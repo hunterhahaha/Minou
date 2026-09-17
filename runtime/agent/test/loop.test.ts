@@ -1,18 +1,22 @@
 /**
- * AgentLoop 最小循环测试（TODOList 阶段 6.1）。
+ * AgentLoop 循环测试（TODOList 阶段 6.1 正常模型请求 + 6.4 Tool Call 小轮接线）。
  *
- * 用「按脚本产出统一流事件的假 Adapter」验证 AgentLoop 的事件创建与 Step 边界，
- * 不碰网络、不依赖测试框架。运行：
+ * 用「按脚本产出统一流事件的假 Adapter」与「按脚本返回 ToolResult 的假工具入口」驱动
+ * `runAgentLoop`，不碰网络、不依赖测试框架，也不实现任何真实工具。运行：
  *   node --experimental-strip-types runtime/agent/test/loop.test.ts
  *
  * 断言包在 async main() 里而非顶层 await：测试被 Node 当作 ESM 运行，
  * 但 tsc 按 CommonJS 检查，顶层 await 在后者不合法。
  *
- * 覆盖：正常完成、Tool Call（工具小轮未实现）、未结束的 tool_call 不进入消息、
- *       用户取消、Adapter 抛错、请求构建（content / tools / model 原样透传）。
+ * 覆盖：
+ *   1. 正常完成：事件顺序、blockId 一致性、assistant/message 内容与 Usage、content 原地更新
+ *   2. Tool Call 小轮：两个调用（一个成功、一个失败）的执行、tool/result 关联、工具结果消息、进入下一 Step
+ *   3. 未结束的 tool_call 不进消息、不执行工具
+ *   4. 用户取消：模型流取消、工具小轮期间取消
+ *   5. Adapter 抛错
  *
- * 架构依据：.git/技术文档/开发备忘录1.0.17.md 第 8.4 / 8.5 / 8.9 节、第 11.4 节、
- *          第 13.3 节、第 14 节
+ * 架构依据：.git/技术文档/开发备忘录1.0.17.md 第 8.4 / 8.5 / 8.6 / 8.9 节、第 11.3 / 11.4 节、
+ *          第 13.3 节、第 14 节、第 16.4 / 16.5 节
  */
 
 import assert from "node:assert/strict"
@@ -33,12 +37,15 @@ import type {
 } from "../../model/src/types.ts"
 import type {
   AppendSessionEvent,
+  AssistantBlockEndEventInput,
   AssistantMessageEventInput,
   SessionEventInput,
   StepEndEventInput,
   StepStartEventInput,
 } from "../../session/src/events.ts"
+import type { ToolResult } from "../../tools/src/types.ts"
 import { runAgentLoop } from "../src/loop.ts"
+import type { ExecuteToolCall } from "../src/loop.ts"
 
 // ---------------------------------------------------------------------------
 // 辅助
@@ -47,13 +54,48 @@ import { runAgentLoop } from "../src/loop.ts"
 /** 本测试使用的模型引用；假 Adapter 不做一致性校验，与真实 Adapter 无关。 */
 const MODEL: ModelRef = { providerId: "provider-1", protocol: "anthropic_messages", modelId: "model-1" }
 
-/** 收集 AgentLoop 写出的待写入事件。 */
+const SESSION_ID = "session-1"
+
+/**
+ * 收集 AgentLoop 写出的待写入事件，并像 SessionEventLog 一样补上身份字段后返回。
+ *
+ * eventId 用 `event-N` 顺序编号，便于断言 `tool/result.toolCallEventId` 指向哪条 block_end。
+ */
 function collector(): { events: SessionEventInput[]; appendEvent: AppendSessionEvent } {
   const events: SessionEventInput[] = []
+  const appendEvent: AppendSessionEvent = async (event) => {
+    events.push(event)
+    return {
+      eventId: `event-${events.length}`,
+      sessionId: SESSION_ID,
+      seq: events.length,
+      createdAt: "2026-09-17T00:00:00.000Z",
+      ...event,
+    }
+  }
+  return { events, appendEvent }
+}
+
+/** 记录收到的工具调用并返回脚本结果的假工具入口。 */
+function toolSpy(script: ToolResult[]): {
+  calls: { name: string; args: unknown; turn: number; step: number; blockId: string; toolCallId: string }[]
+  executeTool: ExecuteToolCall
+} {
+  const calls: { name: string; args: unknown; turn: number; step: number; blockId: string; toolCallId: string }[] = []
   return {
-    events,
-    appendEvent: async (event) => {
-      events.push(event)
+    calls,
+    executeTool: async (name, args, context) => {
+      calls.push({
+        name,
+        args,
+        turn: context.turn,
+        step: context.step,
+        blockId: context.blockId,
+        toolCallId: context.toolCallId,
+      })
+      const result = script.shift()
+      assert.ok(result !== undefined, "假工具入口收到了超出脚本数量的调用")
+      return result
     },
   }
 }
@@ -63,6 +105,24 @@ function adapterFrom(
   stream: (request: UnifiedModelRequest, signal: AbortSignal) => AsyncIterable<ModelStreamEvent>,
 ): ModelAdapter {
   return { stream }
+}
+
+/**
+ * 按请求顺序消费多个脚本的假 Adapter；调用次数超出脚本数时断言失败。
+ *
+ * `seen` 记录每次请求本身与**当时**的消息角色快照 —— content 是被 Loop 原地修改的同一个数组，
+ * 快照才能反映「这次请求实际带上了什么」。
+ */
+function adapterFromScripts(
+  scripts: ModelStreamEvent[][],
+  seen: { request: UnifiedModelRequest; roles: string[] }[],
+): ModelAdapter {
+  return adapterFrom(async function* (request): AsyncGenerator<ModelStreamEvent> {
+    seen.push({ request, roles: request.context.messages.map((message) => message.role) })
+    const script = scripts.shift()
+    assert.ok(script !== undefined, "假 Adapter 收到了超出脚本数量的请求")
+    for (const event of script) yield event
+  })
 }
 
 function eventTypes(events: SessionEventInput[]): string[] {
@@ -123,6 +183,27 @@ function streamEnd(completion: ModelCompletion, usage?: Usage, finishReason?: st
   }
 }
 
+function textResult(text: string): ToolResult {
+  return { status: "success", content: [{ type: "text", text }] }
+}
+
+function errorResult(error: AppError, text: string): ToolResult {
+  return { status: "error", content: [{ type: "text", text }], error }
+}
+
+/** block_end 事件，其 block 已收窄为 tool_call。 */
+type ToolCallBlockEndEvent = AssistantBlockEndEventInput & {
+  block: Extract<AssistantContentBlock, { type: "tool_call" }>
+}
+
+/** 取所有 tool_call 块的 block_end 事件（type 谓词，便于按 toolCallId 查找）。 */
+function toolCallBlockEnds(events: SessionEventInput[]): ToolCallBlockEndEvent[] {
+  return events.filter(
+    (event): event is ToolCallBlockEndEvent =>
+      event.type === "assistant/block_end" && event.block.type === "tool_call",
+  )
+}
+
 /** 取唯一一条指定类型的事件，顺带断言它确实存在。 */
 function only<T extends SessionEventInput["type"]>(
   events: SessionEventInput[],
@@ -134,7 +215,7 @@ function only<T extends SessionEventInput["type"]>(
 }
 
 // ---------------------------------------------------------------------------
-// 正常完成
+// 1. 正常完成
 // ---------------------------------------------------------------------------
 
 async function testCompletedStep(): Promise<void> {
@@ -145,6 +226,7 @@ async function testCompletedStep(): Promise<void> {
   const tools: UnifiedToolDefinition[] = []
   const usage: Usage = { inputTokens: 120, outputTokens: 8, totalTokens: 128 }
   const { events, appendEvent } = collector()
+  const { calls, executeTool } = toolSpy([])
   let seen: UnifiedModelRequest | undefined
 
   const adapter = adapterFrom(async function* (request): AsyncGenerator<ModelStreamEvent> {
@@ -165,6 +247,7 @@ async function testCompletedStep(): Promise<void> {
     adapter,
     content,
     tools,
+    executeTool,
     signal: new AbortController().signal,
     appendEvent,
   })
@@ -196,7 +279,7 @@ async function testCompletedStep(): Promise<void> {
   assert.equal(stepEnd.step, 1)
   assert.equal(stepEnd.reason, "completed")
 
-  // 同一个块的 Start / Delta / End 使用同一个 blockId，block 之间的 blockId 不同（第 8.4 节）
+  // 同一个块的 Start / Delta / End 使用同一个 blockId，块之间的 blockId 不同（第 8.4 节）
   const ids = blockIds(events)
   assert.equal(ids.length, 7)
   assert.equal(new Set(ids.slice(0, 3)).size, 1)
@@ -234,35 +317,51 @@ async function testCompletedStep(): Promise<void> {
   assert.equal(result.completion, "finished")
   assert.deepEqual(result.usage, usage)
   assert.equal(result.finishReason, "end_turn")
-  assert.equal(result.toolCalls.length, 0)
+  assert.equal(calls.length, 0)
 }
 
 // ---------------------------------------------------------------------------
-// Tool Call：工具小轮未实现，一个 Turn 只有一个 Step
+// 2. Tool Call 小轮：一个成功、一个失败，随后进入下一 Step
 // ---------------------------------------------------------------------------
 
-async function testToolCallsWithoutToolRound(): Promise<void> {
+async function testToolRound(): Promise<void> {
   const content: ModelMessage[] = [
     { role: "system", content: "系统设定" },
-    { role: "user", content: "读一下 a.ts" },
+    { role: "user", content: "读一下 a.ts，再删掉 b.ts" },
   ]
   const { events, appendEvent } = collector()
+  const notFound: AppError = { source: "tool", code: "FILE_NOT_FOUND", message: "文件不存在" }
+  const { calls, executeTool } = toolSpy([
+    textResult("a.ts 的内容"),
+    errorResult(notFound, "读取 b.ts 失败：文件不存在"),
+  ])
+  const requests: { request: UnifiedModelRequest; roles: string[] }[] = []
 
-  const adapter = adapterFrom(async function* (): AsyncGenerator<ModelStreamEvent> {
-    yield blockStart(0, "text")
-    yield textDelta(0, "我来读")
-    yield blockEnd(0, { type: "text", text: "我来读" })
-    yield blockStart(1, "tool_call")
-    yield toolCallDelta(1, "call-1", "read_file")
-    yield toolCallDelta(1, "call-1", undefined, '{"path":"a.ts"}')
-    yield blockEnd(1, {
-      type: "tool_call",
-      toolCallId: "call-1",
-      name: "read_file",
-      arguments: { path: "a.ts" },
-    })
-    yield streamEnd("tool_calls", undefined, "tool_use")
-  })
+  const adapter = adapterFromScripts(
+    [
+      [
+        blockStart(0, "text"),
+        textDelta(0, "我先看看这两个文件"),
+        blockEnd(0, { type: "text", text: "我先看看这两个文件" }),
+        blockStart(1, "tool_call"),
+        toolCallDelta(1, "call-1", "read_file"),
+        toolCallDelta(1, "call-1", undefined, '{"path":"a.ts"}'),
+        blockEnd(1, { type: "tool_call", toolCallId: "call-1", name: "read_file", arguments: { path: "a.ts" } }),
+        blockStart(2, "tool_call"),
+        toolCallDelta(2, "call-2", "read_file"),
+        toolCallDelta(2, "call-2", undefined, '{"path":"b.ts"}'),
+        blockEnd(2, { type: "tool_call", toolCallId: "call-2", name: "read_file", arguments: { path: "b.ts" } }),
+        streamEnd("tool_calls", undefined, "tool_use"),
+      ],
+      [
+        blockStart(0, "text"),
+        textDelta(0, "a.ts 可以读，b.ts 不存在"),
+        blockEnd(0, { type: "text", text: "a.ts 可以读，b.ts 不存在" }),
+        streamEnd("finished", { inputTokens: 200, outputTokens: 12 }, "end_turn"),
+      ],
+    ],
+    requests,
+  )
 
   const result = await runAgentLoop({
     turn: 1,
@@ -270,42 +369,111 @@ async function testToolCallsWithoutToolRound(): Promise<void> {
     adapter,
     content,
     tools: [],
+    executeTool,
     signal: new AbortController().signal,
     appendEvent,
   })
 
-  // 工具小轮（TODOList 6.4）未实现：不进入第二个 Step，也不写 tool/result
-  assert.equal(eventTypes(events).filter((type) => type === "step/start").length, 1)
-  assert.equal(eventTypes(events).filter((type) => type === "step/end").length, 1)
-  assert.equal(only(events, "step/end").reason, "completed")
+  // 事件顺序：Step 1 的两个调用逐个写 tool/result，小轮结束后才写 step/end（第 13.3 节）
+  assert.deepEqual(eventTypes(events), [
+    "step/start",
+    "assistant/block_start",
+    "assistant/block_delta",
+    "assistant/block_end",
+    "assistant/block_start",
+    "assistant/block_delta",
+    "assistant/block_delta",
+    "assistant/block_end",
+    "assistant/block_start",
+    "assistant/block_delta",
+    "assistant/block_delta",
+    "assistant/block_end",
+    "assistant/message",
+    "tool/result",
+    "tool/result",
+    "step/end",
+    "step/start",
+    "assistant/block_start",
+    "assistant/block_delta",
+    "assistant/block_end",
+    "assistant/message",
+    "step/end",
+  ])
 
-  assert.equal(result.completion, "tool_calls")
-  assert.equal(result.toolCalls.length, 1)
-  const toolCall = result.toolCalls[0]
-  assert.equal(toolCall?.turn, 1)
-  assert.equal(toolCall?.step, 1)
-  assert.equal(typeof toolCall?.blockId, "string")
-  assert.deepEqual(toolCall?.block, {
-    type: "tool_call",
-    toolCallId: "call-1",
-    name: "read_file",
-    arguments: { path: "a.ts" },
-  })
+  // 工具执行：调用身份来自 tool_call 块，按模型给出的顺序逐个执行
+  assert.deepEqual(calls, [
+    { name: "read_file", args: { path: "a.ts" }, turn: 1, step: 1, blockId: "b-1-1-1", toolCallId: "call-1" },
+    { name: "read_file", args: { path: "b.ts" }, turn: 1, step: 1, blockId: "b-1-1-2", toolCallId: "call-2" },
+  ])
 
-  // blockId 与该 tool_call 块的 block_end 事件一致
-  const toolCallBlockEnd = events.filter(
-    (event) => event.type === "assistant/block_end" && event.index === 1,
-  )
-  assert.equal(toolCallBlockEnd.length, 1)
-  assert.equal(toolCall?.blockId, (toolCallBlockEnd[0] as { blockId: string }).blockId)
+  // tool/result 关联 toolCallEventId（指向该块 block_end 的 eventId）/ toolCallId / blockId（第 8.6 节）
+  // collector 把第 N 条事件命名为 `event-N`，所以 eventId 的编号就是事件下标 + 1。
+  const toolResults = events.filter((event) => event.type === "tool/result")
+  assert.equal(toolResults.length, 2)
   assert.deepEqual(
-    (toolCallBlockEnd[0] as { block: AssistantContentBlock }).block,
-    toolCall?.block,
+    toolResults.map((event) => {
+      const blockEnd = toolCallBlockEnds(events).find(
+        (candidate) => candidate.block.toolCallId === event.toolCallId,
+      )
+      assert.ok(blockEnd !== undefined, `找不到 ${event.toolCallId} 的 block_end`)
+      return {
+        toolCallId: event.toolCallId,
+        blockId: event.blockId,
+        status: event.result.status,
+        toolCallEventId: event.toolCallEventId,
+        blockEndEventId: `event-${events.indexOf(blockEnd) + 1}`,
+        blockEndBlockId: blockEnd.blockId,
+      }
+    }),
+    [
+      {
+        toolCallId: "call-1",
+        blockId: "b-1-1-1",
+        status: "success",
+        toolCallEventId: "event-8",
+        blockEndEventId: "event-8",
+        blockEndBlockId: "b-1-1-1",
+      },
+      {
+        toolCallId: "call-2",
+        blockId: "b-1-1-2",
+        status: "error",
+        toolCallEventId: "event-12",
+        blockEndEventId: "event-12",
+        blockEndBlockId: "b-1-1-2",
+      },
+    ],
   )
+
+  // 工具结果进入 content：只保留 text 内容块，isError 取 status（第 11.3、16.2 节）
+  assert.deepEqual(content.slice(3), [
+    { role: "tool", toolCallId: "call-1", content: [{ type: "text", text: "a.ts 的内容" }], isError: false },
+    {
+      role: "tool",
+      toolCallId: "call-2",
+      content: [{ type: "text", text: "读取 b.ts 失败：文件不存在" }],
+      isError: true,
+    },
+    {
+      role: "assistant",
+      content: [{ type: "text", text: "a.ts 可以读，b.ts 不存在" }],
+    },
+  ])
+
+  // 第二次请求带上了工具结果（工具结果必须交还模型）
+  assert.equal(requests.length, 2)
+  assert.deepEqual(requests[0]?.roles, ["system", "user"])
+  assert.deepEqual(requests[1]?.roles, ["system", "user", "assistant", "tool", "tool"])
+  assert.equal(requests[1]?.request.context.messages, content)
+
+  assert.equal(result.steps, 2)
+  assert.equal(result.completion, "finished")
+  assert.deepEqual(result.usage, { inputTokens: 200, outputTokens: 12 })
+  assert.equal(result.stopped, false)
 }
 
 // ---------------------------------------------------------------------------
-// 未结束的 tool_call 不进入 assistant/message
+// 3. 未结束的 tool_call 不进入消息，也不执行
 // ---------------------------------------------------------------------------
 
 async function testUnfinishedToolCall(): Promise<void> {
@@ -314,6 +482,7 @@ async function testUnfinishedToolCall(): Promise<void> {
     { role: "user", content: "读一下 a.ts" },
   ]
   const { events, appendEvent } = collector()
+  const { calls, executeTool } = toolSpy([])
 
   const adapter = adapterFrom(async function* (): AsyncGenerator<ModelStreamEvent> {
     yield blockStart(0, "tool_call")
@@ -327,30 +496,34 @@ async function testUnfinishedToolCall(): Promise<void> {
     adapter,
     content,
     tools: [],
+    executeTool,
     signal: new AbortController().signal,
     appendEvent,
   })
 
-  // 没有 block_end 的块不进消息，也不被当作待执行工具调用（第 8.5 节）
+  // 没有 block_end 的块不进 assistant/message，也不被当作待执行调用（第 8.5 节）
   assert.deepEqual(only(events, "assistant/message").message.content, [])
-  assert.equal(result.toolCalls.length, 0)
+  assert.equal(eventTypes(events).includes("tool/result"), false)
+  assert.equal(calls.length, 0)
   assert.equal(result.completion, "unknown")
+  assert.equal(result.steps, 1)
 
   // 空内容的消息不追加到 content
   assert.equal(content.length, 2)
 }
 
 // ---------------------------------------------------------------------------
-// 用户取消
+// 4. 用户取消
 // ---------------------------------------------------------------------------
 
-async function testUserStop(): Promise<void> {
+async function testUserStopDuringModelStream(): Promise<void> {
   const content: ModelMessage[] = [
     { role: "system", content: "系统设定" },
     { role: "user", content: "讲个长故事" },
   ]
   const { events, appendEvent } = collector()
   const controller = new AbortController()
+  const { calls, executeTool } = toolSpy([])
 
   // 真实 Adapter 在取消时抛出的就是取消类错误（经 runModelStream 归一化）。
   const adapter = adapterFrom(async function* (): AsyncGenerator<ModelStreamEvent> {
@@ -366,6 +539,7 @@ async function testUserStop(): Promise<void> {
     adapter,
     content,
     tools: [],
+    executeTool,
     signal: controller.signal,
     appendEvent,
   })
@@ -381,13 +555,80 @@ async function testUserStop(): Promise<void> {
   assert.equal(result.stopped, true)
   assert.equal(result.steps, 1)
   assert.equal(result.completion, undefined)
+  assert.equal(calls.length, 0)
 
   // 未完成的消息不进入 content
   assert.equal(content.length, 2)
 }
 
+async function testUserStopDuringToolRound(): Promise<void> {
+  const content: ModelMessage[] = [
+    { role: "system", content: "系统设定" },
+    { role: "user", content: "跑一下两个命令" },
+  ]
+  const { events, appendEvent } = collector()
+  const controller = new AbortController()
+  const cancelled: AppError = { source: "tool", code: "CANCELLED", message: "工具调用已取消" }
+  const requests: { request: UnifiedModelRequest; roles: string[] }[] = []
+
+  const adapter = adapterFromScripts(
+    [
+      [
+        blockStart(0, "tool_call"),
+        toolCallDelta(0, "call-1", "shell", '{"command":"a"}'),
+        blockEnd(0, { type: "tool_call", toolCallId: "call-1", name: "shell", arguments: { command: "a" } }),
+        blockStart(1, "tool_call"),
+        toolCallDelta(1, "call-2", "shell", '{"command":"b"}'),
+        blockEnd(1, { type: "tool_call", toolCallId: "call-2", name: "shell", arguments: { command: "b" } }),
+        streamEnd("tool_calls", undefined, "tool_use"),
+      ],
+    ],
+    requests,
+  )
+
+  // 第一次调用发现已被取消，第二次调用尚未启动便返回 CANCELLED（第 14、16.4 节）。
+  const executeTool: ExecuteToolCall = async (name, args, context) => {
+    if (context.toolCallId === "call-1") controller.abort()
+    return errorResult(cancelled, `工具 ${name} 未执行：已取消`)
+  }
+
+  const result = await runAgentLoop({
+    turn: 7,
+    model: MODEL,
+    adapter,
+    content,
+    tools: [],
+    executeTool,
+    signal: controller.signal,
+    appendEvent,
+  })
+
+  // 小轮仍然为每个调用写 tool/result，Step 以 stopped 关闭，且不再发起下一次模型请求
+  assert.deepEqual(eventTypes(events), [
+    "step/start",
+    "assistant/block_start",
+    "assistant/block_delta",
+    "assistant/block_end",
+    "assistant/block_start",
+    "assistant/block_delta",
+    "assistant/block_end",
+    "assistant/message",
+    "tool/result",
+    "tool/result",
+    "step/end",
+  ])
+  assert.equal(only(events, "step/end").reason, "stopped")
+  assert.equal(requests.length, 1)
+  assert.equal(result.stopped, true)
+  assert.equal(result.steps, 1)
+  assert.equal(
+    events.filter((event) => event.type === "tool/result").every((event) => event.result.status === "error"),
+    true,
+  )
+}
+
 // ---------------------------------------------------------------------------
-// Adapter 抛错
+// 5. Adapter 抛错
 // ---------------------------------------------------------------------------
 
 async function testModelError(): Promise<void> {
@@ -396,6 +637,7 @@ async function testModelError(): Promise<void> {
     { role: "user", content: "你好" },
   ]
   const { events, appendEvent } = collector()
+  const { calls, executeTool } = toolSpy([])
   const modelError: AppError = { source: "model", code: "REQUEST_FAILED", message: "boom" }
 
   const adapter = adapterFrom(async function* (): AsyncGenerator<ModelStreamEvent> {
@@ -409,6 +651,7 @@ async function testModelError(): Promise<void> {
     adapter,
     content,
     tools: [],
+    executeTool,
     signal: new AbortController().signal,
     appendEvent,
   }).then(
@@ -420,6 +663,7 @@ async function testModelError(): Promise<void> {
   assert.deepEqual(thrown, modelError)
   assert.deepEqual(eventTypes(events), ["step/start", "assistant/block_start", "step/end"])
   assert.equal(only(events, "step/end").reason, "error")
+  assert.equal(calls.length, 0)
   assert.equal(content.length, 2)
 }
 
@@ -429,9 +673,10 @@ async function testModelError(): Promise<void> {
 
 async function main(): Promise<void> {
   await testCompletedStep()
-  await testToolCallsWithoutToolRound()
+  await testToolRound()
   await testUnfinishedToolCall()
-  await testUserStop()
+  await testUserStopDuringModelStream()
+  await testUserStopDuringToolRound()
   await testModelError()
   console.log("loop.test.ts: AgentLoop 断言通过")
 }

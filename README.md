@@ -23,10 +23,12 @@ NiCode V1 是一个本地运行的 Coding Agent Runtime：浏览器 UI 与本机
 **阶段 3–5（三个 Protocol Adapter）**已完成：`runtime/model/src/` 下三个协议各自的
 Adapter 与 Usage 转换，含流式调用、双向转换、取消与错误归一化接入。
 
-**阶段 6.1（AgentLoop 最小循环）**已完成：`runtime/agent/src/loop.ts` 的 `runAgentLoop` 只跑
-「正常模型请求」这一条数据流（Step 生命周期 + 模型流事件落盘 + `assistant/message`），
-配套 `runtime/session/src/events.ts` 提供 AgentLoop 写出的事件结构与事件出口契约。
-压缩、Usage 记账、工具小轮、Insert / Queue、Turn 收尾仍未实现，见下文。
+**阶段 6.1（AgentLoop 最小循环）+ 6.4（Tool Call 小轮接线）**已完成：`runtime/agent/src/loop.ts` 的
+`runAgentLoop` 跑完「正常模型请求 + 工具调用小轮」这条数据流（Step 生命周期、模型流事件落盘、
+`assistant/message`、`tool/result` 关联、工具结果回填 content），配套
+`runtime/session/src/events.ts` 提供事件结构与事件出口契约、`runtime/tools/src/types.ts` 提供
+统一 `ToolResult` 结构。工具本体与 ToolScheduler、压缩、Usage 记账、Insert / Queue、Turn 收尾
+仍未实现，见下文。
 
 其余 `index.ts` 仍是占位文件，只含模块职责与对应章节的说明，不导出实现。尚未实现的模块在各自 `index.ts` 里以「尚未实现」列出。
 
@@ -49,7 +51,7 @@ Adapter 与 Usage 转换，含流式调用、双向转换、取消与错误归�
 不一致直接以 `INVALID_MODEL_REQUEST`（`source = "runtime"`）失败，不发网络请求。
 凭据由 `CredentialStore` 按 providerId 提供后经 `ProtocolClientOptions` 传入。
 
-### AgentLoop 最小循环（阶段 6.1）
+### AgentLoop（阶段 6.1 循环骨架 + 6.4 工具调用接线）
 
 `runAgentLoop(options)` 在一个 Turn 内运行 Step 循环，每个 Step 一次正常模型请求：
 
@@ -61,23 +63,35 @@ content + tools + 本 Turn 固定 ModelRef + AbortSignal
 → assistant/block_start / block_delta / block_end（同一个块共用一个 blockId）
 → assistant/message（只收录已有 block_end 的块，按 index 排序，携带权威 Usage 与 finishReason）
 → content 原地追加该 assistant 消息
+→ 有已结束的 tool_call 块时进入工具小轮：
+     executeTool(name, arguments, context)        逐个调用注入的执行入口
+     → tool/result（关联 block_end 的 eventId / toolCallId / blockId）
+     → 工具结果作为 tool 消息追加到 content
 → step/end
+→ 有 Tool Call 则一定进入下一 Step（工具结果必须交还模型），否则结束 Loop
 ```
 
+- 工具由调用方通过 `executeTool` 注入（第 16.4 节统一 execute 的边界形态），AgentLoop 只负责调用与
+  事件关联；工具本体、render、ToolRegistry / ToolExecutor / ToolScheduler 都还没实现。
+- 工具自身的失败（含被取消）必须以 `status = "error"` 的 ToolResult 返回，不用抛异常表达 ——
+  第 16.4 节要求调度器中尚未启动便被取消的调用同样产出 `AppError(CANCELLED)` 并形成 ToolResult；
+  从 `executeTool` 抛出的异常会被当成 Turn 级失败。
+- 当前按顺序逐个执行工具。第 17 节的 ToolScheduler（共享只读并发、独占串行、审批屏障）留给后续阶段。
+- `appendEvent` 返回**已落盘**事件，因为 `tool/result.toolCallEventId` 要指向工具调用块的
+  `block_end.eventId`；`seq` 只能由 Event Log 分配，调用方不自行推算。
 - 进入 Loop 前写 `turn/start + user/message`，Loop 退出后写 `turn/end` 与 `app/error`：这三件事
   属于 SessionRuntime 与 Turn 收尾，不在 `runAgentLoop` 内，本阶段由调用方负责。
 - `blockId` 由 `(turn, step, index)` 决定，不随机生成，便于 Block 修复按同一规则重建。
 - Adapter 由调用方用 `createModelAdapter(config, options)` 创建后注入；AgentLoop 不接触凭据与
   Provider 配置，只依赖 `ModelAdapter` 接口。
-- 取消：Step 未结束时 Adapter 抛出取消类错误（`CANCELLED`），Loop 写 `step/end(stopped)` 后正常返回；
-  其它错误写 `step/end(error)` 后原样抛出，由调用方以 error 终止 Turn。
-- 待执行的完整 tool_call 通过返回值的 `toolCalls` 交给调用方；工具小轮尚未实现，因此当前一个
-  Turn 只有一个 Step（`needsNextStep` 在 `runtime/agent/src/loop.ts:263` 处保留扩展点）。
+- 取消：模型流未结束时 Adapter 抛出取消类错误（`CANCELLED`），Loop 写 `step/end(stopped)` 后正常返回；
+  工具小轮期间取消时，小轮仍为已产生的每个调用写 `tool/result`，再以 `step/end(stopped)` 关闭 Step
+  且不再发起下一次模型请求；其它错误写 `step/end(error)` 后原样抛出，由调用方以 error 终止 Turn。
+- Usage 记账（6.3）、Insert / Queue（6.5）、压缩（6.2）、Turn 收尾（6.6）仍未实现。
 
 ## 目录结构
 
 `runtime/` 是架构文档第 30 节「模块边界」的落地位置，每个模块内部再分 `src/` 与 `test/`：
-
 ```text
 src/                                 Electron 外壳
 ├─ main/index.ts                     主进程入口（占位）
@@ -87,7 +101,7 @@ runtime/                             Runtime 模块，各自含 src/ 与 test/
 ├─ agent/
 │  ├─ src/
 │  │  ├─ index.ts                    模块入口
-│  │  └─ loop.ts                     AgentLoop 的 Step 循环（阶段 6.1）
+│  │  └─ loop.ts                     AgentLoop 的 Step 循环与工具小轮（阶段 6.1 / 6.4）
 │  └─ test/loop.test.ts
 ├─ context/                          ContextBuilder / WindowManager / Compressor / Recovery / Projector / SurfaceBuilder
 ├─ model/
@@ -110,7 +124,7 @@ runtime/                             Runtime 模块，各自含 src/ 与 test/
 ├─ session/
 │  ├─ src/
 │  │  ├─ index.ts                    模块入口
-│  │  └─ events.ts                   事件结构与事件出口契约（阶段 6.1：只含 AgentLoop 写出的事件）
+│  │  └─ events.ts                   事件结构与事件出口契约（阶段 6.1 / 6.4：只含 AgentLoop 写出的事件）
 │  └─ test/                          SessionEventLog / SessionState 尚未实现
 ├─ project/                          Project / ProjectManager / ProjectRules
 ├─ credential/                       CredentialStore
@@ -131,7 +145,8 @@ runtime/                             Runtime 模块，各自含 src/ 与 test/
 │  └─ test/retry.test.ts
 └─ tools/                            与工具有关的全部代码
    ├─ src/
-   │  ├─ index.ts                    ToolRegistry / RenderRegistry / ExposureManager / Executor / Scheduler / OutputStore
+   │  ├─ index.ts                    模块入口
+   │  ├─ types.ts                    统一 ToolResult 与内容块（阶段 6.4）
    │  ├─ render/                     工具结果渲染器
    │  ├─ present/                    present 工具
    │  ├─ file/                       文件工具本体 glob / grep / read / write / edit
@@ -209,10 +224,12 @@ node --experimental-strip-types runtime/agent/test/loop.test.ts
 **端到端**（`test/helpers.ts` 起一个本机 SSE 假服务器，真实走一遍官方 SDK）。
 端到端覆盖正常流、Usage 转换、取消、可重试/不可重试错误四类路径，日志与网络都不出本机。
 
-AgentLoop 的测试用一个「按脚本产出统一流事件的假 Adapter」驱动 `runAgentLoop`，不碰网络也不依赖
-真实模型，覆盖：正常完成（事件顺序、blockId 一致性、`assistant/message` 内容与 Usage、content 原地更新）、
-Tool Call（当前不进入第二个 Step，只有 `step/start` 与 `step/end` 各一条）、未结束的 tool_call 不进消息、
-用户取消（`step/end(stopped)` 且不写 `assistant/message`）、Adapter 抛错（`step/end(error)` 后原样抛出）。
+AgentLoop 的测试用「按脚本产出统一流事件的假 Adapter」与「按脚本返回 ToolResult 的假工具入口」
+驱动 `runAgentLoop`，不碰网络、不实现任何真实工具，覆盖：正常完成（事件顺序、blockId 一致性、
+`assistant/message` 内容与 Usage、content 原地更新）、工具小轮（两个调用一成功一失败的执行顺序与
+`tool/result` 关联、工具结果作为 `tool` 消息回填 content、随后进入下一 Step）、未结束的 tool_call
+不进消息也不执行、模型流取消、工具小轮期间取消（仍写 `tool/result`，以 `step/end(stopped)` 关闭
+且不再发起请求）、Adapter 抛错（`step/end(error)` 后原样抛出）。
 
 **不要用 `node --check <文件>.ts` 作为语法检查**：它并不做类型剥离，对 `interface`、
 `const x: number = 1` 这类写法会误报 `SyntaxError`，而对函数参数的类型标注又会通过，

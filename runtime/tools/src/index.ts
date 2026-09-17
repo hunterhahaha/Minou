@@ -1,10 +1,13 @@
 /**
- * 目录占位，阶段 0 无实现。
+ * Tool 模块入口。
  *
  * 模块职责：Tool Runtime 核心组件 —— ToolRegistry（工具定义、参数 Schema、执行函数与来源元数据）、
  * RenderRegistry、ToolExposureManager（基础内置工具 + 当前 Session 已加载且有效的 MCP Tools）、
  * ToolExecutor（统一校验、权限、执行与 render）、ToolScheduler（共享只读与独占执行调度、
  * 审批屏障）、ToolOutputStore（超过 64 KB 的工具输出落盘）。
+ *
+ * 文件划分：
+ *   types.ts   统一 ToolResult 与内容块（第 16.2 节）
  *
  * 本目录同时收纳与工具有关的全部代码，子目录职责：
  *   render/      工具结果渲染器
@@ -18,6 +21,9 @@
  *   memory/      memory_list / memory_read / memory_write 工具（Memory Runtime 本体在 runtime/memory/）
  *   security/    SandboxPolicy / ApprovalManager 工具权限与审批屏障
  *
+ * 当前已实现的部分：只有统一 ToolResult 结构。工具本体、render、ToolRegistry / ToolExecutor /
+ * ToolScheduler 均未实现；AgentLoop 目前通过注入的执行边界调用工具（见 runtime/agent/src/loop.ts）。
+ *
  * 位置说明：与工具有关的代码统一收在本目录下，因此 runtime/ 顶层没有独立的
  * filesystem/ 与 security/；文档第 30 节的目录树只是参考。
  *
@@ -25,4 +31,5 @@
  * 第 19–24 节、第 26 节
  * 实施阶段：TODOList 阶段 6.4 只接调度入口与 tool/result 写入；工具本体与完整 Scheduler 规则不实现
  */
-export {}
+export * from "./types.ts"
+
