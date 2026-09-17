@@ -1,0 +1,347 @@
+/**
+ * 统一模型格式：Protocol Adapter 的输入与输出契约（第 6 节）。
+ *
+ * Agent Runtime 只处理本文件定义的格式；厂商协议细节只存在于三个 Adapter 内部。
+ *
+ * 架构依据：
+ *   - .git/技术文档/开发备忘录1.0.17.md 第 6 节（模型协议层）、第 8.4 节（模型流事件与内容块）
+ *   - .git/技术文档/NiCode_Usage统一设计.md（Usage 部分以此为准，取代备忘录第 27.1、35.2 节）
+ * 实施阶段：.git/技术文档/开发TODOList.md 阶段 1
+ *
+ * 文档未给出字面结构的类型在此确定为统一契约；三个 Adapter 负责协议侧映射。
+ * 映射参考：.git/技术文档/三个协议调用时传入的上下文示例.md。
+ */
+
+// ---------------------------------------------------------------------------
+// 协议与模型引用
+// ---------------------------------------------------------------------------
+
+/**
+ * 三种原生支持的协议：Anthropic Messages / OpenAI Chat Completions / OpenAI Responses。
+ *
+ * 第 6 节未指定字面值；此处固定为协议配置使用的三个值，并导出运行期常量供配置校验。
+ */
+export const PROTOCOLS = ["anthropic_messages", "chat_completions", "responses"] as const
+
+export type Protocol = (typeof PROTOCOLS)[number]
+
+/** 统一模型引用（第 6 节，已定义）。 */
+export interface ModelRef {
+  providerId: string
+  protocol: Protocol
+  modelId: string
+}
+
+/** 模型配置（第 6 节，已定义）。Provider → Protocol → Models；`id` 对应 `ModelRef.modelId`。 */
+export interface ModelConfig {
+  id: string
+  providerId: string
+  protocol: Protocol
+
+  contextWindow?: number
+  maxOutputTokens?: number
+
+  supportsReasoning?: boolean
+  supportsTools?: boolean
+  supportsParallelTools?: boolean
+
+  supportsResponseId?: boolean
+}
+
+/** Runtime 默认上下文窗口（第 6 节，已定义）。 */
+export const DEFAULT_CONTEXT_WINDOW = 256000
+
+/**
+ * 模型的有效上下文窗口：`contextWindow ?? 256000`（第 6 节，已定义）。
+ * Skill / MCP 预算与压缩阈值均使用同一个有效窗口值。
+ */
+export function resolveContextWindow(model: Pick<ModelConfig, "contextWindow">): number {
+  return model.contextWindow ?? DEFAULT_CONTEXT_WINDOW
+}
+
+// ---------------------------------------------------------------------------
+// 内容块（第 8.4 节，已定义）
+// ---------------------------------------------------------------------------
+
+/** 块类型（第 8.4 节 `blockType`）。 */
+export type BlockType = "thinking" | "text" | "tool_call"
+
+/** Assistant 内容块，也是 `assistant/message.content` 的元素类型（第 8.4 节，已定义）。 */
+export type AssistantContentBlock =
+  | { type: "thinking"; text: string }
+  | { type: "text"; text: string }
+  | {
+      type: "tool_call"
+      toolCallId: string
+      name: string
+      arguments: unknown
+    }
+
+/** `assistant/block_delta.delta` 的增量形态（第 8.4 节，已定义）。 */
+export type AssistantBlockDelta =
+  | { type: "thinking"; text: string }
+  | { type: "text"; text: string }
+  | {
+      type: "tool_call"
+      toolCallId: string
+      nameDelta?: string
+      argumentsDelta?: string
+    }
+
+// ---------------------------------------------------------------------------
+// Unified Usage
+//
+// 事实源：.git/技术文档/NiCode_Usage统一设计.md（Usage 部分以此为准，
+// 取代开发备忘录第 27.1 节与第 35.2 节的相应内容）。
+// ---------------------------------------------------------------------------
+
+/**
+ * 统一 Usage。三个协议必须由各自 Adapter 把厂商字段转换为此格式，Runtime 不再理解厂商原始字段。
+ *
+ * 字段语义（文档第 1 节）：
+ *   - `inputTokens` 语义上是**未落入缓存读取、缓存写入两个桶**的输入 Token，不是完整输入。
+ *     完整输入见 `promptTokens()`。
+ *   - `inputTokens`、`cacheReadTokens`、`cacheWriteTokens` 三个输入桶互不重叠。
+ *   - `reasoningTokens` 是 `outputTokens` 的子集，不能再次加入 Total。
+ *
+ * 可选字段的 undefined 表示**未报告**，而不是 0；两者要尽量保留区别（文档第 9 节第 13 条）。
+ * `cacheWriteTokens` 只在厂商明确提供时才填，不自行推算（第 9 节第 8 条）。
+ *
+ * 状态更新：本类型取代备忘录第 27.1 节旧定义（旧 `cacheHitTokens` / `cacheMissTokens` 及
+ * 其两条不变式已废除）。各协议到本格式的字段映射见上述文档第 2、3、4、5 节，属 Adapter 职责。
+ */
+export interface Usage {
+  /** 未落入缓存读取与缓存写入两个桶的输入 Token。 */
+  inputTokens: number
+  /** 本次模型完整输出 Token。 */
+  outputTokens: number
+
+  /** 完整 Prompt Token 与 Output Token 之和；厂商未提供时为 undefined。 */
+  totalTokens?: number
+  /** 从已有 Prompt Cache 中读取的输入 Token；未报告时为 undefined。 */
+  cacheReadTokens?: number
+  /** 被厂商单独统计为缓存创建 / 写入的输入 Token；未报告时为 undefined。 */
+  cacheWriteTokens?: number
+  /** `outputTokens` 中属于 reasoning / thinking 的部分。 */
+  reasoningTokens?: number
+}
+
+/**
+ * 完整 Prompt Token，即本次真正送入模型的上下文大小（文档第 6.1 节）。
+ *
+ * 计算顺序：
+ *   1. 三个输入桶都齐备时，取 `inputTokens + cacheReadTokens + cacheWriteTokens`；
+ *   2. 否则若 `totalTokens` 可信，取 `totalTokens - outputTokens`；
+ *   3. 两者都无法确定时返回 undefined。
+ *
+ * 第 3 种情形是刻意的：可选缓存字段缺失表示**未报告**，不能当作 0 参与相加，
+ * 否则会低估上下文大小（文档第 1 节与第 9 节第 13 条）。
+ *
+ * 文档第 6.2 节的 Context Pressure 与本函数是同一个值（不含本轮 `outputTokens`），
+ * 因此不再单独提供一个同义函数。
+ */
+export function promptTokens(usage: Usage): number | undefined {
+  const { inputTokens, outputTokens, totalTokens, cacheReadTokens, cacheWriteTokens } = usage
+
+  if (cacheReadTokens !== undefined && cacheWriteTokens !== undefined) {
+    return inputTokens + cacheReadTokens + cacheWriteTokens
+  }
+  if (totalTokens !== undefined) {
+    return totalTokens - outputTokens
+  }
+  return undefined
+}
+
+/**
+ * 完整请求 Token（文档第 6.5 节）：优先使用协议返回的 `totalTokens`，否则由
+ * Prompt Token + `outputTokens` 相加得到；无法确定时返回 undefined。
+ *
+ * `reasoningTokens` 已含在 `outputTokens` 内，不重复加入。
+ */
+export function resolveTotalTokens(usage: Usage): number | undefined {
+  if (usage.totalTokens !== undefined) {
+    return usage.totalTokens
+  }
+  const prompt = promptTokens(usage)
+  return prompt === undefined ? undefined : prompt + usage.outputTokens
+}
+
+/**
+ * 把一次真实请求的 Usage 累计进累计值（文档第 7.2、7.4 节）。
+ *
+ * `previous` 传 undefined 表示「此前还没有任何请求」。
+ *
+ * 累计规则：
+ *   - 必备字段逐次相加；
+ *   - 可选字段只有在**每一次**参与累计的请求都报告了该字段时才保留；
+ *     任意一次未报告，累计值即为 undefined（未报告），不把该次当作 0（文档第 7.2 节与第 9 节第 13 条）。
+ *
+ * Retry 属于一次新的真实请求，按其自身 Usage 正常参与累计（文档第 7.3 节）。
+ */
+export function accumulateUsage(previous: Usage | undefined, usage: Usage): Usage {
+  if (previous === undefined) return { ...usage }
+
+  const accumulated: Usage = {
+    inputTokens: previous.inputTokens + usage.inputTokens,
+    outputTokens: previous.outputTokens + usage.outputTokens,
+  }
+
+  accumulated.totalTokens = sumOptional(previous.totalTokens, usage.totalTokens)
+  accumulated.cacheReadTokens = sumOptional(previous.cacheReadTokens, usage.cacheReadTokens)
+  accumulated.cacheWriteTokens = sumOptional(previous.cacheWriteTokens, usage.cacheWriteTokens)
+  accumulated.reasoningTokens = sumOptional(previous.reasoningTokens, usage.reasoningTokens)
+
+  return accumulated
+}
+
+/** 两个可选计数相加；任一未报告则为未报告。 */
+function sumOptional(a: number | undefined, b: number | undefined): number | undefined {
+  if (a === undefined || b === undefined) return undefined
+  return a + b
+}
+
+/**
+ * 累计缓存命中率（文档第 8 节）：这是缓存命中率**唯一**的口径，不计算单次请求的命中率。
+ *
+ * ```text
+ * 累计命中   = 累计 cacheReadTokens
+ * 累计未命中 = 累计 inputTokens + 累计 cacheWriteTokens
+ * 命中率     = 累计命中 ÷ (累计命中 + 累计未命中)
+ * ```
+ *
+ * 不能对每次请求的命中率取平均 —— 不同请求规模不同，必须先累计 Token 再相除。
+ *
+ * 返回 undefined 的情形：
+ *   - `cacheReadTokens` 未报告（文档第 8 节明确要求视为未知）；
+ *   - `cacheWriteTokens` 未报告 —— 它属于上述分母，若当作 0 会高估命中率（第 9 节第 13 条）；
+ *   - 分母为 0。
+ *
+ * 入参是**累计后的** Usage（由 `accumulateUsage` 得到），不是单次请求的 Usage。
+ */
+export function cacheHitRate(accumulated: Usage): number | undefined {
+  const hit = accumulated.cacheReadTokens
+  const write = accumulated.cacheWriteTokens
+  if (hit === undefined || write === undefined) return undefined
+
+  const miss = accumulated.inputTokens + write
+  const prompt = hit + miss
+  if (prompt === 0) return undefined
+
+  return hit / prompt
+}
+
+// ---------------------------------------------------------------------------
+// 上下文（第 6、11 节及三个协议上下文示例）
+// ---------------------------------------------------------------------------
+
+/**
+ * ContextBuilder 的有序消息数组。`messages[0]` 必须是唯一的 System Message；
+ * `messages[1...]` 是真实会话上下文。Adapter 将首项分别映射到 Anthropic `system`、
+ * Chat Completions `developer/system`、Responses `instructions`，其余项进入消息或 input。
+ * 固定上下文与会话上下文的分界由位置表示，不增加重复的元信息字段。
+ */
+export interface UnifiedModelContext {
+  messages: ModelMessage[]
+}
+
+/**
+ * 用户文本块：对应第 8.3 节的 `UserContentBlock`。Summary 可直接使用字符串，
+ * 因此 user content 同时接受字符串与文本块数组；三个协议都只转换文本输入。
+ */
+export type ModelTextBlock = { type: "text"; text: string }
+
+/**
+ * 回放及当前 Turn 使用的统一消息。工具调用留在 assistant 的内容块中；工具结果单独成项，
+ * 通过 `toolCallId` 与调用配对。三个协议分别映射为 `tool_result`、`role: "tool"`
+ * 与 `function_call_output`。工具结果从 ToolResult.content 中保留所有 text 块及顺序；
+ * Chat Completions / Responses 的字符串字段由 Adapter 按顺序直接拼接文本，不添加分隔符。
+ * `isError` 来自 ToolResult.status，Anthropic 映射为 `is_error`，另两个协议只传文本。
+ */
+export type ModelMessage =
+  | { role: "system"; content: string }
+  | { role: "user"; content: string | ModelTextBlock[] }
+  | { role: "assistant"; content: AssistantContentBlock[] }
+  | { role: "tool"; toolCallId: string; content: ModelTextBlock[]; isError: boolean }
+
+// ---------------------------------------------------------------------------
+// 工具定义（第 6 节引用；结构见下）
+// ---------------------------------------------------------------------------
+
+/**
+ * 工具暴露层交给 Adapter 的统一定义。`inputSchema` 固定为 JSON Schema；Adapter 映射为
+ * Anthropic `input_schema`、Chat Completions / Responses `parameters`。第 16 节的可选
+ * `callDescription` 由工具暴露层加入 schema 的 properties，不是本接口的独立字段。
+ * 工具来源由 tools 模块管理；模型层只需要协议可见的名称、说明和参数结构。
+ */
+export interface UnifiedToolDefinition {
+  name: string
+  description?: string
+  /** 该工具的参数 JSON Schema。 */
+  inputSchema: Record<string, unknown>
+}
+
+// ---------------------------------------------------------------------------
+// 请求与流事件
+// ---------------------------------------------------------------------------
+
+/** 统一模型请求（第 6 节，已定义）。 */
+export interface UnifiedModelRequest {
+  context: UnifiedModelContext
+  tools: UnifiedToolDefinition[]
+  model: ModelRef
+}
+
+/**
+ * Adapter 的流式输出。每个块按本次请求中的连续 `index` 依次 start / delta / end；
+ * Adapter 把协议中的块序号或工具调用序号重新编号，Runtime 用 index 分配 blockId。
+ * delta 的 type 必须与 start 的 blockType 一致，end 提供拼装后的完整内容块。
+ *
+ * 所有 block_end 后恰好产生一个 stream_end，交付最终 Usage、原始 finishReason 与
+ * 统一完成状态。Runtime 自行生成 eventId / sessionId / seq / turn / step / blockId。
+ * Provider 流错误或用户取消由 Adapter 抛出异常，经 Error Normalizer 处理；错误时
+ * 不产生 stream_end，不增加并行的错误事件。
+ */
+export type ModelCompletion = "finished" | "tool_calls" | "incomplete" | "unknown"
+
+export type ModelStreamEvent =
+  | {
+      type: "block_start"
+      /** 本 Step 内的块顺序，从 0 起。 */
+      index: number
+      blockType: BlockType
+    }
+  | {
+      type: "block_delta"
+      index: number
+      delta: AssistantBlockDelta
+    }
+  | {
+      type: "block_end"
+      index: number
+      block: AssistantContentBlock
+    }
+  | {
+      type: "stream_end"
+      /**
+       * 统一完成状态：正常最终回答为 finished；有完整工具调用待执行为 tool_calls；
+       * token 上限、内容过滤等截断为 incomplete；无法从协议结束信息判定为 unknown。
+       * 映射规则（只有已结束的完整 tool_call 才算待执行）：
+       *   - Anthropic：end_turn / stop_sequence / refusal → finished；tool_use 且有完整
+       *     tool_call → tool_calls；max_tokens / model_context_window_exceeded → incomplete。
+       *   - Chat Completions：stop → finished；tool_calls / function_call 且有完整
+       *     tool_call → tool_calls；length / content_filter → incomplete。
+       *   - Responses：status=completed 且有 function_call → tool_calls，否则为 finished；
+       *     status=incomplete → incomplete；status=failed / cancelled 抛出异常。
+       * 其它或缺失的结束原因取 unknown；不能凭文本存在就推断 finished。
+       */
+      completion: ModelCompletion
+      /** 该次请求最终确定的权威 Usage（第 8.5 节）。 */
+      usage?: Usage
+      /** 厂商原始结束原因；Responses 无同名字段时取最终 status 或 incomplete_details.reason。 */
+      finishReason?: string
+    }
+
+/** 模型适配器（第 6 节，已定义）。三个 Adapter 均实现此接口。 */
+export interface ModelAdapter {
+  stream(request: UnifiedModelRequest, signal: AbortSignal): AsyncIterable<ModelStreamEvent>
+}

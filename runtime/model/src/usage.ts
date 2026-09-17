@@ -1,0 +1,213 @@
+/**
+ * 三个协议的 Usage → 统一 Usage（对外契约见 `./types.ts` 的 `Usage`）。
+ *
+ * 事实源：.git/技术文档/NiCode_Usage统一设计.md 第 2、3、4、5 节（Usage 部分以此为准，
+ * 取代开发备忘录第 27.1、35.2 节的旧定义）。Runtime 只处理统一后的 Usage，
+ * 厂商字段差异全部止步于本文件。
+ *
+ * 三条贯穿全部实现的规则：
+ *   1. 三个输入桶互不重叠：Anthropic 的四个字段本身就互不重叠（第 2 节），
+ *      而 Chat Completions 的 `prompt_tokens`、Responses 的 `input_tokens` 是**完整输入**，
+ *      必须减去缓存读取与缓存写入（第 3.3、4.3 节）。
+ *   2. 可选缓存字段缺失表示**未报告**，不是 0，绝不自行推算（第 9 节第 8、13 条）。
+ *      因此 `cacheReadTokens` / `cacheWriteTokens` / `reasoningTokens` 缺失时留 undefined。
+ *   3. `reasoningTokens` 是 `outputTokens` 的子集，只映射，不参与任何相加（第 9 节第 4、5 条）。
+ *
+ * 本文件只做字段映射，不做累计、不读 `totalTokens` 之外的派生量（累计与命中率见
+ * `./types.ts` 的 `accumulateUsage` / `cacheHitRate`）。
+ *
+ * 架构依据：.git/技术文档/NiCode_Usage统一设计.md；开发备忘录第 27 节（Token 与 Usage）
+ * 实施阶段：.git/技术文档/开发TODOList.md 阶段 3 / 4 / 5 的 Usage 转换
+ */
+
+import type { Usage } from "./types.ts"
+
+/**
+ * 读取一个可能为 null / undefined 的数字。
+ *
+ * 两个官方 SDK 把厂商可能缺省的计数字段标成 `T | null`，兼容厂商还可能整段字段缺失，
+ * 因此所有读取都走这里，统一把 null 与 undefined 归一为**未报告**。
+ */
+function readCount(value: number | null | undefined): number | undefined {
+  return typeof value === "number" ? value : undefined
+}
+
+/**
+ * 从"完整输入 Token"里扣除已报告的缓存桶，得到统一 `inputTokens`（未缓存输入）。
+ *
+ * 只扣实际报告的桶：缺少 `cacheWriteTokens` 时只扣缓存读取部分（第 3.3、4.3 节），
+ * 两个桶都缺时 `inputTokens` 就是完整输入。结果为负说明厂商数字自相矛盾，
+ * 按 0 处理（未缓存输入不可能是负值）。
+ */
+function subtractCacheBuckets(
+  fullInputTokens: number,
+  cacheReadTokens: number | undefined,
+  cacheWriteTokens: number | undefined,
+): number {
+  const uncached = fullInputTokens - (cacheReadTokens ?? 0) - (cacheWriteTokens ?? 0)
+  return Math.max(0, uncached)
+}
+
+// ---------------------------------------------------------------------------
+// Anthropic Messages（第 2 节）
+// ---------------------------------------------------------------------------
+
+/**
+ * Anthropic Messages 的 Usage 原始字段。
+ *
+ * `message_start` 的 `usage` 与 `message_delta` 的 `usage` 都是这个形状（后者是累计值）。
+ */
+export interface AnthropicUsageFields {
+  input_tokens?: number | null
+  output_tokens?: number | null
+  cache_read_input_tokens?: number | null
+  cache_creation_input_tokens?: number | null
+  output_tokens_details?: { thinking_tokens?: number | null } | null
+}
+
+/**
+ * Anthropic Messages → 统一 Usage（第 2 节）。
+ *
+ *   inputTokens       ← input_tokens（该字段本身就是未缓存输入，不再拆分）
+ *   cacheReadTokens   ← cache_read_input_tokens
+ *   cacheWriteTokens  ← cache_creation_input_tokens
+ *   reasoningTokens   ← output_tokens_details.thinking_tokens
+ *
+ * `totalTokens` 留空：Anthropic 不返回该字段，统一总量由 `resolveTotalTokens` 从各输入桶与
+ * `outputTokens` 相加得到（第 2、6.5 节）。
+ *
+ * `thinking_tokens`：设计文档第 2、5 节把 Anthropic 的 reasoning 记为"通常缺失"，
+ * 但当前 SDK（0.126）在 `output_tokens_details.thinking_tokens` 提供了独立且可靠的
+ * reasoning 计数，符合"存在可靠独立字段就填"的条件，故按可用字段映射。
+ */
+export function convertAnthropicUsage(fields: AnthropicUsageFields): Usage {
+  const reasoningTokens = readCount(fields.output_tokens_details?.thinking_tokens)
+
+  const usage: Usage = {
+    inputTokens: readCount(fields.input_tokens) ?? 0,
+    outputTokens: readCount(fields.output_tokens) ?? 0,
+  }
+
+  const cacheReadTokens = readCount(fields.cache_read_input_tokens)
+  if (cacheReadTokens !== undefined) usage.cacheReadTokens = cacheReadTokens
+
+  const cacheWriteTokens = readCount(fields.cache_creation_input_tokens)
+  if (cacheWriteTokens !== undefined) usage.cacheWriteTokens = cacheWriteTokens
+
+  if (reasoningTokens !== undefined) usage.reasoningTokens = reasoningTokens
+
+  return usage
+}
+
+// ---------------------------------------------------------------------------
+// OpenAI Chat Completions（第 3 节）
+// ---------------------------------------------------------------------------
+
+/**
+ * Chat Completions 的 Usage 原始字段，含兼容厂商的字段位置（第 3.1 节）。
+ *
+ * `prompt_cache_hit_tokens` 与顶层 `cached_tokens` 不是 OpenAI 官方字段，
+ * 是部分兼容厂商放置缓存命中数的地方，读取顺序见 `convertChatCompletionsUsage`。
+ */
+export interface ChatCompletionsUsageFields {
+  prompt_tokens?: number | null
+  completion_tokens?: number | null
+  total_tokens?: number | null
+  prompt_tokens_details?: {
+    cached_tokens?: number | null
+    cache_write_tokens?: number | null
+  } | null
+  prompt_cache_hit_tokens?: number | null
+  cached_tokens?: number | null
+  completion_tokens_details?: { reasoning_tokens?: number | null } | null
+}
+
+/**
+ * Chat Completions → 统一 Usage（第 3 节）。
+ *
+ *   cacheReadTokens  ← prompt_tokens_details.cached_tokens
+ *                       ｜prompt_cache_hit_tokens｜cached_tokens（兼容读取）
+ *   cacheWriteTokens ← prompt_tokens_details.cache_write_tokens（没有则留空，不推算）
+ *   inputTokens      ← prompt_tokens − cacheReadTokens − cacheWriteTokens
+ *   outputTokens     ← completion_tokens
+ *   reasoningTokens  ← completion_tokens_details.reasoning_tokens
+ *   totalTokens      ← total_tokens；缺失时用 prompt_tokens + completion_tokens（第 3.5 节）
+ */
+export function convertChatCompletionsUsage(fields: ChatCompletionsUsageFields): Usage {
+  const promptTokens = readCount(fields.prompt_tokens)
+  const completionTokens = readCount(fields.completion_tokens)
+
+  const cacheReadTokens =
+    readCount(fields.prompt_tokens_details?.cached_tokens) ??
+    readCount(fields.prompt_cache_hit_tokens) ??
+    readCount(fields.cached_tokens)
+  const cacheWriteTokens = readCount(fields.prompt_tokens_details?.cache_write_tokens)
+
+  const usage: Usage = {
+    inputTokens: subtractCacheBuckets(promptTokens ?? 0, cacheReadTokens, cacheWriteTokens),
+    outputTokens: completionTokens ?? 0,
+  }
+
+  const totalTokens = readCount(fields.total_tokens)
+  if (totalTokens !== undefined) {
+    usage.totalTokens = totalTokens
+  } else if (promptTokens !== undefined && completionTokens !== undefined) {
+    usage.totalTokens = promptTokens + completionTokens
+  }
+
+  if (cacheReadTokens !== undefined) usage.cacheReadTokens = cacheReadTokens
+  if (cacheWriteTokens !== undefined) usage.cacheWriteTokens = cacheWriteTokens
+
+  const reasoningTokens = readCount(fields.completion_tokens_details?.reasoning_tokens)
+  if (reasoningTokens !== undefined) usage.reasoningTokens = reasoningTokens
+
+  return usage
+}
+
+// ---------------------------------------------------------------------------
+// OpenAI Responses（第 4 节）
+// ---------------------------------------------------------------------------
+
+/** Responses 的 Usage 原始字段（`response.completed` / `response.incomplete` 的 `response.usage`）。 */
+export interface ResponsesUsageFields {
+  input_tokens?: number | null
+  output_tokens?: number | null
+  total_tokens?: number | null
+  input_tokens_details?: {
+    cached_tokens?: number | null
+    cache_write_tokens?: number | null
+  } | null
+  output_tokens_details?: { reasoning_tokens?: number | null } | null
+}
+
+/**
+ * Responses → 统一 Usage（第 4 节）。
+ *
+ *   cacheReadTokens  ← input_tokens_details.cached_tokens
+ *   cacheWriteTokens ← input_tokens_details.cache_write_tokens（没有则留空，不推算）
+ *   inputTokens      ← input_tokens − cacheReadTokens − cacheWriteTokens
+ *   outputTokens     ← output_tokens
+ *   reasoningTokens  ← output_tokens_details.reasoning_tokens
+ *   totalTokens      ← total_tokens（该协议直接提供，缺失则留空，不自行相加）
+ */
+export function convertResponsesUsage(fields: ResponsesUsageFields): Usage {
+  const cacheReadTokens = readCount(fields.input_tokens_details?.cached_tokens)
+  const cacheWriteTokens = readCount(fields.input_tokens_details?.cache_write_tokens)
+  const inputTokens = readCount(fields.input_tokens) ?? 0
+
+  const usage: Usage = {
+    inputTokens: subtractCacheBuckets(inputTokens, cacheReadTokens, cacheWriteTokens),
+    outputTokens: readCount(fields.output_tokens) ?? 0,
+  }
+
+  const totalTokens = readCount(fields.total_tokens)
+  if (totalTokens !== undefined) usage.totalTokens = totalTokens
+
+  if (cacheReadTokens !== undefined) usage.cacheReadTokens = cacheReadTokens
+  if (cacheWriteTokens !== undefined) usage.cacheWriteTokens = cacheWriteTokens
+
+  const reasoningTokens = readCount(fields.output_tokens_details?.reasoning_tokens)
+  if (reasoningTokens !== undefined) usage.reasoningTokens = reasoningTokens
+
+  return usage
+}

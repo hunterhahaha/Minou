@@ -1,0 +1,544 @@
+/**
+ * Responses Adapter（第 6 节，TODOList 阶段 5）。
+ *
+ * 两个方向都在本文件里：
+ *   - 请求方向：统一上下文 → `instructions` + `input`（`input` 是 InputItem 列表，
+ *     `function_call` 与 `function_call_output` 与 message 同级，靠 `call_id` 配对）；
+ *   - 响应方向：`ResponseStreamEvent` 流 → `ModelStreamEvent`。
+ *
+ * 协议侧参考：.git/技术文档/三个协议调用时传入的上下文示例.md 第 3 节。
+ * 架构依据：开发备忘录第 6 节（模型协议层）、第 7 节（网络层）、第 8.4 / 8.5 节、
+ *          第 11.1 / 11.3 节、第 16.2 节（工具结果只消费 text）、第 25 节（错误）
+ * 设计文档：.git/技术文档/NiCode_Usage统一设计.md 第 4 节（Usage 映射）
+ * 实施阶段：.git/技术文档/开发TODOList.md 阶段 5
+ *
+ * 本文件的五条实现决定（均为文档未规定处，已在阶段报告中单列）：
+ *   1. `store: false`：NiCode 自己维护 Session 与上下文，不依赖服务端保存响应；
+ *      即使 Provider 默认开启存储，也不把会话内容留在服务端。
+ *   2. 不使用 `previous_response_id`，每次完整传入上下文（示例文档明确该方式）；
+ *      因此 `supportsResponseId` 在 V1 不参与请求构建。
+ *   3. thinking 增量优先取 `reasoning_summary_text.delta`（这是回传给用户的那份），
+ *      缺失时退回 `reasoning_text.delta`。两者语义不同（原始推理 vs 摘要），
+ *      若同一次响应都出现，会拼进同一个 thinking 块。
+ *   4. `status=failed` / `status=cancelled` / `type="error"` 按异常抛出（不产出 `stream_end`），
+ *      `status=incomplete` 正常产出 `stream_end` 且 `completion="incomplete"`。
+ *   5. 无法序列化的 arguments 退化为 `"{}"`（协议要求字符串），
+ *      这类调用仍会进入统一流，由 Runtime 按其 result 处理。
+ */
+
+import OpenAI from "openai"
+
+import type { ProtocolClientOptions } from "./adapter.ts"
+import {
+  assertRequestMatchesModel,
+  joinTextBlocks,
+  parseToolCallArguments,
+  runModelStream,
+  serializeToolCallArguments,
+  splitSystemMessage,
+  streamInterruptedError,
+} from "./shared.ts"
+import { convertResponsesUsage } from "./usage.ts"
+import type { ResponsesUsageFields } from "./usage.ts"
+import type {
+  BlockType,
+  ModelAdapter,
+  ModelCompletion,
+  ModelConfig,
+  ModelMessage,
+  ModelStreamEvent,
+  UnifiedModelRequest,
+  UnifiedToolDefinition,
+} from "./types.ts"
+
+type ResponseStreamEvent = OpenAI.Responses.ResponseStreamEvent
+type ResponseInputItem = OpenAI.Responses.ResponseInputItem
+type ResponseCreateParamsStreaming = OpenAI.Responses.ResponseCreateParamsStreaming
+type FunctionTool = OpenAI.Responses.FunctionTool
+
+/** 该协议的工具项类型：`input` 与 `output` 两种方向共用的形状。 */
+type FunctionCallItem = Extract<ResponseInputItem, { type: "function_call" }>
+
+// ---------------------------------------------------------------------------
+// 请求方向：统一上下文 → Responses
+// ---------------------------------------------------------------------------
+
+/**
+ * 统一 `messages[1...]` → Responses `input`。
+ *
+ * 该协议的 message content 是字符串；工具调用与工具结果是与 message 同级的 InputItem，
+ * 因此一条 assistant 消息在请求里会展开成若干 item（text message + function_call），
+ * 这与协议一致，也让 `function_call_output` 能紧跟其 `function_call`。
+ *
+ * `function_call` 的 id 用统一 `toolCallId`：该协议回传历史调用时以 `call_id` 配对，
+ * 不要求服务端生成的 item id（本轮新调用才由服务端生成）。
+ */
+export function toResponsesInput(messages: ModelMessage[]): ResponseInputItem[] {
+  const items: ResponseInputItem[] = []
+
+  for (const message of messages) {
+    if (message.role === "user") {
+      const text =
+        typeof message.content === "string" ? message.content : joinTextBlocks(message.content)
+      if (text.length > 0) items.push({ role: "user", content: text })
+      continue
+    }
+
+    if (message.role === "assistant") {
+      let text = ""
+      for (const block of message.content) {
+        if (block.type === "text") text += block.text
+      }
+
+      if (text.length > 0) items.push({ role: "assistant", content: text })
+
+      for (const block of message.content) {
+        if (block.type !== "tool_call") continue
+        const call: FunctionCallItem = {
+          type: "function_call",
+          call_id: block.toolCallId,
+          name: block.name,
+          arguments: serializeToolCallArguments(block.arguments),
+        }
+        items.push(call)
+      }
+      continue
+    }
+
+    if (message.role === "tool") {
+      // 工具结果只消费 text 块（第 16.2 节）。
+      items.push({
+        type: "function_call_output",
+        call_id: message.toolCallId,
+        output: joinTextBlocks(message.content),
+      })
+    }
+  }
+
+  return items
+}
+
+function toResponsesTools(tools: UnifiedToolDefinition[]): FunctionTool[] {
+  return tools.map((tool) => ({
+    type: "function",
+    name: tool.name,
+    description: tool.description,
+    // 该协议的 parameters 直接是 JSON Schema；统一格式的 inputSchema 原样转过去。
+    parameters: tool.inputSchema,
+    strict: false,
+  }))
+}
+
+/**
+ * 构建一次 Responses 流式请求。
+ *
+ * `tools` 为空时不传该字段（协议不接受空数组）。
+ */
+export function buildResponsesRequest(
+  request: UnifiedModelRequest,
+): ResponseCreateParamsStreaming {
+  const { system, rest } = splitSystemMessage(request)
+
+  const params: ResponseCreateParamsStreaming = {
+    model: request.model.modelId,
+    instructions: system,
+    input: toResponsesInput(rest),
+    stream: true,
+    store: false,
+  }
+
+  if (request.tools.length > 0) {
+    params.tools = toResponsesTools(request.tools)
+  }
+
+  return params
+}
+
+// ---------------------------------------------------------------------------
+// 响应方向：ResponseStreamEvent → ModelStreamEvent
+// ---------------------------------------------------------------------------
+
+/**
+ * 正在拼装的块。
+ *
+ * 一个块可能收到多种增量事件（`content_part.added` 与 `output_text.delta`、
+ * `output_item.added` 与 `function_call_arguments.delta`），因此用 key 而不是单值变量标识。
+ */
+interface PendingBlock {
+  /** 统一流里的块序号，从 0 起连续。 */
+  index: number
+  blockType: BlockType
+  text: string
+  toolCallId: string
+  name: string
+  argumentsJson: string
+}
+
+/** 工具调用的累积信息：`call_id` 与 `name` 不在参数增量事件里，另外攒着。 */
+interface PendingCall {
+  /** 该调用在流里的键（见 `callKey`）。 */
+  key: string
+  callId: string
+  name: string
+  argumentsJson: string
+}
+
+/**
+ * 一个 output item 在流里的查找键。
+ *
+ * `function_call` 的 `id` 在协议类型里是可选的（`id?: string`），因此没有它时退回
+ * `call_id`；参数增量事件里的 `item_id` 用同一套规则解析（见 `resolveCallKey`）。
+ */
+function callKey(item: { id?: string | null; call_id: string }): string {
+  return item.id ?? item.call_id
+}
+
+/** 完成状态的原始信息：`response.completed` 带完整 Response，便于判断是否含工具调用。 */
+interface TerminalInfo {
+  type: "completed" | "incomplete"
+  status: string | undefined
+  incompleteReason: string | undefined
+  hasFunctionCall: boolean
+  usage: ResponsesUsageFields | undefined
+}
+
+/**
+ * 统一完成状态（第 8.5 节）。
+ *
+ *   status=completed → 已结束的完整 tool_call 是否存在决定 tool_calls / finished
+ *   status=incomplete → incomplete
+ *   status=failed / cancelled → 抛错，不到达这里
+ */
+function resolveCompletion(info: TerminalInfo, endedToolCalls: number): ModelCompletion {
+  if (info.type === "incomplete" || info.status === "incomplete") return "incomplete"
+  if (info.status === "completed") {
+    return endedToolCalls > 0 || info.hasFunctionCall ? "tool_calls" : "finished"
+  }
+  return "unknown"
+}
+
+/**
+ * Responses 协议流 → 统一流事件。
+ *
+ * 块与协议 item 的对应关系：
+ *   - `output_item.added`(message) → text 块；文本增量来自 `output_text.delta`；
+ *   - `output_item.added`(function_call) → tool_call 块，`call_id` / `name` 在这里确定，
+ *     参数增量来自 `function_call_arguments.delta`；
+ *   - `output_item.added`(reasoning) → thinking 块，增量来自 reasoning 摘要或原文。
+ *
+ * 结束事件之前流就断了（未收到 completed / incomplete / failed）时抛错，不产出 `stream_end`。
+ */
+export async function* mapResponsesStream(
+  events: AsyncIterable<ResponseStreamEvent>,
+): AsyncGenerator<ModelStreamEvent> {
+  const textBlocks = new Map<string, PendingBlock>()
+  const thinkingBlocks = new Map<string, PendingBlock>()
+  const toolCallBlocks = new Map<string, PendingBlock>()
+  const calls = new Map<string, PendingCall>()
+  /** 协议 item id → 已打开的块，用于按 item id 收尾。 */
+  const blocksByItem = new Map<string, PendingBlock>()
+  let nextIndex = 0
+  let endedToolCalls = 0
+  let terminal: TerminalInfo | undefined
+
+  function openBlock(blockType: BlockType, itemId: string): PendingBlock {
+    const block: PendingBlock = {
+      index: nextIndex,
+      blockType,
+      text: "",
+      toolCallId: "",
+      name: "",
+      argumentsJson: "",
+    }
+    nextIndex += 1
+    blocksByItem.set(itemId, block)
+    if (blockType === "text") textBlocks.set(itemId, block)
+    if (blockType === "thinking") thinkingBlocks.set(itemId, block)
+    if (blockType === "tool_call") toolCallBlocks.set(itemId, block)
+    return block
+  }
+
+  function closeBlock(block: PendingBlock): ModelStreamEvent {
+    blocksByItem.forEach((value, key) => {
+      if (value === block) blocksByItem.delete(key)
+    })
+    textBlocks.forEach((value, key) => {
+      if (value === block) textBlocks.delete(key)
+    })
+    thinkingBlocks.forEach((value, key) => {
+      if (value === block) thinkingBlocks.delete(key)
+    })
+    toolCallBlocks.forEach((value, key) => {
+      if (value === block) toolCallBlocks.delete(key)
+    })
+
+    if (block.blockType === "tool_call") {
+      endedToolCalls += 1
+      return {
+        type: "block_end",
+        index: block.index,
+        block: {
+          type: "tool_call",
+          toolCallId: block.toolCallId,
+          name: block.name,
+          arguments: parseToolCallArguments(block.argumentsJson),
+        },
+      }
+    }
+
+    return {
+      type: "block_end",
+      index: block.index,
+      block: { type: block.blockType, text: block.text },
+    }
+  }
+
+  /** 收尾某个 item 的块；不传 itemId 时收尾全部。 */
+  function closeItem(itemId: string | undefined): ModelStreamEvent[] {
+    if (itemId !== undefined) {
+      const block = blocksByItem.get(itemId)
+      return block === undefined ? [] : [closeBlock(block)]
+    }
+    const pending = [...blocksByItem.values()].sort((a, b) => a.index - b.index)
+    return pending.map(closeBlock)
+  }
+
+  /** 收尾仍未结束的 thinking / text 块，按 index 升序；不含工具调用（见调用处说明）。 */
+  function flushTextBlocks(): ModelStreamEvent[] {
+    const pending = [...blocksByItem.values()]
+      .filter((block) => block.blockType !== "tool_call")
+      .sort((a, b) => a.index - b.index)
+    return pending.map(closeBlock)
+  }
+
+  /**
+   * 参数增量事件里的 `item_id` 解析成块键。
+   *
+   * 事件里的 `item_id` 与 `output_item.added` 的 item id 对应；当 item 没有 id 时
+   * （function_call 的 id 是可选的）协议给的是 `call_id`，用登记的调用信息换回块键。
+   */
+  function resolveCallKey(itemId: string): string | undefined {
+    if (toolCallBlocks.has(itemId)) return itemId
+
+    for (const call of calls.values()) {
+      if (call.callId === itemId) return call.key
+    }
+
+    return undefined
+  }
+
+  for await (const event of events) {
+    switch (event.type) {
+      case "response.output_item.added": {
+        const item = event.item
+        if (item.type === "message") {
+          const block = openBlock("text", item.id)
+          yield { type: "block_start", index: block.index, blockType: "text" }
+          break
+        }
+
+        if (item.type === "function_call") {
+          const key = callKey(item)
+          calls.set(key, {
+            key,
+            callId: item.call_id,
+            name: item.name,
+            argumentsJson: "",
+          })
+          const block = openBlock("tool_call", key)
+          block.toolCallId = item.call_id
+          block.name = item.name
+          yield { type: "block_start", index: block.index, blockType: "tool_call" }
+          // 先给出 id 与 name：下游不必等到第一个参数增量才知道调用的是哪个工具。
+          yield {
+            type: "block_delta",
+            index: block.index,
+            delta: { type: "tool_call", toolCallId: item.call_id, nameDelta: item.name },
+          }
+          break
+        }
+
+        if (item.type === "reasoning") {
+          const block = openBlock("thinking", item.id)
+          yield { type: "block_start", index: block.index, blockType: "thinking" }
+          break
+        }
+
+        // 其它 item 类型（web_search_call / code_interpreter_call / mcp_call 等）
+        // 没有统一表达，忽略。
+        break
+      }
+
+      case "response.output_text.delta": {
+        const block = textBlocks.get(event.item_id)
+        if (block === undefined || event.delta.length === 0) break
+        block.text += event.delta
+        yield { type: "block_delta", index: block.index, delta: { type: "text", text: event.delta } }
+        break
+      }
+
+      case "response.reasoning_summary_text.delta":
+      case "response.reasoning_text.delta": {
+        const block = thinkingBlocks.get(event.item_id)
+        if (block === undefined || event.delta.length === 0) break
+        block.text += event.delta
+        yield {
+          type: "block_delta",
+          index: block.index,
+          delta: { type: "thinking", text: event.delta },
+        }
+        break
+      }
+
+      case "response.function_call_arguments.delta": {
+        const key = resolveCallKey(event.item_id)
+        const call = key === undefined ? undefined : calls.get(key)
+        const block = key === undefined ? undefined : toolCallBlocks.get(key)
+        if (block === undefined || call === undefined || event.delta.length === 0) break
+
+        call.argumentsJson += event.delta
+        block.argumentsJson = call.argumentsJson
+        yield {
+          type: "block_delta",
+          index: block.index,
+          delta: {
+            type: "tool_call",
+            toolCallId: block.toolCallId,
+            argumentsDelta: event.delta,
+          },
+        }
+        break
+      }
+
+      case "response.function_call_arguments.done": {
+        const block = toolCallBlocks.get(event.item_id)
+        const call = calls.get(event.item_id)
+        if (block === undefined || call === undefined) break
+        // done 事件带最终完整参数：以它为准，避免增量丢包导致参数不完整。
+        call.argumentsJson = event.arguments
+        block.argumentsJson = event.arguments
+        break
+      }
+
+      case "response.output_item.done": {
+        // 该 item 的块到此结束；reasoning 的正文也可能只在这里出现（摘要模式下没有 delta）。
+        const item = event.item
+
+        if (item.type === "function_call") {
+          // function_call 的 id 可选，收尾键必须与打开时一致（见 `callKey`）。
+          for (const mapped of closeItem(callKey(item))) yield mapped
+          break
+        }
+
+        if (item.type === "reasoning" && item.summary.length > 0) {
+          const block = thinkingBlocks.get(item.id)
+          if (block !== undefined && block.text.length === 0) {
+            const text = item.summary.map((part) => part.text).join("")
+            if (text.length > 0) {
+              block.text = text
+              yield {
+                type: "block_delta",
+                index: block.index,
+                delta: { type: "thinking", text },
+              }
+            }
+          }
+        }
+
+        if (item.type === "message" || item.type === "reasoning") {
+          for (const mapped of closeItem(item.id)) yield mapped
+        }
+        break
+      }
+
+      case "response.completed":
+      case "response.incomplete": {
+        const response = event.response
+        terminal = {
+          type: event.type === "response.completed" ? "completed" : "incomplete",
+          status: response.status,
+          incompleteReason: response.incomplete_details?.reason ?? undefined,
+          hasFunctionCall: response.output.some((item) => item.type === "function_call"),
+          usage: response.usage ?? undefined,
+        }
+        break
+      }
+
+      case "response.failed": {
+        const error = event.response.error
+        throw new Error(error === null ? "Responses 请求失败" : `${error.code}: ${error.message}`)
+      }
+
+      case "error": {
+        throw new Error(event.message)
+      }
+
+      default:
+        break
+    }
+  }
+
+  if (terminal === undefined) throw streamInterruptedError("responses")
+
+  // 收尾仍未结束的 thinking / text 块：内容就是已累积的增量，被截断时也应保留。
+  //
+  // 工具调用块只能由 `response.output_item.done`(function_call) 收尾 —— 那是协议对
+  // "该调用已完整"的显式声明。没有收到它的调用参数可能只传了一半，产出 `block_end`
+  // 会让 AgentLoop 把它当成完整调用（第 8.5 节："未结束的 tool_call 不进入消息"）。
+  for (const mapped of flushTextBlocks()) yield mapped
+
+  const finishReason = terminal.incompleteReason ?? terminal.status
+  yield {
+    type: "stream_end",
+    completion: resolveCompletion(terminal, endedToolCalls),
+    ...(terminal.usage !== undefined ? { usage: convertResponsesUsage(terminal.usage) } : {}),
+    ...(finishReason !== undefined ? { finishReason } : {}),
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Adapter
+// ---------------------------------------------------------------------------
+
+/**
+ * 创建 Responses Adapter。
+ *
+ * 与另外两个 Adapter 一样关闭 SDK 自身的重试（`maxRetries: 0`），
+ * 重试统一由 `runtime/network/` 负责（第 7 节）。
+ */
+export function createResponsesAdapter(
+  config: ModelConfig,
+  options: ProtocolClientOptions,
+): ModelAdapter {
+  const client = new OpenAI({
+    apiKey: options.apiKey,
+    baseURL: options.baseURL,
+    defaultHeaders: options.defaultHeaders,
+    maxRetries: 0,
+  })
+
+  async function* stream(
+    request: UnifiedModelRequest,
+    signal: AbortSignal,
+  ): AsyncGenerator<ModelStreamEvent> {
+    // 校验与请求构建在迭代时抛出：AgentLoop 只需在一处处理 Adapter 的错误。
+    assertRequestMatchesModel(request, config)
+    const params = buildResponsesRequest(request)
+
+    yield* runModelStream((attemptSignal) => {
+      return mapResponsesStream(requestResponsesStream(client, params, attemptSignal))
+    }, signal)
+  }
+
+  return { stream }
+}
+
+/** 发起一次真实请求并逐个产出协议事件；取消由 SDK 的 `signal` 传递（第 6 节）。 */
+async function* requestResponsesStream(
+  client: OpenAI,
+  params: ResponseCreateParamsStreaming,
+  signal: AbortSignal,
+): AsyncGenerator<ResponseStreamEvent> {
+  const stream = await client.responses.create(params, { signal })
+  for await (const event of stream) yield event
+}

@@ -1,0 +1,20 @@
+{
+  "name": "nicode",
+  "version": "0.1.0",
+  "private": true,
+  "description": "NiCode V1 — 本地运行的 Coding Agent Runtime",
+  "main": "dist/src/main/index.js",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.test.json",
+    "build": "tsc"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.126.0",
+    "openai": "^7.15.0",
+    "undici": "^8.10.2"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.5",
+    "typescript": "^5.9.3"
+  }
+}
