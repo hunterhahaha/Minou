@@ -1,6 +1,12 @@
 # NiCode 开发规则
 
 `.git/技术文档/开发备忘录1.0.17.md` 是当前项目的架构事实源。
+`config.json` 与 `credentials.json` 的已确认持久化结构见
+`.git/技术文档/配置与凭据文件结构V1.md`；这两份文件的结构以该文档为准。
+`workspace.json` 的已确认持久化结构见
+`.git/技术文档/工作区配置文件结构V1.md`；该文件的结构以此文档为准。
+Global 与 Project Skill 的 `registry.json` 结构见
+`.git/技术文档/Skill管理文件结构V1.md`；该文件的结构以此文档为准。
 
 ## 技术栈
 
@@ -13,6 +19,39 @@
 前端框架、构建与打包工具、测试框架尚未确定，在明确之前不要自行引入。
 
 新增依赖仍需明确授权。
+
+## 已落地的启动配置初始化
+
+`src/main/config-files.ts` 是当前唯一的启动配置初始化入口，导出
+`initializeConfigFiles(userProfile?)`。它默认使用 `USERPROFILE`，也允许测试传入绝对用户目录。
+
+该函数按开发备忘录第 2–4 节创建 `.nicode`、`skills/`、`sessions/`、`logs/`、
+`sessions/default/` 和 `sessions/default/workspace/`，并初始化或检查：
+
+- `.nicode/config.json`
+- `.nicode/credentials.json`
+- `.nicode/sessions/default/workspace.json`
+
+缺失的 `config.json` 和 default `workspace.json` 分别按 V1 空配置创建；
+`credentials.json` 以文档允许的 `{}` 创建。
+已有文件必须是普通文件，且通过 V1 版本、字段与引用检查；失败时抛出带路径的错误，
+保留原文件。校验逻辑在 `src/main/config-schema.ts`。
+Provider、Protocol、Models、凭据与 Skill 管理文件的结构已在上述 V1 文档中确定；
+当前初始化入口尚未创建或校验 `skills/registry.json`，不得自行补充文档外的字段默认值。
+
+Project / default 的 `workspace.json` 保存分组配置与 `sessions` 对话索引；
+每个对话索引项保存 `id`、`name`、`createdAt`、`updatedAt`。
+`workspace.json` 不保存 Skill 信息；Global 与 Project 的各自 `skills/` 目录中
+分别由 `registry.json` 记录当前目录 Skill 的 `name`、`scope`、`enabled`。
+全局目录条目的 `scope` 为 `global`，Project 目录条目的 `scope` 为 `project`。
+
+每个 Provider 在自己的配置项下维护 `protocols` 和 `models`；模型条目不保存
+`providerId` 或 `protocol`。`defaultModel` 保存模型 `id`，省略时选配置顺序中的第一个模型。
+Sandbox Mode 以对话为作用域，不属于全局 `config.json`。同一 Provider 配置多种协议时的
+模型绑定规则尚未确定，不得自行选取协议。
+
+`src/main/index.ts` 只转出该入口，尚未接入 Electron 启动生命周期。后续实现启动装配时应显式调用它，并处理其错误。
+对应测试位于 `test/main/config-files.test.ts`，运行命令见 README 的「验证方式」。
 
 ## 基本原则
 

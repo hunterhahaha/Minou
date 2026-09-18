@@ -1,5 +1,5 @@
 /**
- * Electron 主进程入口占位，阶段 0 无实现。
+ * Electron 主进程入口占位。当前只导出启动配置初始化入口。
  *
  * 进程划分（AGENTS.md 实现约定）：主进程承载 Runtime，渲染进程承载 UI。
  * 本文件之后负责创建窗口、装载渲染进程页面，并把 runtime/ 下的模块装配起来。
@@ -7,4 +7,5 @@
  * 架构依据：.git/技术文档/开发备忘录1.0.17.md 第 1 节（总体架构）、第 28 节（Runtime 总体数据流）
  * 实施阶段：.git/技术文档/开发TODOList.md 阶段 0
  */
-export {}
+export { initializeConfigFiles } from "./config-files.ts"
+export type { ConfigFilePaths } from "./config-files.ts"

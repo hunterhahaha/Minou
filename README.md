@@ -15,6 +15,14 @@ NiCode V1 是一个本地运行的 Coding Agent Runtime：浏览器 UI 与本机
 
 **阶段 0（工程骨架）**已完成：工程配置与目录占位。
 
+**启动配置文件初始化**已完成：`src/main/config-files.ts` 导出
+`initializeConfigFiles(userProfile?)`，按备忘录第 2–4 节初始化 `.nicode`、
+`config.json`、`credentials.json`、`skills/`、`sessions/`、`logs/` 与
+`sessions/default`。新建 `config.json` 和 default `workspace.json` 使用 V1 空配置，
+`credentials.json` 使用文档允许的 `{}`。已有文件按 V1 检查版本、字段与引用关系，
+失败时保留原文件并抛出带路径的错误。Electron 启动
+生命周期尚未实现，因此当前只导出入口，未自动调用。
+
 **阶段 1（统一模型格式）**已完成类型定义：`runtime/model/src/types.ts` 与 `runtime/error/src/types.ts`。
 
 **阶段 2（网络层与模型错误归一化）**已完成：`runtime/network/src/`（Dispatcher 与重试）与
@@ -127,8 +135,14 @@ memory_read / mcp_list_tools。
 
 ```text
 src/                                 Electron 外壳
-├─ main/index.ts                     主进程入口（占位）
+├─ main/
+│  ├─ index.ts                       主进程入口，导出启动配置初始化函数
+│  ├─ config-files.ts                .nicode 目录与文件初始化
+│  └─ config-schema.ts               三份启动配置的 V1 字段检查
 └─ renderer/index.ts                 渲染进程入口，UI（前端框架未定）
+
+test/
+└─ main/config-files.test.ts         主进程配置初始化测试
 
 runtime/                             Runtime 模块，各自含 src/ 与 test/
 ├─ agent/
@@ -203,20 +217,21 @@ runtime/                             Runtime 模块，各自含 src/ 与 test/
 
 ## 源码与测试
 
-每个模块内部按 `src/` 与 `test/` 分开，同一模块的源码与测试放在一起：
+每个 Runtime 模块内部按 `src/` 与 `test/` 分开；Electron 外壳的测试则在根目录 `test/` 下镜像：
 
 ```text
 runtime/model/src/types.ts   →   runtime/model/test/types.test.ts
+src/main/config-files.ts     →   test/main/config-files.test.ts
 ```
 
-- 源码只在 `src/`，测试只在 `test/`，不混放。
-- `test/` 镜像 `src/` 的子目录结构，测试文件名与被测文件同名，加 `.test.ts` 后缀。
+- Runtime 源码只在各模块 `src/`，测试只在各模块 `test/`；Electron 外壳源码在根目录 `src/`，测试在根目录 `test/`。
+- 测试目录镜像对应源码目录结构，测试文件名与被测文件同名，加 `.test.ts` 后缀。
 - 每个模块的类型定义放在该模块的 `src/types.ts`，模块 `src/index.ts` 用 `export * from "./types"` 转出。
 
 ## 工程配置
 
 - 全栈 TypeScript，`tsconfig.json` 覆盖 `src/` 与 `runtime/*/src/`，产出到 `dist/`。
-- `tsconfig.test.json` 继承前者，额外纳入各模块 `test/` 并关闭产出，供 `npm run typecheck` 使用。
+- `tsconfig.test.json` 继承前者，额外纳入 `runtime/**/*.ts` 与根目录 `test/**/*.ts` 并关闭产出，供 `npm run typecheck` 使用。
 - **相对导入一律带 `.ts` 后缀**（源码与测试都是），由 `allowImportingTsExtensions` 允许、
   `rewriteRelativeImportExtensions` 在产出时改写成 `.js`。这样同一个源文件既能被 Node 直接运行，
   又能被 `tsc` 正常产出，不需要打包器。
@@ -253,7 +268,11 @@ node --experimental-strip-types runtime/error/test/normalizer.test.ts
 node --experimental-strip-types runtime/network/test/retry.test.ts
 node --experimental-strip-types runtime/tools/test/tool-scheduler.test.ts
 node --experimental-strip-types runtime/agent/test/loop.test.ts
+node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/main/config-files.test.ts
 ```
+
+`test/main/config-files.test.ts` 使用临时用户目录验证：首次创建、重复调用时保留有效内容、
+缺失文件补齐、V1 有效配置、字段与引用错误、损坏文件保留，以及非法用户目录。
 
 三个 Adapter 的测试分两层：**离线转换**（构造协议侧载荷 → 比对统一事件，不碰网络）与
 **端到端**（`test/helpers.ts` 起一个本机 SSE 假服务器，真实走一遍官方 SDK）。
@@ -288,5 +307,5 @@ ToolScheduler 的测试分两层：切轮规则直接比对 `planToolRounds` 的
 1. 渲染进程的前端框架、构建与打包工具（因此渲染进程暂不单独配置 `tsconfig`）。
 2. 渲染进程与主进程之间的 IPC 协议（第 30 节未定义）。
 3. 测试框架（现有测试不依赖框架）。
-4. `config.json` 的 Provider / Protocol / Models 配置结构（TODOList 缺口 3）—— 重试次数与退避
-   目前是 `runtime/network/src/retry.ts` 里的常量，待该结构确定后再考虑是否做成可配置。
+4. 同一 Provider 配置多种协议时的模型绑定规则；重试次数与退避目前是
+   `runtime/network/src/retry.ts` 里的常量，是否加入配置尚未确定。
