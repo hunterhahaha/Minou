@@ -473,6 +473,90 @@ async function testToolRound(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// 2b. 整批交给调度器：共享只读调用真正并发，谁先完成谁先落盘
+// ---------------------------------------------------------------------------
+
+async function testToolRoundDelegatesToScheduler(): Promise<void> {
+  const content: ModelMessage[] = [
+    { role: "system", content: "系统设定" },
+    { role: "user", content: "读一下 a.ts 和 b.ts" },
+  ]
+  const { events, appendEvent } = collector()
+  const requests: { request: UnifiedModelRequest; roles: string[] }[] = []
+
+  const adapter = adapterFromScripts(
+    [
+      [
+        blockStart(0, "tool_call"),
+        toolCallDelta(0, "call-1", "read", '{"path":"a.ts"}'),
+        blockEnd(0, { type: "tool_call", toolCallId: "call-1", name: "read", arguments: { path: "a.ts" } }),
+        blockStart(1, "tool_call"),
+        toolCallDelta(1, "call-2", "read", '{"path":"b.ts"}'),
+        blockEnd(1, { type: "tool_call", toolCallId: "call-2", name: "read", arguments: { path: "b.ts" } }),
+        streamEnd("tool_calls", undefined, "tool_use"),
+      ],
+      [
+        blockStart(0, "text"),
+        textDelta(0, "两个文件都读到了"),
+        blockEnd(0, { type: "text", text: "两个文件都读到了" }),
+        streamEnd("finished"),
+      ],
+    ],
+    requests,
+  )
+
+  // 两个调用都是共享只读工具：第一个故意慢，用来观察并发与「完成即落盘」
+  const trace: string[] = []
+  const delays: Record<string, number> = { "call-1": 30, "call-2": 5 }
+  const executeTool: ExecuteToolCall = async (_name, _args, context) => {
+    trace.push(`start ${context.toolCallId}`)
+    await new Promise<void>((resolve) => setTimeout(resolve, delays[context.toolCallId]))
+    trace.push(`end ${context.toolCallId}`)
+    return textResult(`${context.toolCallId} 的内容`)
+  }
+
+  // 每条 tool/result 写入时记一笔，和执行轨迹拼在一起看「完成即落盘」
+  const loggingAppend: AppendSessionEvent = async (event) => {
+    if (event.type === "tool/result") trace.push(`wrote ${event.toolCallId}`)
+    return appendEvent(event)
+  }
+
+  await runAgentLoop({
+    turn: 3,
+    model: MODEL,
+    adapter,
+    content,
+    tools: [],
+    executeTool,
+    signal: new AbortController().signal,
+    appendEvent: loggingAppend,
+  })
+
+  // 两个共享只读调用都在对方结束前启动（调度确实发生在 runToolCalls 里，不是 AgentLoop 逐个 await），
+  // 且每个调用一结束就写下了它的 tool/result —— 不必等慢的 call-1 结束（第 16.5 节）
+  assert.deepEqual(trace, [
+    "start call-1",
+    "start call-2",
+    "end call-2",
+    "wrote call-2",
+    "end call-1",
+    "wrote call-1",
+  ])
+
+  // content 里工具结果消息同样按完成顺序追加，且与 toolCallId 正确配对（第 8.6、11.3 节）
+  const toolResults = events.filter((event) => event.type === "tool/result")
+  assert.deepEqual(toolResults.map((event) => event.toolCallId), ["call-2", "call-1"])
+  assert.deepEqual(content.slice(2, 5), [
+    { role: "assistant", content: [
+      { type: "tool_call", toolCallId: "call-1", name: "read", arguments: { path: "a.ts" } },
+      { type: "tool_call", toolCallId: "call-2", name: "read", arguments: { path: "b.ts" } },
+    ] },
+    { role: "tool", toolCallId: "call-2", content: [{ type: "text", text: "call-2 的内容" }], isError: false },
+    { role: "tool", toolCallId: "call-1", content: [{ type: "text", text: "call-1 的内容" }], isError: false },
+  ])
+}
+
+// ---------------------------------------------------------------------------
 // 3. 未结束的 tool_call 不进入消息，也不执行
 // ---------------------------------------------------------------------------
 
@@ -674,6 +758,7 @@ async function testModelError(): Promise<void> {
 async function main(): Promise<void> {
   await testCompletedStep()
   await testToolRound()
+  await testToolRoundDelegatesToScheduler()
   await testUnfinishedToolCall()
   await testUserStopDuringModelStream()
   await testUserStopDuringToolRound()

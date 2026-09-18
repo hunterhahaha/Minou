@@ -7,7 +7,8 @@
  * 审批屏障）、ToolOutputStore（超过 64 KB 的工具输出落盘）。
  *
  * 文件划分：
- *   types.ts   统一 ToolResult 与内容块（第 16.2 节）
+ *   types.ts            统一 ToolResult 与内容块（第 16.2 节）
+ *   tool-scheduler.ts   ToolScheduler：一次工具小轮的串并行调度（第 17 节）
  *
  * 本目录同时收纳与工具有关的全部代码，子目录职责：
  *   render/      工具结果渲染器
@@ -21,8 +22,8 @@
  *   memory/      memory_list / memory_read / memory_write 工具（Memory Runtime 本体在 runtime/memory/）
  *   security/    SandboxPolicy / ApprovalManager 工具权限与审批屏障
  *
- * 当前已实现的部分：只有统一 ToolResult 结构。工具本体、render、ToolRegistry / ToolExecutor /
- * ToolScheduler 均未实现；AgentLoop 目前通过注入的执行边界调用工具（见 runtime/agent/src/loop.ts）。
+ * 当前已实现的部分：统一 ToolResult 结构与 ToolScheduler 的串并行调度。工具本体、render、
+ * ToolRegistry / ToolExecutor 均未实现；AgentLoop 通过注入的执行入口调用工具（见 runtime/agent/src/loop.ts）。
  *
  * 位置说明：与工具有关的代码统一收在本目录下，因此 runtime/ 顶层没有独立的
  * filesystem/ 与 security/；文档第 30 节的目录树只是参考。
@@ -32,4 +33,5 @@
  * 实施阶段：TODOList 阶段 6.4 只接调度入口与 tool/result 写入；工具本体与完整 Scheduler 规则不实现
  */
 export * from "./types.ts"
+export * from "./tool-scheduler.ts"
 

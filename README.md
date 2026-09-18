@@ -25,10 +25,10 @@ Adapter 与 Usage 转换，含流式调用、双向转换、取消与错误归�
 
 **阶段 6.1（AgentLoop 最小循环）+ 6.4（Tool Call 小轮接线）**已完成：`runtime/agent/src/loop.ts` 的
 `runAgentLoop` 跑完「正常模型请求 + 工具调用小轮」这条数据流（Step 生命周期、模型流事件落盘、
-`assistant/message`、`tool/result` 关联、工具结果回填 content），配套
-`runtime/session/src/events.ts` 提供事件结构与事件出口契约、`runtime/tools/src/types.ts` 提供
-统一 `ToolResult` 结构。工具本体与 ToolScheduler、压缩、Usage 记账、Insert / Queue、Turn 收尾
-仍未实现，见下文。
+`assistant/message`、`tool/result` 关联、工具结果回填 content），`runtime/tools/src/tool-scheduler.ts`
+负责工具小轮的串并行调度，配套 `runtime/session/src/events.ts` 提供事件结构与事件出口契约、
+`runtime/tools/src/types.ts` 提供统一 `ToolResult` 结构。工具本体与 ToolExecutor、审批屏障、
+压缩、Usage 记账、Insert / Queue、Turn 收尾仍未实现，见下文。
 
 其余 `index.ts` 仍是占位文件，只含模块职责与对应章节的说明，不导出实现。尚未实现的模块在各自 `index.ts` 里以「尚未实现」列出。
 
@@ -64,19 +64,25 @@ content + tools + 本 Turn 固定 ModelRef + AbortSignal
 → assistant/message（只收录已有 block_end 的块，按 index 排序，携带权威 Usage 与 finishReason）
 → content 原地追加该 assistant 消息
 → 有已结束的 tool_call 块时进入工具小轮：
-     executeTool(name, arguments, context)        逐个调用注入的执行入口
-     → tool/result（关联 block_end 的 eventId / toolCallId / blockId）
-     → 工具结果作为 tool 消息追加到 content
+     把本 Step 的调用按接收顺序组成数组，整批交给 runToolCalls（ToolScheduler 最小形态）
+     → 调度器按第 17 节切轮：连续的一段共享只读调用并发跑完，独占工具单独一轮
+     → 一轮之内每完成一个就 yield 一个结果
+     → 立即写 tool/result（关联 block_end 的 eventId / toolCallId / blockId）
+     → 立即把工具结果作为 tool 消息追加到 content
 → step/end
 → 有 Tool Call 则一定进入下一 Step（工具结果必须交还模型），否则结束 Loop
 ```
 
-- 工具由调用方通过 `executeTool` 注入（第 16.4 节统一 execute 的边界形态），AgentLoop 只负责调用与
-  事件关联；工具本体、render、ToolRegistry / ToolExecutor / ToolScheduler 都还没实现。
+- 工具由调用方通过 `executeTool` 注入（第 16.4 节统一 execute 的边界形态），切轮与串并行调度在
+  `runtime/tools/src/tool-scheduler.ts`；AgentLoop 自己不做调度判断，也不逐个 await。
+- `runToolCalls` 是**异步迭代器**，一轮之内交出顺序 = 完成顺序：先结束的调用先落盘、先进入 content，
+  不必等最慢的那个（第 16.5 节「完成后即可记录」）。写入顺序与 tool_call 顺序无关，
+  配对靠 `toolCallId` 保证（第 8.6 / 11.3 节）。
 - 工具自身的失败（含被取消）必须以 `status = "error"` 的 ToolResult 返回，不用抛异常表达 ——
   第 16.4 节要求调度器中尚未启动便被取消的调用同样产出 `AppError(CANCELLED)` 并形成 ToolResult；
   从 `executeTool` 抛出的异常会被当成 Turn 级失败。
-- 当前按顺序逐个执行工具。第 17 节的 ToolScheduler（共享只读并发、独占串行、审批屏障）留给后续阶段。
+- ToolScheduler 目前只实现切轮与调度分组；审批屏障、取消时由调度器直接产出 `CANCELLED` 结果、
+  Session 级调度状态都还没实现（见 `runtime/tools/src/tool-scheduler.ts` 文件头）。
 - `appendEvent` 返回**已落盘**事件，因为 `tool/result.toolCallEventId` 要指向工具调用块的
   `block_end.eventId`；`seq` 只能由 Event Log 分配，调用方不自行推算。
 - 进入 Loop 前写 `turn/start + user/message`，Loop 退出后写 `turn/end` 与 `app/error`：这三件事
@@ -89,9 +95,36 @@ content + tools + 本 Turn 固定 ModelRef + AbortSignal
   且不再发起下一次模型请求；其它错误写 `step/end(error)` 后原样抛出，由调用方以 error 终止 Turn。
 - Usage 记账（6.3）、Insert / Queue（6.5）、压缩（6.2）、Turn 收尾（6.6）仍未实现。
 
+### ToolScheduler（阶段 6.4，第 17 节）
+
+调度模型是**按模型给出的顺序切轮，逐轮执行**：
+
+```text
+从索引 0 开始取调用：
+  取到的第一个工具是独占工具 → 它单独一轮，本轮不再取别的
+  取到的是共享只读工具       → 继续往后取，直到取完全部或遇到独占工具
+一轮内的调用并发执行；一轮全部结束后才开始下一轮
+```
+
+因此第 17 节的三条规则都由这两句话推出：连续的一段共享只读调用彼此并发；独占工具永远独占一轮，
+所以既不会被前面的共享调用抢先，也不会和后面的共享调用重叠。未登记的工具名（含动态载入的
+MCP Tool）按独占处理，默认保守。
+
+共享只读组名单（照第 17 节抄写）：glob / grep / read / terminal_list / skill_load / memory_list /
+memory_read / mcp_list_tools。
+
+- `planToolRounds(calls)` 只做切轮，是纯函数；`runToolCalls(calls, execute)` 逐轮驱动执行。
+- `runToolCalls` 是**异步迭代器**：一轮之内谁先完成谁先交出 `{ call, result }`，调用方（AgentLoop）
+  收到一个就写一条 `tool/result`，先完成的先落盘（第 16.5 节「完成后即可记录」）。交出顺序因此是
+  完成顺序，与 tool_call 顺序不同；配对靠 `toolCallId` 保证（第 8.6 / 11.3 节）。
+- 调度器只决定谁和谁一轮，实际执行仍由调用方注入的 `execute` 完成（第 17 节要求所有执行走统一
+  execute）。若某次调用抛出，本轮其它调用照常跑完，异常在本轮结束时抛出；之前已交出的结果照常生效。
+- 审批屏障、取消时由调度器直接为未启动调用产出 `CANCELLED` 结果、Session 级调度状态尚未实现。
+
 ## 目录结构
 
 `runtime/` 是架构文档第 30 节「模块边界」的落地位置，每个模块内部再分 `src/` 与 `test/`：
+
 ```text
 src/                                 Electron 外壳
 ├─ main/index.ts                     主进程入口（占位）
@@ -147,6 +180,7 @@ runtime/                             Runtime 模块，各自含 src/ 与 test/
    ├─ src/
    │  ├─ index.ts                    模块入口
    │  ├─ types.ts                    统一 ToolResult 与内容块（阶段 6.4）
+   │  ├─ tool-scheduler.ts           ToolScheduler：工具小轮的串并行调度（阶段 6.4）
    │  ├─ render/                     工具结果渲染器
    │  ├─ present/                    present 工具
    │  ├─ file/                       文件工具本体 glob / grep / read / write / edit
@@ -157,7 +191,7 @@ runtime/                             Runtime 模块，各自含 src/ 与 test/
    │  ├─ skill/                      skill_load 工具
    │  ├─ memory/                     memory_list / memory_read / memory_write 工具
    │  └─ security/                   SandboxPolicy / ApprovalManager（工具权限与审批屏障）
-   └─ test/                          与 src/ 子目录一一对应
+   └─ test/                          tool-scheduler.test.ts；其余与 src/ 子目录一一对应
 ```
 
 未开始实现的 `test/` 只有 `.gitkeep` 占位。
@@ -217,6 +251,7 @@ node --experimental-strip-types runtime/model/test/chat-completions.test.ts
 node --experimental-strip-types runtime/model/test/responses.test.ts
 node --experimental-strip-types runtime/error/test/normalizer.test.ts
 node --experimental-strip-types runtime/network/test/retry.test.ts
+node --experimental-strip-types runtime/tools/test/tool-scheduler.test.ts
 node --experimental-strip-types runtime/agent/test/loop.test.ts
 ```
 
@@ -227,9 +262,16 @@ node --experimental-strip-types runtime/agent/test/loop.test.ts
 AgentLoop 的测试用「按脚本产出统一流事件的假 Adapter」与「按脚本返回 ToolResult 的假工具入口」
 驱动 `runAgentLoop`，不碰网络、不实现任何真实工具，覆盖：正常完成（事件顺序、blockId 一致性、
 `assistant/message` 内容与 Usage、content 原地更新）、工具小轮（两个调用一成功一失败的执行顺序与
-`tool/result` 关联、工具结果作为 `tool` 消息回填 content、随后进入下一 Step）、未结束的 tool_call
-不进消息也不执行、模型流取消、工具小轮期间取消（仍写 `tool/result`，以 `step/end(stopped)` 关闭
-且不再发起请求）、Adapter 抛错（`step/end(error)` 后原样抛出）。
+`tool/result` 关联、工具结果作为 `tool` 消息回填 content、随后进入下一 Step）、整批交给调度器
+（两个共享只读调用确实并发，且每个一结束就写下自己的 `tool/result`，不必等慢的那个）、未结束的
+tool_call 不进消息也不执行、模型流取消、工具小轮期间取消（仍写 `tool/result`，以 `step/end(stopped)`
+关闭且不再发起请求）、Adapter 抛错（`step/end(error)` 后原样抛出）。
+
+ToolScheduler 的测试分两层：切轮规则直接比对 `planToolRounds` 的结果（连续共享只读合成一轮、
+独占单独一轮、独占前后断开）；执行行为把执行轨迹（`start` / `end`）与消费轨迹（`got`）写进同一条
+数组，于是「谁先完成、谁先被交出、下一轮何时开始」都能直接从轨迹读出，不依赖墙钟时间。覆盖共享
+只读并发且完成即交出、独占单独一轮、上一轮没结束下一轮不启动（两个方向都测）、空批次、异常传播、
+分组名单（含未登记工具按独占处理）。
 
 **不要用 `node --check <文件>.ts` 作为语法检查**：它并不做类型剥离，对 `interface`、
 `const x: number = 1` 这类写法会误报 `SyntaxError`，而对函数参数的类型标注又会通过，

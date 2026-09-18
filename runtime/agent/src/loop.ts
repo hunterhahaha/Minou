@@ -13,13 +13,14 @@
  * Tool Call 小轮（阶段 6.4）：
  *
  *   本 Step 有已结束的 tool_call 块
- *     → 逐个调用注入的 `executeTool`（第 16.4 节的统一 execute）
- *     → 逐个写 tool/result（关联 block_end 的 eventId / toolCallId / blockId）
- *     → 工具结果追加到 content
+ *     → 收集成数组（按接收顺序）
+ *     → `runToolCalls`（ToolScheduler 最小形态，第 17 节）决定串并行并执行
+ *     → 每完成一个就交出一个结果，立即写 tool/result（关联 block_end 的 eventId /
+ *       toolCallId / blockId）并把工具结果追加到 content
  *     → 因为工具结果必须交还模型，本 Step 结束后一定进入下一 Step
  *
- * 工具本体与 ToolScheduler 的调度规则不在本阶段：`executeTool` 由调用方注入，
- * 当前按顺序逐个执行，见 `runToolRound`。
+ * 工具本体与 ToolExecutor 不在本阶段：`executeTool` 由调用方注入；串并行调度委托给
+ * `runtime/tools/src/tool-scheduler.ts`，AgentLoop 自己不判断哪个工具能并发。
  *
  * 不做的事（属后续子阶段，见 TODOList 6.2、6.3、6.5、6.6）：压缩检查、Usage 记账、
  * Insert / Queue、Turn 收尾。因此本函数的边界是：
@@ -32,13 +33,15 @@
  *   2. `blockId` 由 `(turn, step, index)` 决定而不随机生成：第 8.4 节只要求同一个块的
  *      Start / Delta / End 使用同一个 `blockId`，而 `index` 在同一 Step 内唯一；确定性 ID
  *      让 Block 修复（第 10.3 节）不需要额外维护映射。
- *   3. 工具的执行入口由调用方注入（`ExecuteToolCall`），AgentLoop 只负责调用与事件关联。
- *      真正的 ToolExecutor / ToolScheduler 在 runtime/tools/ 下尚未实现。
+ *   3. 工具的执行入口由调用方注入（`ExecuteToolCall`），串并行调度由 `runToolCalls` 负责；
+ *      AgentLoop 只负责把本 Step 的调用按接收顺序交出去，并在每个结果返回时立即写事件与工具结果。
+ *      真正的 ToolExecutor 与完整 ToolScheduler 规则在后续阶段接入。
  *   4. Turn 边界事件不在本函数内（见上）。
  *
  * 架构依据：.git/技术文档/开发备忘录1.0.17.md 第 6 节（模型协议层）、第 8.2 / 8.4 / 8.5 / 8.6 / 8.9 节、
  *          第 11.1 / 11.4 节（content 与请求构建）、第 13.3 节（AgentLoop 与 Step）、
- *          第 14 节（用户停止 Agent）、第 16.4 / 16.5 节（统一 execute 与事件关联）
+ *          第 14 节（用户停止 Agent）、第 16.4 / 16.5 节（统一 execute 与事件关联）、
+ *          第 17 节（Tool Scheduler）
  * 实施阶段：.git/技术文档/开发TODOList.md 阶段 6.1、6.4
  */
 
@@ -57,6 +60,7 @@ import type {
   Usage,
 } from "../../model/src/types.ts"
 import type { AppendSessionEvent } from "../../session/src/events.ts"
+import { runToolCalls } from "../../tools/src/tool-scheduler.ts"
 import type { ToolResult } from "../../tools/src/types.ts"
 
 /**
@@ -328,41 +332,48 @@ interface ToolRoundParams {
 }
 
 /**
- * 执行本 Step 产生的全部 Tool Call：执行 → 写 `tool/result` → 把工具结果追加到 content。
+ * 执行本 Step 产生的全部 Tool Call：整批交给调度器，再按**完成顺序**逐个写 `tool/result`
+ * 与工具结果消息。
  *
- * 每个调用单独写事件、单独追加内容，不等待整个小轮结束（第 16.5 节）。
+ * 一个工具执行完就立刻落盘（第 16.5 节：完成后即可记录，不等整批或 Turn 结束），
+ * 因此并发执行时事件顺序是完成顺序而不是 tool_call 的接收顺序 —— 第 8.6 / 11.3 节要求的是
+ * `toolCallId` 与调用配对，与写入顺序无关。
+ *
  * 工具失败不在这里加工：ToolExecutor 已把失败渲染成 `status = "error"` 的 ToolResult，
  * 因此不为同一次失败额外写 `app/error`（第 8.6 节）。
- *
- * 当前按顺序逐个执行。第 17 节的 ToolScheduler（共享只读并发、独占串行、审批屏障）尚未实现，
- * 将来由它接管调度与本函数的调用点。
  */
 async function runToolRound(params: ToolRoundParams): Promise<void> {
   const { turn, step, toolCalls, executeTool, content, signal, appendEvent } = params
 
-  for (const toolCall of toolCalls) {
-    const { block, blockId, toolCallEventId } = toolCall
+  // 工具名决定调度分组（第 17 节），所以交给调度器的每一项都带上它；
+  // 调用身份（turn / step / blockId / toolCallId）留在本文件里，通过闭包喂给执行入口。
+  const stream = runToolCalls(
+    toolCalls.map((call) => ({ toolName: call.block.name, call })),
+    ({ call }) =>
+      executeTool(call.block.name, call.block.arguments, {
+        turn,
+        step,
+        blockId: call.blockId,
+        toolCallId: call.block.toolCallId,
+        signal,
+      }),
+  )
 
-    const result = await executeTool(block.name, block.arguments, {
-      turn,
-      step,
-      blockId,
-      toolCallId: block.toolCallId,
-      signal,
-    })
+  for await (const { call: scheduled, result } of stream) {
+    const call = scheduled.call
 
     // 关联原调用身份（第 8.6、16.5 节）：日志身份由 Agent Loop 写入事件。
     await appendEvent({
       type: "tool/result",
       turn,
       step,
-      toolCallEventId,
-      toolCallId: block.toolCallId,
-      blockId,
+      toolCallEventId: call.toolCallEventId,
+      toolCallId: call.block.toolCallId,
+      blockId: call.blockId,
       result,
     })
 
-    content.push(toToolMessage(block.toolCallId, result))
+    content.push(toToolMessage(call.block.toolCallId, result))
   }
 }
 
