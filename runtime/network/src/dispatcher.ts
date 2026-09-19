@@ -8,6 +8,7 @@
 
 import * as undici from "undici"
 
+/** 当前进程已安装的 Dispatcher；未初始化时保持未定义。 */
 let dispatcher: undici.Dispatcher | undefined
 
 /**
@@ -28,6 +29,9 @@ let dispatcher: undici.Dispatcher | undefined
  *    这是文档要求的做法，但属于全局改动，故集中在这一个函数里。
  *
  * 重复调用是安全的：已有实例时直接复用，不会重建 Agent、不会丢弃连接池。
+ *
+ * @returns 已安装并可供调用方复用的进程级 Dispatcher。
+ * @throws 当 undici Agent 创建、全局 Dispatcher 设置或全局 API 安装失败时，向调用方抛出底层异常。
  */
 export function initNetworkDispatcher(): undici.Dispatcher {
   if (dispatcher !== undefined) return dispatcher
@@ -40,7 +44,11 @@ export function initNetworkDispatcher(): undici.Dispatcher {
   return dispatcher
 }
 
-/** 取当前进程级 Dispatcher；未初始化时为 undefined。 */
+/**
+ * 取当前进程级 Dispatcher，不会触发初始化或产生新的连接池。
+ *
+ * @returns 已初始化的 Dispatcher；未调用 {@link initNetworkDispatcher} 时返回 `undefined`。
+ */
 export function getNetworkDispatcher(): undici.Dispatcher | undefined {
   return dispatcher
 }

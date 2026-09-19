@@ -25,8 +25,11 @@ import type { ModelAdapter, ModelConfig, Protocol } from "./types.ts"
  * 先作为可选参数留在这里；等 `config.json` 的结构确定后由配置层填。
  */
 export interface ProtocolClientOptions {
+  /** 由 CredentialStore 按 Provider 提供的 API Key。 */
   apiKey: string
+  /** 协议客户端使用的 Provider 地址；缺失时使用 SDK 默认地址。 */
   baseURL?: string
+  /** 传给协议客户端的额外请求头。 */
   defaultHeaders?: Record<string, string>
 }
 
@@ -50,6 +53,11 @@ const ADAPTER_FACTORIES: Record<
  *
  * 一个 Adapter 实例绑定一个模型：请求校验需要它，Anthropic 的必填 `max_tokens`
  * 也要从它有默认值。模型切换 = 换实例，与第 6 节"Provider 与 Model 可动态切换"一致。
+ *
+ * @param config 要绑定的 Provider、协议和模型配置。
+ * @param options 协议客户端所需的凭据、地址和额外请求头。
+ * @returns 与 `config.protocol` 对应、已绑定该模型的 Adapter。
+ * @throws 当配置的协议没有对应创建函数时由协议工厂访问失败。
  */
 export function createModelAdapter(
   config: ModelConfig,

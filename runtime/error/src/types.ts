@@ -8,7 +8,12 @@
  * 实施阶段：.git/技术文档/开发TODOList.md 阶段 1（AppError 类型）、阶段 2（Error Normalizer）
  */
 
-/** 错误来源（第 25 节，已定义）。 */
+/**
+ * 统一错误结构中的错误来源。
+ *
+ * 来源用于区分 Runtime、模型、工具、MCP、存储和系统边界，供事件日志、SSE
+ * 以及 UI 选择对应的错误处理路径。
+ */
 export type AppErrorSource = "runtime" | "model" | "tool" | "mcp" | "storage" | "system"
 
 /**
@@ -21,8 +26,12 @@ export type AppErrorSource = "runtime" | "model" | "tool" | "mcp" | "storage" | 
  *     `ToolResult.content` 由该工具的 render 生成模型可见内容。
  */
 export interface AppError {
+  /** 产生该错误的 Runtime 子系统边界。 */
   source: AppErrorSource
+  /** 稳定的应用层错误码，供调用方进行机器判断。 */
   code: string
+  /** 可直接展示或继续包装的错误说明。 */
   message: string
+  /** 可选的结构化上下文；仅保存调用方允许向外传递的附加信息。 */
   details?: Record<string, unknown>
 }

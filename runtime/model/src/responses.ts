@@ -72,6 +72,9 @@ type FunctionCallItem = Extract<ResponseInputItem, { type: "function_call" }>
  *
  * `function_call` 的 id 用统一 `toolCallId`：该协议回传历史调用时以 `call_id` 配对，
  * 不要求服务端生成的 item id（本轮新调用才由服务端生成）。
+ *
+ * @param messages 除首个 System Message 外的统一会话消息。
+ * @returns Responses InputItem 数组。
  */
 export function toResponsesInput(messages: ModelMessage[]): ResponseInputItem[] {
   const items: ResponseInputItem[] = []
@@ -118,6 +121,12 @@ export function toResponsesInput(messages: ModelMessage[]): ResponseInputItem[] 
   return items
 }
 
+/**
+ * 将统一工具定义映射为 Responses function tools。
+ *
+ * @param tools 统一工具定义。
+ * @returns Responses 工具定义数组。
+ */
 function toResponsesTools(tools: UnifiedToolDefinition[]): FunctionTool[] {
   return tools.map((tool) => ({
     type: "function",
@@ -133,6 +142,10 @@ function toResponsesTools(tools: UnifiedToolDefinition[]): FunctionTool[] {
  * 构建一次 Responses 流式请求。
  *
  * `tools` 为空时不传该字段（协议不接受空数组）。
+ *
+ * @param request 待转换的统一模型请求。
+ * @returns SDK 可接受的流式 Responses 请求参数。
+ * @throws `AppError` 当统一上下文缺少首个 System Message 或包含多个 System Message 时抛出。
  */
 export function buildResponsesRequest(
   request: UnifiedModelRequest,
@@ -167,10 +180,15 @@ export function buildResponsesRequest(
 interface PendingBlock {
   /** 统一流里的块序号，从 0 起连续。 */
   index: number
+  /** 统一块类型。 */
   blockType: BlockType
+  /** 已收到的文本或 thinking 内容。 */
   text: string
+  /** Responses `function_call.call_id`。非工具块为空字符串。 */
   toolCallId: string
+  /** 工具名称。非工具块为空字符串。 */
   name: string
+  /** 已收到的工具参数 JSON 分片拼接结果。 */
   argumentsJson: string
 }
 
@@ -178,8 +196,11 @@ interface PendingBlock {
 interface PendingCall {
   /** 该调用在流里的键（见 `callKey`）。 */
   key: string
+  /** 用于和 `function_call_output` 配对的调用 ID。 */
   callId: string
+  /** Responses function call 的工具名称。 */
   name: string
+  /** 已收到的参数 JSON 分片拼接结果。 */
   argumentsJson: string
 }
 
@@ -188,6 +209,9 @@ interface PendingCall {
  *
  * `function_call` 的 `id` 在协议类型里是可选的（`id?: string`），因此没有它时退回
  * `call_id`；参数增量事件里的 `item_id` 用同一套规则解析（见 `resolveCallKey`）。
+ *
+ * @param item Responses function call item。
+ * @returns 优先使用 item id、否则使用 call id 的稳定查找键。
  */
 function callKey(item: { id?: string | null; call_id: string }): string {
   return item.id ?? item.call_id
@@ -195,10 +219,15 @@ function callKey(item: { id?: string | null; call_id: string }): string {
 
 /** 完成状态的原始信息：`response.completed` 带完整 Response，便于判断是否含工具调用。 */
 interface TerminalInfo {
+  /** Responses 终态事件类型。 */
   type: "completed" | "incomplete"
+  /** Provider 报告的响应状态。 */
   status: string | undefined
+  /** 不完整响应的原始原因。 */
   incompleteReason: string | undefined
+  /** 终态响应中是否包含 function call item。 */
   hasFunctionCall: boolean
+  /** 终态响应提供的 Usage；缺失时为 `undefined`。 */
   usage: ResponsesUsageFields | undefined
 }
 
@@ -208,6 +237,10 @@ interface TerminalInfo {
  *   status=completed → 已结束的完整 tool_call 是否存在决定 tool_calls / finished
  *   status=incomplete → incomplete
  *   status=failed / cancelled → 抛错，不到达这里
+ *
+ * @param info Responses 终态信息。
+ * @param endedToolCalls 已完整收尾的工具调用数量。
+ * @returns Runtime 使用的统一完成状态。
  */
 function resolveCompletion(info: TerminalInfo, endedToolCalls: number): ModelCompletion {
   if (info.type === "incomplete" || info.status === "incomplete") return "incomplete"
@@ -227,6 +260,10 @@ function resolveCompletion(info: TerminalInfo, endedToolCalls: number): ModelCom
  *   - `output_item.added`(reasoning) → thinking 块，增量来自 reasoning 摘要或原文。
  *
  * 结束事件之前流就断了（未收到 completed / incomplete / failed）时抛错，不产出 `stream_end`。
+ *
+ * @param events Responses SDK 产生的原始流事件。
+ * @returns 按统一块协议产生的异步事件流。
+ * @throws `Error` 当协议报告失败、错误事件或在终态事件前结束时抛出。
  */
 export async function* mapResponsesStream(
   events: AsyncIterable<ResponseStreamEvent>,
@@ -241,6 +278,13 @@ export async function* mapResponsesStream(
   let endedToolCalls = 0
   let terminal: TerminalInfo | undefined
 
+  /**
+   * 为 Responses item 分配统一序号并登记到对应类型的查找表。
+   *
+   * @param blockType 统一块类型。
+   * @param itemId Responses item 的查找键。
+   * @returns 新建的待收尾块状态。
+   */
   function openBlock(blockType: BlockType, itemId: string): PendingBlock {
     const block: PendingBlock = {
       index: nextIndex,
@@ -258,6 +302,12 @@ export async function* mapResponsesStream(
     return block
   }
 
+  /**
+   * 收尾块并从所有查找表移除，生成统一 block_end 事件。
+   *
+   * @param block 待收尾的块状态。
+   * @returns 对应的统一 block_end 事件。
+   */
   function closeBlock(block: PendingBlock): ModelStreamEvent {
     blocksByItem.forEach((value, key) => {
       if (value === block) blocksByItem.delete(key)
@@ -293,7 +343,12 @@ export async function* mapResponsesStream(
     }
   }
 
-  /** 收尾某个 item 的块；不传 itemId 时收尾全部。 */
+  /**
+   * 收尾某个 item 的块；不传 itemId 时收尾全部。
+   *
+   * @param itemId 可选的 Responses item 键。
+   * @returns 收尾得到的统一 block_end 事件数组。
+   */
   function closeItem(itemId: string | undefined): ModelStreamEvent[] {
     if (itemId !== undefined) {
       const block = blocksByItem.get(itemId)
@@ -303,7 +358,11 @@ export async function* mapResponsesStream(
     return pending.map(closeBlock)
   }
 
-  /** 收尾仍未结束的 thinking / text 块，按 index 升序；不含工具调用（见调用处说明）。 */
+  /**
+   * 收尾仍未结束的 thinking / text 块，按 index 升序；不含工具调用（见调用处说明）。
+   *
+   * @returns 尚未收尾的文本与 thinking 块的 block_end 事件。
+   */
   function flushTextBlocks(): ModelStreamEvent[] {
     const pending = [...blocksByItem.values()]
       .filter((block) => block.blockType !== "tool_call")
@@ -316,6 +375,9 @@ export async function* mapResponsesStream(
    *
    * 事件里的 `item_id` 与 `output_item.added` 的 item id 对应；当 item 没有 id 时
    * （function_call 的 id 是可选的）协议给的是 `call_id`，用登记的调用信息换回块键。
+   *
+   * @param itemId 参数增量事件提供的 item_id 或 call_id。
+   * @returns 对应的内部查找键；无法匹配时返回 `undefined`。
    */
   function resolveCallKey(itemId: string): string | undefined {
     if (toolCallBlocks.has(itemId)) return itemId
@@ -505,6 +567,10 @@ export async function* mapResponsesStream(
  *
  * 与另外两个 Adapter 一样关闭 SDK 自身的重试（`maxRetries: 0`），
  * 重试统一由 `runtime/network/` 负责（第 7 节）。
+ *
+ * @param config 要绑定的 Responses 模型配置。
+ * @param options OpenAI SDK 客户端的凭据、地址和额外请求头。
+ * @returns 已绑定配置并负责流式请求的 Responses Adapter。
  */
 export function createResponsesAdapter(
   config: ModelConfig,
@@ -517,6 +583,14 @@ export function createResponsesAdapter(
     maxRetries: 0,
   })
 
+  /**
+   * 执行一次绑定模型的 Responses 流式请求，并统一处理重试与错误归一化。
+   *
+   * @param request 当前统一模型请求。
+   * @param signal 调用方的取消信号。
+   * @returns Responses 响应转换后的统一模型事件流。
+   * @throws `AppError` 请求校验失败、协议请求失败或取消时抛出。
+   */
   async function* stream(
     request: UnifiedModelRequest,
     signal: AbortSignal,
@@ -533,7 +607,15 @@ export function createResponsesAdapter(
   return { stream }
 }
 
-/** 发起一次真实请求并逐个产出协议事件；取消由 SDK 的 `signal` 传递（第 6 节）。 */
+/**
+ * 发起一次真实请求并逐个产出协议事件；取消由 SDK 的 `signal` 传递（第 6 节）。
+ *
+ * @param client OpenAI SDK 客户端。
+ * @param params 已构建的流式请求参数。
+ * @param signal 当前请求尝试的取消信号。
+ * @returns 原始 Responses 流事件异步生成器。
+ * @throws SDK 请求失败或取消时抛出底层异常。
+ */
 async function* requestResponsesStream(
   client: OpenAI,
   params: ResponseCreateParamsStreaming,

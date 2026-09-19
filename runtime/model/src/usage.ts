@@ -27,6 +27,9 @@ import type { Usage } from "./types.ts"
  *
  * 两个官方 SDK 把厂商可能缺省的计数字段标成 `T | null`，兼容厂商还可能整段字段缺失，
  * 因此所有读取都走这里，统一把 null 与 undefined 归一为**未报告**。
+ *
+ * @param value 厂商原始计数字段。
+ * @returns 数字原样返回；`null`、`undefined` 或其它值视为未报告。
  */
 function readCount(value: number | null | undefined): number | undefined {
   return typeof value === "number" ? value : undefined
@@ -38,6 +41,11 @@ function readCount(value: number | null | undefined): number | undefined {
  * 只扣实际报告的桶：缺少 `cacheWriteTokens` 时只扣缓存读取部分（第 3.3、4.3 节），
  * 两个桶都缺时 `inputTokens` 就是完整输入。结果为负说明厂商数字自相矛盾，
  * 按 0 处理（未缓存输入不可能是负值）。
+ *
+ * @param fullInputTokens 协议报告的完整输入 Token。
+ * @param cacheReadTokens 已报告的缓存读取桶。
+ * @param cacheWriteTokens 已报告的缓存写入桶。
+ * @returns 扣除已报告缓存桶后的非负未缓存输入 Token。
  */
 function subtractCacheBuckets(
   fullInputTokens: number,
@@ -58,10 +66,15 @@ function subtractCacheBuckets(
  * `message_start` 的 `usage` 与 `message_delta` 的 `usage` 都是这个形状（后者是累计值）。
  */
 export interface AnthropicUsageFields {
+  /** 未缓存输入 Token。 */
   input_tokens?: number | null
+  /** 输出 Token。 */
   output_tokens?: number | null
+  /** 从已有 Prompt Cache 读取的输入 Token。 */
   cache_read_input_tokens?: number | null
+  /** 创建或写入 Prompt Cache 的输入 Token。 */
   cache_creation_input_tokens?: number | null
+  /** 输出中属于 thinking 的 Token；可能不被 Provider 报告。 */
   output_tokens_details?: { thinking_tokens?: number | null } | null
 }
 
@@ -79,6 +92,9 @@ export interface AnthropicUsageFields {
  * `thinking_tokens`：设计文档第 2、5 节把 Anthropic 的 reasoning 记为"通常缺失"，
  * 但当前 SDK（0.126）在 `output_tokens_details.thinking_tokens` 提供了独立且可靠的
  * reasoning 计数，符合"存在可靠独立字段就填"的条件，故按可用字段映射。
+ *
+ * @param fields Anthropic `message_start` 或 `message_delta` 提供的 Usage 字段。
+ * @returns 符合统一 Usage 契约的字段；未报告的可选桶保持为 `undefined`。
  */
 export function convertAnthropicUsage(fields: AnthropicUsageFields): Usage {
   const reasoningTokens = readCount(fields.output_tokens_details?.thinking_tokens)
@@ -110,15 +126,24 @@ export function convertAnthropicUsage(fields: AnthropicUsageFields): Usage {
  * 是部分兼容厂商放置缓存命中数的地方，读取顺序见 `convertChatCompletionsUsage`。
  */
 export interface ChatCompletionsUsageFields {
+  /** 完整输入 Token，包含缓存读取与写入桶。 */
   prompt_tokens?: number | null
+  /** 完整输出 Token。 */
   completion_tokens?: number | null
+  /** 输入与输出 Token 总数。 */
   total_tokens?: number | null
+  /** 官方及兼容厂商提供的输入缓存细分。 */
   prompt_tokens_details?: {
+    /** 缓存读取 Token。 */
     cached_tokens?: number | null
+    /** 缓存写入 Token。 */
     cache_write_tokens?: number | null
   } | null
+  /** 兼容厂商提供的缓存读取 Token 备用字段。 */
   prompt_cache_hit_tokens?: number | null
+  /** 兼容厂商提供的缓存读取 Token 顶层备用字段。 */
   cached_tokens?: number | null
+  /** 输出中属于 reasoning 的 Token。 */
   completion_tokens_details?: { reasoning_tokens?: number | null } | null
 }
 
@@ -132,6 +157,9 @@ export interface ChatCompletionsUsageFields {
  *   outputTokens     ← completion_tokens
  *   reasoningTokens  ← completion_tokens_details.reasoning_tokens
  *   totalTokens      ← total_tokens；缺失时用 prompt_tokens + completion_tokens（第 3.5 节）
+ *
+ * @param fields Chat Completions 最后一个带 Usage 的流 chunk 的字段。
+ * @returns 符合统一 Usage 契约的字段；缓存细分缺失时不将其伪造为 0。
  */
 export function convertChatCompletionsUsage(fields: ChatCompletionsUsageFields): Usage {
   const promptTokens = readCount(fields.prompt_tokens)
@@ -170,13 +198,20 @@ export function convertChatCompletionsUsage(fields: ChatCompletionsUsageFields):
 
 /** Responses 的 Usage 原始字段（`response.completed` / `response.incomplete` 的 `response.usage`）。 */
 export interface ResponsesUsageFields {
+  /** 完整输入 Token，包含缓存读取与写入桶。 */
   input_tokens?: number | null
+  /** 完整输出 Token。 */
   output_tokens?: number | null
+  /** 输入与输出 Token 总数。 */
   total_tokens?: number | null
+  /** 输入缓存细分。 */
   input_tokens_details?: {
+    /** 缓存读取 Token。 */
     cached_tokens?: number | null
+    /** 缓存写入 Token。 */
     cache_write_tokens?: number | null
   } | null
+  /** 输出中属于 reasoning 的 Token。 */
   output_tokens_details?: { reasoning_tokens?: number | null } | null
 }
 
@@ -189,6 +224,9 @@ export interface ResponsesUsageFields {
  *   outputTokens     ← output_tokens
  *   reasoningTokens  ← output_tokens_details.reasoning_tokens
  *   totalTokens      ← total_tokens（该协议直接提供，缺失则留空，不自行相加）
+ *
+ * @param fields Responses 终态事件中的 `response.usage` 字段。
+ * @returns 符合统一 Usage 契约的字段；缺失的可选协议字段保持未报告。
  */
 export function convertResponsesUsage(fields: ResponsesUsageFields): Usage {
   const cacheReadTokens = readCount(fields.input_tokens_details?.cached_tokens)

@@ -23,28 +23,41 @@
  */
 export const PROTOCOLS = ["anthropic_messages", "chat_completions", "responses"] as const
 
+/** `PROTOCOLS` 中允许出现在模型引用和模型配置里的协议字面量。 */
 export type Protocol = (typeof PROTOCOLS)[number]
 
 /** 统一模型引用（第 6 节，已定义）。 */
 export interface ModelRef {
+  /** Provider 配置中的稳定标识。 */
   providerId: string
+  /** Provider 下负责请求转换的协议。 */
   protocol: Protocol
+  /** Provider / protocol 下的模型标识。 */
   modelId: string
 }
 
 /** 模型配置（第 6 节，已定义）。Provider → Protocol → Models；`id` 对应 `ModelRef.modelId`。 */
 export interface ModelConfig {
+  /** Provider 内的模型标识。 */
   id: string
+  /** 该模型所属 Provider 的标识。 */
   providerId: string
+  /** 该模型使用的协议。 */
   protocol: Protocol
 
+  /** 模型声明的上下文窗口；缺失时由 `resolveContextWindow` 使用 Runtime 默认值。 */
   contextWindow?: number
+  /** 协议请求允许的最大输出 Token；是否使用由具体 Adapter 决定。 */
   maxOutputTokens?: number
 
+  /** 模型是否支持 reasoning / thinking 能力。 */
   supportsReasoning?: boolean
+  /** 模型是否支持工具调用。 */
   supportsTools?: boolean
+  /** 模型是否支持同一响应中的并行工具调用。 */
   supportsParallelTools?: boolean
 
+  /** 模型是否支持服务端响应 ID；当前 V1 的 Responses Adapter 不依赖该能力。 */
   supportsResponseId?: boolean
 }
 
@@ -54,6 +67,9 @@ export const DEFAULT_CONTEXT_WINDOW = 256000
 /**
  * 模型的有效上下文窗口：`contextWindow ?? 256000`（第 6 节，已定义）。
  * Skill / MCP 预算与压缩阈值均使用同一个有效窗口值。
+ *
+ * @param model 只需提供可选 `contextWindow` 的模型配置或配置片段。
+ * @returns 配置声明的窗口，或配置缺失时的 Runtime 默认窗口。
  */
 export function resolveContextWindow(model: Pick<ModelConfig, "contextWindow">): number {
   return model.contextWindow ?? DEFAULT_CONTEXT_WINDOW
@@ -139,6 +155,9 @@ export interface Usage {
  *
  * 文档第 6.2 节的 Context Pressure 与本函数是同一个值（不含本轮 `outputTokens`），
  * 因此不再单独提供一个同义函数。
+ *
+ * @param usage 本次请求已经统一化的 Usage。
+ * @returns 可确定的完整 Prompt Token；缓存桶不完整且没有可信 `totalTokens` 时返回 `undefined`。
  */
 export function promptTokens(usage: Usage): number | undefined {
   const { inputTokens, outputTokens, totalTokens, cacheReadTokens, cacheWriteTokens } = usage
@@ -157,6 +176,9 @@ export function promptTokens(usage: Usage): number | undefined {
  * Prompt Token + `outputTokens` 相加得到；无法确定时返回 undefined。
  *
  * `reasoningTokens` 已含在 `outputTokens` 内，不重复加入。
+ *
+ * @param usage 本次请求已经统一化的 Usage。
+ * @returns 协议提供或由输入与输出推导出的完整 Token 数；无法确定 Prompt 时返回 `undefined`。
  */
 export function resolveTotalTokens(usage: Usage): number | undefined {
   if (usage.totalTokens !== undefined) {
@@ -177,6 +199,10 @@ export function resolveTotalTokens(usage: Usage): number | undefined {
  *     任意一次未报告，累计值即为 undefined（未报告），不把该次当作 0（文档第 7.2 节与第 9 节第 13 条）。
  *
  * Retry 属于一次新的真实请求，按其自身 Usage 正常参与累计（文档第 7.3 节）。
+ *
+ * @param previous 此前累计的 Usage；`undefined` 表示这是第一笔请求。
+ * @param usage 当前真实请求的 Usage。
+ * @returns 合并后的新对象；不会修改任一入参，可选字段任一轮未报告时在累计值中保持未报告。
  */
 export function accumulateUsage(previous: Usage | undefined, usage: Usage): Usage {
   if (previous === undefined) return { ...usage }
@@ -194,7 +220,13 @@ export function accumulateUsage(previous: Usage | undefined, usage: Usage): Usag
   return accumulated
 }
 
-/** 两个可选计数相加；任一未报告则为未报告。 */
+/**
+ * 两个可选计数相加；任一未报告则为未报告。
+ *
+ * @param a 第一个累计计数。
+ * @param b 第二个累计计数。
+ * @returns 两个都已报告时的和，否则返回 `undefined`。
+ */
 function sumOptional(a: number | undefined, b: number | undefined): number | undefined {
   if (a === undefined || b === undefined) return undefined
   return a + b
@@ -217,6 +249,9 @@ function sumOptional(a: number | undefined, b: number | undefined): number | und
  *   - 分母为 0。
  *
  * 入参是**累计后的** Usage（由 `accumulateUsage` 得到），不是单次请求的 Usage。
+ *
+ * @param accumulated 已累计的 Usage。
+ * @returns 累计缓存命中率（0 到 1）；缓存桶未完整报告或分母为 0 时返回 `undefined`。
  */
 export function cacheHitRate(accumulated: Usage): number | undefined {
   const hit = accumulated.cacheReadTokens
@@ -241,6 +276,7 @@ export function cacheHitRate(accumulated: Usage): number | undefined {
  * 固定上下文与会话上下文的分界由位置表示，不增加重复的元信息字段。
  */
 export interface UnifiedModelContext {
+  /** 按送入模型的顺序排列；第一个元素必须是唯一的 System Message。 */
   messages: ModelMessage[]
 }
 
@@ -274,7 +310,9 @@ export type ModelMessage =
  * 工具来源由 tools 模块管理；模型层只需要协议可见的名称、说明和参数结构。
  */
 export interface UnifiedToolDefinition {
+  /** 协议请求中暴露的工具名称。 */
   name: string
+  /** 给模型看的工具说明。 */
   description?: string
   /** 该工具的参数 JSON Schema。 */
   inputSchema: Record<string, unknown>
@@ -286,8 +324,11 @@ export interface UnifiedToolDefinition {
 
 /** 统一模型请求（第 6 节，已定义）。 */
 export interface UnifiedModelRequest {
+  /** ContextBuilder 生成的完整上下文。 */
   context: UnifiedModelContext
+  /** 本次请求向模型暴露的工具定义；为空时不发送协议工具字段。 */
   tools: UnifiedToolDefinition[]
+  /** 本请求实际采用的模型，必须与 Adapter 绑定的配置一致。 */
   model: ModelRef
 }
 
@@ -308,16 +349,21 @@ export type ModelStreamEvent =
       type: "block_start"
       /** 本 Step 内的块顺序，从 0 起。 */
       index: number
+      /** 该块后续 delta 和 end 使用的统一类型。 */
       blockType: BlockType
     }
   | {
       type: "block_delta"
+      /** 与对应 block_start / block_end 相同的块序号。 */
       index: number
+      /** 本次收到的内容增量。 */
       delta: AssistantBlockDelta
     }
   | {
       type: "block_end"
+      /** 与对应 block_start / block_delta 相同的块序号。 */
       index: number
+      /** 已拼装的完整内容块。 */
       block: AssistantContentBlock
     }
   | {
@@ -343,5 +389,13 @@ export type ModelStreamEvent =
 
 /** 模型适配器（第 6 节，已定义）。三个 Adapter 均实现此接口。 */
 export interface ModelAdapter {
+  /**
+   * 把一次统一模型请求转换为协议请求并以统一事件流返回。
+   *
+   * @param request 当前请求的上下文、工具和模型引用。
+   * @param signal 调用方的取消信号；实现必须把它传递到协议请求。
+   * @returns 按块开始、增量、结束及最终流结束事件排列的异步迭代器。
+   * @throws `AppError` 请求不符合统一契约、请求失败或被取消时抛出。
+   */
   stream(request: UnifiedModelRequest, signal: AbortSignal): AsyncIterable<ModelStreamEvent>
 }

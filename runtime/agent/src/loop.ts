@@ -69,7 +69,9 @@ import type { ToolResult } from "../../tools/src/types.ts"
  * 工具小轮要用它把 `tool/result` 关联回原调用（第 8.6、16.5 节）。
  */
 export interface AgentLoopToolCall {
+  /** 产生此工具调用的 Turn 编号。 */
   turn: number
+  /** 产生此工具调用的 Step 编号。 */
   step: number
   /** 该 tool_call 块的 `blockId`，与块事件一致（第 8.4 节）。 */
   blockId: string
@@ -80,9 +82,13 @@ export interface AgentLoopToolCall {
 
 /** 一次工具调用的 Runtime 上下文（第 16.4 节 `ToolExecutionContext` 在 AgentLoop 侧的最小形态）。 */
 export interface ToolCallContext {
+  /** 当前工具调用所属的 Turn 编号。 */
   turn: number
+  /** 当前工具调用所属的 Step 编号。 */
   step: number
+  /** 工具调用对应的 assistant Block ID。 */
   blockId: string
+  /** 模型生成的工具调用 ID。 */
   toolCallId: string
   /** 本 Agent Loop 的取消信号：已开始的工具应据此尝试取消（第 14、17 节）。 */
   signal: AbortSignal
@@ -97,6 +103,12 @@ export interface ToolCallContext {
  * 工具自身的失败（含被取消）也必须以 `status = "error"` 的 ToolResult 返回，不能用抛异常表达 ——
  * 第 16.4 节要求调度器中尚未启动便被取消的调用同样产出 `AppError(CANCELLED)` 并形成 ToolResult；
  * 从本函数抛出的异常会被当作 Turn 级失败处理。
+ *
+ * @param toolName 模型请求执行的工具名称。
+ * @param toolArguments 模型为工具提供的、尚未由 AgentLoop 解释的参数值。
+ * @param context 当前 Turn、Step、Block 和取消信号等执行上下文。
+ * @returns 工具执行结果；工具自身失败也应通过 `status = "error"` 返回。
+ * @throws 工具执行入口发生 Turn 级异常时抛出；工具业务失败不应使用异常表示。
  */
 export type ExecuteToolCall = (
   toolName: string,
@@ -146,6 +158,10 @@ export interface AgentLoopOptions {
  * 正常返回表示 Loop 自己结束（无待执行的 Tool Call，或被用户取消）；
  * Adapter 或工具执行抛出非取消错误时，写完 `step/end(error)` 后原样抛出，`turn/end(error)` 与
  * `app/error` 由调用方负责（第 13.5 节）。
+ *
+ * @param options AgentLoop 的模型、上下文、工具执行入口、取消信号和事件出口。
+ * @returns 本 Turn 的停止状态、Step 数量以及最后一次模型请求的完成信息。
+ * @throws 非取消的模型或工具执行错误；抛出前会写入当前 Step 的 `step/end(error)`。
  */
 export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoopResult> {
   const { turn, model, adapter, content, tools, executeTool, signal, appendEvent } = options
@@ -202,27 +218,43 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
 
 /** 一次正常模型请求的输入（第 11.4 节）。 */
 interface ModelStepParams {
+  /** 当前 Turn 编号。 */
   turn: number
+  /** 当前 Step 编号。 */
   step: number
+  /** 本 Turn 固定的模型引用。 */
   model: ModelRef
+  /** 负责发起统一模型流请求的 Adapter。 */
   adapter: ModelAdapter
+  /** 当前请求使用并由后续 Step 原地追加的会话上下文。 */
   content: ModelMessage[]
+  /** 当前请求向模型暴露的工具定义。 */
   tools: UnifiedToolDefinition[]
+  /** 当前 AgentLoop 的取消信号。 */
   signal: AbortSignal
+  /** 将模型流事件写入 Session Event Log 的事件出口。 */
   appendEvent: AppendSessionEvent
 }
 
 /** 一次正常模型请求的结果。 */
 interface ModelStepOutcome {
+  /** 模型本次请求的统一完成状态。 */
   completion: ModelCompletion
+  /** 模型返回的 Usage；模型未提供时省略。 */
   usage?: Usage
+  /** 模型协议返回的结束原因；未提供时省略。 */
   finishReason?: string
+  /** 本次响应中已完成且需要执行的工具调用。 */
   toolCalls: AgentLoopToolCall[]
 }
 
 /**
  * 执行一次正常模型请求：消费 Adapter 的统一事件流，逐个写 Block 事件，
  * 最后写本 Step 的 `assistant/message`（第 8.4、8.5、11.4 节）。
+ *
+ * @param params 当前 Step 的模型请求参数和事件出口。
+ * @returns 模型完成状态、Usage、结束原因以及已完成的工具调用。
+ * @throws Adapter 流或事件持久化失败时向调用方传播原始错误。
  */
 async function runModelStep(params: ModelStepParams): Promise<ModelStepOutcome> {
   const { turn, step, model, adapter, content, tools, signal, appendEvent } = params
@@ -322,12 +354,19 @@ async function runModelStep(params: ModelStepParams): Promise<ModelStepOutcome> 
 
 /** 一次 Tool Call 小轮的输入。 */
 interface ToolRoundParams {
+  /** 当前 Turn 编号。 */
   turn: number
+  /** 产生这些工具调用的 Step 编号。 */
   step: number
+  /** 当前 Step 中按模型响应顺序收集的已完成工具调用。 */
   toolCalls: AgentLoopToolCall[]
+  /** 统一的工具执行入口。 */
   executeTool: ExecuteToolCall
+  /** 将工具结果追加到的会话上下文。 */
   content: ModelMessage[]
+  /** 当前 AgentLoop 的取消信号。 */
   signal: AbortSignal
+  /** 将工具结果写入 Session Event Log 的事件出口。 */
   appendEvent: AppendSessionEvent
 }
 
@@ -341,6 +380,10 @@ interface ToolRoundParams {
  *
  * 工具失败不在这里加工：ToolExecutor 已把失败渲染成 `status = "error"` 的 ToolResult，
  * 因此不为同一次失败额外写 `app/error`（第 8.6 节）。
+ *
+ * @param params 当前 Step 的工具调用、执行入口、上下文和事件出口。
+ * @returns 所有工具调用结果均已写入事件日志并追加到模型上下文后完成。
+ * @throws 调度器、工具执行入口或事件持久化发生 Turn 级异常时传播该异常。
  */
 async function runToolRound(params: ToolRoundParams): Promise<void> {
   const { turn, step, toolCalls, executeTool, content, signal, appendEvent } = params
@@ -382,6 +425,10 @@ async function runToolRound(params: ToolRoundParams): Promise<void> {
  *
  * 三个协议当前只消费 `type = "text"` 的内容：这里保留 text 块及其顺序，其余类型不进入模型上下文。
  * `isError` 取 ToolResult 的 `status`（第 16.2 节）。
+ *
+ * @param toolCallId 模型生成的工具调用 ID，用于建立工具消息关联。
+ * @param result 要转换为模型消息的统一工具结果。
+ * @returns 可追加到 ModelMessage 上下文的工具消息。
  */
 function toToolMessage(toolCallId: string, result: ToolResult): ModelMessage {
   const content: ModelTextBlock[] = []
@@ -393,6 +440,11 @@ function toToolMessage(toolCallId: string, result: ToolResult): ModelMessage {
 
 /**
  * 块的 ID 由 `(turn, step, index)` 决定，见文件头第 2 条决定。
+ *
+ * @param turn 块所属的 Turn 编号。
+ * @param step 块所属的 Step 编号。
+ * @param index 块在当前模型响应中的零基索引。
+ * @returns 可在同一 Block 的 start、delta、end 事件中复用的稳定 ID。
  */
 function blockIdFor(turn: number, step: number, index: number): string {
   return `b-${turn}-${step}-${index}`

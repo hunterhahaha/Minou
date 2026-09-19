@@ -68,11 +68,25 @@ const RETRYABLE_ERROR_NAMES = new Set(["APIConnectionError", "APIConnectionTimeo
 /** Provider 明确报告「临时不可用」时的错误类型标记。 */
 const RETRYABLE_PROVIDER_TYPES = new Set(["overloaded_error", "server_error", "unavailable"])
 
+/**
+ * 从未知值中安全读取一个对象属性。
+ *
+ * @param source 待读取的未知值；非对象值按属性缺失处理。
+ * @param key 要读取的属性名。
+ * @returns 属性当前值；源值不是非空对象或属性不存在时返回 `undefined`。
+ */
 function readProperty(source: unknown, key: string): unknown {
   if (typeof source !== "object" || source === null) return undefined
   return (source as Record<string, unknown>)[key]
 }
 
+/**
+ * 从未知值中安全读取非空字符串属性。
+ *
+ * @param source 待读取的未知值。
+ * @param key 要读取的属性名。
+ * @returns 非空字符串属性值；属性不是非空字符串时返回 `undefined`。
+ */
 function readString(source: unknown, key: string): string | undefined {
   const value = readProperty(source, key)
   return typeof value === "string" && value.length > 0 ? value : undefined
@@ -83,6 +97,9 @@ function readString(source: unknown, key: string): string | undefined {
  *
  * 取消类错误一律返回 false —— 即便它同时带着连接中断的错误码，
  * 也不能在请求已被终止后继续重试（第 7、14 节）。
+ *
+ * @param error 待判断的未知错误值。
+ * @returns 错误属于可重试情形且不是取消错误时返回 `true`，否则返回 `false`。
  */
 export function isRetryableError(error: unknown): boolean {
   return classifyRetryable(error, 0)
@@ -95,6 +112,13 @@ export function isRetryableError(error: unknown): boolean {
  */
 const MAX_CAUSE_DEPTH = 8
 
+/**
+ * 沿错误及其 `cause` 链判断是否命中网络层可重试条件。
+ *
+ * @param error 当前待判断的未知错误值。
+ * @param depth 当前已经追溯的 `cause` 深度，用于限制循环引用的影响范围。
+ * @returns 错误自身或有限深度内的底层原因满足可重试条件时返回 `true`，否则返回 `false`。
+ */
 function classifyRetryable(error: unknown, depth: number): boolean {
   // 非对象输入直接结束。缺了这一条会退化成无限递归：readProperty 对非对象返回
   // undefined，而 undefined 又不是可重试错误，于是再次进入本函数。
@@ -131,6 +155,11 @@ function classifyRetryable(error: unknown, depth: number): boolean {
  * 即落在原值的 50%–100% 之间。抖动用于避免多个请求同时重试。
  *
  * `random` 可注入，便于测试给出确定值。
+ *
+ * @param attemptIndex 从 0 开始的重试序号。
+ * @param baseDelayMs 指数退避的初始毫秒数，默认使用 `RETRY_BASE_DELAY_MS`。
+ * @param random 返回抖动因子的随机函数，默认使用 `Math.random`。
+ * @returns 当前重试前应等待的、经过四舍五入的毫秒数。
  */
 export function computeBackoffDelay(
   attemptIndex: number,
@@ -141,7 +170,14 @@ export function computeBackoffDelay(
   return Math.round(exponential * (0.5 + random() * 0.5))
 }
 
-/** 等待指定毫秒；期间收到取消则立即以取消错误结束。 */
+/**
+ * 等待指定毫秒；期间收到取消则立即结束等待。
+ *
+ * @param ms 等待时长，单位为毫秒。
+ * @param signal 当前请求的取消信号。
+ * @returns 在计时器到期后完成的 Promise。
+ * @throws 当 signal 已取消或在等待期间取消时，返回的 Promise 以取消错误拒绝。
+ */
 function sleep(ms: number, signal: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
     if (signal.aborted) {
@@ -163,7 +199,11 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
   })
 }
 
-/** `streamWithRetry` 的可选项。 */
+/**
+ * `streamWithRetry` 的取消、输出判定、重试策略与观测配置。
+ *
+ * @typeParam T 流式模型事件的类型。
+ */
 export interface StreamRetryOptions<T> {
   /**
    * 判定一个事件是否构成「有效模型输出」（第 7 节的重试边界）。
@@ -173,6 +213,9 @@ export interface StreamRetryOptions<T> {
    * 默认值 `() => true` 是保守选择 —— 把任何事件都视为有效输出即等于「流一旦
    * 开始就不能重试」。各 Adapter 会传入更精确的判定（首个内容增量），
    * 因为只有 Adapter 才知道事件语义。
+   *
+   * @param event 待判断的流式模型事件。
+   * @returns 该事件已经构成有效模型输出时返回 `true`。
    */
   isValidOutput?: (event: T) => boolean
 
@@ -185,7 +228,11 @@ export interface StreamRetryOptions<T> {
   /** 退避基数，默认 `RETRY_BASE_DELAY_MS`。测试可调小。 */
   baseDelayMs?: number
 
-  /** 每次决定重试时回调，用于观测与日志。 */
+  /**
+   * 每次决定重试时调用，用于观测与日志。
+   *
+   * @param info 本次重试的序号、等待时长和触发重试的原始错误。
+   */
   onRetry?: (info: { attempt: number; delayMs: number; error: unknown }) => void
 }
 
@@ -204,6 +251,12 @@ export interface StreamRetryOptions<T> {
  * 重试后再漏一个，消费方（AgentLoop）就会为同一次请求写出两个 `assistant/block_start`。
  *
  * 缓冲区只保存「有效输出之前」的事件，通常就是个别的 `block_start`，不会随响应长度增长。
+ *
+ * @typeParam T 流式模型事件的类型。
+ * @param attempt 创建一次模型流式请求的函数；收到重试信号时会用同一个取消信号重新调用。
+ * @param options 当前请求的取消信号、输出判定、尝试次数、退避和观测回调。
+ * @returns 按重试边界向下游产生的模型事件流。
+ * @throws 已产生有效输出后的流错误、不可重试错误、取消错误或重试耗尽后的最后一个错误。
  */
 export async function* streamWithRetry<T>(
   attempt: (signal: AbortSignal) => AsyncIterable<T>,
