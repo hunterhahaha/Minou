@@ -1,5 +1,5 @@
 /**
- * Electron 主进程入口占位。当前只导出启动配置初始化入口。
+ * Electron 主进程入口占位。当前导出启动配置初始化和 Session IPC 注册入口。
  *
  * 进程划分（AGENTS.md 实现约定）：主进程承载 Runtime，渲染进程承载 UI。
  * 本文件之后负责创建窗口、装载渲染进程页面，并把 runtime/ 下的模块装配起来。
@@ -9,3 +9,9 @@
  */
 export { initializeConfigFiles } from "./config-files.ts"
 export type { ConfigFilePaths } from "./config-files.ts"
+export { registerSessionIpcHandlers } from "./session-ipc.ts"
+export type {
+  HandleSessionCompletionFailure,
+  IpcMainHandlePort,
+  SessionCompletionFailure,
+} from "./session-ipc.ts"

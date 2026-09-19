@@ -38,7 +38,21 @@ Adapter 与 Usage 转换，含流式调用、双向转换、取消与错误归�
 `runtime/tools/src/types.ts` 提供统一 `ToolResult` 结构。工具本体与 ToolExecutor、审批屏障、
 压缩、Usage 记账、Insert / Queue、Turn 收尾仍未实现，见下文。
 
-其余 `index.ts` 仍是占位文件，只含模块职责与对应章节的说明，不导出实现。尚未实现的模块在各自 `index.ts` 里以「尚未实现」列出。
+**SessionRuntime 的两个入口框架**已提供：`runtime/agent/src/session-runtime.ts` 导出
+`startNewSession` 与 `continueSession`。首次入口先创建目录，再成批提交
+`turn/start + user/message`；继续入口先修复 Session、做 Turn 开始增量检查，再提交下一 Turn。
+两者随后构建一次 content 并调用现有 `runAgentLoop`。`createRepairSession` 提供第 10 节的
+Event Log 校验与确定性补写，可绑定为 `SessionRuntimePorts.repairSession`；Event Log I/O、
+派生状态修复、ContextBuilder 及 Loop 运行资源仍由 ports 注入。入口在批次提交成功后返回
+`sessionId`、`turn` 和 `completion` Promise。
+
+**Renderer 的两个 Session 命令**已通过 preload 暴露为
+`window.nicode.startNewSession(input)` 与 `window.nicode.continueSession(sessionId, input)`。
+preload 只允许调用两个固定 IPC channel；主进程校验输入后调用上述 SessionRuntime 入口，立即向
+Renderer 返回可序列化的 `{ sessionId, turn }`，并在主进程继续观察后台 `completion`。
+Electron 窗口与主进程启动生命周期仍未装配。
+
+尚未开始的模块仍以 `index.ts` 占位；各自文件中注明待实现的职责。
 
 ### 三个 Adapter 的内容划分
 
@@ -93,8 +107,8 @@ content + tools + 本 Turn 固定 ModelRef + AbortSignal
   Session 级调度状态都还没实现（见 `runtime/tools/src/tool-scheduler.ts` 文件头）。
 - `appendEvent` 返回**已落盘**事件，因为 `tool/result.toolCallEventId` 要指向工具调用块的
   `block_end.eventId`；`seq` 只能由 Event Log 分配，调用方不自行推算。
-- 进入 Loop 前写 `turn/start + user/message`，Loop 退出后写 `turn/end` 与 `app/error`：这三件事
-  属于 SessionRuntime 与 Turn 收尾，不在 `runAgentLoop` 内，本阶段由调用方负责。
+- SessionRuntime 入口在进入 Loop 前成批提交 `turn/start + user/message`；Loop 退出后的
+  `turn/end` 与 `app/error` 属于后续 Turn 收尾实现。
 - `blockId` 由 `(turn, step, index)` 决定，不随机生成，便于 Block 修复按同一规则重建。
 - Adapter 由调用方用 `createModelAdapter(config, options)` 创建后注入；AgentLoop 不接触凭据与
   Provider 配置，只依赖 `ModelAdapter` 接口。
@@ -136,20 +150,27 @@ memory_read / mcp_list_tools。
 ```text
 src/                                 Electron 外壳
 ├─ main/
-│  ├─ index.ts                       主进程入口，导出启动配置初始化函数
+│  ├─ index.ts                       主进程入口，导出启动配置与 IPC 注册函数
 │  ├─ config-files.ts                .nicode 目录与文件初始化
-│  └─ config-schema.ts               三份启动配置的 V1 字段检查
+│  ├─ config-schema.ts               三份启动配置的 V1 字段检查
+│  └─ session-ipc.ts                 SessionRuntime 的两个 IPC handler
+├─ preload/
+│  ├─ index.ts                       contextBridge 安装入口
+│  ├─ session-api.ts                 window.nicode Session API 与 IPC 契约
+│  └─ global.d.ts                    Renderer 的 window.nicode 类型
 └─ renderer/index.ts                 渲染进程入口，UI（前端框架未定）
 
 test/
-└─ main/config-files.test.ts         主进程配置初始化测试
+├─ main/                              配置初始化与 Session IPC 测试
+└─ preload/session-api.test.ts        preload Session API 测试
 
 runtime/                             Runtime 模块，各自含 src/ 与 test/
 ├─ agent/
 │  ├─ src/
 │  │  ├─ index.ts                    模块入口
-│  │  └─ loop.ts                     AgentLoop 的 Step 循环与工具小轮（阶段 6.1 / 6.4）
-│  └─ test/loop.test.ts
+│  │  ├─ loop.ts                     AgentLoop 的 Step 循环与工具小轮（阶段 6.1 / 6.4）
+│  │  └─ session-runtime.ts          新建和继续 Session 的 Turn 入口框架
+│  └─ test/                          loop.test.ts / session-runtime.test.ts
 ├─ context/                          ContextBuilder / WindowManager / Compressor / Recovery / Projector / SurfaceBuilder
 ├─ model/
 │  ├─ src/
@@ -248,6 +269,9 @@ src/main/config-files.ts     →   test/main/config-files.test.ts
 | `typescript`（dev） | ^5.9.3 | 类型检查与产出 |
 | `@types/node`（dev） | ^24.13.5 | Node 全局类型 |
 
+Electron 依赖和窗口启动装配仍未落地；preload 入口只在 Electron 环境中读取其提供的
+`contextBridge` / `ipcRenderer`，离线测试使用同形最小接口，不新增依赖。
+
 未选 TypeScript 7：TS 7 已移除 `moduleResolution: node10`（本项目配置中的 `"Node"` 即该值），
 实测报 `TS5108`，需先调整 `moduleResolution` 才能使用。
 
@@ -268,7 +292,10 @@ node --experimental-strip-types runtime/error/test/normalizer.test.ts
 node --experimental-strip-types runtime/network/test/retry.test.ts
 node --experimental-strip-types runtime/tools/test/tool-scheduler.test.ts
 node --experimental-strip-types runtime/agent/test/loop.test.ts
+node --experimental-strip-types runtime/agent/test/session-runtime.test.ts
 node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/main/config-files.test.ts
+node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/main/session-ipc.test.ts
+node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/preload/session-api.test.ts
 ```
 
 `test/main/config-files.test.ts` 使用临时用户目录验证：首次创建、重复调用时保留有效内容、
