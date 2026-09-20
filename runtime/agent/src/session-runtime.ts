@@ -28,6 +28,9 @@ import type {
   UserMessageInput,
   UserMessageEventInput,
 } from "../../session/src/events.ts"
+import { createFileSessionEventLog } from "../../session/src/event-log.ts"
+import { createFileSessionState } from "../../session/src/session-state.ts"
+import type { CurrentSessionBaseline } from "../../session/src/session-state.ts"
 import type { ToolResult } from "../../tools/src/types.ts"
 import { runAgentLoop } from "./loop.ts"
 import type { AgentLoopOptions, AgentLoopResult } from "./loop.ts"
@@ -141,6 +144,83 @@ export interface SessionRepairPorts {
    * @returns 已分配 eventId、seq 等身份并持久化的完整事件。
    */
   appendEvent(sessionId: string, event: SessionEventInput): Promise<SessionEvent>
+}
+
+/** 文件系统版 `SessionRepairPorts` 的创建参数。 */
+export interface FileSessionRepairPortsOptions {
+  /** 当前文件端口唯一绑定的 Session ID。 */
+  sessionId: string
+  /** 当前 Session 目录的绝对路径。 */
+  sessionDirectory: string
+  /** 读取恢复当下的 AGENTS.md、Skill、MCP 及其它 Session meta 基线。 */
+  resolveCurrentBaseline(): Promise<CurrentSessionBaseline>
+  /** 计算 Skill description 的估算 Token，用于重放已提交的 Skill 增量。 */
+  estimateSkillTokens(description: string): number
+  /** 测试或宿主需要控制恢复事件时间时使用。 */
+  now?: () => Date
+  /** 测试或宿主需要控制恢复事件 ID 时使用。 */
+  createEventId?: () => string
+}
+
+/**
+ * 为一个确定的 Session 装配 `SessionRepairPorts` 的四项文件系统能力。
+ *
+ * Event Log 的读取与追加由 SessionEventLog 实现；派生文件的初始化与修复由 SessionState 实现。
+ * AGENTS.md / Skill / MCP 的发现仍由各自 Runtime 负责，并通过 `resolveCurrentBaseline` 注入。
+ * 同一活动 Session 应复用返回端口；新的 Session 创建自己的端口，不建立 Project 级访问器。
+ *
+ * @param options Session 身份与目录、当前上下文基线提供者及可选事件身份依赖。
+ * @returns 只能服务该 Session、可交给 `repairSession` / `createRepairSession` 的完整端口。
+ */
+export function createFileSessionRepairPorts(
+  options: FileSessionRepairPortsOptions,
+): SessionRepairPorts {
+  const eventLog = createFileSessionEventLog({
+    sessionId: options.sessionId,
+    sessionDirectory: options.sessionDirectory,
+    now: options.now,
+    createEventId: options.createEventId,
+  })
+  const sessionState = createFileSessionState({
+    sessionId: options.sessionId,
+    sessionDirectory: options.sessionDirectory,
+    readEvents: eventLog.readEvents,
+    resolveCurrentBaseline: options.resolveCurrentBaseline,
+    estimateSkillTokens: options.estimateSkillTokens,
+  })
+  return {
+    readEvents: async (sessionId) => {
+      assertBoundSessionId(options.sessionId, sessionId)
+      return eventLog.readEvents()
+    },
+    initializeSession: async (sessionId) => {
+      assertBoundSessionId(options.sessionId, sessionId)
+      return sessionState.initializeSession()
+    },
+    repairDerivedState: async (sessionId, events) => {
+      assertBoundSessionId(options.sessionId, sessionId)
+      return sessionState.repairDerivedState(events)
+    },
+    appendEvent: async (sessionId, event) => {
+      assertBoundSessionId(options.sessionId, sessionId)
+      return eventLog.appendEvent(event)
+    },
+  }
+}
+
+/**
+ * 防止对话级文件端口被误用于其它 Session。
+ *
+ * @param boundSessionId 创建端口时已经绑定的 Session ID。
+ * @param requestedSessionId `SessionRepairPorts` 调用方传入的目标 Session ID。
+ * @throws Error 当调用方试图通过当前端口访问其它 Session 时抛出。
+ */
+function assertBoundSessionId(boundSessionId: string, requestedSessionId: string): void {
+  if (requestedSessionId !== boundSessionId) {
+    throw new Error(
+      `Session 文件端口已绑定 ${boundSessionId}，不能访问其它 Session：${requestedSessionId}`,
+    )
+  }
 }
 
 export const SESSION_LOG_CORRUPTED = "SESSION_LOG_CORRUPTED"

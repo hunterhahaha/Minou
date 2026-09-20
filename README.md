@@ -42,9 +42,10 @@ Adapter 与 Usage 转换，含流式调用、双向转换、取消与错误归�
 `startNewSession` 与 `continueSession`。首次入口先创建目录，再成批提交
 `turn/start + user/message`；继续入口先修复 Session、做 Turn 开始增量检查，再提交下一 Turn。
 两者随后构建一次 content 并调用现有 `runAgentLoop`。`createRepairSession` 提供第 10 节的
-Event Log 校验与确定性补写，可绑定为 `SessionRuntimePorts.repairSession`；Event Log I/O、
-派生状态修复、ContextBuilder 及 Loop 运行资源仍由 ports 注入。入口在批次提交成功后返回
-`sessionId`、`turn` 和 `completion` Promise。
+Event Log 校验与确定性补写，可绑定为 `SessionRuntimePorts.repairSession`；
+`createFileSessionRepairPorts` 按单个 `sessionId + sessionDirectory` 装配 Event Log I/O 与派生状态修复，
+ContextBuilder 及 Loop 运行资源仍由 ports 注入。入口在批次提交成功后返回 `sessionId`、`turn` 和
+`completion` Promise。
 
 **Renderer 的两个 Session 命令**已通过 preload 暴露为
 `window.nicode.startNewSession(input)` 与 `window.nicode.continueSession(sessionId, input)`。
@@ -192,8 +193,10 @@ runtime/                             Runtime 模块，各自含 src/ 与 test/
 ├─ session/
 │  ├─ src/
 │  │  ├─ index.ts                    模块入口
-│  │  └─ events.ts                   事件结构与事件出口契约（阶段 6.1 / 6.4：只含 AgentLoop 写出的事件）
-│  └─ test/                          SessionEventLog / SessionState 尚未实现
+│  │  ├─ events.ts                   事件结构与事件出口契约（阶段 6.1 / 6.4：只含 AgentLoop 写出的事件）
+│  │  ├─ event-log.ts                对话级 events.jsonl 读取与恢复事件追加
+│  │  └─ session-state.ts             对话级 Session 派生文件初始化与恢复
+│  └─ test/                          event-log.test.ts / session-state.test.ts
 ├─ project/                          Project / ProjectManager / ProjectRules
 ├─ credential/                       CredentialStore
 ├─ skill/                            Skill Runtime 本体：SkillManager / SkillContextManager
@@ -293,6 +296,8 @@ node --experimental-strip-types runtime/network/test/retry.test.ts
 node --experimental-strip-types runtime/tools/test/tool-scheduler.test.ts
 node --experimental-strip-types runtime/agent/test/loop.test.ts
 node --experimental-strip-types runtime/agent/test/session-runtime.test.ts
+node --experimental-strip-types runtime/session/test/event-log.test.ts
+node --experimental-strip-types runtime/session/test/session-state.test.ts
 node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/main/config-files.test.ts
 node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/main/session-ipc.test.ts
 node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/preload/session-api.test.ts
