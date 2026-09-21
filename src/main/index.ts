@@ -1,17 +1,141 @@
 /**
- * Electron 主进程入口占位。当前导出启动配置初始化和 Session IPC 注册入口。
+ * Electron 主进程的可测试启动装配。
  *
- * 进程划分（AGENTS.md 实现约定）：主进程承载 Runtime，渲染进程承载 UI。
- * 本文件之后负责创建窗口、装载渲染进程页面，并把 runtime/ 下的模块装配起来。
+ * 进程划分（AGENTS.md 实现约定）：主进程承载 Runtime，渲染进程承载 UI。本文件只依赖
+ * Electron 生命周期、IPC 与窗口管理的最小宿主端口；真实 Electron 包、BrowserWindow 参数和
+ * Renderer 页面加载由之后的桌面壳入口提供。
  *
- * 架构依据：.git/技术文档/开发备忘录1.0.17.md 第 1 节（总体架构）、第 28 节（Runtime 总体数据流）
- * 实施阶段：.git/技术文档/开发TODOList.md 阶段 0
+ * 架构依据：.git/技术文档/开发备忘录1.0.17.md 第 1、4、28、29 节
  */
-export { initializeConfigFiles } from "./config-files.ts"
+
+import { dirname, join } from "node:path"
+
+import {
+  SessionRuntimeBindings,
+  SessionRuntimePorts,
+} from "../../runtime/agent/src/session-runtime.ts"
+import { initializeConfigFiles } from "./config-files.ts"
+import { registerSessionIpcHandlers } from "./session-ipc.ts"
+import type {
+  CreateSessionRuntime,
+  HandleSessionCompletionFailure,
+  IpcMainHandlePort,
+  SessionEventForwardingPort,
+} from "./session-ipc.ts"
+
+/** Electron 主进程启动装配使用的应用生命周期事件。 */
+export type ElectronAppLifecycleEvent = "activate" | "window-all-closed"
+
+/** Electron `app` 在当前启动流程中需要提供的最小能力。 */
+export interface ElectronAppPort {
+  /**
+   * 等待 Electron 完成初始化。
+   *
+   * @returns 应用进入可创建窗口状态时完成的 Promise。
+   */
+  whenReady(): Promise<void>
+  /**
+   * 注册应用生命周期监听器。
+   *
+   * @param event 要监听的 Electron 应用事件。
+   * @param listener 事件发生时同步执行的监听器。
+   */
+  on(event: ElectronAppLifecycleEvent, listener: () => void): void
+  /** 退出当前应用进程。 */
+  quit(): void
+}
+
+/** BrowserWindow 具体实现之外，启动流程需要的窗口生命周期能力。 */
+export interface MainWindowLifecyclePort {
+  /** 创建并开始装载一个主窗口。 */
+  createMainWindow(): void
+  /**
+   * 检查当前是否仍有打开的窗口。
+   *
+   * @returns 至少有一个窗口仍打开时返回 true。
+   */
+  hasOpenWindows(): boolean
+}
+
+/** `SessionRuntimeBindings` 当前构造函数接受的完整参数。 */
+type SessionRuntimeBindingsOptions = ConstructorParameters<typeof SessionRuntimeBindings>[0]
+
+/**
+ * 启动期共享的 SessionRuntime 宿主依赖。
+ * Session 身份和目录由每次 IPC 请求创建 Runtime 时填写，不允许调用方覆盖。
+ */
+export type SessionRuntimeStartupDependencies = Omit<
+  SessionRuntimeBindingsOptions,
+  "sessionId" | "sessionDirectory"
+>
+
+/** `startElectronApp` 的全部宿主输入。 */
+export interface ElectronStartupOptions {
+  /** Electron 应用生命周期端口。 */
+  app: ElectronAppPort
+  /** Electron 主进程 IPC handler 注册端口。 */
+  ipcMain: IpcMainHandlePort
+  /** 主窗口创建与存活状态端口。 */
+  windows: MainWindowLifecyclePort
+  /** 每个 default Session 共用的 Runtime 宿主依赖。 */
+  sessionRuntime: SessionRuntimeStartupDependencies
+  /** 后台 Turn 或 Renderer 事件发送失败时的错误出口。 */
+  onSessionCompletionFailure: HandleSessionCompletionFailure
+  /** 可选的内部 SessionEvent 筛选与 Renderer 发送出口。 */
+  sessionEventForwarding?: SessionEventForwardingPort
+  /** 测试或宿主显式指定的绝对用户目录；省略时读取 USERPROFILE。 */
+  userProfile?: string
+  /** 测试或宿主覆盖的平台；省略时使用当前 Node 进程平台。 */
+  platform?: NodeJS.Platform
+}
+
+/**
+ * 初始化本地配置、注册 Session IPC，并接入 Electron 窗口生命周期。
+ *
+ * 当前 IPC 契约不包含 Project 身份，因此所有 Session 都创建在 default 分组。该函数只应在同一个
+ * `ipcMain` 上调用一次；重复调用时由 IPC 实现报告重复 handler 注册错误。
+ *
+ * @param options Electron 端口、窗口端口、Runtime 宿主依赖与错误出口。
+ * @returns 首个主窗口创建完成后解析的 Promise。
+ * @throws Error 当配置初始化、IPC 注册、Electron ready 或首窗创建失败时抛出。
+ */
+export async function startElectronApp(options: ElectronStartupOptions): Promise<void> {
+  const configPaths = await initializeConfigFiles(options.userProfile)
+  const defaultGroupDirectory = dirname(configPaths.defaultWorkspacePath)
+
+  const createRuntime: CreateSessionRuntime = (sessionId) => {
+    const bindings = new SessionRuntimeBindings({
+      ...options.sessionRuntime,
+      sessionId,
+      sessionDirectory: join(defaultGroupDirectory, sessionId),
+    })
+    return new SessionRuntimePorts(sessionId, bindings)
+  }
+
+  registerSessionIpcHandlers(
+    options.ipcMain,
+    createRuntime,
+    options.onSessionCompletionFailure,
+    options.sessionEventForwarding,
+  )
+
+  await options.app.whenReady()
+  options.app.on("activate", () => {
+    if (!options.windows.hasOpenWindows()) options.windows.createMainWindow()
+  })
+  options.app.on("window-all-closed", () => {
+    if ((options.platform ?? process.platform) !== "darwin") options.app.quit()
+  })
+  options.windows.createMainWindow()
+}
+
+export { initializeConfigFiles }
 export type { ConfigFilePaths } from "./config-files.ts"
-export { registerSessionIpcHandlers } from "./session-ipc.ts"
+export { registerSessionIpcHandlers }
 export type {
+  CreateSessionRuntime,
   HandleSessionCompletionFailure,
   IpcMainHandlePort,
   SessionCompletionFailure,
+  SessionEventForwardingPort,
 } from "./session-ipc.ts"

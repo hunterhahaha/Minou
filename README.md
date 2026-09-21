@@ -20,8 +20,14 @@ NiCode V1 是一个本地运行的 Coding Agent Runtime：浏览器 UI 与本机
 `config.json`、`credentials.json`、`skills/`、`sessions/`、`logs/` 与
 `sessions/default`。新建 `config.json` 和 default `workspace.json` 使用 V1 空配置，
 `credentials.json` 使用文档允许的 `{}`。已有文件按 V1 检查版本、字段与引用关系，
-失败时保留原文件并抛出带路径的错误。Electron 启动
-生命周期尚未实现，因此当前只导出入口，未自动调用。
+失败时保留原文件并抛出带路径的错误。
+
+**Electron 主进程启动装配**已完成：`src/main/index.ts` 导出
+`startElectronApp(options)`，依次完成启动配置初始化、default 分组 `SessionRuntime` 工厂装配、
+Session IPC 注册、Electron ready 等待与窗口生命周期接线。调用方显式提供 app、ipcMain、
+窗口管理端口，以及 System Prompt、工作区说明、当前基线、Adapter 与工具执行入口；后台错误出口
+和 Renderer 事件转发端口同样在此注入。当前未引入 Electron 包，也不自动执行入口；真实
+BrowserWindow 参数、preload 路径与页面加载仍由后续桌面壳装配提供。
 
 **阶段 1（统一模型格式）**已完成类型定义：`runtime/model/src/types.ts` 与 `runtime/error/src/types.ts`。
 
@@ -50,8 +56,8 @@ Insert 与最终 Surface 仍未实现。
 `window.nicode.startNewSession(input)`、`window.nicode.continueSession(sessionId, input)` 与
 `window.nicode.enqueueSessionMessage(sessionId, input)`。主进程按 `sessionId` 管理活动实例；前两个入口在
 首批事件提交后返回 `{ sessionId, turn }`，追加入口返回 `{ sessionId, content }`。主进程后台消费
-Session 事件流，并预留了 Renderer 事件筛选与发送边界；具体筛选名单和 Electron 窗口接线尚未确定。
-Electron 窗口与主进程启动生命周期仍未装配。
+Session 事件流，并预留了 Renderer 事件筛选与发送边界；具体筛选名单和 Renderer wire shape 尚未确定。
+当前 IPC 参数没有 Project 身份，因此启动装配创建的 Session 暂时统一落在 default 分组。
 
 尚未开始的模块仍以 `index.ts` 占位；各自文件中注明待实现的职责。
 
@@ -152,7 +158,7 @@ memory_read / mcp_list_tools。
 ```text
 src/                                 Electron 外壳
 ├─ main/
-│  ├─ index.ts                       主进程入口，导出启动配置与 IPC 注册函数
+│  ├─ index.ts                       主进程启动装配、default SessionRuntime 工厂与生命周期端口
 │  ├─ config-files.ts                .nicode 目录与文件初始化
 │  ├─ config-schema.ts               三份启动配置的 V1 字段检查
 │  └─ session-ipc.ts                 SessionRuntime 的两个 IPC handler
@@ -273,8 +279,8 @@ src/main/config-files.ts     →   test/main/config-files.test.ts
 | `typescript`（dev） | ^5.9.3 | 类型检查与产出 |
 | `@types/node`（dev） | ^24.13.5 | Node 全局类型 |
 
-Electron 依赖和窗口启动装配仍未落地；preload 入口只在 Electron 环境中读取其提供的
-`contextBridge` / `ipcRenderer`，离线测试使用同形最小接口，不新增依赖。
+Electron 依赖和真实 BrowserWindow 装配仍未落地；主进程启动函数与 preload 入口只依赖
+Electron 能力的最小同形接口，离线测试使用假端口，不新增依赖。
 
 未选 TypeScript 7：TS 7 已移除 `moduleResolution: node10`（本项目配置中的 `"Node"` 即该值），
 实测报 `TS5108`，需先调整 `moduleResolution` 才能使用。
@@ -300,12 +306,17 @@ node --experimental-strip-types runtime/agent/test/session-runtime.test.ts
 node --experimental-strip-types runtime/session/test/event-log.test.ts
 node --experimental-strip-types runtime/session/test/session-state.test.ts
 node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/main/config-files.test.ts
+node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/main/index.test.ts
 node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/main/session-ipc.test.ts
 node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/preload/session-api.test.ts
 ```
 
 `test/main/config-files.test.ts` 使用临时用户目录验证：首次创建、重复调用时保留有效内容、
 缺失文件补齐、V1 有效配置、字段与引用错误、损坏文件保留，以及非法用户目录。
+
+`test/main/index.test.ts` 使用假 Electron app、ipcMain 与窗口端口验证：配置先于副作用完成、
+三个 Session channel 注册、default SessionRuntime 实际落盘与宿主依赖注入、后台错误和事件转发、
+ready / activate / window-all-closed 生命周期，以及同一 ipcMain 重复启动时保留重复注册错误。
 
 三个 Adapter 的测试分两层：**离线转换**（构造协议侧载荷 → 比对统一事件，不碰网络）与
 **端到端**（`test/helpers.ts` 起一个本机 SSE 假服务器，真实走一遍官方 SDK）。
