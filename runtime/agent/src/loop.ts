@@ -23,9 +23,9 @@
  * `runtime/tools/src/tool-scheduler.ts`，AgentLoop 自己不判断哪个工具能并发。
  *
  * 不做的事（属后续子阶段，见 TODOList 6.2、6.3、6.5、6.6）：压缩检查、Usage 记账、
- * Insert / Queue、Turn 收尾。因此本函数的边界是：
+ * Insert 与完整 Turn 收尾。Queue 和最小 `turn/end` 由外层 SessionRuntime 处理，因此本函数的边界是：
  *   - `turn/start + user/message` 由 SessionRuntime 在进入 Loop 前写入（第 13.1、13.2 节）；
- *   - `turn/end` 与 `app/error` 由调用方在 Loop 退出后写入（第 13.5 节）。
+ *   - 最小 `turn/end` 由调用方在 Loop 退出后写入；`turn/file_changes` 与 `app/error` 留待后续。
  *
  * 四处文档未规定处的实现决定：
  *   1. Adapter 由调用方创建（`createModelAdapter(config, options)`）后注入。模型配置 → Adapter

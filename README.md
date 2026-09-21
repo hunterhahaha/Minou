@@ -36,21 +36,19 @@ Adapter 与 Usage 转换，含流式调用、双向转换、取消与错误归�
 `assistant/message`、`tool/result` 关联、工具结果回填 content），`runtime/tools/src/tool-scheduler.ts`
 负责工具小轮的串并行调度，配套 `runtime/session/src/events.ts` 提供事件结构与事件出口契约、
 `runtime/tools/src/types.ts` 提供统一 `ToolResult` 结构。工具本体与 ToolExecutor、审批屏障、
-压缩、Usage 记账、Insert / Queue、Turn 收尾仍未实现，见下文。
+压缩、Usage 记账、Insert、文件变更汇总与最终 Surface 仍未实现，见下文。
 
-**SessionRuntime 的两个入口框架**已提供：`runtime/agent/src/session-runtime.ts` 导出
-`startNewSession` 与 `continueSession`。首次入口先创建目录，再成批提交
-`turn/start + user/message`；继续入口先修复 Session、做 Turn 开始增量检查，再提交下一 Turn。
-两者随后构建一次 content 并调用现有 `runAgentLoop`。`createRepairSession` 提供第 10 节的
-Event Log 校验与确定性补写，可绑定为 `SessionRuntimePorts.repairSession`；
-`createFileSessionRepairPorts` 按单个 `sessionId + sessionDirectory` 装配 Event Log I/O 与派生状态修复，
-ContextBuilder 及 Loop 运行资源仍由 ports 注入。入口在批次提交成功后返回 `sessionId`、`turn` 和
-`completion` Promise。
+**SessionRuntime 的活动实例框架**已提供：`SessionRuntimePorts` 类绑定一个 `sessionId`，复用同一套
+Event Log / SessionState 端口，维护运行期 FIFO 用户消息队列和已持久化事件流。`startNewSession`
+直接提交新 Session 首轮；已有 Session 的首条及运行中追加消息先入队，再由实例在上一 Turn 完整结束后
+依次调用 `continueSession`。每个 Turn 会写入最小 `turn/end`，而文件变更汇总、Insert 与最终 Surface
+仍未实现。`createFileSessionRepairPorts` 继续负责对话级 Event Log I/O 与派生状态修复。
 
-**Renderer 的两个 Session 命令**已通过 preload 暴露为
-`window.nicode.startNewSession(input)` 与 `window.nicode.continueSession(sessionId, input)`。
-preload 只允许调用两个固定 IPC channel；主进程校验输入后调用上述 SessionRuntime 入口，立即向
-Renderer 返回可序列化的 `{ sessionId, turn }`，并在主进程继续观察后台 `completion`。
+**Renderer 的三个 Session 命令**已通过 preload 暴露为
+`window.nicode.startNewSession(input)`、`window.nicode.continueSession(sessionId, input)` 与
+`window.nicode.enqueueSessionMessage(sessionId, input)`。主进程按 `sessionId` 管理活动实例；前两个入口在
+首批事件提交后返回 `{ sessionId, turn }`，追加入口返回 `{ sessionId, content }`。主进程后台消费
+Session 事件流，并预留了 Renderer 事件筛选与发送边界；具体筛选名单和 Electron 窗口接线尚未确定。
 Electron 窗口与主进程启动生命周期仍未装配。
 
 尚未开始的模块仍以 `index.ts` 占位；各自文件中注明待实现的职责。
@@ -108,15 +106,16 @@ content + tools + 本 Turn 固定 ModelRef + AbortSignal
   Session 级调度状态都还没实现（见 `runtime/tools/src/tool-scheduler.ts` 文件头）。
 - `appendEvent` 返回**已落盘**事件，因为 `tool/result.toolCallEventId` 要指向工具调用块的
   `block_end.eventId`；`seq` 只能由 Event Log 分配，调用方不自行推算。
-- SessionRuntime 入口在进入 Loop 前成批提交 `turn/start + user/message`；Loop 退出后的
-  `turn/end` 与 `app/error` 属于后续 Turn 收尾实现。
+- SessionRuntime 入口在进入 Loop 前成批提交 `turn/start + user/message`；Loop 退出后提交最小
+  `turn/end(completed|stopped|error)`。`turn/file_changes`、`app/error` 与最终 Surface 属于后续收尾实现。
 - `blockId` 由 `(turn, step, index)` 决定，不随机生成，便于 Block 修复按同一规则重建。
 - Adapter 由调用方用 `createModelAdapter(config, options)` 创建后注入；AgentLoop 不接触凭据与
   Provider 配置，只依赖 `ModelAdapter` 接口。
 - 取消：模型流未结束时 Adapter 抛出取消类错误（`CANCELLED`），Loop 写 `step/end(stopped)` 后正常返回；
   工具小轮期间取消时，小轮仍为已产生的每个调用写 `tool/result`，再以 `step/end(stopped)` 关闭 Step
   且不再发起下一次模型请求；其它错误写 `step/end(error)` 后原样抛出，由调用方以 error 终止 Turn。
-- Usage 记账（6.3）、Insert / Queue（6.5）、压缩（6.2）、Turn 收尾（6.6）仍未实现。
+- Queue 已由单 Session 活动实例按 FIFO 串行处理；Usage 记账（6.3）、Insert（6.5）、压缩（6.2）
+  及完整 Turn 收尾（6.6）仍未实现。
 
 ### ToolScheduler（阶段 6.4，第 17 节）
 

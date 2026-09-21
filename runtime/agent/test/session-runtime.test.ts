@@ -2,62 +2,78 @@ import assert from "node:assert/strict"
 
 import type { ModelRef } from "../../model/src/types.ts"
 import type {
-  AppendSessionEvent,
   SessionEvent,
   SessionEventInput,
 } from "../../session/src/events.ts"
 import {
   continueSession,
   createRepairSession,
+  SessionRuntimePorts,
   SessionLogCorruptedError,
   startNewSession,
 } from "../src/session-runtime.ts"
-import type { SessionRepairPorts, SessionRuntimePorts } from "../src/session-runtime.ts"
+import type { SessionRepairPorts, SessionRuntimeBindings } from "../src/session-runtime.ts"
 
 const MODEL: ModelRef = { providerId: "provider-1", protocol: "anthropic_messages", modelId: "model-1" }
-const OTHER_MODEL: ModelRef = { providerId: "provider-1", protocol: "anthropic_messages", modelId: "model-2" }
 const MESSAGE = [{ type: "text" as const, text: "你好" }]
 
-function fixture(): {
+function fixture(
+  sessionId = "session-1",
+  initialEvents: readonly SessionEvent[] = [],
+): {
   ports: SessionRuntimePorts
+  bindings: SessionRuntimeBindings
+  repairPorts: SessionRepairPorts
   calls: string[]
-  batches: Parameters<SessionRuntimePorts["appendTurnStartAndUserMessage"]>[1][]
+  batches: Parameters<SessionRuntimeBindings["appendTurnStartAndUserMessage"]>[0][]
+  events: SessionEvent[]
   loopEvents: SessionEventInput[]
   seenModels: ModelRef[]
 } {
   const calls: string[] = []
-  const batches: Parameters<SessionRuntimePorts["appendTurnStartAndUserMessage"]>[1][] = []
+  const batches: Parameters<SessionRuntimeBindings["appendTurnStartAndUserMessage"]>[0][] = []
+  const events = [...initialEvents]
   const loopEvents: SessionEventInput[] = []
   const seenModels: ModelRef[] = []
-  const appendEvent: AppendSessionEvent = async (event) => {
-    loopEvents.push(event)
-    calls.push(event.type)
-    return {
-      ...event,
-      eventId: `event-${loopEvents.length}`,
-      sessionId: "session-1",
-      seq: loopEvents.length,
-      createdAt: "2026-09-18T00:00:00.000Z",
-    }
-  }
-
-  const ports: SessionRuntimePorts = {
-    createSessionDirectory: async () => { calls.push("createDirectory") },
-    appendTurnStartAndUserMessage: async (_sessionId, events) => {
-      calls.push("appendBatch")
-      batches.push(events)
+  const repairPorts: SessionRepairPorts = {
+    readEvents: async () => {
+      calls.push("readEvents")
+      return events
     },
     initializeSession: async () => { calls.push("initialize") },
-    repairSession: async () => {
-      calls.push("repair")
-      return { lastTurn: 3, currentModel: MODEL }
+    repairDerivedState: async () => {
+      calls.push("repairDerivedState")
+      return { currentModel: MODEL }
+    },
+    appendEvent: async (input) => {
+      loopEvents.push(input)
+      calls.push(input.type)
+      const event = persistedEvent(sessionId, events.length + 1, input)
+      events.push(event)
+      return event
+    },
+  }
+  const bindings: SessionRuntimeBindings = {
+    createSessionDirectory: async () => { calls.push("createDirectory") },
+    appendTurnStartAndUserMessage: async (inputs) => {
+      calls.push("appendBatch")
+      batches.push(inputs)
+      const start = persistedEvent(sessionId, events.length + 1, inputs[0])
+      const message = persistedEvent(sessionId, events.length + 2, inputs[1])
+      assert.equal(start.type, "turn/start")
+      assert.equal(message.type, "user/message")
+      if (start.type !== "turn/start" || message.type !== "user/message") {
+        throw new Error("unreachable")
+      }
+      events.push(start, message)
+      return [start, message]
     },
     prepareExistingTurn: async () => { calls.push("prepare") },
     buildContent: async () => {
       calls.push("buildContent")
       return [{ role: "system", content: "fixed" }, { role: "user", content: MESSAGE }]
     },
-    createLoopOptions: async (_sessionId, model) => {
+    createLoopOptions: async (model) => {
       calls.push("createLoopOptions")
       seenModels.push(model)
       return {
@@ -72,11 +88,12 @@ function fixture(): {
         tools: [],
         executeTool: async () => { throw new Error("unexpected tool call") },
         signal: new AbortController().signal,
-        appendEvent,
       }
     },
+    repairPorts,
   }
-  return { ports, calls, batches, loopEvents, seenModels }
+  const ports = new SessionRuntimePorts(sessionId, bindings)
+  return { ports, bindings, repairPorts, calls, batches, events, loopEvents, seenModels }
 }
 
 function persistedEvent(
@@ -104,10 +121,16 @@ function initialRepairEvents(sessionId: string): SessionEvent[] {
   ]
 }
 
+function completedSessionEvents(sessionId: string): SessionEvent[] {
+  const events = initialRepairEvents(sessionId)
+  events.push(persistedEvent(sessionId, 3, { type: "turn/end", turn: 1, reason: "completed" }))
+  return events
+}
+
 function repairFixture(initial: readonly SessionEvent[]): {
   events: SessionEvent[]
   calls: string[]
-  repair: SessionRuntimePorts["repairSession"]
+  repair: () => Promise<{ lastTurn: number; currentModel: ModelRef }>
   ports: SessionRepairPorts
 } {
   const events = [...initial]
@@ -118,82 +141,136 @@ function repairFixture(initial: readonly SessionEvent[]): {
       return events
     },
     initializeSession: async () => { calls.push("initialize") },
-    repairDerivedState: async (_sessionId, validatedEvents) => {
+    repairDerivedState: async (validatedEvents) => {
       calls.push("repairDerivedState")
       assert.equal(validatedEvents.length, events.length)
       return { currentModel: MODEL }
     },
-    appendEvent: async (sessionId, input) => {
+    appendEvent: async (input) => {
       calls.push(`append:${input.type}`)
-      const event = persistedEvent(sessionId, events.length + 1, input)
+      const event = persistedEvent(initial[0]?.sessionId ?? "session-repair", events.length + 1, input)
       events.push(event)
       return event
     },
   }
-  return { events, calls, repair: createRepairSession(ports), ports }
+  const sessionId = initial[0]?.sessionId ?? "session-repair"
+  return { events, calls, repair: createRepairSession(sessionId, ports), ports }
 }
 
 async function testNewSession(): Promise<void> {
-  const { ports, calls, batches, loopEvents, seenModels } = fixture()
+  const { ports, repairPorts, calls, batches, loopEvents, seenModels } = fixture()
   let releaseInitialization!: () => void
   const initializationGate = new Promise<void>((resolve) => { releaseInitialization = resolve })
-  ports.initializeSession = async () => {
+  repairPorts.initializeSession = async () => {
     calls.push("initialize")
     await initializationGate
   }
 
   const started = await startNewSession({ content: MESSAGE, model: MODEL }, ports)
-  assert.ok(started.sessionId.length > 0)
+  const processing = ports.processMessageQueue(started)
+  const streamed: SessionEvent[] = []
+  const streamDone = (async () => {
+    for await (const event of started.events) streamed.push(event)
+  })()
+  assert.equal(started.sessionId, "session-1")
   assert.equal(started.turn, 1)
   assert.deepEqual(calls, ["createDirectory", "appendBatch", "initialize"])
-  assert.deepEqual(batches[0].map((event) => event.type), ["turn/start", "user/message"])
-  assert.deepEqual(batches[0][0], { type: "turn/start", turn: 1, model: MODEL })
-  assert.equal(batches[0][1].message.role, "user")
-  assert.deepEqual(batches[0][1].message.content, MESSAGE)
-  assert.ok(batches[0][1].message.id.length > 0)
+  const firstBatch = batches[0]
+  assert.ok(firstBatch)
+  assert.deepEqual(firstBatch.map((event) => event.type), ["turn/start", "user/message"])
+  assert.deepEqual(firstBatch[0], { type: "turn/start", turn: 1, model: MODEL })
+  assert.equal(firstBatch[1].message.role, "user")
+  assert.deepEqual(firstBatch[1].message.content, MESSAGE)
+  assert.ok(firstBatch[1].message.id.length > 0)
 
   releaseInitialization()
-  const result = await started.completion
-  assert.equal(result.stopped, false)
-  assert.equal(result.steps, 1)
+  await processing.completion
+  await streamDone
   assert.deepEqual(seenModels, [MODEL])
-  assert.deepEqual(loopEvents.map((event) => event.type), ["step/start", "assistant/message", "step/end"])
+  assert.deepEqual(
+    loopEvents.map((event) => event.type),
+    ["step/start", "assistant/message", "step/end", "turn/end"],
+  )
+  assert.deepEqual(streamed.map((event) => event.type), [
+    "turn/start",
+    "user/message",
+    "step/start",
+    "assistant/message",
+    "step/end",
+    "turn/end",
+  ])
   assert.deepEqual(calls.slice(3, 5), ["buildContent", "createLoopOptions"])
 }
 
 async function testContinueSession(): Promise<void> {
-  const { ports, calls, batches, seenModels } = fixture()
-  const started = await continueSession("session-existing", { content: MESSAGE }, ports)
+  const { ports, calls, batches, seenModels } = fixture(
+    "session-existing",
+    completedSessionEvents("session-existing"),
+  )
+  const started = await continueSession({ content: MESSAGE }, ports)
   assert.equal(started.sessionId, "session-existing")
-  assert.equal(started.turn, 4)
+  assert.equal(started.turn, 2)
   await started.completion
-  assert.deepEqual(calls.slice(0, 5), ["repair", "prepare", "appendBatch", "buildContent", "createLoopOptions"])
-  assert.deepEqual(batches[0][0], { type: "turn/start", turn: 4, model: MODEL })
+  assert.deepEqual(calls.slice(0, 6), [
+    "readEvents",
+    "initialize",
+    "repairDerivedState",
+    "prepare",
+    "appendBatch",
+    "buildContent",
+  ])
+  assert.deepEqual(batches[0]?.[0], { type: "turn/start", turn: 2, model: MODEL })
   assert.deepEqual(seenModels, [MODEL])
+}
 
-  const override = fixture()
-  const withOverride = await continueSession("session-existing", { content: MESSAGE, model: OTHER_MODEL }, override.ports)
-  await withOverride.completion
-  assert.deepEqual(override.batches[0][0].model, OTHER_MODEL)
-  assert.deepEqual(override.seenModels, [OTHER_MODEL])
+async function testQueuedMessagesRunInOrder(): Promise<void> {
+  const state = fixture("session-queue")
+  let releaseInitialization!: () => void
+  const initializationGate = new Promise<void>((resolve) => { releaseInitialization = resolve })
+  state.repairPorts.initializeSession = async () => {
+    state.calls.push("initialize")
+    await initializationGate
+  }
+  const started = await startNewSession({ content: MESSAGE, model: MODEL }, state.ports)
+  const processing = state.ports.processMessageQueue(started)
+  const second = [{ type: "text" as const, text: "第二条" }]
+  const third = [{ type: "text" as const, text: "第三条" }]
+  assert.deepEqual(state.ports.enqueueSessionMessage(second), {
+    sessionId: "session-queue",
+    content: second,
+  })
+  state.ports.enqueueSessionMessage(third)
+  releaseInitialization()
+  await processing.completion
+
+  assert.deepEqual(state.batches.map((batch) => batch[0].turn), [1, 2, 3])
+  assert.deepEqual(
+    state.batches.map((batch) => batch[1].message.content),
+    [MESSAGE, second, third],
+  )
+  assert.deepEqual(state.seenModels, [MODEL, MODEL, MODEL])
+  assert.throws(() => state.ports.enqueueSessionMessage(MESSAGE), /已关闭/)
 }
 
 async function testFailureBoundaries(): Promise<void> {
   const failedBatch = fixture()
-  failedBatch.ports.appendTurnStartAndUserMessage = async () => { throw new Error("batch failed") }
+  failedBatch.bindings.appendTurnStartAndUserMessage = async () => { throw new Error("batch failed") }
   await assert.rejects(startNewSession({ content: MESSAGE, model: MODEL }, failedBatch.ports), /batch failed/)
   assert.deepEqual(failedBatch.calls, ["createDirectory"])
 
-  const failedRepair = fixture()
-  failedRepair.ports.repairSession = async () => { throw new Error("repair failed") }
-  await assert.rejects(continueSession("session-existing", { content: MESSAGE }, failedRepair.ports), /repair failed/)
+  const failedRepair = fixture("session-existing", completedSessionEvents("session-existing"))
+  failedRepair.repairPorts.readEvents = async () => { throw new Error("repair failed") }
+  await assert.rejects(continueSession({ content: MESSAGE }, failedRepair.ports), /repair failed/)
   assert.deepEqual(failedRepair.calls, [])
 
   const failedInitialization = fixture()
-  failedInitialization.ports.initializeSession = async () => { throw new Error("initialize failed") }
+  failedInitialization.repairPorts.initializeSession = async () => { throw new Error("initialize failed") }
   const started = await startNewSession({ content: MESSAGE, model: MODEL }, failedInitialization.ports)
   await assert.rejects(started.completion, /initialize failed/)
-  assert.deepEqual(failedInitialization.calls, ["createDirectory", "appendBatch"])
+  assert.deepEqual(
+    failedInitialization.loopEvents.map((event) => event.type),
+    ["turn/end"],
+  )
 }
 
 async function testRepairInterruptedTextStep(): Promise<void> {
@@ -226,7 +303,7 @@ async function testRepairInterruptedTextStep(): Promise<void> {
   )
   const state = repairFixture(initial)
 
-  assert.deepEqual(await state.repair(sessionId), { lastTurn: 1, currentModel: MODEL })
+  assert.deepEqual(await state.repair(), { lastTurn: 1, currentModel: MODEL })
   assert.deepEqual(
     state.events.slice(6).map((event) => event.type),
     ["assistant/block_end", "assistant/message", "step/end", "turn/end"],
@@ -250,7 +327,7 @@ async function testRepairInterruptedTextStep(): Promise<void> {
   assert.ok(turnEnd.type === "turn/end" && turnEnd.reason === "error")
 
   const eventCount = state.events.length
-  await state.repair(sessionId)
+  await state.repair()
   assert.equal(state.events.length, eventCount, "重复恢复不得再次补写事件")
 }
 
@@ -352,7 +429,7 @@ async function testRepairApprovalAndToolResults(): Promise<void> {
   })
 
   const state = repairFixture(initial)
-  await state.repair(sessionId)
+  await state.repair()
   const appended = state.events.slice(initial.length)
   assert.deepEqual(
     appended.map((event) => event.type),
@@ -401,7 +478,7 @@ async function testInterruptedToolCallDoesNotCreateOrphanResult(): Promise<void>
     }),
   )
   const state = repairFixture(initial)
-  await state.repair(sessionId)
+  await state.repair()
   assert.deepEqual(state.events.slice(5).map((event) => event.type), ["step/end", "turn/end"])
 }
 
@@ -444,7 +521,7 @@ async function testRepairPreservesContextAndUncommittedSummary(): Promise<void> 
     }),
   )
   const state = repairFixture(initial)
-  assert.deepEqual(await state.repair(sessionId), { lastTurn: 2, currentModel: MODEL })
+  assert.deepEqual(await state.repair(), { lastTurn: 2, currentModel: MODEL })
   assert.deepEqual(state.events.slice(10).map((event) => event.type), ["turn/end"])
   assert.equal(state.events.filter((event) => event.type === "summary/end").length, 0)
 }
@@ -464,7 +541,7 @@ async function testCorruptedLogIsRejectedBeforeWrites(): Promise<void> {
   )
   const state = repairFixture(initial)
   await assert.rejects(
-    state.repair(sessionId),
+    state.repair(),
     (error: unknown) => error instanceof SessionLogCorruptedError && error.code === "SESSION_LOG_CORRUPTED",
   )
   assert.deepEqual(state.calls, ["readEvents"])
@@ -474,13 +551,14 @@ async function testCorruptedLogIsRejectedBeforeWrites(): Promise<void> {
     persistedEvent(sessionId, 1, { type: "turn/start", turn: 1, model: MODEL }),
     persistedEvent(sessionId, 2, { type: "step/start", turn: 1, step: 1 }),
   ])
-  await assert.rejects(missingFirstMessage.repair(sessionId), SessionLogCorruptedError)
+  await assert.rejects(missingFirstMessage.repair(), SessionLogCorruptedError)
   assert.deepEqual(missingFirstMessage.calls, ["readEvents"])
 }
 
 async function main(): Promise<void> {
   await testNewSession()
   await testContinueSession()
+  await testQueuedMessagesRunInOrder()
   await testFailureBoundaries()
   await testRepairInterruptedTextStep()
   await testRepairApprovalAndToolResults()

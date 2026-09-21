@@ -25,9 +25,13 @@ async function testCallsFixedChannels(): Promise<void> {
   const ipcRenderer: IpcRendererInvokePort = {
     invoke: async (channel, ...args) => {
       calls.push({ channel, args })
-      return channel === SESSION_IPC_CHANNELS.startNewSession
-        ? { sessionId: "new-session", turn: 1 }
-        : { sessionId: "existing-session", turn: 4 }
+      if (channel === SESSION_IPC_CHANNELS.startNewSession) {
+        return { sessionId: "new-session", turn: 1 }
+      }
+      if (channel === SESSION_IPC_CHANNELS.continueSession) {
+        return { sessionId: "existing-session", turn: 4 }
+      }
+      return { sessionId: "existing-session", content: CONTENT }
     },
   }
   const api = createSessionApi(ipcRenderer)
@@ -41,6 +45,10 @@ async function testCallsFixedChannels(): Promise<void> {
     await api.continueSession("existing-session", { content: CONTENT }),
     { sessionId: "existing-session", turn: 4 },
   )
+  assert.deepEqual(
+    await api.enqueueSessionMessage("existing-session", { content: CONTENT }),
+    { sessionId: "existing-session", content: CONTENT },
+  )
   assert.deepEqual(calls, [
     {
       channel: SESSION_IPC_CHANNELS.startNewSession,
@@ -48,6 +56,10 @@ async function testCallsFixedChannels(): Promise<void> {
     },
     {
       channel: SESSION_IPC_CHANNELS.continueSession,
+      args: ["existing-session", { content: CONTENT }],
+    },
+    {
+      channel: SESSION_IPC_CHANNELS.enqueueSessionMessage,
       args: ["existing-session", { content: CONTENT }],
     },
   ])
@@ -71,7 +83,7 @@ async function testExposesOnlyNiCodeApi(): Promise<void> {
   assert.equal(exposedApi, api)
   assert.deepEqual(
     Object.keys(exposedApi as NiCodePreloadApi).sort(),
-    ["continueSession", "startNewSession"],
+    ["continueSession", "enqueueSessionMessage", "startNewSession"],
   )
 }
 
@@ -80,6 +92,12 @@ async function testRejectsInvalidMainResponse(): Promise<void> {
   await assert.rejects(
     api.startNewSession({ content: CONTENT, model: MODEL }),
     /无效的 Session 启动结果/,
+  )
+
+  const invalidQueued = createSessionApi({ invoke: async () => ({ sessionId: "session-1", content: null }) })
+  await assert.rejects(
+    invalidQueued.enqueueSessionMessage("session-1", { content: CONTENT }),
+    /无效的 Session 消息入队结果/,
   )
 }
 

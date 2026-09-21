@@ -2,12 +2,16 @@
  * Renderer 可调用的 Session 入口，以及 preload 与主进程之间的 IPC 契约。
  *
  * preload 只暴露窄接口，不把 ipcRenderer 本体交给 Renderer。Runtime 仍运行在主进程；
- * 主进程在首批事件提交后返回可结构化克隆的 sessionId / turn，后台 completion 不跨 IPC。
+ * 主进程在首批事件提交后返回可结构化克隆的 sessionId / turn，运行中追加返回入队确认；
+ * 后台事件流与 completion 均不跨 IPC。
  *
  * 架构依据：.git/技术文档/开发备忘录1.0.17.md 第 1、13、28 节。
  */
 
-import type { ContinueSessionInput } from "../../runtime/agent/src/session-runtime.ts"
+import type {
+  ContinueSessionInput,
+  EnqueuedSessionMessageResponse,
+} from "../../runtime/agent/src/session-runtime.ts"
 import type { UserMessageInput } from "../../runtime/session/src/events.ts"
 
 export const NICODE_PRELOAD_GLOBAL = "nicode"
@@ -15,6 +19,7 @@ export const NICODE_PRELOAD_GLOBAL = "nicode"
 export const SESSION_IPC_CHANNELS = {
   startNewSession: "nicode:session:start-new",
   continueSession: "nicode:session:continue",
+  enqueueSessionMessage: "nicode:session:enqueue-message",
 } as const
 
 /** 首批 Turn 事件成功提交后即可返回前端的可序列化结果。 */
@@ -23,13 +28,17 @@ export interface StartedSessionResponse {
   turn: number
 }
 
-/** 暴露为 `window.nicode` 的两个 Session 命令。 */
+/** 暴露为 `window.nicode` 的 Session 命令。 */
 export interface NiCodePreloadApi {
   startNewSession(input: UserMessageInput): Promise<StartedSessionResponse>
   continueSession(
     sessionId: string,
     input: ContinueSessionInput,
   ): Promise<StartedSessionResponse>
+  enqueueSessionMessage(
+    sessionId: string,
+    input: ContinueSessionInput,
+  ): Promise<EnqueuedSessionMessageResponse>
 }
 
 /** Electron ipcRenderer.invoke 的最小接口，便于在不引入 Electron 类型依赖时测试。 */
@@ -60,6 +69,18 @@ export function createSessionApi(ipcRenderer: IpcRendererInvokePort): NiCodePrel
       )
       return requireStartedSessionResponse(response)
     },
+
+    async enqueueSessionMessage(
+      sessionId: string,
+      input: ContinueSessionInput,
+    ): Promise<EnqueuedSessionMessageResponse> {
+      const response = await ipcRenderer.invoke(
+        SESSION_IPC_CHANNELS.enqueueSessionMessage,
+        sessionId,
+        input,
+      )
+      return requireEnqueuedSessionMessageResponse(response)
+    },
   })
 }
 
@@ -88,4 +109,30 @@ function requireStartedSessionResponse(value: unknown): StartedSessionResponse {
     throw new TypeError("主进程返回了无效的 Session 启动结果")
   }
   return { sessionId: value.sessionId, turn: value.turn }
+}
+
+function requireEnqueuedSessionMessageResponse(value: unknown): EnqueuedSessionMessageResponse {
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    !("sessionId" in value) ||
+    typeof value.sessionId !== "string" ||
+    value.sessionId.length === 0 ||
+    !("content" in value) ||
+    !isTextContent(value.content)
+  ) {
+    throw new TypeError("主进程返回了无效的 Session 消息入队结果")
+  }
+  return { sessionId: value.sessionId, content: value.content }
+}
+
+function isTextContent(value: unknown): value is ContinueSessionInput["content"] {
+  return Array.isArray(value) && value.every((block) =>
+    typeof block === "object" &&
+    block !== null &&
+    "type" in block &&
+    block.type === "text" &&
+    "text" in block &&
+    typeof block.text === "string"
+  )
 }

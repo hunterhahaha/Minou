@@ -319,7 +319,7 @@ async function testCompleteRepairPorts(root: string): Promise<void> {
   })
 
   assert.deepEqual(await repairSession(sessionId, ports), { lastTurn: 1, currentModel: MODEL })
-  const repaired = await ports.readEvents(sessionId) as SessionEvent[]
+  const repaired = await ports.readEvents() as SessionEvent[]
   assert.deepEqual(repaired.slice(5).map((event) => event.type), [
     "assistant/block_end",
     "assistant/message",
@@ -328,11 +328,7 @@ async function testCompleteRepairPorts(root: string): Promise<void> {
   ])
   const count = repaired.length
   await repairSession(sessionId, ports)
-  assert.equal((await ports.readEvents(sessionId)).length, count)
-  await assert.rejects(
-    ports.readEvents("another-session"),
-    /已绑定 session-complete-ports，不能访问其它 Session：another-session/,
-  )
+  assert.equal((await ports.readEvents()).length, count)
 }
 
 async function main(): Promise<void> {

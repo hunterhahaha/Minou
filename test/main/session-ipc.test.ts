@@ -1,14 +1,16 @@
 import assert from "node:assert/strict"
 
+import { SessionRuntimePorts } from "../../runtime/agent/src/session-runtime.ts"
+import type { SessionRuntimeBindings } from "../../runtime/agent/src/session-runtime.ts"
 import type { ModelRef } from "../../runtime/model/src/types.ts"
-import type { AppendSessionEvent } from "../../runtime/session/src/events.ts"
-import type { SessionRuntimePorts } from "../../runtime/agent/src/session-runtime.ts"
+import type { SessionEvent, SessionEventInput } from "../../runtime/session/src/events.ts"
 import {
   registerSessionIpcHandlers,
 } from "../../src/main/session-ipc.ts"
 import type {
   IpcMainHandlePort,
   SessionCompletionFailure,
+  SessionEventForwardingPort,
 } from "../../src/main/session-ipc.ts"
 import {
   SESSION_IPC_CHANNELS,
@@ -19,11 +21,6 @@ const MODEL: ModelRef = {
   providerId: "provider-1",
   protocol: "anthropic_messages",
   modelId: "model-1",
-}
-const OTHER_MODEL: ModelRef = {
-  providerId: "provider-1",
-  protocol: "responses",
-  modelId: "model-2",
 }
 const CONTENT = [{ type: "text" as const, text: "你好" }]
 
@@ -44,108 +41,200 @@ class FakeIpcMain implements IpcMainHandlePort {
   }
 }
 
-function runtimeFixture(): {
-  ports: SessionRuntimePorts
-  calls: string[]
-  batches: Parameters<SessionRuntimePorts["appendTurnStartAndUserMessage"]>[1][]
-  loopStarted: Promise<void>
-} {
-  const calls: string[] = []
-  const batches: Parameters<SessionRuntimePorts["appendTurnStartAndUserMessage"]>[1][] = []
-  let resolveLoopStarted!: () => void
-  const loopStarted = new Promise<void>((resolve) => { resolveLoopStarted = resolve })
-  let nextEvent = 0
-  const appendEvent: AppendSessionEvent = async (event) => ({
-    ...event,
-    eventId: `loop-event-${++nextEvent}`,
-    sessionId: "runtime-session",
-    seq: nextEvent,
-    createdAt: "2026-09-19T00:00:00.000Z",
-  })
-
-  const ports: SessionRuntimePorts = {
-    createSessionDirectory: async () => { calls.push("createDirectory") },
-    appendTurnStartAndUserMessage: async (_sessionId, events) => {
-      calls.push("appendBatch")
-      batches.push(events)
-    },
-    initializeSession: async () => { calls.push("initialize") },
-    repairSession: async () => {
-      calls.push("repair")
-      return { lastTurn: 2, currentModel: MODEL }
-    },
-    prepareExistingTurn: async () => { calls.push("prepare") },
-    buildContent: async () => {
-      calls.push("buildContent")
-      return [{ role: "system", content: "system" }, { role: "user", content: CONTENT }]
-    },
-    createLoopOptions: async () => ({
-      adapter: {
-        stream: async function* () {
-          calls.push("modelRequest")
-          resolveLoopStarted()
-          yield { type: "stream_end" as const, completion: "finished" as const }
-        },
-      },
-      tools: [],
-      executeTool: async () => { throw new Error("unexpected tool call") },
-      signal: new AbortController().signal,
-      appendEvent,
-    }),
-  }
-  return { ports, calls, batches, loopStarted }
+interface RuntimeRecord {
+  runtime: SessionRuntimePorts
+  events: SessionEvent[]
+  batches: Array<Parameters<SessionRuntimeBindings["appendTurnStartAndUserMessage"]>[0]>
 }
 
-async function testStartsNewSessionAndReturnsBeforeCompletion(): Promise<void> {
-  const runtime = runtimeFixture()
-  let releaseInitialization!: () => void
-  const initializationGate = new Promise<void>((resolve) => { releaseInitialization = resolve })
-  runtime.ports.initializeSession = async () => {
-    runtime.calls.push("initialize")
-    await initializationGate
+function persistedEvent(sessionId: string, seq: number, input: SessionEventInput): SessionEvent {
+  return {
+    ...input,
+    eventId: `${sessionId}-event-${seq}`,
+    sessionId,
+    seq,
+    createdAt: `2026-09-20T00:00:${String(seq).padStart(2, "0")}.000Z`,
+  } as SessionEvent
+}
+
+function completedSessionEvents(sessionId: string): SessionEvent[] {
+  return [
+    persistedEvent(sessionId, 1, { type: "turn/start", turn: 1, model: MODEL }),
+    persistedEvent(sessionId, 2, {
+      type: "user/message",
+      turn: 1,
+      message: { id: "existing-message", role: "user", content: CONTENT },
+    }),
+    persistedEvent(sessionId, 3, { type: "turn/end", turn: 1, reason: "completed" }),
+  ]
+}
+
+function runtimeHarness(options: { blockFirstLoop?: boolean; failInitialization?: boolean } = {}): {
+  createRuntime: (sessionId: string) => SessionRuntimePorts
+  records: Map<string, RuntimeRecord>
+  loopStarted: Promise<void>
+  releaseFirstLoop(): void
+  twoTurnsEnded: Promise<void>
+} {
+  const records = new Map<string, RuntimeRecord>()
+  let releaseFirstLoop!: () => void
+  let markLoopStarted!: () => void
+  const firstLoopGate = new Promise<void>((resolve) => { releaseFirstLoop = resolve })
+  const loopStarted = new Promise<void>((resolve) => { markLoopStarted = resolve })
+  let firstLoop = true
+  let turnEndCount = 0
+  let resolveTwoTurns!: () => void
+  const twoTurnsEnded = new Promise<void>((resolve) => { resolveTwoTurns = resolve })
+
+  const createRuntime = (sessionId: string): SessionRuntimePorts => {
+    const events = sessionId === "existing-session" ? completedSessionEvents(sessionId) : []
+    const batches: RuntimeRecord["batches"] = []
+    const repairPorts = {
+      readEvents: async () => events,
+      initializeSession: async () => {
+        if (options.failInitialization) throw new Error("initialize failed")
+      },
+      repairDerivedState: async () => ({ currentModel: MODEL }),
+      appendEvent: async (input: SessionEventInput) => {
+        const event = persistedEvent(sessionId, events.length + 1, input)
+        events.push(event)
+        if (event.type === "turn/end") {
+          turnEndCount += 1
+          if (turnEndCount >= 2) resolveTwoTurns()
+        }
+        return event
+      },
+    }
+    const bindings: SessionRuntimeBindings = {
+      createSessionDirectory: async () => {},
+      appendTurnStartAndUserMessage: async (inputs) => {
+        batches.push(inputs)
+        const start = persistedEvent(sessionId, events.length + 1, inputs[0])
+        const message = persistedEvent(sessionId, events.length + 2, inputs[1])
+        assert.equal(start.type, "turn/start")
+        assert.equal(message.type, "user/message")
+        if (start.type !== "turn/start" || message.type !== "user/message") {
+          throw new Error("unreachable")
+        }
+        events.push(start, message)
+        return [start, message]
+      },
+      prepareExistingTurn: async () => {},
+      buildContent: async () => [
+        { role: "system", content: "system" },
+        { role: "user", content: CONTENT },
+      ],
+      createLoopOptions: async () => ({
+        adapter: {
+          stream: async function* () {
+            if (firstLoop) {
+              firstLoop = false
+              markLoopStarted()
+              if (options.blockFirstLoop) await firstLoopGate
+            }
+            yield { type: "stream_end" as const, completion: "finished" as const }
+          },
+        },
+        tools: [],
+        executeTool: async () => { throw new Error("unexpected tool call") },
+        signal: new AbortController().signal,
+      }),
+      repairPorts,
+    }
+    const runtime = new SessionRuntimePorts(sessionId, bindings)
+    records.set(sessionId, { runtime, events, batches })
+    return runtime
   }
+
+  return {
+    createRuntime,
+    records,
+    loopStarted,
+    releaseFirstLoop,
+    twoTurnsEnded,
+  }
+}
+
+async function testStartsNewSessionAndProcessesQueuedMessages(): Promise<void> {
+  const harness = runtimeHarness({ blockFirstLoop: true })
   const ipcMain = new FakeIpcMain()
   const failures: SessionCompletionFailure[] = []
-  registerSessionIpcHandlers(ipcMain, runtime.ports, (failure) => { failures.push(failure) })
+  const forwarded: SessionEvent[] = []
+  const forwarding: SessionEventForwardingPort = {
+    filterSessionEventForRenderer: (event) => event.type === "user/message" ? event : undefined,
+    sendSessionEventToRenderer: (event) => { forwarded.push(event as SessionEvent) },
+  }
+  registerSessionIpcHandlers(ipcMain, harness.createRuntime, (failure) => {
+    failures.push(failure)
+  }, forwarding)
 
   const response = await ipcMain.invoke<StartedSessionResponse>(
     SESSION_IPC_CHANNELS.startNewSession,
     { content: CONTENT, model: MODEL },
   )
   assert.equal(response.turn, 1)
-  assert.ok(response.sessionId.length > 0)
-  assert.deepEqual(runtime.calls, ["createDirectory", "appendBatch", "initialize"])
-  assert.deepEqual(runtime.batches[0].map((event) => event.type), ["turn/start", "user/message"])
+  await harness.loopStarted
 
-  releaseInitialization()
-  await runtime.loopStarted
+  const queuedContent = [{ type: "text" as const, text: "排队消息" }]
+  assert.deepEqual(
+    await ipcMain.invoke(
+      SESSION_IPC_CHANNELS.enqueueSessionMessage,
+      response.sessionId,
+      { content: queuedContent },
+    ),
+    { sessionId: response.sessionId, content: queuedContent },
+  )
+  await assert.rejects(
+    ipcMain.invoke(
+      SESSION_IPC_CHANNELS.continueSession,
+      response.sessionId,
+      { content: queuedContent },
+    ),
+    /正在运行/,
+  )
+
+  harness.releaseFirstLoop()
+  await harness.twoTurnsEnded
+  await new Promise<void>((resolve) => setTimeout(resolve, 0))
+  const record = harness.records.get(response.sessionId)
+  assert.ok(record)
+  assert.deepEqual(record.batches.map((batch) => batch[0].turn), [1, 2])
+  assert.deepEqual(forwarded.map((event) => event.type), ["user/message", "user/message"])
   assert.deepEqual(failures, [])
+  await assert.rejects(
+    ipcMain.invoke(
+      SESSION_IPC_CHANNELS.enqueueSessionMessage,
+      response.sessionId,
+      { content: queuedContent },
+    ),
+    /当前未运行/,
+  )
 }
 
-async function testContinuesExistingSession(): Promise<void> {
-  const runtime = runtimeFixture()
+async function testContinuesExistingSessionThroughQueue(): Promise<void> {
+  const harness = runtimeHarness()
   const ipcMain = new FakeIpcMain()
-  registerSessionIpcHandlers(ipcMain, runtime.ports, () => {})
+  registerSessionIpcHandlers(ipcMain, harness.createRuntime, () => {})
 
   const response = await ipcMain.invoke<StartedSessionResponse>(
     SESSION_IPC_CHANNELS.continueSession,
     "existing-session",
-    { content: CONTENT, model: OTHER_MODEL },
+    { content: CONTENT },
   )
-  assert.deepEqual(response, { sessionId: "existing-session", turn: 3 })
-  assert.deepEqual(runtime.calls.slice(0, 3), ["repair", "prepare", "appendBatch"])
-  assert.deepEqual(runtime.batches[0][0], {
+  assert.deepEqual(response, { sessionId: "existing-session", turn: 2 })
+  const record = harness.records.get("existing-session")
+  assert.ok(record)
+  assert.deepEqual(record.batches[0]?.[0], {
     type: "turn/start",
-    turn: 3,
-    model: OTHER_MODEL,
+    turn: 2,
+    model: MODEL,
   })
-  await runtime.loopStarted
 }
 
 async function testRejectsInvalidRendererInput(): Promise<void> {
-  const runtime = runtimeFixture()
+  const harness = runtimeHarness()
   const ipcMain = new FakeIpcMain()
-  registerSessionIpcHandlers(ipcMain, runtime.ports, () => {})
+  registerSessionIpcHandlers(ipcMain, harness.createRuntime, () => {})
 
   await assert.rejects(
     ipcMain.invoke(SESSION_IPC_CHANNELS.startNewSession, { content: CONTENT }),
@@ -157,23 +246,20 @@ async function testRejectsInvalidRendererInput(): Promise<void> {
   )
   await assert.rejects(
     ipcMain.invoke(
-      SESSION_IPC_CHANNELS.continueSession,
-      "existing-session",
-      { content: CONTENT, model: { ...MODEL, protocol: "invalid" } },
+      SESSION_IPC_CHANNELS.enqueueSessionMessage,
+      "missing-session",
+      { content: "invalid" },
     ),
-    /model 无效/,
+    /enqueueSessionMessage 输入无效/,
   )
-  assert.deepEqual(runtime.calls, [])
 }
 
-async function testObservesBackgroundFailure(): Promise<void> {
-  const runtime = runtimeFixture()
-  const failureError = new Error("initialize failed")
-  runtime.ports.initializeSession = async () => { throw failureError }
+async function testObservesBackgroundFailureAndCleansRuntime(): Promise<void> {
+  const harness = runtimeHarness({ failInitialization: true })
   const ipcMain = new FakeIpcMain()
   let resolveFailure!: (failure: SessionCompletionFailure) => void
   const failureSeen = new Promise<SessionCompletionFailure>((resolve) => { resolveFailure = resolve })
-  registerSessionIpcHandlers(ipcMain, runtime.ports, resolveFailure)
+  registerSessionIpcHandlers(ipcMain, harness.createRuntime, resolveFailure)
 
   const response = await ipcMain.invoke<StartedSessionResponse>(
     SESSION_IPC_CHANNELS.startNewSession,
@@ -182,14 +268,22 @@ async function testObservesBackgroundFailure(): Promise<void> {
   const failure = await failureSeen
   assert.equal(failure.sessionId, response.sessionId)
   assert.equal(failure.turn, response.turn)
-  assert.equal(failure.error, failureError)
+  assert.match(String(failure.error), /initialize failed/)
+  await assert.rejects(
+    ipcMain.invoke(
+      SESSION_IPC_CHANNELS.enqueueSessionMessage,
+      response.sessionId,
+      { content: CONTENT },
+    ),
+    /当前未运行/,
+  )
 }
 
 async function main(): Promise<void> {
-  await testStartsNewSessionAndReturnsBeforeCompletion()
-  await testContinuesExistingSession()
+  await testStartsNewSessionAndProcessesQueuedMessages()
+  await testContinuesExistingSessionThroughQueue()
   await testRejectsInvalidRendererInput()
-  await testObservesBackgroundFailure()
+  await testObservesBackgroundFailureAndCleansRuntime()
   console.log("session-ipc.test.ts: 主进程 Session IPC 断言通过")
 }
 

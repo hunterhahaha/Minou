@@ -1,8 +1,8 @@
 /**
- * SessionRuntime 的两个 Turn 入口（架构备忘录第 13.1、13.2 节）。
+ * SessionRuntime 的活动实例、消息队列与两个 Turn 入口（架构备忘录第 13.1、13.2 节）。
  *
- * Event Log 读写、派生状态修复、增量检查和 ContextBuilder 由 ports 提供；本文件实现
- * 第 10 节确定的 Event Log 校验与补写顺序，可用 createRepairSession 绑定 repairSession。
+ * SessionRuntimePorts 绑定一个 Session 的 Event Log、派生状态、消息队列与持久化事件流；本文件实现
+ * 第 10 节确定的 Event Log 校验与补写顺序，并以 FIFO 串行启动后续 Turn。
  * appendTurnStartAndUserMessage 必须在一个持久化批次中提交两条事件；失败不能启动 Loop。
  * 当前 runAgentLoop 只负责 Step，Turn 收尾仍由调用方处理。
  */
@@ -24,6 +24,7 @@ import type {
   StepStartEvent,
   ToolResultEvent,
   TurnStartEvent,
+  UserMessageEvent,
   TurnStartEventInput,
   UserMessageInput,
   UserMessageEventInput,
@@ -35,69 +36,75 @@ import type { ToolResult } from "../../tools/src/types.ts"
 import { runAgentLoop } from "./loop.ts"
 import type { AgentLoopOptions, AgentLoopResult } from "./loop.ts"
 
-export interface SessionRuntimePorts {
+/** 创建单个 SessionRuntimePorts 实例时注入的宿主能力。 */
+export interface SessionRuntimeBindings {
   /**
-   * 在目标 Project/default 分组下创建 Session 目录。
-   *
-   * @param sessionId 要创建的 Session ID。
+   * 在目标 Project/default 分组下创建当前 Session 的目录。
    */
-  createSessionDirectory(sessionId: string): Promise<void>
+  createSessionDirectory(): Promise<void>
   /**
    * 两条事件一次提交，顺序固定；实现者负责分配事件身份和持久化。
    * 同一 Session 并发启动时，须确保 turn 仍是下一个编号，否则拒绝提交。
    *
-   * @param sessionId 目标 Session ID。
    * @param events 按 `turn/start`、`user/message` 顺序排列的成批事件。
+   * @returns 已分配身份并成功持久化的两条完整事件。
    */
   appendTurnStartAndUserMessage(
-    sessionId: string,
     events: readonly [TurnStartEventInput, UserMessageEventInput],
-  ): Promise<void>
-  /**
-   * 首次事件已提交后，幂等补齐其余 Session 状态。
-   *
-   * @param sessionId 要初始化的 Session ID。
-   */
-  initializeSession(sessionId: string): Promise<void>
-  /**
-   * 修复已有 Session，返回已提交的最后 Turn 和当前模型。
-   *
-   * @param sessionId 要修复的 Session ID。
-   * @returns Event Log 修复后的最后 Turn 编号与当前模型。
-   */
-  repairSession(sessionId: string): Promise<{ lastTurn: number; currentModel: ModelRef }>
+  ): Promise<readonly [TurnStartEvent, UserMessageEvent]>
   /**
    * 已有 Session 的 AGENTS.md / Skills 增量检查；先提交事件再更新比较状态。
+   * 检查产生的事件必须使用注入的当前 Session 事件出口。
    *
-   * @param sessionId 要准备下一 Turn 的 Session ID。
+   * @param appendEvent 当前活动实例唯一的持久化事件出口。
    */
-  prepareExistingTurn(sessionId: string): Promise<void>
+  prepareExistingTurn(
+    appendEvent: (event: SessionEventInput) => Promise<SessionEvent>,
+  ): Promise<void>
   /**
    * 在进入 Loop 前构建一次完整 content。
    *
-   * @param sessionId 目标 Session ID。
    * @param turn 要构建上下文的 Turn 编号。
    * @returns 供 AgentLoop 使用的模型消息上下文。
    */
-  buildContent(sessionId: string, turn: number): Promise<ModelMessage[]>
+  buildContent(turn: number): Promise<ModelMessage[]>
   /**
-   * 提供尚未由 SessionRuntime 装配的 Adapter、工具、取消信号和事件出口。
+   * 提供尚未由 SessionRuntime 装配的 Adapter、工具和取消信号。
+   * 当前 Session 的唯一事件出口由 SessionRuntimePorts 注入。
    *
-   * @param sessionId 目标 Session ID。
    * @param model 本 Turn 固定使用的模型引用。
-   * @returns 可与 Turn 和 content 合并成 AgentLoopOptions 的运行资源。
+   * @returns 可与 Turn、content 和事件出口合并成 AgentLoopOptions 的运行资源。
    */
   createLoopOptions(
-    sessionId: string,
     model: ModelRef,
-  ): Promise<Omit<AgentLoopOptions, "turn" | "model" | "content">>
+  ): Promise<Omit<AgentLoopOptions, "turn" | "model" | "content" | "appendEvent">>
+  /** 当前 Session 的 Event Log 与派生状态端口。 */
+  repairPorts: SessionRepairPorts
 }
 
-export interface StartedAgentLoop {
+/** 运行中追加消息成功后的 Renderer 可序列化确认。 */
+export interface EnqueuedSessionMessageResponse {
+  /** 接收消息的活动 Session。 */
+  sessionId: string
+  /** 已复制并加入后端内存队列的消息内容。 */
+  content: ModelTextBlock[]
+}
+
+/** Session 活动期的消息消费任务。 */
+export interface SessionRuntimeProcessing {
+  /** 队首消息成功提交为新 Turn 后解析；新建 Session 则立即指向已启动首轮。 */
+  started: Promise<StartedSessionTurn>
+  /** 队列耗尽、停止或失败时结束的整个活动期任务。 */
+  completion: Promise<void>
+}
+
+export interface StartedSessionTurn {
   /** 新创建或继续运行的 Session ID。 */
   sessionId: string
   /** 已提交并正在运行的 Turn 编号。 */
   turn: number
+  /** 当前活动 Session 中所有已成功持久化事件的单消费者异步流。 */
+  events: AsyncIterable<SessionEvent>
   /** 成批提交新 Turn 后启动；调用方需等待并处理运行结果或错误。 */
   completion: Promise<AgentLoopResult>
 }
@@ -105,8 +112,6 @@ export interface StartedAgentLoop {
 export interface ContinueSessionInput {
   /** 要写入新 Turn 的用户文本内容。 */
   content: ModelTextBlock[]
-  /** 省略时使用 repairSession 返回的 meta.currentModel。 */
-  model?: ModelRef
 }
 
 /** `repairSession` 读取和修复 Event Log 所需的最小持久化端口。 */
@@ -114,36 +119,348 @@ export interface SessionRepairPorts {
   /**
    * 检查 Session 目录并返回逐行解析后的 Event Log；缺失目录或日志时应拒绝。
    *
-   * @param sessionId 要读取的 Session ID。
    * @returns 尚未信任、需要本文件校验的事件值集合。
    */
-  readEvents(sessionId: string): Promise<readonly unknown[]>
+  readEvents(): Promise<readonly unknown[]>
   /**
    * 幂等补齐首次初始化可能缺失的 Session 派生文件。
    *
-   * @param sessionId 要初始化的 Session ID。
    */
-  initializeSession(sessionId: string): Promise<void>
+  initializeSession(): Promise<void>
   /**
    * 根据已校验的日志修复 meta / contextstate / snapshot 等派生状态，并返回当前模型。
    * 该端口不得改写 Event Log。
    *
-   * @param sessionId 要修复的 Session ID。
    * @param events 已通过 Event Log 结构和生命周期校验的事件。
    * @returns 派生状态中的当前模型引用。
    */
   repairDerivedState(
-    sessionId: string,
     events: readonly SessionEvent[],
   ): Promise<{ currentModel: ModelRef }>
   /**
    * 追加一条恢复事件并返回已经分配身份、成功落盘的事件。
    *
-   * @param sessionId 目标 Session ID。
    * @param event 要追加的恢复事件输入。
    * @returns 已分配 eventId、seq 等身份并持久化的完整事件。
    */
-  appendEvent(sessionId: string, event: SessionEventInput): Promise<SessionEvent>
+  appendEvent(event: SessionEventInput): Promise<SessionEvent>
+}
+
+/**
+ * 单个活动 Session 的运行端口、消息队列和持久化事件流。
+ *
+ * 实例从创建起只服务 `sessionId` 指定的 Session。首次或继续入口由主进程启动，之后运行期间收到的
+ * 消息进入当前实例的 FIFO 队列；消费循环在每个 Turn 完整结束后才会启动下一条消息。
+ */
+export class SessionRuntimePorts {
+  /** 当前实例唯一绑定的 Session ID。 */
+  readonly sessionId: string
+  /** 当前活动期已经持久化的 Session 事件流。 */
+  readonly events: AsyncIterable<SessionEvent>
+
+  private readonly bindings: SessionRuntimeBindings
+  private readonly eventStream = new SessionEventStream()
+  private readonly pendingMessages: ModelTextBlock[][] = []
+  private processing = false
+  private closed = false
+  private activeTurn: number | undefined
+
+  /**
+   * 生成新 Session 使用的随机 ID。
+   *
+   * @returns 可用于 Session 目录名与事件身份的 UUID。
+   */
+  static createSessionId(): string {
+    return randomUUID()
+  }
+
+  /**
+   * 创建一个绑定单个 Session 的活动 Runtime。
+   *
+   * @param sessionId 当前实例唯一服务的 Session ID。
+   * @param bindings 当前 Session 已绑定的持久化、上下文和 Loop 宿主能力。
+   */
+  constructor(sessionId: string, bindings: SessionRuntimeBindings) {
+    if (sessionId.trim() === "") {
+      throw new Error("SessionRuntimePorts.sessionId 不能为空")
+    }
+    this.sessionId = sessionId
+    this.bindings = bindings
+    this.events = this.eventStream
+  }
+
+  /** 当前正在执行或最近一次启动的 Turn，供宿主关联后台错误。 */
+  get currentTurn(): number | undefined {
+    return this.activeTurn
+  }
+
+  /** 在目标 Project/default 分组下创建当前 Session 目录。 */
+  createSessionDirectory(): Promise<void> {
+    this.assertOpen()
+    return this.bindings.createSessionDirectory()
+  }
+
+  /**
+   * 成批提交新 Turn 的两条首事件，并在整个批次成功后发布到事件流。
+   *
+   * @param events 顺序固定的 `turn/start` 与 `user/message` 输入。
+   * @returns 已成功持久化的完整事件。
+   */
+  async appendTurnStartAndUserMessage(
+    events: readonly [TurnStartEventInput, UserMessageEventInput],
+  ): Promise<readonly [TurnStartEvent, UserMessageEvent]> {
+    this.assertOpen()
+    const written = await this.bindings.appendTurnStartAndUserMessage(events)
+    this.publishPersistedEvent(written[0], "turn/start")
+    this.publishPersistedEvent(written[1], "user/message")
+    return written
+  }
+
+  /** 首批事件已提交后，幂等补齐当前 Session 的派生状态。 */
+  initializeSession(): Promise<void> {
+    this.assertOpen()
+    return this.bindings.repairPorts.initializeSession()
+  }
+
+  /**
+   * 修复当前 Session 并返回最后 Turn 与持久化的当前模型。
+   *
+   * @returns Event Log 修复后的最后 Turn 编号与当前模型。
+   */
+  repairSession(): Promise<{ lastTurn: number; currentModel: ModelRef }> {
+    this.assertOpen()
+    return repairSession(this.sessionId, this.boundRepairPorts())
+  }
+
+  /** 执行当前 Session 的 Turn 开始增量检查。 */
+  prepareExistingTurn(): Promise<void> {
+    this.assertOpen()
+    return this.bindings.prepareExistingTurn((event) => this.appendEvent(event))
+  }
+
+  /**
+   * 为指定 Turn 构建完整模型上下文。
+   *
+   * @param turn 要构建上下文的 Turn 编号。
+   * @returns AgentLoop 使用的模型消息。
+   */
+  buildContent(turn: number): Promise<ModelMessage[]> {
+    this.assertOpen()
+    return this.bindings.buildContent(turn)
+  }
+
+  /**
+   * 创建 Loop 资源，并强制注入当前实例唯一的持久化事件出口。
+   *
+   * @param model 当前 Turn 固定使用的模型。
+   * @returns 完整的 AgentLoop 非 Turn 参数。
+   */
+  async createLoopOptions(
+    model: ModelRef,
+  ): Promise<Omit<AgentLoopOptions, "turn" | "model" | "content">> {
+    this.assertOpen()
+    const options = await this.bindings.createLoopOptions(model)
+    return { ...options, appendEvent: (event) => this.appendEvent(event) }
+  }
+
+  /**
+   * 追加并发布当前 Session 的一条完整事件。
+   *
+   * @param event 尚未分配持久化身份的事件输入。
+   * @returns 已成功写入 Event Log 的完整事件。
+   */
+  async appendEvent(event: SessionEventInput): Promise<SessionEvent> {
+    this.assertOpen()
+    const written = await this.bindings.repairPorts.appendEvent(event)
+    this.publishPersistedEvent(written, event.type)
+    return written
+  }
+
+  /**
+   * 把运行中的新用户消息复制后加入当前 Session 的 FIFO 队列。
+   *
+   * @param content 用户文本内容；队列不保存模型或 Turn。
+   * @returns Renderer 可保存到内存队列的确认数据。
+   * @throws Error 当前实例已经关闭时抛出。
+   */
+  enqueueSessionMessage(content: ModelTextBlock[]): EnqueuedSessionMessageResponse {
+    this.assertOpen()
+    const queued = cloneMessageContent(content)
+    this.pendingMessages.push(queued)
+    return { sessionId: this.sessionId, content: cloneMessageContent(queued) }
+  }
+
+  /**
+   * 启动当前活动期唯一的消息消费循环。
+   *
+   * 新 Session 传入已经启动的首轮；已有 Session 省略它，并要求调用前已经把首条消息放入队列。
+   * 每个 Turn 完整结束后才会读取下一条消息。stopped、error 或队列耗尽都会关闭实例与事件流。
+   *
+   * @param initialTurn 新建 Session 已经启动的首轮；已有 Session 省略。
+   * @returns 首个已启动 Turn 与整个活动期的完成 Promise。
+   * @throws Error 当前实例已处理过队列，或已有 Session 的初始队列为空时抛出。
+   */
+  processMessageQueue(initialTurn?: StartedSessionTurn): SessionRuntimeProcessing {
+    this.assertOpen()
+    if (this.processing) {
+      throw new Error(`Session 消息队列已经在处理：${this.sessionId}`)
+    }
+    if (initialTurn === undefined && this.pendingMessages.length === 0) {
+      throw new Error(`Session 消息队列为空，无法启动：${this.sessionId}`)
+    }
+    if (initialTurn !== undefined && initialTurn.sessionId !== this.sessionId) {
+      throw new Error(
+        `首轮属于其它 Session：${initialTurn.sessionId}，当前实例为 ${this.sessionId}`,
+      )
+    }
+    this.processing = true
+    let resolveStarted!: (started: StartedSessionTurn) => void
+    let rejectStarted!: (error: unknown) => void
+    const started = initialTurn === undefined
+      ? new Promise<StartedSessionTurn>((resolve, reject) => {
+        resolveStarted = resolve
+        rejectStarted = reject
+      })
+      : Promise.resolve(initialTurn)
+
+    const completion = this.consumeMessageQueue(
+      initialTurn,
+      initialTurn === undefined ? resolveStarted : undefined,
+      initialTurn === undefined ? rejectStarted : undefined,
+    ).finally(() => {
+      this.close()
+    })
+
+    return { started, completion }
+  }
+
+  /**
+   * 关闭当前活动实例，丢弃尚未启动的消息并结束事件流。
+   * 重复关闭不会产生额外效果。
+   */
+  close(): void {
+    if (this.closed) return
+    this.closed = true
+    this.pendingMessages.length = 0
+    this.eventStream.close()
+  }
+
+  private async consumeMessageQueue(
+    initialTurn: StartedSessionTurn | undefined,
+    resolveStarted: ((started: StartedSessionTurn) => void) | undefined,
+    rejectStarted: ((error: unknown) => void) | undefined,
+  ): Promise<void> {
+    let current = initialTurn
+    try {
+      while (true) {
+        if (current === undefined) {
+          const content = this.pendingMessages.shift()
+          if (content === undefined) return
+          current = await continueSession({ content }, this)
+          resolveStarted?.(current)
+          resolveStarted = undefined
+          rejectStarted = undefined
+        }
+
+        this.activeTurn = current.turn
+        const result = await current.completion
+        if (result.stopped) return
+
+        current = undefined
+        if (this.pendingMessages.length === 0) return
+      }
+    } catch (error) {
+      rejectStarted?.(error)
+      throw error
+    }
+  }
+
+  private boundRepairPorts(): SessionRepairPorts {
+    return {
+      readEvents: () => this.bindings.repairPorts.readEvents(),
+      initializeSession: () => this.bindings.repairPorts.initializeSession(),
+      repairDerivedState: (events) => this.bindings.repairPorts.repairDerivedState(events),
+      appendEvent: (event) => this.appendEvent(event),
+    }
+  }
+
+  private publishPersistedEvent(event: SessionEvent, expectedType: SessionEvent["type"]): void {
+    if (event.sessionId !== this.sessionId) {
+      throw new Error(
+        `持久化事件属于其它 Session：${event.sessionId}，当前实例为 ${this.sessionId}`,
+      )
+    }
+    if (event.type !== expectedType) {
+      throw new Error(`持久化事件类型不匹配：期望 ${expectedType}，实际 ${event.type}`)
+    }
+    this.eventStream.publish(event)
+  }
+
+  private assertOpen(): void {
+    if (this.closed) {
+      throw new Error(`SessionRuntimePorts 已关闭：${this.sessionId}`)
+    }
+  }
+}
+
+/** 单消费者、实例内存级的 SessionEvent 异步流。 */
+class SessionEventStream implements AsyncIterable<SessionEvent> {
+  private readonly buffered: SessionEvent[] = []
+  private nextResolver: ((result: IteratorResult<SessionEvent>) => void) | undefined
+  private iteratorCreated = false
+  private closed = false
+
+  /** @param event 已经成功持久化的 Session 事件。 */
+  publish(event: SessionEvent): void {
+    if (this.closed) return
+    const resolveNext = this.nextResolver
+    if (resolveNext !== undefined) {
+      this.nextResolver = undefined
+      resolveNext({ value: event, done: false })
+      return
+    }
+    this.buffered.push(event)
+  }
+
+  /** 结束事件流；缓冲区中的既有事件仍会先被消费。 */
+  close(): void {
+    if (this.closed) return
+    this.closed = true
+    if (this.buffered.length === 0 && this.nextResolver !== undefined) {
+      const resolveNext = this.nextResolver
+      this.nextResolver = undefined
+      resolveNext({ value: undefined, done: true })
+    }
+  }
+
+  /** @returns 当前事件流唯一的异步迭代器。 */
+  [Symbol.asyncIterator](): AsyncIterator<SessionEvent> {
+    if (this.iteratorCreated) {
+      throw new Error("Session 事件流只能消费一次")
+    }
+    this.iteratorCreated = true
+    return {
+      next: () => this.next(),
+    }
+  }
+
+  private next(): Promise<IteratorResult<SessionEvent>> {
+    const event = this.buffered.shift()
+    if (event !== undefined) {
+      return Promise.resolve({ value: event, done: false })
+    }
+    if (this.closed) {
+      return Promise.resolve({ value: undefined, done: true })
+    }
+    return new Promise((resolve) => {
+      this.nextResolver = resolve
+    })
+  }
+}
+
+/** @param content 要保存到内存队列或返回给 Renderer 的文本内容。 */
+function cloneMessageContent(content: readonly ModelTextBlock[]): ModelTextBlock[] {
+  return content.map((block) => ({ ...block }))
 }
 
 /** 文件系统版 `SessionRepairPorts` 的创建参数。 */
@@ -189,37 +506,10 @@ export function createFileSessionRepairPorts(
     estimateSkillTokens: options.estimateSkillTokens,
   })
   return {
-    readEvents: async (sessionId) => {
-      assertBoundSessionId(options.sessionId, sessionId)
-      return eventLog.readEvents()
-    },
-    initializeSession: async (sessionId) => {
-      assertBoundSessionId(options.sessionId, sessionId)
-      return sessionState.initializeSession()
-    },
-    repairDerivedState: async (sessionId, events) => {
-      assertBoundSessionId(options.sessionId, sessionId)
-      return sessionState.repairDerivedState(events)
-    },
-    appendEvent: async (sessionId, event) => {
-      assertBoundSessionId(options.sessionId, sessionId)
-      return eventLog.appendEvent(event)
-    },
-  }
-}
-
-/**
- * 防止对话级文件端口被误用于其它 Session。
- *
- * @param boundSessionId 创建端口时已经绑定的 Session ID。
- * @param requestedSessionId `SessionRepairPorts` 调用方传入的目标 Session ID。
- * @throws Error 当调用方试图通过当前端口访问其它 Session 时抛出。
- */
-function assertBoundSessionId(boundSessionId: string, requestedSessionId: string): void {
-  if (requestedSessionId !== boundSessionId) {
-    throw new Error(
-      `Session 文件端口已绑定 ${boundSessionId}，不能访问其它 Session：${requestedSessionId}`,
-    )
+    readEvents: () => eventLog.readEvents(),
+    initializeSession: () => sessionState.initializeSession(),
+    repairDerivedState: (events) => sessionState.repairDerivedState(events),
+    appendEvent: (event) => eventLog.appendEvent(event),
   }
 }
 
@@ -241,16 +531,18 @@ export class SessionLogCorruptedError extends Error {
 }
 
 /**
- * 创建可直接赋给 `SessionRuntimePorts.repairSession` 的实现。
+ * 创建已经绑定 Session 身份与文件端口的修复函数。
  * 持久化细节保留在 ports，恢复顺序和补写决策集中在本文件。
  *
- * @param ports 提供 Event Log 读写和派生状态修复能力的持久化端口。
- * @returns 可传给 SessionRuntime 的 Session 修复函数。
+ * @param sessionId 当前修复函数唯一服务的 Session ID。
+ * @param ports 已经绑定同一 Session 的持久化端口。
+ * @returns 无需再次传入 Session ID 的修复函数。
  */
 export function createRepairSession(
+  sessionId: string,
   ports: SessionRepairPorts,
-): SessionRuntimePorts["repairSession"] {
-  return (sessionId) => repairSession(sessionId, ports)
+): () => Promise<{ lastTurn: number; currentModel: ModelRef }> {
+  return () => repairSession(sessionId, ports)
 }
 
 /**
@@ -265,17 +557,17 @@ export async function repairSession(
   sessionId: string,
   ports: SessionRepairPorts,
 ): Promise<{ lastTurn: number; currentModel: ModelRef }> {
-  const events = validateEventLog(sessionId, await ports.readEvents(sessionId))
+  const events = validateEventLog(sessionId, await ports.readEvents())
   const lifecycle = validateLifecycle(sessionId, events)
   validateBlockStreams(sessionId, events)
   validateSummaries(sessionId, events)
 
-  await ports.initializeSession(sessionId)
-  const { currentModel } = await ports.repairDerivedState(sessionId, events)
+  await ports.initializeSession()
+  const { currentModel } = await ports.repairDerivedState(events)
 
   const append = async (input: SessionEventInput): Promise<SessionEvent> => {
     const previousSeq = events.at(-1)?.seq ?? 0
-    const written = validateSessionEvent(sessionId, await ports.appendEvent(sessionId, input), events.length)
+    const written = validateSessionEvent(sessionId, await ports.appendEvent(input), events.length)
     if (written.type !== input.type) {
       corrupted(sessionId, `追加 ${input.type} 后返回了 ${written.type}`)
     }
@@ -324,42 +616,80 @@ export async function repairSession(
 export async function startNewSession(
   input: UserMessageInput,
   ports: SessionRuntimePorts,
-): Promise<StartedAgentLoop> {
-  const sessionId = randomUUID()
+): Promise<StartedSessionTurn> {
+  const sessionId = ports.sessionId
   const turn = 1
 
-  await ports.createSessionDirectory(sessionId)
-  await ports.appendTurnStartAndUserMessage(sessionId, turnEvents(turn, input.model, input.content))
+  await ports.createSessionDirectory()
+  await ports.appendTurnStartAndUserMessage(turnEvents(turn, input.model, input.content))
 
-  const completion = (async () => {
-    await ports.initializeSession(sessionId)
-    return startLoop(sessionId, turn, input.model, ports)
-  })()
-  return { sessionId, turn, completion }
+  const completion = runCommittedTurn(turn, ports, async () => {
+    await ports.initializeSession()
+    return startLoop(turn, input.model, ports)
+  })
+  return { sessionId, turn, events: ports.events, completion }
 }
 
 /**
  * 在已修复的 Session 上创建下一 Turn，然后进入同一个 AgentLoop。
  *
- * @param sessionId 要继续运行的 Session ID。
- * @param input 下一 Turn 的用户消息及可选模型覆盖。
+ * @param input 下一 Turn 的用户消息；模型始终取自修复后的 Session 状态。
  * @param ports 提供 Session 修复、增量检查、事件提交和 AgentLoop 资源的运行端口。
  * @returns 已提交的下一 Turn 身份，以及后台 AgentLoop 的完成 Promise。
  * @throws Session 修复、增量检查或首批事件提交失败时抛出。
  */
 export async function continueSession(
-  sessionId: string,
   input: ContinueSessionInput,
   ports: SessionRuntimePorts,
-): Promise<StartedAgentLoop> {
-  const state = await ports.repairSession(sessionId)
-  await ports.prepareExistingTurn(sessionId)
+): Promise<StartedSessionTurn> {
+  const sessionId = ports.sessionId
+  const state = await ports.repairSession()
+  await ports.prepareExistingTurn()
 
   const turn = state.lastTurn + 1
-  const model = input.model ?? state.currentModel
-  await ports.appendTurnStartAndUserMessage(sessionId, turnEvents(turn, model, input.content))
+  const model = state.currentModel
+  await ports.appendTurnStartAndUserMessage(turnEvents(turn, model, input.content))
 
-  return { sessionId, turn, completion: startLoop(sessionId, turn, model, ports) }
+  return {
+    sessionId,
+    turn,
+    events: ports.events,
+    completion: runCommittedTurn(turn, ports, () => startLoop(turn, model, ports)),
+  }
+}
+
+/**
+ * 执行已经提交 `turn/start + user/message` 的 Turn，并保证 completion 覆盖最小 Turn 收尾。
+ *
+ * @param turn 当前已经提交的 Turn 编号。
+ * @param ports 当前 Session 的运行端口。
+ * @param run 初始化剩余状态并执行 AgentLoop 的函数。
+ * @returns AgentLoop 结果；返回前已经提交对应的 `turn/end`。
+ * @throws 初始化或 Loop 失败时先尝试提交 `turn/end(error)`，随后传播原始错误。
+ */
+async function runCommittedTurn(
+  turn: number,
+  ports: SessionRuntimePorts,
+  run: () => Promise<AgentLoopResult>,
+): Promise<AgentLoopResult> {
+  let result: AgentLoopResult
+  try {
+    result = await run()
+  } catch (error) {
+    try {
+      await ports.appendEvent({ type: "turn/end", turn, reason: "error" })
+    } catch {
+      // 保留原始运行错误；下次 repairSession 会修复仍未闭合的 Turn。
+    }
+    throw error
+  }
+
+  await ports.appendEvent({
+    type: "turn/end",
+    turn,
+    reason: result.stopped ? "stopped" : "completed",
+  })
+  return result
 }
 
 /**
@@ -384,7 +714,6 @@ function turnEvents(
 /**
  * 为指定 Turn 构建上下文和 Loop 运行资源，并启动 AgentLoop。
  *
- * @param sessionId 目标 Session ID。
  * @param turn 要运行的 Turn 编号。
  * @param model 本 Turn 固定使用的模型引用。
  * @param ports 提供上下文构建和 Loop 依赖装配能力的端口。
@@ -392,13 +721,12 @@ function turnEvents(
  * @throws AgentLoop 执行期间发生的非取消错误。
  */
 async function startLoop(
-  sessionId: string,
   turn: number,
   model: ModelRef,
   ports: SessionRuntimePorts,
 ): Promise<AgentLoopResult> {
-  const content = await ports.buildContent(sessionId, turn)
-  const options = await ports.createLoopOptions(sessionId, model)
+  const content = await ports.buildContent(turn)
+  const options = await ports.createLoopOptions(model)
   return runAgentLoop({ ...options, turn, model, content })
 }
 
