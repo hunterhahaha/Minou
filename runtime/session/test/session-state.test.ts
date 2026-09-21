@@ -54,10 +54,15 @@ async function readJson<T>(path: string): Promise<T> {
 /** 返回包含当前 AGENTS.md / Skill / MCP 状态的初始化基线。 */
 function baseline(suffix: string): CurrentSessionBaseline {
   return {
-    agentsmd: { hash: `hash-${suffix}`, content: `agents-${suffix}` },
+    agentsmd: {
+      path: `G:/workspace-${suffix}/AGENTS.md`,
+      hash: `hash-${suffix}`,
+      content: `agents-${suffix}`,
+    },
     skills: {
       content: `skills-${suffix}`,
       entries: [{ name: "alpha", scope: "global", enabled: true, estimatedTokens: 5 }],
+      descriptions: { alpha: "alpha" },
     },
     mcp: [{ name: "mcp_read", description: "read", inputSchema: { type: "object" } }],
     additionalMeta: {
@@ -101,11 +106,21 @@ async function testInitialization(root: string): Promise<void> {
   assert.deepEqual(meta.skills, { id: null, entries: currentBaseline.skills.entries })
   assert.deepEqual(meta.loadedMcpTools, currentBaseline.additionalMeta?.loadedMcpTools)
   assert.deepEqual(await readJson<SessionContextState>(contextPath), {
-    agentsmd: currentBaseline.agentsmd,
+    agentsmd: {
+      hash: currentBaseline.agentsmd.hash,
+      content: currentBaseline.agentsmd.content,
+    },
     skills: { id: "initial", content: currentBaseline.skills.content },
     mcp: currentBaseline.mcp,
   })
   assert.equal(await readFile(snapshotPath, "utf8"), currentBaseline.agentsmd.content)
+  assert.deepEqual(await state.readContextComparisonState(), {
+    agentsSnapshot: currentBaseline.agentsmd.content,
+    skills: {
+      id: null,
+      entries: currentBaseline.skills.entries,
+    },
+  })
   assert.equal((await lstat(join(sessionDirectory, "tool_output"))).isDirectory(), true)
 
   currentBaseline = baseline("changed-after-initialization")
@@ -237,7 +252,10 @@ async function testRecoveryUsesCurrentBaseline(root: string): Promise<void> {
   const context = await readJson<SessionContextState>(join(sessionDirectory, "contextstate.json"))
   assert.equal(meta.skills.id, null)
   assert.deepEqual(meta.skills.entries, current.skills.entries)
-  assert.deepEqual(context.agentsmd, current.agentsmd)
+  assert.deepEqual(context.agentsmd, {
+    hash: current.agentsmd.hash,
+    content: current.agentsmd.content,
+  })
   assert.equal(await readFile(join(sessionDirectory, "agents_md.snapshot"), "utf8"), current.agentsmd.content)
 }
 

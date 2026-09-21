@@ -38,11 +38,13 @@ Adapter 与 Usage 转换，含流式调用、双向转换、取消与错误归�
 `runtime/tools/src/types.ts` 提供统一 `ToolResult` 结构。工具本体与 ToolExecutor、审批屏障、
 压缩、Usage 记账、Insert、文件变更汇总与最终 Surface 仍未实现，见下文。
 
-**SessionRuntime 的活动实例框架**已提供：`SessionRuntimePorts` 类绑定一个 `sessionId`，复用同一套
-Event Log / SessionState 端口，维护运行期 FIFO 用户消息队列和已持久化事件流。`startNewSession`
-直接提交新 Session 首轮；已有 Session 的首条及运行中追加消息先入队，再由实例在上一 Turn 完整结束后
-依次调用 `continueSession`。每个 Turn 会写入最小 `turn/end`，而文件变更汇总、Insert 与最终 Surface
-仍未实现。`createFileSessionRepairPorts` 继续负责对话级 Event Log I/O 与派生状态修复。
+**SessionRuntime 的活动实例与具体绑定**已提供：`SessionRuntimeBindings` 为单个 Session 绑定目录、
+同一写队列中的 Event Log / SessionState、Turn 首批事件原子追加、AGENTS.md / Skill 增量、Event Log
+上下文回放以及 Adapter / 执行器；固定基线仍由 Project / Skill 层通过已有解析函数提供，Tool Definition
+构建在 ToolExposureManager 落地前返回空数组。`SessionRuntimePorts` 维护运行期 FIFO 用户消息队列和
+已持久化事件流；`startNewSession` 直接提交新 Session 首轮，已有 Session 的首条及运行中追加消息则在
+上一 Turn 完整结束后依次调用 `continueSession`。每个 Turn 会写入最小 `turn/end`，文件变更汇总、
+Insert 与最终 Surface 仍未实现。
 
 **Renderer 的三个 Session 命令**已通过 preload 暴露为
 `window.nicode.startNewSession(input)`、`window.nicode.continueSession(sessionId, input)` 与
@@ -169,7 +171,7 @@ runtime/                             Runtime 模块，各自含 src/ 与 test/
 │  ├─ src/
 │  │  ├─ index.ts                    模块入口
 │  │  ├─ loop.ts                     AgentLoop 的 Step 循环与工具小轮（阶段 6.1 / 6.4）
-│  │  └─ session-runtime.ts          新建和继续 Session 的 Turn 入口框架
+│  │  └─ session-runtime.ts          Session 具体绑定、活动实例与新建/继续 Turn 入口
 │  └─ test/                          loop.test.ts / session-runtime.test.ts
 ├─ context/                          ContextBuilder / WindowManager / Compressor / Recovery / Projector / SurfaceBuilder
 ├─ model/

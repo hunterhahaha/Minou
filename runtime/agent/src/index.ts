@@ -9,8 +9,9 @@
  *   session-runtime.ts   单 Session 活动实例、首次 / 继续入口、Queue 与恢复
  *
  * 当前已实现 `runAgentLoop` 的正常模型请求及工具小轮，并提供 SessionRuntime 的两个入口
- * 与 Event Log 确定性恢复。SessionRepairPorts 已有文件系统组合实现；当前 AGENTS.md / Skill / MCP
- * 基线及 ContextBuilder 仍通过接口注入。Queue 与最小 Turn 收尾已经接入；压缩、运行期 Usage 记账、
+ * 与 Event Log 确定性恢复。SessionRuntimeBindings 已提供具体文件系统实现，负责 Turn 首批事件、
+ * AGENTS.md / Skill 增量、Event Log 上下文回放和 Loop 资源装配；当前固定基线仍通过已有解析函数提供。
+ * Queue 与最小 Turn 收尾已经接入；压缩、运行期 Usage 记账、
  * Insert、文件变更汇总和最终 Surface 尚未实现。
  *
  * 架构依据：.git/技术文档/开发备忘录1.0.17.md 第 13 节（Session 入口与 Agent Loop）、

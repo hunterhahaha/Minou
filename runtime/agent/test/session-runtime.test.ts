@@ -1,6 +1,10 @@
 import assert from "node:assert/strict"
+import { mkdtemp, readFile, rm } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 
 import type { ModelRef } from "../../model/src/types.ts"
+import type { CurrentSessionBaseline } from "../../session/src/session-state.ts"
 import type {
   SessionEvent,
   SessionEventInput,
@@ -8,11 +12,12 @@ import type {
 import {
   continueSession,
   createRepairSession,
+  SessionRuntimeBindings,
   SessionRuntimePorts,
   SessionLogCorruptedError,
   startNewSession,
 } from "../src/session-runtime.ts"
-import type { SessionRepairPorts, SessionRuntimeBindings } from "../src/session-runtime.ts"
+import type { SessionRepairPorts } from "../src/session-runtime.ts"
 
 const MODEL: ModelRef = { providerId: "provider-1", protocol: "anthropic_messages", modelId: "model-1" }
 const MESSAGE = [{ type: "text" as const, text: "你好" }]
@@ -53,9 +58,11 @@ function fixture(
       return event
     },
   }
-  const bindings: SessionRuntimeBindings = {
+  const bindings = {
     createSessionDirectory: async () => { calls.push("createDirectory") },
-    appendTurnStartAndUserMessage: async (inputs) => {
+    appendTurnStartAndUserMessage: async (
+      inputs: Parameters<SessionRuntimeBindings["appendTurnStartAndUserMessage"]>[0],
+    ) => {
       calls.push("appendBatch")
       batches.push(inputs)
       const start = persistedEvent(sessionId, events.length + 1, inputs[0])
@@ -73,15 +80,15 @@ function fixture(
       calls.push("buildContent")
       return [{ role: "system", content: "fixed" }, { role: "user", content: MESSAGE }]
     },
-    createLoopOptions: async (model) => {
+    createLoopOptions: async (model: ModelRef) => {
       calls.push("createLoopOptions")
       seenModels.push(model)
       return {
         adapter: {
-          stream: async function* (request) {
+          stream: async function* (request: Parameters<import("../../model/src/types.ts").ModelAdapter["stream"]>[0]) {
             calls.push("modelRequest")
             assert.deepEqual(request.model, model)
-            assert.deepEqual(request.context.messages.map((message) => message.role), ["system", "user"])
+            assert.deepEqual(request.context.messages.map((message: import("../../model/src/types.ts").ModelMessage) => message.role), ["system", "user"])
             yield { type: "stream_end" as const, completion: "finished" as const }
           },
         },
@@ -91,7 +98,7 @@ function fixture(
       }
     },
     repairPorts,
-  }
+  } as unknown as SessionRuntimeBindings
   const ports = new SessionRuntimePorts(sessionId, bindings)
   return { ports, bindings, repairPorts, calls, batches, events, loopEvents, seenModels }
 }
@@ -555,6 +562,131 @@ async function testCorruptedLogIsRejectedBeforeWrites(): Promise<void> {
   assert.deepEqual(missingFirstMessage.calls, ["readEvents"])
 }
 
+async function testConcreteRuntimeBindings(): Promise<void> {
+  const root = await mkdtemp(join(tmpdir(), "nicode-runtime-bindings-"))
+  try {
+    const sessionId = "session-concrete"
+    const sessionDirectory = join(root, sessionId)
+    let baseline: CurrentSessionBaseline = {
+      agentsmd: {
+        path: join(root, "AGENTS.md"),
+        hash: "hash-1",
+        content: "Use npm.",
+      },
+      skills: {
+        content: "skills-1",
+        entries: [{ name: "alpha", scope: "global" as const, enabled: true, estimatedTokens: 5 }],
+        descriptions: { alpha: "alpha" },
+      },
+      mcp: [],
+    }
+    const adapter = {
+      stream: async function* () {
+        yield { type: "stream_end" as const, completion: "finished" as const }
+      },
+    }
+    const bindings = new SessionRuntimeBindings({
+      sessionId,
+      sessionDirectory,
+      systemPrompt: "system",
+      workspaceInfo: "workspace",
+      resolveCurrentBaseline: async () => baseline,
+      estimateSkillTokens: (description) => description.length,
+      adapters: [{ model: MODEL, adapter }],
+      executeTool: async () => ({ status: "success", content: [] }),
+      now: () => new Date("2026-09-21T00:00:00.000Z"),
+      createEventId: (() => {
+        let id = 0
+        return () => `concrete-${++id}`
+      })(),
+    })
+
+    await bindings.createSessionDirectory()
+    await assert.rejects(bindings.createSessionDirectory(), /无法创建 Session 目录/)
+    const first = await bindings.appendTurnStartAndUserMessage([
+      { type: "turn/start", turn: 1, model: MODEL },
+      { type: "user/message", turn: 1, message: { id: "user-1", role: "user", content: MESSAGE } },
+    ])
+    assert.deepEqual(first.map((event) => event.seq), [1, 2])
+    await bindings.repairPorts.initializeSession()
+    assert.deepEqual(await bindings.buildContent(1), [
+      { role: "system", content: "system\n\nworkspace\n\nUse npm.\n\nskills-1" },
+      { role: "user", content: MESSAGE },
+    ])
+
+    const firstOptions = await bindings.createLoopOptions(MODEL)
+    const secondOptions = await bindings.createLoopOptions(MODEL)
+    assert.equal(firstOptions.adapter, adapter)
+    assert.deepEqual(firstOptions.tools, [])
+    assert.notEqual(firstOptions.signal, secondOptions.signal)
+
+    await bindings.repairPorts.appendEvent({ type: "turn/end", turn: 1, reason: "completed" })
+    baseline = {
+      agentsmd: {
+        path: join(root, "AGENTS.md"),
+        hash: "hash-2",
+        content: "Use pnpm.",
+      },
+      skills: {
+        content: "skills-2",
+        entries: [{ name: "beta", scope: "project" as const, enabled: true, estimatedTokens: 4 }],
+        descriptions: { beta: "beta" },
+      },
+      mcp: [],
+    }
+    await bindings.prepareExistingTurn((event) => bindings.repairPorts.appendEvent(event))
+    await bindings.appendTurnStartAndUserMessage([
+      { type: "turn/start", turn: 2, model: MODEL },
+      { type: "user/message", turn: 2, message: { id: "user-2", role: "user", content: [{ type: "text", text: "继续" }] } },
+    ])
+
+    const content = await bindings.buildContent(2)
+    assert.equal(content[0]?.role, "system")
+    assert.equal(content[0]?.content, "system\n\nworkspace\n\nUse pnpm.\n\nskills-2")
+    assert.deepEqual(content.slice(1).map((message) => message.role), ["user", "user", "user", "user"])
+    const log = (await readFile(join(sessionDirectory, "events.jsonl"), "utf8"))
+      .trimEnd()
+      .split("\n")
+      .map((line) => JSON.parse(line) as SessionEvent)
+    const updates = log.filter((event) => event.type === "context_update")
+    assert.equal(updates.length, 2)
+    assert.match(updates[0].content, /Removed:\nUse npm\./)
+    assert.match(updates[0].content, /Added:\nUse pnpm\./)
+    assert.deepEqual(updates[1].source, {
+      type: "skill",
+      changes: [
+        { type: "new", name: "beta", scope: "project", description: "beta" },
+        { type: "disabled", name: "alpha" },
+      ],
+    })
+
+    await bindings.repairPorts.appendEvent({
+      type: "summary/start",
+      turn: 2,
+      summaryId: "summary-1",
+      throughEventSeq: 5,
+    })
+    await bindings.repairPorts.appendEvent({
+      type: "summary/end",
+      turn: 2,
+      summaryId: "summary-1",
+      summary: "Earlier context summary.",
+      throughEventSeq: 5,
+    })
+    assert.deepEqual(await bindings.buildContent(2), [
+      { role: "system", content: "system\n\nworkspace\n\nUse pnpm.\n\nskills-2" },
+      { role: "user", content: "Earlier context summary." },
+      { role: "user", content: [{ type: "text", text: "继续" }] },
+    ])
+    await assert.rejects(
+      bindings.createLoopOptions({ ...MODEL, modelId: "missing" }),
+      /匹配数量 0/,
+    )
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+}
+
 async function main(): Promise<void> {
   await testNewSession()
   await testContinueSession()
@@ -565,6 +697,7 @@ async function main(): Promise<void> {
   await testInterruptedToolCallDoesNotCreateOrphanResult()
   await testRepairPreservesContextAndUncommittedSummary()
   await testCorruptedLogIsRejectedBeforeWrites()
+  await testConcreteRuntimeBindings()
   console.log("session-runtime.test.ts: SessionRuntime 入口与恢复断言通过")
 }
 

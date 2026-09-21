@@ -8,10 +8,18 @@
  */
 
 import { randomUUID } from "node:crypto"
+import { mkdir } from "node:fs/promises"
+import { isAbsolute, resolve } from "node:path"
 import { isDeepStrictEqual } from "node:util"
 
 import { CANCELLED } from "../../error/src/normalizer.ts"
-import type { ModelMessage, ModelRef, ModelTextBlock } from "../../model/src/types.ts"
+import type {
+  ModelAdapter,
+  ModelMessage,
+  ModelRef,
+  ModelTextBlock,
+  UnifiedToolDefinition,
+} from "../../model/src/types.ts"
 import type {
   ApprovalRequestEvent,
   ApprovalResultEvent,
@@ -25,23 +33,117 @@ import type {
   ToolResultEvent,
   TurnStartEvent,
   UserMessageEvent,
+  SkillContextChange,
   TurnStartEventInput,
   UserMessageInput,
   UserMessageEventInput,
 } from "../../session/src/events.ts"
 import { createFileSessionEventLog } from "../../session/src/event-log.ts"
+import type { FileSessionEventLog } from "../../session/src/event-log.ts"
 import { createFileSessionState } from "../../session/src/session-state.ts"
-import type { CurrentSessionBaseline } from "../../session/src/session-state.ts"
+import type {
+  CurrentSessionBaseline,
+  FileSessionState,
+  SessionSkillContextEntry,
+} from "../../session/src/session-state.ts"
 import type { ToolResult } from "../../tools/src/types.ts"
 import { runAgentLoop } from "./loop.ts"
-import type { AgentLoopOptions, AgentLoopResult } from "./loop.ts"
+import type { AgentLoopOptions, AgentLoopResult, ExecuteToolCall } from "./loop.ts"
 
-/** 创建单个 SessionRuntimePorts 实例时注入的宿主能力。 */
-export interface SessionRuntimeBindings {
+/**
+ * 单个 SessionRuntimePorts 使用的具体文件、上下文和 AgentLoop 资源绑定。
+ *
+ * 该类直接实现 Session 目录、Event Log 批量提交、Turn 开始增量、Context 回放与 Loop 资源装配；
+ * Project/Skill 发现仍沿用既有 `resolveCurrentBaseline` 函数边界，Adapter 与工具执行器由启动装配提供。
+ */
+export class SessionRuntimeBindings {
+  /** 当前绑定唯一服务的 Session ID。 */
+  readonly sessionId: string
+  /** 当前 Session 的 Event Log 与派生状态端口。 */
+  readonly repairPorts: SessionRepairPorts
+
+  private readonly sessionDirectory: string
+  private readonly eventLog: FileSessionEventLog
+  private readonly sessionState: FileSessionState
+  private readonly systemPrompt: string
+  private readonly workspaceInfo: string
+  private readonly adapters: readonly { model: ModelRef; adapter: ModelAdapter }[]
+  private readonly executeTool: ExecuteToolCall
+  private readonly resolveCurrentBaselineSource: () => Promise<CurrentSessionBaseline>
+  private turnBaseline: Promise<CurrentSessionBaseline> | undefined
+
+  /**
+   * 创建一个完全绑定到单个 Session 的运行资源集合。
+   *
+   * @param options Session 文件位置、固定 System Message 片段、当前基线解析器、Adapter 与工具执行入口。
+   * @throws Error 当 Session ID 或目录无效，或同一 ModelRef 重复注册 Adapter 时抛出。
+   */
+  constructor(options: {
+    sessionId: string
+    sessionDirectory: string
+    systemPrompt: string
+    workspaceInfo: string
+    resolveCurrentBaseline(): Promise<CurrentSessionBaseline>
+    estimateSkillTokens(description: string): number
+    adapters: readonly { model: ModelRef; adapter: ModelAdapter }[]
+    executeTool: ExecuteToolCall
+    now?: () => Date
+    createEventId?: () => string
+  }) {
+    validateRuntimeSessionId(options.sessionId)
+    if (!isAbsolute(options.sessionDirectory)) {
+      throw new Error(`Session 目录必须是绝对路径：${options.sessionDirectory}`)
+    }
+    const adapterKeys = new Set<string>()
+    for (const entry of options.adapters) {
+      const key = modelRefKey(entry.model)
+      if (adapterKeys.has(key)) throw new Error(`Session Adapter 重复：${key}`)
+      adapterKeys.add(key)
+    }
+
+    this.sessionId = options.sessionId
+    this.sessionDirectory = resolve(options.sessionDirectory)
+    this.systemPrompt = options.systemPrompt
+    this.workspaceInfo = options.workspaceInfo
+    this.adapters = options.adapters.map((entry) => ({
+      model: { ...entry.model },
+      adapter: entry.adapter,
+    }))
+    this.executeTool = options.executeTool
+    this.resolveCurrentBaselineSource = options.resolveCurrentBaseline
+
+    this.eventLog = createFileSessionEventLog({
+      sessionId: options.sessionId,
+      sessionDirectory: this.sessionDirectory,
+      now: options.now,
+      createEventId: options.createEventId,
+    })
+    this.sessionState = createFileSessionState({
+      sessionId: options.sessionId,
+      sessionDirectory: this.sessionDirectory,
+      readEvents: () => this.eventLog.readEvents(),
+      resolveCurrentBaseline: () => this.resolveTurnBaseline(),
+      estimateSkillTokens: options.estimateSkillTokens,
+    })
+    this.repairPorts = {
+      readEvents: () => this.eventLog.readEvents(),
+      initializeSession: () => this.sessionState.initializeSession(),
+      repairDerivedState: (events) => this.sessionState.repairDerivedState(events),
+      appendEvent: (event) => this.eventLog.appendEvent(event),
+    }
+  }
+
   /**
    * 在目标 Project/default 分组下创建当前 Session 的目录。
+   *
+   * @throws Error 当父分组不存在、目标目录已经存在或创建失败时抛出。
    */
-  createSessionDirectory(): Promise<void>
+  async createSessionDirectory(): Promise<void> {
+    await mkdir(this.sessionDirectory, { recursive: false }).catch((error: unknown) => {
+      throw new Error(`无法创建 Session 目录：${this.sessionDirectory}`, { cause: error })
+    })
+  }
+
   /**
    * 两条事件一次提交，顺序固定；实现者负责分配事件身份和持久化。
    * 同一 Session 并发启动时，须确保 turn 仍是下一个编号，否则拒绝提交。
@@ -51,7 +153,10 @@ export interface SessionRuntimeBindings {
    */
   appendTurnStartAndUserMessage(
     events: readonly [TurnStartEventInput, UserMessageEventInput],
-  ): Promise<readonly [TurnStartEvent, UserMessageEvent]>
+  ): Promise<readonly [TurnStartEvent, UserMessageEvent]> {
+    return this.eventLog.appendTurnStartAndUserMessage(events)
+  }
+
   /**
    * 已有 Session 的 AGENTS.md / Skills 增量检查；先提交事件再更新比较状态。
    * 检查产生的事件必须使用注入的当前 Session 事件出口。
@@ -60,14 +165,34 @@ export interface SessionRuntimeBindings {
    */
   prepareExistingTurn(
     appendEvent: (event: SessionEventInput) => Promise<SessionEvent>,
-  ): Promise<void>
+  ): Promise<void> {
+    return this.prepareExistingTurnInternal(appendEvent)
+  }
+
   /**
    * 在进入 Loop 前构建一次完整 content。
    *
    * @param turn 要构建上下文的 Turn 编号。
    * @returns 供 AgentLoop 使用的模型消息上下文。
    */
-  buildContent(turn: number): Promise<ModelMessage[]>
+  async buildContent(turn: number): Promise<ModelMessage[]> {
+    const baseline = await this.resolveTurnBaseline()
+    const events = validateEventLog(this.sessionId, await this.eventLog.readEvents())
+    const lifecycle = validateLifecycle(this.sessionId, events)
+    validateBlockStreams(this.sessionId, events)
+    validateSummaries(this.sessionId, events)
+    if (lifecycle.lastTurn !== turn || lifecycle.openTurn !== turn) {
+      throw new Error(
+        `无法为非当前开放 Turn 构建 Context：期望 ${lifecycle.openTurn ?? "无"}，实际 ${turn}`,
+      )
+    }
+    return replayModelContent(events, composeSystemMessage(
+      this.systemPrompt,
+      this.workspaceInfo,
+      baseline,
+    ))
+  }
+
   /**
    * 提供尚未由 SessionRuntime 装配的 Adapter、工具和取消信号。
    * 当前 Session 的唯一事件出口由 SessionRuntimePorts 注入。
@@ -75,11 +200,351 @@ export interface SessionRuntimeBindings {
    * @param model 本 Turn 固定使用的模型引用。
    * @returns 可与 Turn、content 和事件出口合并成 AgentLoopOptions 的运行资源。
    */
-  createLoopOptions(
+  async createLoopOptions(
     model: ModelRef,
-  ): Promise<Omit<AgentLoopOptions, "turn" | "model" | "content" | "appendEvent">>
-  /** 当前 Session 的 Event Log 与派生状态端口。 */
-  repairPorts: SessionRepairPorts
+  ): Promise<Omit<AgentLoopOptions, "turn" | "model" | "content" | "appendEvent">> {
+    const matching = this.adapters.filter((entry) => modelRefsEqual(entry.model, model))
+    if (matching.length !== 1) {
+      throw new Error(
+        `无法为 ModelRef 选择唯一 Adapter：${modelRefKey(model)}（匹配数量 ${matching.length}）`,
+      )
+    }
+    const controller = new AbortController()
+    return {
+      adapter: matching[0].adapter,
+      tools: buildTools(model),
+      executeTool: this.executeTool,
+      signal: controller.signal,
+    }
+  }
+
+  /** 读取并缓存当前 Turn 使用的同一份固定上下文基线。 */
+  private resolveTurnBaseline(): Promise<CurrentSessionBaseline> {
+    if (this.turnBaseline === undefined) {
+      this.turnBaseline = this.resolveCurrentBaselineSource().then((baseline) => structuredClone(baseline))
+    }
+    return this.turnBaseline
+  }
+
+  /** 执行已有 Session 的 AGENTS.md / Skill 比较、事件提交与派生状态推进。 */
+  private async prepareExistingTurnInternal(
+    appendEvent: (event: SessionEventInput) => Promise<SessionEvent>,
+  ): Promise<void> {
+    const events = validateEventLog(this.sessionId, await this.eventLog.readEvents())
+    const lifecycle = validateLifecycle(this.sessionId, events)
+    if (lifecycle.openTurn !== undefined || lifecycle.openStep !== undefined) {
+      throw new Error(`Session 尚未恢复到一致状态，不能准备下一 Turn：${this.sessionId}`)
+    }
+    validateBlockStreams(this.sessionId, events)
+    validateSummaries(this.sessionId, events)
+
+    this.turnBaseline = this.resolveCurrentBaselineSource().then((baseline) => structuredClone(baseline))
+    const baseline = await this.turnBaseline
+    const comparison = await this.sessionState.readContextComparisonState()
+    const turn = lifecycle.lastTurn + 1
+    const appended: SessionEvent[] = []
+
+    if (comparison.agentsSnapshot !== baseline.agentsmd.content) {
+      const written = await appendEvent({
+        type: "context_update",
+        turn,
+        source: {
+          type: "agents_md",
+          path: baseline.agentsmd.path,
+          hash: baseline.agentsmd.hash,
+          fullContent: baseline.agentsmd.content,
+        },
+        content: formatAgentsMdUpdate(comparison.agentsSnapshot, baseline.agentsmd.content),
+      })
+      appended.push(written)
+    }
+
+    const skillChanges = collectSkillChanges(
+      baseline.skills.entries,
+      comparison.skills.entries,
+      baseline.skills.descriptions,
+    )
+    if (skillChanges.length > 0) {
+      const written = await appendEvent({
+        type: "context_update",
+        turn,
+        source: { type: "skill", changes: skillChanges },
+        content: `<skills_update>\n${JSON.stringify(skillChanges, null, 2)}\n</skills_update>`,
+      })
+      appended.push(written)
+    }
+
+    if (appended.length > 0) {
+      await this.sessionState.repairDerivedState([...events, ...appended])
+    }
+  }
+}
+
+/**
+ * 当前阶段的 Tool Definition 构建出口。
+ *
+ * ToolExposureManager 尚未落地；项目负责人已确认本任务只保留空工具构建占位，不能在这里伪造工具能力。
+ *
+ * @param _model 当前 Turn 的模型引用，后续 ToolExposureManager 可据模型能力筛选工具。
+ * @returns 当前阶段不向模型暴露任何工具。
+ */
+function buildTools(_model: ModelRef): UnifiedToolDefinition[] {
+  // TODO: ToolExposureManager 落地后，由它按当前 Session 与模型能力构建工具定义。
+  return []
+}
+
+/** @param model 用于 Adapter 查找和错误定位的模型引用。 */
+function modelRefKey(model: ModelRef): string {
+  return `${model.providerId}:${model.protocol}:${model.modelId}`
+}
+
+/** @returns 两个 ModelRef 是否表示同一 Provider、协议和模型。 */
+function modelRefsEqual(left: ModelRef, right: ModelRef): boolean {
+  return left.providerId === right.providerId &&
+    left.protocol === right.protocol &&
+    left.modelId === right.modelId
+}
+
+/**
+ * 组合当前 Turn 唯一的固定 System Message。
+ *
+ * @param systemPrompt Agent 的基础系统设定。
+ * @param workspaceInfo 当前 Project/default 的工作区说明。
+ * @param baseline 与 Turn 开始增量检查相同的 AGENTS.md / Skill 基线。
+ * @returns 以双换行分隔非空部分的 System Message。
+ */
+function composeSystemMessage(
+  systemPrompt: string,
+  workspaceInfo: string,
+  baseline: CurrentSessionBaseline,
+): string {
+  if (!isAbsolute(baseline.agentsmd.path)) {
+    throw new Error(`当前 Session 基线的 AGENTS.md 路径不是绝对路径：${baseline.agentsmd.path}`)
+  }
+  for (const entry of baseline.skills.entries) {
+    if (typeof baseline.skills.descriptions[entry.name] !== "string") {
+      throw new Error(`当前 Session 基线缺少 Skill description：${entry.name}`)
+    }
+  }
+  return [systemPrompt, workspaceInfo, baseline.agentsmd.content, baseline.skills.content]
+    .filter((part) => part.length > 0)
+    .join("\n\n")
+}
+
+/**
+ * 按架构第 11.3 节把权威 Session Event 回放为模型上下文。
+ *
+ * @param events 已通过结构、生命周期、Block 与 Summary 校验的事件。
+ * @param systemMessage 当前 Turn 新建的固定 System Message。
+ * @returns 首项为 System Message、其余按日志顺序排列的模型消息。
+ */
+function replayModelContent(
+  events: readonly SessionEvent[],
+  systemMessage: string,
+): ModelMessage[] {
+  const content: ModelMessage[] = [{ role: "system", content: systemMessage }]
+  const summary = events
+    .filter((event) => event.type === "summary/end")
+    .sort((left, right) => left.seq - right.seq)
+    .at(-1)
+  const throughEventSeq = summary?.throughEventSeq ?? 0
+  if (summary !== undefined) content.push({ role: "user", content: summary.summary })
+
+  for (const event of events) {
+    if (event.seq <= throughEventSeq) continue
+    switch (event.type) {
+      case "context_update":
+        content.push({ role: "user", content: event.content })
+        break
+      case "user/message":
+        content.push({
+          role: "user",
+          content: event.message.content.map((block) => ({ ...block })),
+        })
+        break
+      case "assistant/message":
+        content.push({
+          role: "assistant",
+          content: structuredClone(event.message.content),
+        })
+        break
+      case "tool/result":
+        content.push({
+          role: "tool",
+          toolCallId: event.toolCallId,
+          content: event.result.content
+            .filter((block): block is ModelTextBlock => block.type === "text")
+            .map((block) => ({ ...block })),
+          isError: event.result.status === "error",
+        })
+        break
+    }
+  }
+  return content
+}
+
+/**
+ * 按第 12.3 节比较当前有效 Skills 与 Session 已保存比较状态。
+ *
+ * @param current 当前实际启用的有效 Skill，顺序即新增/替换事件顺序。
+ * @param previous `meta.skills.entries` 中的历史比较状态。
+ * @param descriptions 当前有效 Skill 的预算后 description。
+ * @returns 应写入同一条 `context_update` 的有序 changes。
+ */
+function collectSkillChanges(
+  current: readonly SessionSkillContextEntry[],
+  previous: readonly SessionSkillContextEntry[],
+  descriptions: Readonly<Record<string, string>>,
+): SkillContextChange[] {
+  const changes: SkillContextChange[] = []
+  const currentByName = new Map(current.filter((entry) => entry.enabled).map((entry) => [entry.name, entry]))
+  const previousByName = new Map(previous.map((entry) => [entry.name, entry]))
+
+  for (const entry of current) {
+    if (!entry.enabled) continue
+    const old = previousByName.get(entry.name)
+    const description = descriptions[entry.name]
+    if (typeof description !== "string") {
+      throw new Error(`当前 Session 基线缺少 Skill description：${entry.name}`)
+    }
+    if (old === undefined) {
+      changes.push({ type: "new", name: entry.name, scope: entry.scope, description })
+      continue
+    }
+    if (old.scope === entry.scope) {
+      if (!old.enabled) changes.push({ type: "enabled", name: entry.name })
+      continue
+    }
+    if (entry.scope === "project" && old.scope === "global") {
+      changes.push({
+        type: "replaced",
+        name: entry.name,
+        fromScope: old.scope,
+        toScope: entry.scope,
+        description,
+      })
+    }
+  }
+
+  for (const old of previous) {
+    if (old.enabled && !currentByName.has(old.name)) {
+      changes.push({ type: "disabled", name: old.name })
+    }
+  }
+  return changes
+}
+
+/**
+ * 把 AGENTS.md 的零上下文行差异格式化为模型可见增量。
+ *
+ * @param oldContent Session 比较快照。
+ * @param newContent 当前 AGENTS.md 完整内容。
+ * @returns 按连续差异 hunk 组织的 `<agents_md_update>` 文本。
+ */
+function formatAgentsMdUpdate(oldContent: string, newContent: string): string {
+  const changes = diffLineHunks(splitLines(oldContent), splitLines(newContent))
+  const hunks = changes.map((change) => {
+    const sections: string[] = []
+    if (change.removed.length > 0) sections.push(`Removed:\n${change.removed.join("\n")}`)
+    if (change.added.length > 0) sections.push(`Added:\n${change.added.join("\n")}`)
+    return `<change>\n${sections.join("\n\n")}\n</change>`
+  })
+  return [
+    "<agents_md_update>",
+    "",
+    "The project's AGENTS.md has changed.",
+    "",
+    hunks.join("\n\n"),
+    "",
+    "</agents_md_update>",
+  ].join("\n")
+}
+
+/** @param content 待按行比较的文本。 */
+function splitLines(content: string): string[] {
+  if (content === "") return []
+  const normalized = content.replace(/\r\n/g, "\n")
+  return normalized.endsWith("\n")
+    ? normalized.slice(0, -1).split("\n")
+    : normalized.split("\n")
+}
+
+/**
+ * 使用最长公共子序列生成零上下文的连续行差异 hunk。
+ *
+ * @param oldLines 旧文本行。
+ * @param newLines 新文本行。
+ * @returns 每个连续差异区域的删除行与新增行。
+ */
+function diffLineHunks(
+  oldLines: readonly string[],
+  newLines: readonly string[],
+): Array<{ removed: string[]; added: string[] }> {
+  const columns = newLines.length + 1
+  const table = new Uint32Array((oldLines.length + 1) * columns)
+  for (let oldIndex = oldLines.length - 1; oldIndex >= 0; oldIndex -= 1) {
+    for (let newIndex = newLines.length - 1; newIndex >= 0; newIndex -= 1) {
+      const offset = oldIndex * columns + newIndex
+      table[offset] = oldLines[oldIndex] === newLines[newIndex]
+        ? table[(oldIndex + 1) * columns + newIndex + 1] + 1
+        : Math.max(table[(oldIndex + 1) * columns + newIndex], table[offset + 1])
+    }
+  }
+
+  const operations: Array<{ type: "equal" | "remove" | "add"; line: string }> = []
+  let oldIndex = 0
+  let newIndex = 0
+  while (oldIndex < oldLines.length || newIndex < newLines.length) {
+    if (
+      oldIndex < oldLines.length
+      && newIndex < newLines.length
+      && oldLines[oldIndex] === newLines[newIndex]
+    ) {
+      operations.push({ type: "equal", line: oldLines[oldIndex] })
+      oldIndex += 1
+      newIndex += 1
+    } else if (
+      oldIndex < oldLines.length
+      && (
+        newIndex >= newLines.length
+        || table[(oldIndex + 1) * columns + newIndex] >= table[oldIndex * columns + newIndex + 1]
+      )
+    ) {
+      operations.push({ type: "remove", line: oldLines[oldIndex] })
+      oldIndex += 1
+    } else {
+      operations.push({ type: "add", line: newLines[newIndex] })
+      newIndex += 1
+    }
+  }
+
+  const hunks: Array<{ removed: string[]; added: string[] }> = []
+  let current: { removed: string[]; added: string[] } | undefined
+  for (const operation of operations) {
+    if (operation.type === "equal") {
+      if (current !== undefined) hunks.push(current)
+      current = undefined
+      continue
+    }
+    current ??= { removed: [], added: [] }
+    if (operation.type === "remove") current.removed.push(operation.line)
+    else current.added.push(operation.line)
+  }
+  if (current !== undefined) hunks.push(current)
+  return hunks
+}
+
+/** @param sessionId 要绑定到磁盘路径的 Session ID。 */
+function validateRuntimeSessionId(sessionId: string): void {
+  if (
+    sessionId.trim() === ""
+    || sessionId === "."
+    || sessionId === ".."
+    || sessionId.includes("/")
+    || sessionId.includes("\\")
+  ) {
+    throw new Error(`Session ID 必须是不含路径分隔符的非空目录名：${sessionId}`)
+  }
 }
 
 /** 运行中追加消息成功后的 Renderer 可序列化确认。 */

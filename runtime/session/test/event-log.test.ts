@@ -97,6 +97,70 @@ async function testConcurrentAppend(root: string): Promise<void> {
   assert.equal(new Set(events.map((event) => event.eventId)).size, 4)
 }
 
+async function testTurnBatch(root: string): Promise<void> {
+  const sessionId = "session-turn-batch"
+  const sessionDirectory = join(root, sessionId)
+  await mkdir(sessionDirectory)
+  let nextId = 1
+  const options = {
+    sessionId,
+    sessionDirectory,
+    now: () => new Date(CREATED_AT),
+    createEventId: () => `batch-${nextId++}`,
+  }
+  const log = createFileSessionEventLog(options)
+  const first = await log.appendTurnStartAndUserMessage([
+    {
+      type: "turn/start",
+      turn: 1,
+      model: { providerId: "provider-1", protocol: "responses", modelId: "model-1" },
+    },
+    {
+      type: "user/message",
+      turn: 1,
+      message: { id: "message-1", role: "user", content: [{ type: "text", text: "first" }] },
+    },
+  ])
+  assert.deepEqual(first.map((event) => event.seq), [1, 2])
+  assert.equal((await readFile(join(sessionDirectory, "events.jsonl"), "utf8")).split("\n").length, 3)
+
+  const secondAccessor = createFileSessionEventLog(options)
+  const [turnEnd, second] = await Promise.all([
+    log.appendEvent({ type: "turn/end", turn: 1, reason: "completed" }),
+    secondAccessor.appendTurnStartAndUserMessage([
+      {
+        type: "turn/start",
+        turn: 2,
+        model: { providerId: "provider-1", protocol: "responses", modelId: "model-1" },
+      },
+      {
+        type: "user/message",
+        turn: 2,
+        message: { id: "message-2", role: "user", content: [{ type: "text", text: "second" }] },
+      },
+    ]),
+  ])
+  assert.equal(turnEnd.seq, 3)
+  assert.deepEqual(second.map((event) => event.seq), [4, 5])
+  assert.deepEqual((await log.readEvents() as SessionEvent[]).map((event) => event.seq), [1, 2, 3, 4, 5])
+
+  await assert.rejects(
+    log.appendTurnStartAndUserMessage([
+      {
+        type: "turn/start",
+        turn: 4,
+        model: { providerId: "provider-1", protocol: "responses", modelId: "model-1" },
+      },
+      {
+        type: "user/message",
+        turn: 4,
+        message: { id: "message-4", role: "user", content: [{ type: "text", text: "skip" }] },
+      },
+    ]),
+    /编号不连续|尚未完整结束/,
+  )
+}
+
 async function testReadFailures(root: string): Promise<void> {
   const missingLog = createFileSessionEventLog({
     sessionId: "missing",
@@ -219,6 +283,7 @@ async function main(): Promise<void> {
   try {
     await testReadAndAppend(root)
     await testConcurrentAppend(root)
+    await testTurnBatch(root)
     await testReadFailures(root)
     await testAppendFailures(root)
   } finally {

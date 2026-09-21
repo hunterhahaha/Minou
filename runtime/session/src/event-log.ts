@@ -9,7 +9,14 @@ import { randomUUID } from "node:crypto"
 import { appendFile, lstat, readFile } from "node:fs/promises"
 import { isAbsolute, join, resolve } from "node:path"
 
-import type { SessionEvent, SessionEventInput } from "./events.ts"
+import type {
+  SessionEvent,
+  SessionEventInput,
+  TurnStartEvent,
+  TurnStartEventInput,
+  UserMessageEvent,
+  UserMessageEventInput,
+} from "./events.ts"
 
 /** 文件型 Event Log 创建参数。 */
 export interface FileSessionEventLogOptions {
@@ -41,7 +48,21 @@ export interface FileSessionEventLog {
    * @throws Error 当日志不可读、末尾事件没有有效 seq，或追加失败时抛出。
    */
   appendEvent(event: SessionEventInput): Promise<SessionEvent>
+  /**
+   * 为一个新 Turn 连续分配身份，并用一次文件追加提交 `turn/start + user/message`。
+   * 新 Session 只允许创建 Turn 1；已有 Session 必须从最后一个已结束 Turn 连续编号。
+   *
+   * @param events 顺序和 Turn 身份已经由 SessionRuntime 确定的两条事件。
+   * @returns 已经成功持久化的完整事件元组。
+   * @throws Error 当日志状态与待提交 Turn 不一致，或批量追加失败时抛出。
+   */
+  appendTurnStartAndUserMessage(
+    events: readonly [TurnStartEventInput, UserMessageEventInput],
+  ): Promise<readonly [TurnStartEvent, UserMessageEvent]>
 }
+
+/** 同一进程内按规范化 Event Log 路径共享的写入队列。 */
+const WRITE_TAILS = new Map<string, Promise<void>>()
 
 /**
  * 创建仅绑定到一个 Session 的文件型 Event Log。
@@ -61,56 +82,231 @@ export function createFileSessionEventLog(options: FileSessionEventLogOptions): 
   const eventsPath = join(sessionDirectory, "events.jsonl")
   const now = options.now ?? (() => new Date())
   const createEventId = options.createEventId ?? randomUUID
-  let appendTail = Promise.resolve()
 
   return {
     readEvents: async () => {
+      await waitForWrites(eventsPath)
       await requireDirectory(sessionDirectory, "Session 目录")
       await requireFile(eventsPath, "Session Event Log")
       return readJsonLines(eventsPath)
     },
     appendEvent: (input) => {
-      const operation = appendTail.then(async () => {
+      return runSerializedWrite(eventsPath, async () => {
         await requireDirectory(sessionDirectory, "Session 目录")
         await requireFile(eventsPath, "Session Event Log")
 
         const values = await readJsonLines(eventsPath)
-        const last = values.at(-1)
-        if (!isRecord(last) || !isPositiveSafeInteger(last.seq)) {
-          throw new Error(`无法追加 Session Event：${eventsPath} 的末尾事件缺少有效 seq。`)
-        }
-        if (last.seq === Number.MAX_SAFE_INTEGER) {
-          throw new Error(`无法追加 Session Event：${eventsPath} 的 seq 已达到安全整数上限。`)
-        }
-
-        const eventId = createEventId()
-        if (eventId.trim() === "") {
-          throw new Error(`无法追加 Session Event：事件 ID 不能为空（${eventsPath}）。`)
-        }
-
-        const event = {
-          ...input,
-          eventId,
-          sessionId: options.sessionId,
-          seq: last.seq + 1,
-          createdAt: now().toISOString(),
-        } as SessionEvent
-
-        let line: string
-        try {
-          line = `${JSON.stringify(event)}\n`
-        } catch (error) {
-          throw new Error(`无法序列化 Session Event：${eventsPath}`, { cause: error })
-        }
+        const nextSeq = nextSequence(values, eventsPath, 1)
+        const [event] = materializeEvents(
+          [input],
+          options.sessionId,
+          nextSeq,
+          now,
+          createEventId,
+          eventsPath,
+        )
+        const line = serializeEvents([event], eventsPath)
 
         await appendFile(eventsPath, line, "utf8").catch((error: unknown) => {
           throw new Error(`无法追加 Session Event：${eventsPath}`, { cause: error })
         })
         return event
       })
-      appendTail = operation.then(() => undefined, () => undefined)
-      return operation
     },
+    appendTurnStartAndUserMessage: (inputs) => runSerializedWrite(eventsPath, async () => {
+      await requireDirectory(sessionDirectory, "Session 目录")
+      validateTurnBatch(inputs, eventsPath)
+
+      const kind = await pathKind(eventsPath)
+      let nextSeq: number
+      let create = false
+      if (kind === "missing") {
+        if (inputs[0].turn !== 1) {
+          throw new Error(`无法创建 Session Event Log：首个 Turn 必须为 1（${eventsPath}）。`)
+        }
+        nextSeq = 1
+        create = true
+      } else {
+        if (kind !== "file") throw new Error(`Session Event Log 不是普通文件：${eventsPath}`)
+        const values = await readJsonLines(eventsPath)
+        validateNextTurn(values, inputs[0].turn, eventsPath)
+        nextSeq = nextSequence(values, eventsPath, 2)
+      }
+
+      const written = materializeEvents(
+        inputs,
+        options.sessionId,
+        nextSeq,
+        now,
+        createEventId,
+        eventsPath,
+      ) as [TurnStartEvent, UserMessageEvent]
+      const content = serializeEvents(written, eventsPath)
+      const appendOptions = create
+        ? { encoding: "utf8" as const, flag: "ax" }
+        : { encoding: "utf8" as const, flag: "a" }
+      await appendFile(eventsPath, content, appendOptions).catch((error: unknown) => {
+        throw new Error(`无法批量追加 Session Turn 事件：${eventsPath}`, { cause: error })
+      })
+      return written
+    }),
+  }
+}
+
+/**
+ * 在当前 Event Log 的共享队列中串行运行一次写入。
+ *
+ * @param eventsPath 规范化的 Event Log 路径。
+ * @param operation 必须独占当前日志执行的写入操作。
+ * @returns 写入操作的结果。
+ */
+function runSerializedWrite<T>(eventsPath: string, operation: () => Promise<T>): Promise<T> {
+  const previous = WRITE_TAILS.get(eventsPath) ?? Promise.resolve()
+  const result = previous.then(operation)
+  const settled = result.then(() => undefined, () => undefined)
+  WRITE_TAILS.set(eventsPath, settled)
+  void settled.then(() => {
+    if (WRITE_TAILS.get(eventsPath) === settled) WRITE_TAILS.delete(eventsPath)
+  })
+  return result
+}
+
+/** @param eventsPath 要等候较早写入完成的 Event Log 路径。 */
+async function waitForWrites(eventsPath: string): Promise<void> {
+  await (WRITE_TAILS.get(eventsPath) ?? Promise.resolve())
+}
+
+/**
+ * 校验 Turn 首批事件的顺序与共同身份。
+ *
+ * @param events 待提交的固定二元组。
+ * @param eventsPath 错误定位使用的 Event Log 路径。
+ * @throws Error 当事件类型、Turn 或消息身份不符合提交边界时抛出。
+ */
+function validateTurnBatch(
+  events: readonly [TurnStartEventInput, UserMessageEventInput],
+  eventsPath: string,
+): void {
+  const [start, message] = events
+  if (start.type !== "turn/start" || message.type !== "user/message") {
+    throw new Error(`Session Turn 批次顺序无效：${eventsPath}`)
+  }
+  if (!isPositiveSafeInteger(start.turn) || message.turn !== start.turn) {
+    throw new Error(`Session Turn 批次编号无效：${eventsPath}`)
+  }
+  if (
+    !isRecord(message.message)
+    || message.message.role !== "user"
+    || typeof message.message.id !== "string"
+    || message.message.id.trim() === ""
+  ) {
+    throw new Error(`Session Turn 批次的用户消息无效：${eventsPath}`)
+  }
+}
+
+/**
+ * 根据已有日志确认待写 Turn 是最后一个完整 Turn 的连续下一项。
+ *
+ * @param values 已从 JSONL 读取的日志值。
+ * @param turn 待提交的 Turn 编号。
+ * @param eventsPath 错误定位使用的 Event Log 路径。
+ * @throws Error 当日志为空、上一 Turn 未结束或 Turn 编号不连续时抛出。
+ */
+function validateNextTurn(values: readonly unknown[], turn: number, eventsPath: string): void {
+  if (values.length === 0) throw new Error(`Session Event Log 为空，不能继续 Turn：${eventsPath}`)
+  const lastStart = [...values].reverse().find((value) => isRecord(value) && value.type === "turn/start")
+  const lastEnd = [...values].reverse().find((value) => isRecord(value) && value.type === "turn/end")
+  if (
+    !isRecord(lastStart)
+    || !isPositiveSafeInteger(lastStart.turn)
+    || !isRecord(lastEnd)
+    || lastEnd.turn !== lastStart.turn
+  ) {
+    throw new Error(`上一个 Session Turn 尚未完整结束：${eventsPath}`)
+  }
+  const expectedTurn = lastStart.turn + 1
+  if (turn !== expectedTurn) {
+    throw new Error(`Session Turn 编号不连续：期望 ${expectedTurn}，实际 ${turn}（${eventsPath}）。`)
+  }
+
+  for (const value of values) {
+    if (
+      isRecord(value)
+      && value.type === "context_update"
+      && typeof value.turn === "number"
+      && value.turn > lastStart.turn
+      && value.turn !== turn
+    ) {
+      throw new Error(`Session context_update 不属于待提交 Turn ${turn}：${eventsPath}`)
+    }
+  }
+}
+
+/**
+ * 计算一批事件可使用的起始序号。
+ *
+ * @param values 当前日志值。
+ * @param eventsPath 错误定位使用的 Event Log 路径。
+ * @param count 本次需要分配的事件数量。
+ * @returns 第一条新事件应使用的 seq。
+ */
+function nextSequence(values: readonly unknown[], eventsPath: string, count: number): number {
+  const last = values.at(-1)
+  if (!isRecord(last) || !isPositiveSafeInteger(last.seq)) {
+    throw new Error(`无法追加 Session Event：${eventsPath} 的末尾事件缺少有效 seq。`)
+  }
+  if (last.seq > Number.MAX_SAFE_INTEGER - count) {
+    throw new Error(`无法追加 Session Event：${eventsPath} 的 seq 已达到安全整数上限。`)
+  }
+  return last.seq + 1
+}
+
+/**
+ * 为一组事件输入分配连续身份。
+ *
+ * @param inputs 尚未分配身份的事件。
+ * @param sessionId 当前日志绑定的 Session ID。
+ * @param firstSeq 第一条事件使用的 seq。
+ * @param now 时间来源。
+ * @param createEventId 事件 ID 来源。
+ * @param eventsPath 错误定位使用的 Event Log 路径。
+ * @returns 已经分配完整身份、尚未落盘的事件。
+ */
+function materializeEvents(
+  inputs: readonly SessionEventInput[],
+  sessionId: string,
+  firstSeq: number,
+  now: () => Date,
+  createEventId: () => string,
+  eventsPath: string,
+): SessionEvent[] {
+  return inputs.map((input, index) => {
+    const eventId = createEventId()
+    if (eventId.trim() === "") {
+      throw new Error(`无法追加 Session Event：事件 ID 不能为空（${eventsPath}）。`)
+    }
+    return {
+      ...input,
+      eventId,
+      sessionId,
+      seq: firstSeq + index,
+      createdAt: now().toISOString(),
+    } as SessionEvent
+  })
+}
+
+/**
+ * 在实际写文件前一次性序列化全部事件，避免序列化失败产生半批次。
+ *
+ * @param events 待持久化事件。
+ * @param eventsPath 错误定位使用的 Event Log 路径。
+ * @returns 以换行结尾的 JSONL 文本。
+ */
+function serializeEvents(events: readonly SessionEvent[], eventsPath: string): string {
+  try {
+    return `${events.map((event) => JSON.stringify(event)).join("\n")}\n`
+  } catch (error) {
+    throw new Error(`无法序列化 Session Event：${eventsPath}`, { cause: error })
   }
 }
 
@@ -130,6 +326,29 @@ function validateSessionId(sessionId: string): void {
   ) {
     throw new Error(`Session ID 必须是不含路径分隔符的非空目录名：${sessionId}`)
   }
+}
+
+/**
+ * 读取路径当前类型；不存在时返回 `missing`。
+ *
+ * @param path 待检查路径。
+ * @returns 普通文件、目录、其它节点或不存在。
+ */
+async function pathKind(path: string): Promise<"file" | "directory" | "other" | "missing"> {
+  try {
+    const stats = await lstat(path)
+    if (stats.isFile()) return "file"
+    if (stats.isDirectory()) return "directory"
+    return "other"
+  } catch (error) {
+    if (isFileNotFoundError(error)) return "missing"
+    throw new Error(`无法检查 Session Event Log：${path}`, { cause: error })
+  }
+}
+
+/** @returns 未知异常是否表示目标路径不存在。 */
+function isFileNotFoundError(error: unknown): boolean {
+  return error !== null && typeof error === "object" && "code" in error && error.code === "ENOENT"
 }
 
 /**

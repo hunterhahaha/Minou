@@ -105,9 +105,11 @@ function runtimeHarness(options: { blockFirstLoop?: boolean; failInitialization?
         return event
       },
     }
-    const bindings: SessionRuntimeBindings = {
+    const bindings = {
       createSessionDirectory: async () => {},
-      appendTurnStartAndUserMessage: async (inputs) => {
+      appendTurnStartAndUserMessage: async (
+        inputs: Parameters<SessionRuntimeBindings["appendTurnStartAndUserMessage"]>[0],
+      ) => {
         batches.push(inputs)
         const start = persistedEvent(sessionId, events.length + 1, inputs[0])
         const message = persistedEvent(sessionId, events.length + 2, inputs[1])
@@ -140,7 +142,7 @@ function runtimeHarness(options: { blockFirstLoop?: boolean; failInitialization?
         signal: new AbortController().signal,
       }),
       repairPorts,
-    }
+    } as unknown as SessionRuntimeBindings
     const runtime = new SessionRuntimePorts(sessionId, bindings)
     records.set(sessionId, { runtime, events, batches })
     return runtime

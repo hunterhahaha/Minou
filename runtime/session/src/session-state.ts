@@ -65,12 +65,16 @@ export interface SessionContextState {
 /** 恢复当下由 Project / Skill / MCP Runtime 汇总出的初始化基线。 */
 export interface CurrentSessionBaseline {
   agentsmd: {
+    /** 当前实际参与比较的 AGENTS.md 绝对路径。 */
+    path: string
     hash: string
     content: string
   }
   skills: {
     content: string
     entries: SessionSkillContextEntry[]
+    /** 按 Skill 名称保存已经过预算处理、可写入增量事件的 description。 */
+    descriptions: Record<string, string>
   }
   mcp: UnifiedToolDefinition[]
   /**
@@ -113,6 +117,16 @@ export interface FileSessionState {
   repairDerivedState(
     events: readonly SessionEvent[],
   ): Promise<{ currentModel: ModelRef }>
+  /**
+   * 读取已有 Session 在下一 Turn 开始前需要比较的 AGENTS.md 快照和 Skill 状态。
+   *
+   * @returns 与当前磁盘状态脱离引用关系的比较值。
+   * @throws Error 当派生状态缺失或结构无效时抛出。
+   */
+  readContextComparisonState(): Promise<{
+    agentsSnapshot: string
+    skills: SessionSkillContextState
+  }>
 }
 
 const EMPTY_USAGE: RealUsage = {
@@ -186,14 +200,20 @@ export function createFileSessionState(options: FileSessionStateOptions): FileSe
       let nextContextState = contextState
       if (needsContextState) {
         nextContextState = {
-          agentsmd: { ...baseline.agentsmd },
+          agentsmd: {
+            hash: baseline.agentsmd.hash,
+            content: baseline.agentsmd.content,
+          },
           skills: { id: "initial", content: baseline.skills.content },
           mcp: structuredClone(baseline.mcp),
         }
       } else if (needsAgentBaseline) {
         nextContextState = {
           ...contextState,
-          agentsmd: { ...baseline.agentsmd },
+          agentsmd: {
+            hash: baseline.agentsmd.hash,
+            content: baseline.agentsmd.content,
+          },
         }
       }
       if (nextContextState !== contextState) {
@@ -283,7 +303,23 @@ export function createFileSessionState(options: FileSessionStateOptions): FileSe
     })
   }
 
-  return { initializeSession, repairDerivedState }
+  /** 在 SessionState 串行队列中读取 Turn 开始增量比较状态。 */
+  const readContextComparisonState = async (): Promise<{
+    agentsSnapshot: string
+    skills: SessionSkillContextState
+  }> => runSerialized(queue, async () => {
+    const meta = await readRequiredJson(paths.metaPath, isSessionMeta, "Session Meta")
+    const agentsSnapshot = await readRequiredTextFile(paths.agentsSnapshotPath, "AGENTS.md 比较快照")
+    return {
+      agentsSnapshot,
+      skills: {
+        id: meta.skills.id,
+        entries: cloneSkillEntries(meta.skills.entries),
+      },
+    }
+  })
+
+  return { initializeSession, repairDerivedState, readContextComparisonState }
 }
 
 interface SessionStatePaths {
@@ -500,13 +536,21 @@ function skillEntryFromDescription(
  * @throws Error 当任一已确认字段不符合持久化结构时抛出。
  */
 function validateCurrentBaseline(baseline: CurrentSessionBaseline): void {
-  if (!isRecord(baseline) || !isAgentsState(baseline.agentsmd)) {
+  if (
+    !isRecord(baseline)
+    || !isAgentsState(baseline.agentsmd)
+    || !isAbsolute(baseline.agentsmd.path)
+  ) {
     throw new Error("当前 Session 基线的 agentsmd 无效。")
   }
   if (
     !isRecord(baseline.skills)
     || typeof baseline.skills.content !== "string"
     || !isSkillEntries(baseline.skills.entries)
+    || !isRecord(baseline.skills.descriptions)
+    || !baseline.skills.entries.every((entry) =>
+      typeof baseline.skills.descriptions[entry.name] === "string"
+    )
   ) {
     throw new Error("当前 Session 基线的 skills 无效。")
   }
