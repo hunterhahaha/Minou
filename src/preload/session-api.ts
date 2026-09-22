@@ -10,6 +10,7 @@
 
 import type {
   ContinueSessionInput,
+  EnqueueSessionMessageInput,
   EnqueuedSessionMessageResponse,
 } from "../../runtime/agent/src/session-runtime.ts"
 import type { UserMessageInput } from "../../runtime/session/src/events.ts"
@@ -53,7 +54,7 @@ export interface NiCodePreloadApi {
    *
    * @param projectId Session 所属 Project 的数字身份。
    * @param sessionId 要恢复的 Session 身份。
-   * @param input 新 Turn 的用户消息。
+   * @param input 新 Turn 的用户消息与要先保存到 Session Meta 的模型选择。
    * @returns 新 Turn 首批事件成功提交后的 Session 身份和 Turn 编号。
    */
   continueSession(
@@ -72,7 +73,7 @@ export interface NiCodePreloadApi {
   enqueueSessionMessage(
     projectId: number,
     sessionId: string,
-    input: ContinueSessionInput,
+    input: EnqueueSessionMessageInput,
   ): Promise<EnqueuedSessionMessageResponse>
   /**
    * 停止指定 Project 中的活动 Session Runtime。
@@ -128,7 +129,7 @@ export function createSessionApi(ipcRenderer: IpcRendererInvokePort): NiCodePrel
     async enqueueSessionMessage(
       projectId: number,
       sessionId: string,
-      input: ContinueSessionInput,
+      input: EnqueueSessionMessageInput,
     ): Promise<EnqueuedSessionMessageResponse> {
       const response = await ipcRenderer.invoke(
         SESSION_IPC_CHANNELS.enqueueSessionMessage,
@@ -208,7 +209,7 @@ function requireStoppedSessionResponse(value: unknown): StoppedSessionResponse {
   return { sessionId: value.sessionId }
 }
 
-function isTextContent(value: unknown): value is ContinueSessionInput["content"] {
+function isTextContent(value: unknown): value is EnqueueSessionMessageInput["content"] {
   return Array.isArray(value) && value.every((block) =>
     typeof block === "object" &&
     block !== null &&

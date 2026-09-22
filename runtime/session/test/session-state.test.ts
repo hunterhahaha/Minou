@@ -7,7 +7,12 @@ import { createFileSessionRepairPorts, repairSession } from "../../agent/src/ses
 import type { ModelRef } from "../../model/src/types.ts"
 import { createFileSessionEventLog } from "../src/event-log.ts"
 import type { SessionEvent, SessionEventInput } from "../src/events.ts"
-import { createFileSessionState } from "../src/session-state.ts"
+import {
+  DEFAULT_SESSION_SANDBOX_MODE,
+  SESSION_META_VERSION,
+  createFileSessionState,
+  writeCurrentModel,
+} from "../src/session-state.ts"
 import type { CurrentSessionBaseline, SessionContextState, SessionMeta } from "../src/session-state.ts"
 
 const MODEL: ModelRef = { providerId: "provider-1", protocol: "responses", modelId: "model-1" }
@@ -101,7 +106,9 @@ async function testInitialization(root: string): Promise<void> {
   const contextPath = join(sessionDirectory, "contextstate.json")
   const snapshotPath = join(sessionDirectory, "agents_md.snapshot")
   const meta = await readJson<SessionMeta>(metaPath)
+  assert.equal(meta.version, SESSION_META_VERSION)
   assert.deepEqual(meta.currentModel, MODEL)
+  assert.equal(meta.sandboxMode, DEFAULT_SESSION_SANDBOX_MODE)
   assert.deepEqual(meta.usage, { inputTokens: 0, cacheHitTokens: 0, cacheMissTokens: 0, cacheHitRate: 0 })
   assert.deepEqual(meta.skills, { id: null, entries: currentBaseline.skills.entries })
   assert.deepEqual(meta.loadedMcpTools, currentBaseline.additionalMeta?.loadedMcpTools)
@@ -123,10 +130,45 @@ async function testInitialization(root: string): Promise<void> {
   })
   assert.equal((await lstat(join(sessionDirectory, "tool_output"))).isDirectory(), true)
 
+  meta.sandboxMode = "full-access"
+  await writeFile(metaPath, `${JSON.stringify(meta, null, 2)}\n`, "utf8")
   currentBaseline = baseline("changed-after-initialization")
   await state.initializeSession()
   assert.equal(baselineReads, 1, "有效的既有派生文件不得按当前状态覆盖")
   assert.equal(await readFile(snapshotPath, "utf8"), "agents-initial")
+  assert.equal((await readJson<SessionMeta>(metaPath)).sandboxMode, "full-access")
+}
+
+/** 验证不支持的 meta 版本或沙盒模式会作为可修复派生状态重新创建。 */
+async function testMetaVersionAndSandboxValidation(root: string): Promise<void> {
+  const sessionId = "session-meta-version-and-sandbox"
+  const sessionDirectory = join(root, sessionId)
+  await mkdir(sessionDirectory)
+  await writeEvents(sessionDirectory, initialEvents(sessionId))
+  const log = createFileSessionEventLog({ sessionId, sessionDirectory })
+  const state = createFileSessionState({
+    sessionId,
+    sessionDirectory,
+    readEvents: log.readEvents,
+    resolveCurrentBaseline: async () => baseline("version-and-sandbox"),
+    estimateSkillTokens: (description) => description.length,
+  })
+  const metaPath = join(sessionDirectory, "meta.json")
+
+  await state.initializeSession()
+  const unsupportedVersion = await readJson<Record<string, unknown>>(metaPath)
+  unsupportedVersion.version = 2
+  await writeFile(metaPath, `${JSON.stringify(unsupportedVersion, null, 2)}\n`, "utf8")
+  await state.initializeSession()
+  assert.equal((await readJson<SessionMeta>(metaPath)).version, SESSION_META_VERSION)
+
+  const unsupportedSandboxMode = await readJson<Record<string, unknown>>(metaPath)
+  unsupportedSandboxMode.sandboxMode = "unsupported"
+  await writeFile(metaPath, `${JSON.stringify(unsupportedSandboxMode, null, 2)}\n`, "utf8")
+  await state.initializeSession()
+  const repaired = await readJson<SessionMeta>(metaPath)
+  assert.equal(repaired.version, SESSION_META_VERSION)
+  assert.equal(repaired.sandboxMode, DEFAULT_SESSION_SANDBOX_MODE)
 }
 
 async function testDerivedStateRepair(root: string): Promise<void> {
@@ -192,7 +234,7 @@ async function testDerivedStateRepair(root: string): Promise<void> {
     }),
   )
 
-  assert.deepEqual(await state.repairDerivedState(events), { currentModel: OTHER_MODEL })
+  assert.equal(await state.repairDerivedState(events), undefined)
   const repairedMeta = await readJson<SessionMeta>(metaPath)
   assert.deepEqual(repairedMeta.usage, {
     inputTokens: 20,
@@ -200,6 +242,8 @@ async function testDerivedStateRepair(root: string): Promise<void> {
     cacheMissTokens: 30,
     cacheHitRate: 1 / 7,
   })
+  assert.equal(repairedMeta.version, SESSION_META_VERSION)
+  assert.equal(repairedMeta.sandboxMode, DEFAULT_SESSION_SANDBOX_MODE)
   assert.deepEqual(repairedMeta.skills, {
     id: "event-4",
     entries: [
@@ -302,6 +346,75 @@ async function testInitializationFailures(root: string): Promise<void> {
   await assert.rejects(state.initializeSession(), /Session Tool Output 目录不是目录/)
 }
 
+async function testCurrentModelDiskOperations(root: string): Promise<void> {
+  const sessionId = "session-current-model"
+  const sessionDirectory = join(root, sessionId)
+  await mkdir(sessionDirectory)
+  await writeEvents(sessionDirectory, initialEvents(sessionId))
+  const log = createFileSessionEventLog({ sessionId, sessionDirectory })
+  const state = createFileSessionState({
+    sessionId,
+    sessionDirectory,
+    readEvents: log.readEvents,
+    resolveCurrentBaseline: async () => baseline("current-model"),
+    estimateSkillTokens: (description) => description.length,
+  })
+  await state.initializeSession()
+
+  const metaPath = join(sessionDirectory, "meta.json")
+  const before = await readJson<SessionMeta>(metaPath)
+  before.sandboxMode = "full-access"
+  before.futureField = { keep: true }
+  await writeFile(metaPath, `${JSON.stringify(before, null, 2)}\n`, "utf8")
+
+  const selected = structuredClone(OTHER_MODEL)
+  await state.writeCurrentModel(selected)
+  selected.modelId = "mutated-after-write"
+  const written = await readJson<SessionMeta>(metaPath)
+  assert.deepEqual(written.currentModel, OTHER_MODEL)
+  assert.equal(written.sandboxMode, "full-access")
+  assert.deepEqual(written.futureField, { keep: true })
+  assert.deepEqual(written.usage, before.usage)
+  assert.deepEqual(written.skills, before.skills)
+
+  written.currentModel = MODEL
+  await writeFile(metaPath, `${JSON.stringify(written, null, 2)}\n`, "utf8")
+  assert.deepEqual(await state.readCurrentModel(), MODEL, "读取不得复用上次写入的局部模型")
+
+  await writeFile(metaPath, "not-json\n", "utf8")
+  await assert.rejects(state.readCurrentModel(), (error: unknown) =>
+    error instanceof Error && error.message.includes(metaPath))
+  await rm(metaPath)
+  await assert.rejects(state.readCurrentModel(), (error: unknown) =>
+    error instanceof Error && error.message.includes(metaPath))
+
+  const globalSessionId = "session-global-model-write"
+  const globalSessionDirectory = join(root, ".nicode", "sessions", "7", globalSessionId)
+  await mkdir(globalSessionDirectory, { recursive: true })
+  await writeEvents(globalSessionDirectory, initialEvents(globalSessionId))
+  const globalLog = createFileSessionEventLog({
+    sessionId: globalSessionId,
+    sessionDirectory: globalSessionDirectory,
+  })
+  const globalState = createFileSessionState({
+    sessionId: globalSessionId,
+    sessionDirectory: globalSessionDirectory,
+    readEvents: globalLog.readEvents,
+    resolveCurrentBaseline: async () => baseline("global-model-write"),
+    estimateSkillTokens: (description) => description.length,
+  })
+  await globalState.initializeSession()
+  const previousUserProfile = process.env.USERPROFILE
+  process.env.USERPROFILE = root
+  try {
+    await writeCurrentModel(7, globalSessionId, OTHER_MODEL)
+    assert.deepEqual(await globalState.readCurrentModel(), OTHER_MODEL)
+  } finally {
+    if (previousUserProfile === undefined) delete process.env.USERPROFILE
+    else process.env.USERPROFILE = previousUserProfile
+  }
+}
+
 async function testCompleteRepairPorts(root: string): Promise<void> {
   const sessionId = "session-complete-ports"
   const sessionDirectory = join(root, sessionId)
@@ -336,7 +449,7 @@ async function testCompleteRepairPorts(root: string): Promise<void> {
     createEventId: () => `event-${nextId++}`,
   })
 
-  assert.deepEqual(await repairSession(sessionId, ports), { lastTurn: 1, currentModel: MODEL })
+  assert.deepEqual(await repairSession(sessionId, ports), { lastTurn: 1 })
   const repaired = await ports.readEvents() as SessionEvent[]
   assert.deepEqual(repaired.slice(5).map((event) => event.type), [
     "assistant/block_end",
@@ -364,9 +477,11 @@ async function main(): Promise<void> {
   const root = await mkdtemp(join(tmpdir(), "nicode-session-state-"))
   try {
     await testInitialization(root)
+    await testMetaVersionAndSandboxValidation(root)
     await testDerivedStateRepair(root)
     await testRecoveryUsesCurrentBaseline(root)
     await testInitializationFailures(root)
+    await testCurrentModelDiskOperations(root)
     await testCompleteRepairPorts(root)
   } finally {
     await rm(root, { recursive: true, force: true })

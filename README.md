@@ -20,14 +20,52 @@ NiCode V1 是一个本地运行的 Coding Agent Runtime：浏览器 UI 与本机
 `config.json`、`credentials.json`、`skills/`、`sessions/`、`logs/` 与
 `sessions/default`。新建 `config.json` 和 default `workspace.json` 使用 V1 空配置，
 `credentials.json` 使用文档允许的 `{}`。已有文件按 V1 检查版本、字段与引用关系，
-失败时保留原文件并抛出带路径的错误。
+失败时保留原文件并抛出带路径的错误；初始化链在同一次调用中读取并校验普通配置、凭据和 default
+workspace，真实 Electron 入口只保留返回的固定路径，不保留配置或凭据快照。每个 Provider（包括暂时没有模型的
+Provider）必须恰好配置一个协议。`readModelAdapterConfigSnapshot()` 为每个 Turn 只读重开并重新
+校验 `config.json` 与 `credentials.json`，不重复读取 workspace，也不会创建缺失配置文件。
 
-**Electron 主进程启动装配**已完成：`src/main/index.ts` 导出
-`startElectronApp(options)`，依次完成启动配置初始化、default 分组 `SessionRuntime` 工厂装配、
-Session IPC 注册、Electron ready 等待与窗口生命周期接线。调用方显式提供 app、ipcMain、
-窗口管理端口，以及 System Prompt、工作区说明、当前基线、Adapter 与工具执行入口；后台错误出口
-和 Renderer 事件转发端口同样在此注入。当前未引入 Electron 包，也不自动执行入口；真实
-BrowserWindow 参数、preload 路径与页面加载仍由后续桌面壳装配提供。
+**Electron 可执行入口和 `startElectronApp` 参数装配**已完成：package 的 `main` 指向
+`src/main/electron-main.ts` 的编译产物。该入口直接导入真实 Electron `app`、`ipcMain` 和
+`BrowserWindow`，依次初始化并首次校验配置文件、初始化全局 Network Dispatcher、空 Tool / Render
+Registry 的统一执行入口和 Project Context resolver，随后逐字段调用：
+
+```ts
+await startElectronApp({
+  app,
+  ipcMain,
+  windows,
+  configPaths: paths,
+  sessionRuntime: {
+    systemPrompt: "You are an AI agent powered by NiCode.",
+    resolveProjectContext,
+    estimateSkillTokens: estimateLocalTokens,
+    createTurnModelAdapter: (model) =>
+      createTurnModelAdapter(paths, model),
+    executeTool,
+  },
+  onSessionCompletionFailure,
+})
+```
+
+没有 `BuildInput` 或 options builder 公共层，启动时也不创建任何 Provider SDK Client 或 Adapter。
+初始配置结构和 Provider 协议基数在 IPC 注册、Electron ready 和窗口创建前完成检查；空配置和缺少
+凭据仍允许应用启动，真正选中对应模型的 Turn 才会明确失败。
+`src/main/index.ts` 的 `startElectronApp(options)` 只消费这些完成的依赖，注册 Session IPC、等待 ready、
+管理 activate / window-all-closed，并在每次创建 Runtime 时按 `projectId` 使用
+`sessions/<project-id>/<session-id>`。
+
+**Project 固定上下文解析**已接入：`src/main/project-context.ts` 同步读取并检查
+`sessions/<project-id>/workspace.json`，生成包含关联目录、cwd、内置 workspace 和 allowedRoots 的
+Workspace Info；每个 Turn 的 baseline 异步读取当前 cwd 下的 `AGENTS.md`，并合并 Global / Project
+Skills。每个 `skills/` 直接子目录中的 `SKILL.md` 以 YAML frontmatter 的 `name` 为唯一身份，目录名可以
+不同；`registry.json` 的 name 引用 YAML name 并提供 scope / enabled，Project 同名项覆盖 Global，
+包括 disabled Project 项屏蔽同名 Global Skill。YAML `description` 进入固定 Skill Context；Token 粗估
+暂按 `Math.ceil(text.length / 4)`。MCP Runtime 尚未实现，因此 baseline 的 MCP 列表仍明确为空。
+
+真实 BrowserWindow 使用编译后的 preload 与无框架静态 `src/renderer/index.html`；构建脚本把 HTML
+复制到 `dist`。Renderer 保持 `contextIsolation=true`、`nodeIntegration=false`。由于 preload 目前是
+未经打包的多文件 CommonJS 输出，窗口暂时显式使用 `sandbox=false`。
 
 **阶段 1（统一模型格式）**已完成类型定义：`runtime/model/src/types.ts` 与 `runtime/error/src/types.ts`。
 
@@ -47,10 +85,12 @@ Insert、文件变更汇总与最终 Surface 仍未实现，见下文。
 
 **SessionRuntime 的活动实例与具体绑定**已提供：`SessionRuntimeBindings` 为单个 Session 绑定目录、
 同一写队列中的 Event Log / SessionState、Turn 首批事件原子追加、AGENTS.md / Skill 增量、Event Log
-上下文回放以及 Adapter / 执行器；固定基线仍由 Project / Skill 层通过已有解析函数提供，Tool Definition
+上下文回放以及每 Turn Adapter 工厂 / 执行器；固定基线由 Electron 入口接入的 Project Context resolver 提供，Tool Definition
 构建在 ToolExposureManager 落地前返回空数组。`SessionRuntimePorts` 维护运行期 FIFO 用户消息队列和
-已持久化事件流；`startNewSession` 直接提交新 Session 首轮，已有 Session 的首条及运行中追加消息则在
-上一 Turn 完整结束后依次调用 `continueSession`。每个 Turn 会写入最小 `turn/end`，文件变更汇总、
+已持久化事件流。新 Session 保持 Event Log 先于派生文件的提交顺序；显式 Continue 先把请求模型
+原子写入 `meta.json`，Queue 则不保存或覆盖模型。两条路径都会在 Turn 真正开始时重新打开
+`meta.json`，随后重新打开并校验 `config.json` 与 `credentials.json`，创建只供该 Turn 全部 Step 共用的
+新 Adapter。Adapter、CredentialStore、配置快照和 SDK Client 都不跨 Turn 缓存。每个 Turn 会写入最小 `turn/end`，文件变更汇总、
 Insert 与最终 Surface 仍未实现。
 
 **Renderer 的四个 Session 命令**已通过 preload 暴露为
@@ -60,7 +100,8 @@ Insert 与最终 Surface 仍未实现。
 `window.nicode.stopSession(projectId, sessionId)`。主进程按 `sessionId` 管理活动实例；
 `projectId` 是对应 `sessions/<project-id>` 分组目录的数字身份；前两个入口在
 首批事件提交后返回 `{ sessionId, turn }`，追加入口返回 `{ sessionId, content }`，
-Stop 入口幂等返回 `{ sessionId }`。每个活动 `SessionRuntimePorts` 中的所有 Turn / Loop 共享同一取消信号；
+其中 start 与 continue 输入都包含 `{ content, model }`，enqueue 只包含 `{ content }`。Stop 入口幂等返回
+`{ sessionId }`。每个活动 `SessionRuntimePorts` 中的所有 Turn / Loop 共享同一取消信号；
 取消后不再消费后续内存 Queue。主进程后台消费
 Session 事件流，并预留了 Renderer 事件筛选与发送边界；具体筛选名单和 Renderer wire shape 尚未确定。
 
@@ -81,9 +122,11 @@ Session 事件流，并预留了 Renderer 事件筛选与发送边界；具体�
 → 协议流 → Adapter（事件转换）→ `ModelStreamEvent` → AgentLoop。重试与错误归一化统一在
 `runModelStream` 内完成，因此 Adapter 抛出的一定是 `AppError`（`source = "model"`）。
 
-三个 Adapter 是**每个模型一个实例**：请求里的 `ModelRef` 会与实例绑定的 `ModelConfig` 校验，
+三个 Adapter 是**每个 Turn 一个实例**：请求里的 `ModelRef` 会与实例绑定的 `ModelConfig` 校验，
 不一致直接以 `INVALID_MODEL_REQUEST`（`source = "runtime"`）失败，不发网络请求。
-凭据由 `CredentialStore` 按 providerId 提供后经 `ProtocolClientOptions` 传入。
+同一 Turn 的多个 AgentLoop Step 共用该实例；下一个 Turn 即使选择相同 ModelRef 也会重读磁盘并创建
+新实例。凭据由该 Turn 新建的 `CredentialStore` 按 providerId 提供后经 `ProtocolClientOptions` 传入。
+`CredentialStore` 只提供单项查找，不暴露凭据枚举、修改或持久化入口。
 
 ### AgentLoop（阶段 6.1 循环骨架 + 6.4 工具调用接线）
 
@@ -190,15 +233,23 @@ memory_read / mcp_list_tools。
 ```text
 src/                                 Electron 外壳
 ├─ main/
-│  ├─ index.ts                       主进程启动装配、default SessionRuntime 工厂与生命周期端口
-│  ├─ config-files.ts                .nicode 目录与文件初始化
+│  ├─ electron-main.ts               真实 Electron 可执行入口，直接构造 startElectronApp 参数
+│  ├─ electron-windows.ts            BrowserWindow 创建、静态页面加载与窗口存活检查
+│  ├─ index.ts                       startElectronApp、Project SessionRuntime 工厂与生命周期端口
+│  ├─ model-adapters.ts              每 Turn 重读配置、凭据并创建单个模型 Adapter
+│  ├─ project-context.ts             workspace、AGENTS.md 与 YAML Skill baseline 解析
+│  ├─ token-estimator.ts             Skill / MCP 元信息的本地 Token 粗估
+│  ├─ config-files.ts                .nicode 初始化及每 Turn 模型配置只读重载
 │  ├─ config-schema.ts               三份启动配置的 V1 字段检查
-│  └─ session-ipc.ts                 SessionRuntime 的两个 IPC handler
+│  └─ session-ipc.ts                 SessionRuntime 的四个 IPC handler
 ├─ preload/
 │  ├─ index.ts                       contextBridge 安装入口
 │  ├─ session-api.ts                 window.nicode Session API 与 IPC 契约
 │  └─ global.d.ts                    Renderer 的 window.nicode 类型
-└─ renderer/index.ts                 渲染进程入口，UI（前端框架未定）
+└─ renderer/index.html               当前无框架的最小静态桌面页面
+
+scripts/
+└─ copy-static-assets.mjs            把静态 Renderer HTML 复制到 dist
 
 test/
 ├─ main/                              配置初始化与 Session IPC 测试
@@ -237,7 +288,7 @@ runtime/                             Runtime 模块，各自含 src/ 与 test/
 │  │  └─ session-state.ts             对话级 Session 派生文件初始化与恢复
 │  └─ test/                          event-log.test.ts / session-state.test.ts
 ├─ project/                          Project / ProjectManager / ProjectRules
-├─ credential/                       CredentialStore
+├─ credential/                       只读 CredentialStore 与测试
 ├─ skill/                            Skill Runtime 本体：SkillManager / SkillContextManager
 ├─ memory/                           Memory Runtime 本体：MemoryManager
 ├─ error/
@@ -310,11 +361,13 @@ src/main/config-files.ts     →   test/main/config-files.test.ts
 | `undici` | ^8.10.2 | 进程级 HTTP Dispatcher 与 Keep-Alive（第 7 节） |
 | `openai` | ^7.15.0 | Chat Completions 与 Responses 两个协议的官方 SDK |
 | `@anthropic-ai/sdk` | ^0.126.0 | Anthropic Messages 协议的官方 SDK |
+| `yaml` | ^2.9.1 | 解析每个 `SKILL.md` 开头的 YAML frontmatter |
+| `electron`（dev） | ^44.4.3 | 桌面主进程、preload 与 BrowserWindow |
 | `typescript`（dev） | ^5.9.3 | 类型检查与产出 |
 | `@types/node`（dev） | ^24.13.5 | Node 全局类型 |
 
-Electron 依赖和真实 BrowserWindow 装配仍未落地；主进程启动函数与 preload 入口只依赖
-Electron 能力的最小同形接口，离线测试使用假端口，不新增依赖。
+`npm start` 先构建 TypeScript 和静态页面，再通过 package 的 `main` 启动 Electron。主进程生命周期
+与窗口管理仍保留最小同形端口，离线测试无需启动真实 GUI。
 
 未选 TypeScript 7：TS 7 已移除 `moduleResolution: node10`（本项目配置中的 `"Node"` 即该值），
 实测报 `TS5108`，需先调整 `moduleResolution` 才能使用。
@@ -341,7 +394,11 @@ node --experimental-strip-types runtime/agent/test/loop.test.ts
 node --experimental-strip-types runtime/agent/test/session-runtime.test.ts
 node --experimental-strip-types runtime/session/test/event-log.test.ts
 node --experimental-strip-types runtime/session/test/session-state.test.ts
+node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types runtime/credential/test/credential-store.test.ts
 node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/main/config-files.test.ts
+node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/main/model-adapters.test.ts
+node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/main/project-context.test.ts
+node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/main/electron-windows.test.ts
 node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/main/index.test.ts
 node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/main/session-ipc.test.ts
 node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/preload/session-api.test.ts
@@ -350,9 +407,30 @@ node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types t
 `test/main/config-files.test.ts` 使用临时用户目录验证：首次创建、重复调用时保留有效内容、
 缺失文件补齐、V1 有效配置、字段与引用错误、损坏文件保留，以及非法用户目录。
 
-`test/main/index.test.ts` 使用假 Electron app、ipcMain 与窗口端口验证：配置先于副作用完成、
-四个 Session channel 注册、Project SessionRuntime 实际落盘与宿主依赖注入、后台错误和事件转发、
-ready / activate / window-all-closed 生命周期，以及同一 ipcMain 重复启动时保留重复注册错误。
+`runtime/credential/test/credential-store.test.ts` 验证空 Store、按 Provider 查找、输入复制、
+空字段与重复 Provider 拒绝，以及错误信息不泄露 API Key。
+
+`test/main/model-adapters.test.ts` 验证每 Turn 重读后的模型能力、URL、Headers 与 API Key 热更新，
+相同 ModelRef 不复用 Adapter，以及 Provider、Model、协议、凭据、零协议、多协议和损坏配置错误均带
+对应路径且不泄露 API Key。
+
+`runtime/session/test/session-state.test.ts` 验证 `currentModel` 原子写入只修改该字段、每次读取都
+重新访问磁盘、外部修改立即可见、损坏或缺失 Meta 带路径失败，以及全局 project/session 写入口与
+绑定式 SessionState 共用串行状态边界。
+
+`runtime/agent/test/session-runtime.test.ts` 验证新 Session、显式 Continue 和 Queue 的不同模型时序，
+Adapter 失败的事件提交边界、Queue 不覆盖模型、同一 Turn 多 Step 只创建一个 Adapter，以及连续 Turn
+按当时磁盘模型分别创建 Adapter。
+
+`test/main/project-context.test.ts` 验证 Project workspace 与 AGENTS.md、YAML name 身份、任意 Skill
+目录名、registry 引用、Project 覆盖及 disabled 屏蔽、无效 workspace / Skill 配置和 Token 粗估。
+
+`test/main/electron-windows.test.ts` 验证 BrowserWindow 参数、preload / Renderer 绝对路径、页面装载
+错误出口，以及窗口创建和存活状态。
+
+`test/main/index.test.ts` 使用假 Electron app、ipcMain 与窗口端口验证：四个 Session channel 注册、
+不同 Project 的 SessionRuntime 路径与上下文独立装配、后台错误和事件转发、Project Context 失败时
+不创建 Session、ready / activate / window-all-closed 生命周期，以及重复注册错误。
 
 三个 Adapter 的测试分两层：**离线转换**（构造协议侧载荷 → 比对统一事件，不碰网络）与
 **端到端**（`test/helpers.ts` 起一个本机 SSE 假服务器，真实走一遍官方 SDK）。

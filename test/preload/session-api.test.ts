@@ -46,7 +46,7 @@ async function testCallsFixedChannels(): Promise<void> {
     { sessionId: "new-session", turn: 1 },
   )
   assert.deepEqual(
-    await api.continueSession(PROJECT_ID, "existing-session", { content: CONTENT }),
+    await api.continueSession(PROJECT_ID, "existing-session", { content: CONTENT, model: MODEL }),
     { sessionId: "existing-session", turn: 4 },
   )
   assert.deepEqual(
@@ -64,7 +64,7 @@ async function testCallsFixedChannels(): Promise<void> {
     },
     {
       channel: SESSION_IPC_CHANNELS.continueSession,
-      args: [PROJECT_ID, "existing-session", { content: CONTENT }],
+      args: [PROJECT_ID, "existing-session", { content: CONTENT, model: MODEL }],
     },
     {
       channel: SESSION_IPC_CHANNELS.enqueueSessionMessage,

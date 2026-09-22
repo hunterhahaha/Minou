@@ -1,12 +1,13 @@
 /**
- * Protocol Adapter 的创建入口（第 6 节、第 4 节启动初始化第 11 步）。
+ * Protocol Adapter 的创建入口（第 6 节）。
  *
  * 三个 Adapter 实现同一个 `ModelAdapter` 接口，差异只在协议内部；本文件只负责按
  * `ModelConfig.protocol` 选择实现，让上层（SessionRuntime / AgentLoop）不需要 switch。
+ * 当前宿主在每个 Turn 开始时调用该入口；本模块不缓存 SDK Client 或 Adapter。
  *
  * 架构依据：开发备忘录第 6 节（模型协议层：Provider → Protocol → Models）、
  *          第 3 节（CredentialStore 为 Adapter 提供凭据）、
- *          第 4 节（第 9 步配置 Dispatcher 在第 11 步初始化 Adapter 之前）
+ *          第 7 节（全局 Dispatcher 必须早于任一 Adapter 初始化）
  * 实施阶段：.git/技术文档/开发TODOList.md 阶段 3 / 4 / 5
  */
 

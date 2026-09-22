@@ -23,6 +23,11 @@ const MODEL: ModelRef = {
   protocol: "anthropic_messages",
   modelId: "model-1",
 }
+const OTHER_MODEL: ModelRef = {
+  providerId: "provider-2",
+  protocol: "responses",
+  modelId: "model-2",
+}
 const CONTENT = [{ type: "text" as const, text: "你好" }]
 const PROJECT_ID = 17
 
@@ -95,12 +100,13 @@ function runtimeHarness(options: { blockFirstLoop?: boolean; failInitialization?
   const createRuntime = (projectId: number, sessionId: string): SessionRuntimePorts => {
     const events = sessionId === "existing-session" ? completedSessionEvents(sessionId) : []
     const batches: RuntimeRecord["batches"] = []
+    let diskModel = structuredClone(MODEL)
     const repairPorts = {
       readEvents: async () => events,
       initializeSession: async () => {
         if (options.failInitialization) throw new Error("initialize failed")
       },
-      repairDerivedState: async () => ({ currentModel: MODEL }),
+      repairDerivedState: async () => {},
       appendEvent: async (input: SessionEventInput) => {
         const event = persistedEvent(sessionId, events.length + 1, input)
         events.push(event)
@@ -129,6 +135,8 @@ function runtimeHarness(options: { blockFirstLoop?: boolean; failInitialization?
         return [start, message]
       },
       prepareExistingTurn: async () => {},
+      writeCurrentModel: async (model: ModelRef) => { diskModel = structuredClone(model) },
+      readCurrentModel: async () => structuredClone(diskModel),
       buildContent: async () => [
         { role: "system", content: "system" },
         { role: "user", content: CONTENT },
@@ -212,7 +220,7 @@ async function testStartsNewSessionAndProcessesQueuedMessages(): Promise<void> {
       SESSION_IPC_CHANNELS.continueSession,
       PROJECT_ID,
       response.sessionId,
-      { content: queuedContent },
+      { content: queuedContent, model: MODEL },
     ),
     /正在运行/,
   )
@@ -237,7 +245,7 @@ async function testStartsNewSessionAndProcessesQueuedMessages(): Promise<void> {
   )
 }
 
-async function testContinuesExistingSessionThroughQueue(): Promise<void> {
+async function testContinuesExistingSessionExplicitly(): Promise<void> {
   const harness = runtimeHarness()
   const ipcMain = new FakeIpcMain()
   registerSessionIpcHandlers(ipcMain, harness.createRuntime, () => {})
@@ -246,7 +254,7 @@ async function testContinuesExistingSessionThroughQueue(): Promise<void> {
     SESSION_IPC_CHANNELS.continueSession,
     PROJECT_ID,
     "existing-session",
-    { content: CONTENT },
+    { content: CONTENT, model: OTHER_MODEL },
   )
   assert.deepEqual(response, { sessionId: "existing-session", turn: 2 })
   const record = harness.records.get("existing-session")
@@ -255,7 +263,7 @@ async function testContinuesExistingSessionThroughQueue(): Promise<void> {
   assert.deepEqual(record.batches[0]?.[0], {
     type: "turn/start",
     turn: 2,
-    model: MODEL,
+    model: OTHER_MODEL,
   })
 }
 
@@ -344,10 +352,37 @@ async function testRejectsInvalidRendererInput(): Promise<void> {
   )
   await assert.rejects(
     ipcMain.invoke(
+      SESSION_IPC_CHANNELS.continueSession,
+      PROJECT_ID,
+      "existing-session",
+      { content: CONTENT },
+    ),
+    /continueSession 输入无效/,
+  )
+  await assert.rejects(
+    ipcMain.invoke(
+      SESSION_IPC_CHANNELS.continueSession,
+      PROJECT_ID,
+      "existing-session",
+      { content: CONTENT, model: { ...MODEL, protocol: "invalid" } },
+    ),
+    /continueSession 输入无效/,
+  )
+  await assert.rejects(
+    ipcMain.invoke(
       SESSION_IPC_CHANNELS.enqueueSessionMessage,
       PROJECT_ID,
       "missing-session",
       { content: "invalid" },
+    ),
+    /enqueueSessionMessage 输入无效/,
+  )
+  await assert.rejects(
+    ipcMain.invoke(
+      SESSION_IPC_CHANNELS.enqueueSessionMessage,
+      PROJECT_ID,
+      "missing-session",
+      { content: CONTENT, model: MODEL },
     ),
     /enqueueSessionMessage 输入无效/,
   )
@@ -398,7 +433,7 @@ async function testObservesBackgroundFailureAndCleansRuntime(): Promise<void> {
 
 async function main(): Promise<void> {
   await testStartsNewSessionAndProcessesQueuedMessages()
-  await testContinuesExistingSessionThroughQueue()
+  await testContinuesExistingSessionExplicitly()
   await testStopsActiveSessionAndDropsQueuedTurns()
   await testRejectsInvalidRendererInput()
   await testObservesBackgroundFailureAndCleansRuntime()

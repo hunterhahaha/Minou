@@ -1,7 +1,7 @@
 /** Electron 主进程启动装配的配置、IPC、Runtime 与窗口生命周期测试。 */
 
 import assert from "node:assert/strict"
-import { mkdir, mkdtemp, rm, stat } from "node:fs/promises"
+import { mkdir, mkdtemp, readdir, rm, stat } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve, sep } from "node:path"
 
@@ -185,14 +185,21 @@ function startupFixture(
     app,
     ipcMain,
     windows,
-    userProfile: profile,
+    configPaths: {
+      rootDir: join(profile, ".nicode"),
+      configPath: join(profile, ".nicode", "config.json"),
+      credentialsPath: join(profile, ".nicode", "credentials.json"),
+      defaultWorkspacePath: join(profile, ".nicode", "sessions", "default", "workspace.json"),
+    },
     platform: "win32",
     sessionRuntime: {
       systemPrompt: "System prompt.",
-      workspaceInfo: "Default workspace.",
-      resolveCurrentBaseline: async () => baseline,
+      resolveProjectContext: () => ({
+        workspaceInfo: "Default workspace.",
+        resolveCurrentBaseline: async () => baseline,
+      }),
       estimateSkillTokens: (description) => description.length,
-      adapters: [{ model: MODEL, adapter }],
+      createTurnModelAdapter: async () => adapter,
       executeTool: async () => ({ status: "success", content: [] }),
     },
     onSessionCompletionFailure: () => {},
@@ -205,10 +212,16 @@ function startupFixture(
 async function testRegistersIpcAndWindowLifecycle(): Promise<void> {
   await withTempProfile(async (profile) => {
     const fixture = startupFixture(profile)
+    let adapterFactoryCalls = 0
+    fixture.options.sessionRuntime.createTurnModelAdapter = async () => {
+      adapterFactoryCalls += 1
+      throw new Error("启动阶段不得创建 Adapter")
+    }
     await startElectronApp(fixture.options)
 
     assert.equal(fixture.app.readyCalls, 1)
     assert.equal(fixture.windows.createCalls, 1)
+    assert.equal(adapterFactoryCalls, 0)
     assert.deepEqual([...fixture.ipcMain.handlers.keys()], [
       SESSION_IPC_CHANNELS.startNewSession,
       SESSION_IPC_CHANNELS.continueSession,
@@ -256,22 +269,24 @@ async function testCreatesProjectSessionRuntime(): Promise<void> {
     const fixture = startupFixture(profile, {
       sessionRuntime: {
         systemPrompt: "Injected system prompt.",
-        workspaceInfo: "Injected workspace info.",
-        resolveCurrentBaseline: async () => ({
-          agentsmd: {
-            path: join(profile, "AGENTS.md"),
-            hash: "injected-agents-hash",
-            content: "Injected AGENTS content.",
-          },
-          skills: {
-            content: "Injected skills content.",
-            entries: [],
-            descriptions: {},
-          },
-          mcp: [],
+        resolveProjectContext: (projectId) => ({
+          workspaceInfo: `Injected workspace info for ${projectId}.`,
+          resolveCurrentBaseline: async () => ({
+            agentsmd: {
+              path: join(profile, "AGENTS.md"),
+              hash: "injected-agents-hash",
+              content: "Injected AGENTS content.",
+            },
+            skills: {
+              content: "Injected skills content.",
+              entries: [],
+              descriptions: {},
+            },
+            mcp: [],
+          }),
         }),
         estimateSkillTokens: (description) => description.length,
-        adapters: [{ model: MODEL, adapter }],
+        createTurnModelAdapter: async () => adapter,
         executeTool: async () => ({ status: "success", content: [] }),
       },
       onSessionCompletionFailure: (failure) => { failures.push(failure) },
@@ -285,7 +300,7 @@ async function testCreatesProjectSessionRuntime(): Promise<void> {
       },
     })
     await startElectronApp(fixture.options)
-    await mkdir(join(profile, ".nicode", "sessions", String(PROJECT_ID)))
+    await mkdir(join(profile, ".nicode", "sessions", String(PROJECT_ID)), { recursive: true })
 
     const response = await fixture.ipcMain.invoke<StartedSessionResponse>(
       SESSION_IPC_CHANNELS.startNewSession,
@@ -310,7 +325,7 @@ async function testCreatesProjectSessionRuntime(): Promise<void> {
         role: "system",
         content: [
           "Injected system prompt.",
-          "Injected workspace info.",
+          `Injected workspace info for ${PROJECT_ID}.`,
           "Injected AGENTS content.",
           "Injected skills content.",
         ].join("\n\n"),
@@ -321,6 +336,77 @@ async function testCreatesProjectSessionRuntime(): Promise<void> {
     assert.equal(forwarded.some((event) => event.type === "turn/start"), true)
     assert.equal(forwarded.some((event) => event.type === "turn/end"), true)
     assert.deepEqual(failures, [])
+  })
+}
+
+/** 验证每次 Runtime 构造都按当前 projectId 取得独立固定上下文。 */
+async function testResolvesContextForEachProject(): Promise<void> {
+  await withTempProfile(async (profile) => {
+    const projectIds = [17, 18]
+    const requestedProjects: number[] = []
+    const systemMessages: string[] = []
+    let resolveRequests!: () => void
+    const requestsSeen = new Promise<void>((resolve) => { resolveRequests = resolve })
+    let completedTurns = 0
+    let resolveTurns!: () => void
+    const turnsCompleted = new Promise<void>((resolve) => { resolveTurns = resolve })
+    const adapter: ModelAdapter = {
+      stream: async function* (request) {
+        const systemMessage = request.context.messages[0]
+        assert.equal(systemMessage.role, "system")
+        assert.equal(typeof systemMessage.content, "string")
+        if (typeof systemMessage.content === "string") systemMessages.push(systemMessage.content)
+        if (systemMessages.length === projectIds.length) resolveRequests()
+        yield { type: "stream_end", completion: "finished" }
+      },
+    }
+    const fixture = startupFixture(profile, {
+      sessionRuntime: {
+        ...startupFixture(profile).options.sessionRuntime,
+        resolveProjectContext: (projectId) => {
+          requestedProjects.push(projectId)
+          return {
+            workspaceInfo: `Workspace ${projectId}`,
+            resolveCurrentBaseline: async () => ({
+              agentsmd: {
+                path: join(profile, `AGENTS-${projectId}.md`),
+                hash: `agents-${projectId}`,
+                content: `Rules ${projectId}`,
+              },
+              skills: { content: "", entries: [], descriptions: {} },
+              mcp: [],
+            }),
+          }
+        },
+        createTurnModelAdapter: async () => adapter,
+      },
+      sessionEventForwarding: {
+        filterSessionEventForRenderer: (event) => event,
+        sendSessionEventToRenderer: (event) => {
+          const sessionEvent = event as SessionEvent
+          if (sessionEvent.type === "turn/end") {
+            completedTurns += 1
+            if (completedTurns === projectIds.length) resolveTurns()
+          }
+        },
+      },
+    })
+    await startElectronApp(fixture.options)
+    for (const projectId of projectIds) {
+      await mkdir(join(profile, ".nicode", "sessions", String(projectId)), { recursive: true })
+    }
+
+    await Promise.all(projectIds.map((projectId) => fixture.ipcMain.invoke(
+      SESSION_IPC_CHANNELS.startNewSession,
+      projectId,
+      { content: MESSAGE, model: MODEL },
+    )))
+    await requestsSeen
+    await turnsCompleted
+
+    assert.deepEqual(requestedProjects, projectIds)
+    assert.equal(systemMessages.some((message) => message.includes("Workspace 17\n\nRules 17")), true)
+    assert.equal(systemMessages.some((message) => message.includes("Workspace 18\n\nRules 18")), true)
   })
 }
 
@@ -338,12 +424,12 @@ async function testForwardsSessionCompletionFailure(): Promise<void> {
     const fixture = startupFixture(profile, {
       sessionRuntime: {
         ...startupFixture(profile).options.sessionRuntime,
-        adapters: [{ model: MODEL, adapter }],
+        createTurnModelAdapter: async () => adapter,
       },
       onSessionCompletionFailure: resolveFailure,
     })
     await startElectronApp(fixture.options)
-    await mkdir(join(profile, ".nicode", "sessions", String(PROJECT_ID)))
+    await mkdir(join(profile, ".nicode", "sessions", String(PROJECT_ID)), { recursive: true })
     const response = await fixture.ipcMain.invoke<StartedSessionResponse>(
       SESSION_IPC_CHANNELS.startNewSession,
       PROJECT_ID,
@@ -354,22 +440,40 @@ async function testForwardsSessionCompletionFailure(): Promise<void> {
   })
 }
 
-/** 验证配置失败发生在 IPC、ready 和窗口副作用之前。 */
-async function testRejectsInvalidProfileBeforeRegistration(): Promise<void> {
-  const fixture = startupFixture(resolve(tmpdir()), { userProfile: "relative-profile" })
-  await assert.rejects(startElectronApp(fixture.options), /USERPROFILE/)
-  assert.equal(fixture.ipcMain.handlers.size, 0)
-  assert.equal(fixture.app.readyCalls, 0)
-  assert.equal(fixture.app.listenerCount(), 0)
-  assert.equal(fixture.windows.createCalls, 0)
+/** 验证 Project Context 建立失败时不会创建 Session 目录。 */
+async function testRejectsProjectContextBeforeSessionCreation(): Promise<void> {
+  await withTempProfile(async (profile) => {
+    const projectDirectory = join(profile, ".nicode", "sessions", String(PROJECT_ID))
+    await mkdir(projectDirectory, { recursive: true })
+    const fixture = startupFixture(profile, {
+      sessionRuntime: {
+        ...startupFixture(profile).options.sessionRuntime,
+        resolveProjectContext: () => {
+          throw new Error("Project context unavailable")
+        },
+      },
+    })
+    await startElectronApp(fixture.options)
+
+    await assert.rejects(
+      fixture.ipcMain.invoke(
+        SESSION_IPC_CHANNELS.startNewSession,
+        PROJECT_ID,
+        { content: MESSAGE, model: MODEL },
+      ),
+      /Project context unavailable/,
+    )
+    assert.deepEqual(await readdir(projectDirectory), [])
+  })
 }
 
 /** 依次运行启动装配的全部断言。 */
 async function main(): Promise<void> {
   await testRegistersIpcAndWindowLifecycle()
   await testCreatesProjectSessionRuntime()
+  await testResolvesContextForEachProject()
   await testForwardsSessionCompletionFailure()
-  await testRejectsInvalidProfileBeforeRegistration()
+  await testRejectsProjectContextBeforeSessionCreation()
   console.log("index.test.ts: Electron 主进程启动装配断言通过")
 }
 

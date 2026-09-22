@@ -121,6 +121,14 @@ async function main(): Promise<void> {
   }] }), ".id 重复")
   await assertInvalidFile("config", JSON.stringify({ ...validConfig, providers: [{ ...validConfig.providers[0], models: [{ id: "coding-model", providerId: "example" }] }] }), "providerId 不是 V1 字段")
   await assertInvalidFile("config", JSON.stringify({ ...validConfig, providers: [{ ...validConfig.providers[0], protocols: { invalid: {} } }] }), "不是支持的协议")
+  await assertInvalidFile("config", JSON.stringify({ ...validConfig, providers: [{
+    ...validConfig.providers[0], protocols: {}, models: [],
+  }] }), "恰好包含一个协议")
+  await assertInvalidFile("config", JSON.stringify({ ...validConfig, providers: [{
+    ...validConfig.providers[0],
+    protocols: { anthropic_messages: {}, responses: {} },
+    models: [],
+  }] }), "恰好包含一个协议")
   await assertInvalidFile("config", JSON.stringify({ ...validConfig, runtime: { userMessageMode: "other" } }), "userMessageMode")
   await assertInvalidFile("config", JSON.stringify({ ...validConfig, mcpServers: [{ name: "x", enabled: true, transport: "stdio" }] }), ".command")
   await assertInvalidFile("config", JSON.stringify({ ...validConfig, apiKey: "secret" }), "apiKey 不是 V1 字段")

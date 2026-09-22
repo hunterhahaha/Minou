@@ -8,12 +8,13 @@
 import type { ModelRef } from "../../runtime/model/src/types.ts"
 import type { SessionEvent, UserMessageInput } from "../../runtime/session/src/events.ts"
 import {
+  continueSession,
   SessionRuntimePorts,
   startNewSession,
 } from "../../runtime/agent/src/session-runtime.ts"
 import type {
   ContinueSessionInput,
-  EnqueuedSessionMessageResponse,
+  EnqueueSessionMessageInput,
   SessionRuntimeProcessing,
   StartedSessionTurn,
 } from "../../runtime/agent/src/session-runtime.ts"
@@ -120,11 +121,8 @@ export function registerSessionIpcHandlers(
 
       const runtime = createAndRegisterRuntime(projectId, sessionId, activeSessions, createRuntime)
       try {
-        runtime.enqueueSessionMessage(input.content)
-        const processing = runtime.processMessageQueue()
-        // started 可能在 repair/批次提交阶段失败；立即观察 completion，避免其先行拒绝成为未处理 Promise。
-        void processing.completion.catch(() => {})
-        const started = await processing.started
+        const started = await continueSession(input, runtime)
+        const processing = runtime.processMessageQueue(started)
         observeActiveRuntime(
           runtime,
           started,
@@ -152,7 +150,7 @@ export function registerSessionIpcHandlers(
       if (runtime === undefined) {
         throw new Error(`Session 当前未运行，不能追加消息：${sessionId}`)
       }
-      return runtime.enqueueSessionMessage(input.content)
+      return runtime.enqueueSessionMessage(input)
     },
   )
 
@@ -251,16 +249,20 @@ function requireUserMessageInput(value: unknown): UserMessageInput {
 }
 
 function requireContinueSessionInput(value: unknown): ContinueSessionInput {
-  if (!isRecord(value) || !isTextContent(value.content)) {
+  if (!isRecord(value) || !isTextContent(value.content) || !isModelRef(value.model)) {
     throw new TypeError("continueSession 输入无效")
   }
-  return { content: value.content }
+  return { content: value.content, model: value.model }
 }
 
 function requireEnqueueSessionMessageInput(
   value: unknown,
-): Pick<EnqueuedSessionMessageResponse, "content"> {
-  if (!isRecord(value) || !isTextContent(value.content)) {
+): EnqueueSessionMessageInput {
+  if (
+    !isRecord(value)
+    || Object.keys(value).length !== 1
+    || !isTextContent(value.content)
+  ) {
     throw new TypeError("enqueueSessionMessage 输入无效")
   }
   return { content: value.content }
@@ -289,6 +291,8 @@ function requireProjectId(value: unknown): number {
 
 function isModelRef(value: unknown): value is ModelRef {
   return isRecord(value) &&
+    Object.keys(value).length === 3 &&
+    Object.keys(value).every((key) => key === "providerId" || key === "protocol" || key === "modelId") &&
     isNonEmptyString(value.providerId) &&
     isNonEmptyString(value.modelId) &&
     (

@@ -1,4 +1,6 @@
-/** V1 持久化配置的字段检查；只检查当前启动流程涉及的三份文件。 */
+/** 当前启动与 Project Context 涉及的 V1 持久化配置字段检查。 */
+
+import { isAbsolute } from "node:path"
 
 import { PROTOCOLS } from "../../runtime/model/src/types.ts"
 
@@ -59,6 +61,23 @@ function stringList(value: unknown, field: string): void {
   }
 }
 
+/** Project `workspace.json` 中的 Session 索引条目。 */
+export interface ValidatedWorkspaceSession {
+  id: string
+  name: string
+  createdAt: string
+  updatedAt: string
+}
+
+/** 已通过 V1 字段、路径和目录身份检查的 Project 工作区配置。 */
+export interface ValidatedProjectWorkspace {
+  version: 1
+  id: number
+  name: string
+  directories: string[]
+  sessions: ValidatedWorkspaceSession[]
+}
+
 function isZonedIsoTimestamp(value: string): boolean {
   const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(Z|[+-](\d{2}):(\d{2}))$/.exec(value)
   if (!match) return false
@@ -90,6 +109,12 @@ export function checkConfig(value: JsonObject): Set<string> {
     providerIds.add(id)
 
     const protocols = object(provider.protocols, `${field}.protocols`)
+    const protocolCount = Object.keys(protocols).length
+    if (protocolCount !== 1) {
+      throw new Error(
+        `${field}.protocols（Provider ${id}）必须恰好包含一个协议，当前为 ${protocolCount} 个。`,
+      )
+    }
     for (const [protocol, optionsValue] of Object.entries(protocols)) {
       if (!(PROTOCOLS as readonly string[]).includes(protocol)) {
         throw new Error(`${field}.protocols.${protocol} 不是支持的协议。`)
@@ -171,9 +196,52 @@ export function checkCredentials(value: JsonObject, providerIds: ReadonlySet<str
 export function checkDefaultWorkspace(value: JsonObject): void {
   fields(value, "workspace", ["version", "sessions"])
   if (value.version !== 1) throw new Error("workspace.version 必须是 1。")
-  if (!Array.isArray(value.sessions)) throw new Error("workspace.sessions 必须是数组。")
+  checkWorkspaceSessions(value.sessions)
+}
+
+/**
+ * 检查 Project 分组 `workspace.json` 的 V1 结构及其目录身份。
+ *
+ * @param value 尚未检查的 JSON 顶层对象。
+ * @param expectedProjectId 当前 `sessions/<project-id>` 目录所代表的 Project ID。
+ * @returns 可安全用于 Project Context 的工作区配置。
+ * @throws Error 当版本、字段、Project ID、绝对目录或 Session 索引不符合 V1 时抛出。
+ */
+export function checkProjectWorkspace(
+  value: JsonObject,
+  expectedProjectId: number,
+): ValidatedProjectWorkspace {
+  fields(value, "workspace", ["version", "id", "name", "directories", "sessions"])
+  if (value.version !== 1) throw new Error("workspace.version 必须是 1。")
+  if (!Number.isSafeInteger(value.id) || (value.id as number) < 0) {
+    throw new Error("workspace.id 必须是非负安全整数。")
+  }
+  if (value.id !== expectedProjectId) {
+    throw new Error(`workspace.id 必须与 Project 目录一致，期望 ${expectedProjectId}。`)
+  }
+  nonEmptyString(value.name, "workspace.name")
+  if (!Array.isArray(value.directories)) {
+    throw new Error("workspace.directories 必须是数组。")
+  }
+  for (const [index, directory] of value.directories.entries()) {
+    const field = `workspace.directories[${index}]`
+    const path = nonEmptyString(directory, field)
+    if (!isAbsolute(path)) throw new Error(`${field} 必须是绝对路径。`)
+  }
+  checkWorkspaceSessions(value.sessions)
+  return value as unknown as ValidatedProjectWorkspace
+}
+
+/**
+ * 检查 default 与 Project 分组共用的 Session 索引。
+ *
+ * @param value 未检查的 `workspace.sessions` 字段。
+ * @throws Error 当字段不是数组，或条目字段、身份、时间戳无效时抛出。
+ */
+function checkWorkspaceSessions(value: unknown): void {
+  if (!Array.isArray(value)) throw new Error("workspace.sessions 必须是数组。")
   const ids = new Set<string>()
-  for (const [index, entry] of value.sessions.entries()) {
+  for (const [index, entry] of value.entries()) {
     const field = `workspace.sessions[${index}]`
     const session = object(entry, field)
     fields(session, field, ["id", "name", "createdAt", "updatedAt"])

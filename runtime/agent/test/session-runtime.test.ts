@@ -3,7 +3,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-import type { ModelRef } from "../../model/src/types.ts"
+import type { ModelAdapter, ModelRef, ModelStreamEvent } from "../../model/src/types.ts"
 import type { CurrentSessionBaseline } from "../../session/src/session-state.ts"
 import type {
   SessionEvent,
@@ -20,6 +20,7 @@ import {
 import type { SessionRepairPorts } from "../src/session-runtime.ts"
 
 const MODEL: ModelRef = { providerId: "provider-1", protocol: "anthropic_messages", modelId: "model-1" }
+const OTHER_MODEL: ModelRef = { providerId: "provider-2", protocol: "responses", modelId: "model-2" }
 const MESSAGE = [{ type: "text" as const, text: "你好" }]
 
 function fixture(
@@ -34,12 +35,17 @@ function fixture(
   events: SessionEvent[]
   loopEvents: SessionEventInput[]
   seenModels: ModelRef[]
+  writtenModels: ModelRef[]
+  queueReadModels(...models: ModelRef[]): void
 } {
   const calls: string[] = []
   const batches: Parameters<SessionRuntimeBindings["appendTurnStartAndUserMessage"]>[0][] = []
   const events = [...initialEvents]
   const loopEvents: SessionEventInput[] = []
   const seenModels: ModelRef[] = []
+  const writtenModels: ModelRef[] = []
+  const pendingReadModels: ModelRef[] = []
+  let diskModel = structuredClone(MODEL)
   const repairPorts: SessionRepairPorts = {
     readEvents: async () => {
       calls.push("readEvents")
@@ -48,7 +54,6 @@ function fixture(
     initializeSession: async () => { calls.push("initialize") },
     repairDerivedState: async () => {
       calls.push("repairDerivedState")
-      return { currentModel: MODEL }
     },
     appendEvent: async (input) => {
       loopEvents.push(input)
@@ -76,6 +81,15 @@ function fixture(
       return [start, message]
     },
     prepareExistingTurn: async () => { calls.push("prepare") },
+    writeCurrentModel: async (model: ModelRef) => {
+      calls.push("writeCurrentModel")
+      diskModel = structuredClone(model)
+      writtenModels.push(structuredClone(model))
+    },
+    readCurrentModel: async () => {
+      calls.push("readCurrentModel")
+      return structuredClone(pendingReadModels.shift() ?? diskModel)
+    },
     buildContent: async () => {
       calls.push("buildContent")
       return [{ role: "system", content: "fixed" }, { role: "user", content: MESSAGE }]
@@ -99,7 +113,18 @@ function fixture(
     repairPorts,
   } as unknown as SessionRuntimeBindings
   const ports = new SessionRuntimePorts(sessionId, bindings)
-  return { ports, bindings, repairPorts, calls, batches, events, loopEvents, seenModels }
+  return {
+    ports,
+    bindings,
+    repairPorts,
+    calls,
+    batches,
+    events,
+    loopEvents,
+    seenModels,
+    writtenModels,
+    queueReadModels: (...models) => pendingReadModels.push(...models.map((model) => structuredClone(model))),
+  }
 }
 
 function persistedEvent(
@@ -136,7 +161,7 @@ function completedSessionEvents(sessionId: string): SessionEvent[] {
 function repairFixture(initial: readonly SessionEvent[]): {
   events: SessionEvent[]
   calls: string[]
-  repair: () => Promise<{ lastTurn: number; currentModel: ModelRef }>
+  repair: () => Promise<{ lastTurn: number }>
   ports: SessionRepairPorts
 } {
   const events = [...initial]
@@ -150,7 +175,6 @@ function repairFixture(initial: readonly SessionEvent[]): {
     repairDerivedState: async (validatedEvents) => {
       calls.push("repairDerivedState")
       assert.equal(validatedEvents.length, events.length)
-      return { currentModel: MODEL }
     },
     appendEvent: async (input) => {
       calls.push(`append:${input.type}`)
@@ -205,28 +229,87 @@ async function testNewSession(): Promise<void> {
     "step/end",
     "turn/end",
   ])
-  assert.deepEqual(calls.slice(3, 5), ["buildContent", "createLoopOptions"])
+  assert.deepEqual(calls.slice(3, 7), [
+    "writeCurrentModel",
+    "readCurrentModel",
+    "createLoopOptions",
+    "buildContent",
+  ])
 }
 
 async function testContinueSession(): Promise<void> {
-  const { ports, calls, batches, seenModels } = fixture(
+  const state = fixture(
     "session-existing",
     completedSessionEvents("session-existing"),
   )
-  const started = await continueSession({ content: MESSAGE }, ports)
+  state.queueReadModels(OTHER_MODEL)
+  const started = await continueSession({ content: MESSAGE, model: MODEL }, state.ports)
   assert.equal(started.sessionId, "session-existing")
   assert.equal(started.turn, 2)
   await started.completion
-  assert.deepEqual(calls.slice(0, 6), [
+  assert.deepEqual(state.calls.slice(0, 9), [
     "readEvents",
     "initialize",
     "repairDerivedState",
     "prepare",
+    "writeCurrentModel",
+    "readCurrentModel",
+    "createLoopOptions",
     "appendBatch",
     "buildContent",
   ])
-  assert.deepEqual(batches[0]?.[0], { type: "turn/start", turn: 2, model: MODEL })
-  assert.deepEqual(seenModels, [MODEL])
+  assert.deepEqual(state.writtenModels, [MODEL])
+  assert.deepEqual(state.batches[0]?.[0], {
+    type: "turn/start",
+    turn: 2,
+    model: OTHER_MODEL,
+  })
+  assert.deepEqual(state.seenModels, [OTHER_MODEL])
+}
+
+async function testOneAdapterServesAllStepsInTurn(): Promise<void> {
+  const state = fixture("session-multi-step")
+  let adapterFactoryCalls = 0
+  let modelRequests = 0
+  state.bindings.createLoopOptions = async (model: ModelRef) => {
+    adapterFactoryCalls += 1
+    const adapter: ModelAdapter = {
+      stream: async function* (): AsyncGenerator<ModelStreamEvent> {
+        modelRequests += 1
+        if (modelRequests === 1) {
+          yield { type: "block_start", index: 0, blockType: "tool_call" }
+          yield {
+            type: "block_end",
+            index: 0,
+            block: {
+              type: "tool_call",
+              toolCallId: "call-1",
+              name: "fake_tool",
+              arguments: {},
+            },
+          }
+          yield { type: "stream_end", completion: "tool_calls" }
+          return
+        }
+        yield { type: "stream_end", completion: "finished" }
+      },
+    }
+    return {
+      adapter,
+      tools: [],
+      executeTool: async () => ({
+        status: "success" as const,
+        content: [{ type: "text" as const, text: "ok" }],
+      }),
+    }
+  }
+
+  const started = await startNewSession({ content: MESSAGE, model: MODEL }, state.ports)
+  const processing = state.ports.processMessageQueue(started)
+  await processing.completion
+  assert.equal(adapterFactoryCalls, 1)
+  assert.equal(modelRequests, 2)
+  assert.deepEqual(state.seenModels, [], "测试覆盖的 Adapter 工厂不得回落到旧 fixture")
 }
 
 async function testQueuedMessagesRunInOrder(): Promise<void> {
@@ -241,11 +324,12 @@ async function testQueuedMessagesRunInOrder(): Promise<void> {
   const processing = state.ports.processMessageQueue(started)
   const second = [{ type: "text" as const, text: "第二条" }]
   const third = [{ type: "text" as const, text: "第三条" }]
-  assert.deepEqual(state.ports.enqueueSessionMessage(second), {
+  state.queueReadModels(MODEL, OTHER_MODEL, MODEL)
+  assert.deepEqual(state.ports.enqueueSessionMessage({ content: second }), {
     sessionId: "session-queue",
     content: second,
   })
-  state.ports.enqueueSessionMessage(third)
+  state.ports.enqueueSessionMessage({ content: third })
   releaseInitialization()
   await processing.completion
 
@@ -254,8 +338,10 @@ async function testQueuedMessagesRunInOrder(): Promise<void> {
     state.batches.map((batch) => batch[1].message.content),
     [MESSAGE, second, third],
   )
-  assert.deepEqual(state.seenModels, [MODEL, MODEL, MODEL])
-  assert.throws(() => state.ports.enqueueSessionMessage(MESSAGE), /已关闭/)
+  assert.deepEqual(state.batches.map((batch) => batch[0].model), [MODEL, OTHER_MODEL, MODEL])
+  assert.deepEqual(state.seenModels, [MODEL, OTHER_MODEL, MODEL])
+  assert.deepEqual(state.writtenModels, [MODEL], "Queue Turn 不得覆盖 currentModel")
+  assert.throws(() => state.ports.enqueueSessionMessage({ content: MESSAGE }), /已关闭/)
 }
 
 async function testFailureBoundaries(): Promise<void> {
@@ -266,7 +352,10 @@ async function testFailureBoundaries(): Promise<void> {
 
   const failedRepair = fixture("session-existing", completedSessionEvents("session-existing"))
   failedRepair.repairPorts.readEvents = async () => { throw new Error("repair failed") }
-  await assert.rejects(continueSession({ content: MESSAGE }, failedRepair.ports), /repair failed/)
+  await assert.rejects(
+    continueSession({ content: MESSAGE, model: MODEL }, failedRepair.ports),
+    /repair failed/,
+  )
   assert.deepEqual(failedRepair.calls, [])
 
   const failedInitialization = fixture()
@@ -277,6 +366,34 @@ async function testFailureBoundaries(): Promise<void> {
     failedInitialization.loopEvents.map((event) => event.type),
     ["turn/end"],
   )
+
+  const failedNewAdapter = fixture("session-new-adapter-failure")
+  failedNewAdapter.bindings.createLoopOptions = async () => {
+    throw new Error("new adapter failed")
+  }
+  const failedNewTurn = await startNewSession(
+    { content: MESSAGE, model: MODEL },
+    failedNewAdapter.ports,
+  )
+  await assert.rejects(failedNewTurn.completion, /new adapter failed/)
+  assert.deepEqual(
+    failedNewAdapter.loopEvents.map((event) => event.type),
+    ["turn/end"],
+  )
+
+  const failedAdapter = fixture(
+    "session-adapter-failure",
+    completedSessionEvents("session-adapter-failure"),
+  )
+  failedAdapter.bindings.createLoopOptions = async () => {
+    throw new Error("adapter failed")
+  }
+  await assert.rejects(
+    continueSession({ content: MESSAGE, model: OTHER_MODEL }, failedAdapter.ports),
+    /adapter failed/,
+  )
+  assert.deepEqual(failedAdapter.writtenModels, [OTHER_MODEL])
+  assert.equal(failedAdapter.batches.length, 0, "Adapter 失败前不得提交新 Turn")
 }
 
 async function testRepairInterruptedTextStep(): Promise<void> {
@@ -309,7 +426,7 @@ async function testRepairInterruptedTextStep(): Promise<void> {
   )
   const state = repairFixture(initial)
 
-  assert.deepEqual(await state.repair(), { lastTurn: 1, currentModel: MODEL })
+  assert.deepEqual(await state.repair(), { lastTurn: 1 })
   assert.deepEqual(
     state.events.slice(6).map((event) => event.type),
     ["assistant/block_end", "assistant/message", "step/end", "turn/end"],
@@ -527,7 +644,7 @@ async function testRepairPreservesContextAndUncommittedSummary(): Promise<void> 
     }),
   )
   const state = repairFixture(initial)
-  assert.deepEqual(await state.repair(), { lastTurn: 2, currentModel: MODEL })
+  assert.deepEqual(await state.repair(), { lastTurn: 2 })
   assert.deepEqual(state.events.slice(10).map((event) => event.type), ["turn/end"])
   assert.equal(state.events.filter((event) => event.type === "summary/end").length, 0)
 }
@@ -579,11 +696,7 @@ async function testConcreteRuntimeBindings(): Promise<void> {
       },
       mcp: [],
     }
-    const adapter = {
-      stream: async function* () {
-        yield { type: "stream_end" as const, completion: "finished" as const }
-      },
-    }
+    const createdAdapters: Array<import("../../model/src/types.ts").ModelAdapter> = []
     const bindings = new SessionRuntimeBindings({
       sessionId,
       sessionDirectory,
@@ -591,7 +704,16 @@ async function testConcreteRuntimeBindings(): Promise<void> {
       workspaceInfo: "workspace",
       resolveCurrentBaseline: async () => baseline,
       estimateSkillTokens: (description) => description.length,
-      adapters: [{ model: MODEL, adapter }],
+      createTurnModelAdapter: async (model) => {
+        if (model.modelId === "missing") throw new Error("model missing")
+        const adapter = {
+          stream: async function* () {
+            yield { type: "stream_end" as const, completion: "finished" as const }
+          },
+        }
+        createdAdapters.push(adapter)
+        return adapter
+      },
       executeTool: async () => ({ status: "success", content: [] }),
       now: () => new Date("2026-09-21T00:00:00.000Z"),
       createEventId: (() => {
@@ -614,8 +736,11 @@ async function testConcreteRuntimeBindings(): Promise<void> {
     ])
 
     const loopResources = await bindings.createLoopOptions(MODEL)
-    assert.equal(loopResources.adapter, adapter)
+    assert.equal(loopResources.adapter, createdAdapters[0])
     assert.deepEqual(loopResources.tools, [])
+    const nextTurnResources = await bindings.createLoopOptions(MODEL)
+    assert.notEqual(loopResources.adapter, nextTurnResources.adapter)
+    assert.equal(createdAdapters.length, 2)
 
     await bindings.repairPorts.appendEvent({ type: "turn/end", turn: 1, reason: "completed" })
     baseline = {
@@ -677,7 +802,7 @@ async function testConcreteRuntimeBindings(): Promise<void> {
     ])
     await assert.rejects(
       bindings.createLoopOptions({ ...MODEL, modelId: "missing" }),
-      /匹配数量 0/,
+      /model missing/,
     )
   } finally {
     await rm(root, { recursive: true, force: true })
@@ -701,7 +826,7 @@ async function testRuntimeScopedCancellation(): Promise<void> {
   assert.equal(nextTurnOptions.signal.aborted, true)
   assert.equal(otherRuntimeOptions.signal.aborted, false)
   assert.throws(
-    () => first.ports.enqueueSessionMessage(MESSAGE),
+    () => first.ports.enqueueSessionMessage({ content: MESSAGE }),
     /正在停止/,
   )
 
@@ -713,6 +838,7 @@ async function testRuntimeScopedCancellation(): Promise<void> {
 async function main(): Promise<void> {
   await testNewSession()
   await testContinueSession()
+  await testOneAdapterServesAllStepsInTurn()
   await testQueuedMessagesRunInOrder()
   await testFailureBoundaries()
   await testRepairInterruptedTextStep()

@@ -15,6 +15,22 @@ import { PROTOCOLS } from "../../model/src/types.ts"
 import type { ModelRef, UnifiedToolDefinition } from "../../model/src/types.ts"
 import type { ContextUpdateEvent, SessionEvent, SkillContextChange, SkillScope } from "./events.ts"
 
+/** 当前 `meta.json` 已确认的持久化结构版本。 */
+export const SESSION_META_VERSION = 1 as const
+
+/** `meta.json.sandboxMode` 支持的对话级沙盒模式。 */
+export const SANDBOX_MODES = [
+  "full-access",
+  "sandbox-full-access",
+  "sandbox-read-only",
+] as const
+
+/** 对话级持久化沙盒模式。 */
+export type SandboxMode = (typeof SANDBOX_MODES)[number]
+
+/** 新 Session 创建时使用的默认沙盒模式。 */
+export const DEFAULT_SESSION_SANDBOX_MODE: SandboxMode = "sandbox-full-access"
+
 /** `meta.json.usage` 的 V1 派生结构。 */
 export interface RealUsage {
   /** 最近一次正常 Agent 请求的完整输入 Token。 */
@@ -43,7 +59,11 @@ export interface SessionSkillContextState {
 
 /** 当前已确认的 `meta.json` 字段；其它 Runtime 字段由初始化提供者原样保留。 */
 export interface SessionMeta {
+  /** `meta.json` 的持久化结构版本。 */
+  version: typeof SESSION_META_VERSION
   currentModel: ModelRef
+  /** 当前 Session 的工具权限模式；不从全局或 Project 配置继承。 */
+  sandboxMode: SandboxMode
   usage: RealUsage
   skills: SessionSkillContextState
   [field: string]: unknown
@@ -79,7 +99,7 @@ export interface CurrentSessionBaseline {
   mcp: UnifiedToolDefinition[]
   /**
    * 尚未在架构文档中固定字段名的其它 meta 状态，例如 Session Loaded MCP Tools。
-   * 不得包含 `currentModel`、`usage` 或 `skills`，这些字段由本模块维护。
+   * 不得包含 `version`、`currentModel`、`sandboxMode`、`usage` 或 `skills`，这些字段由本模块维护。
    */
   additionalMeta?: Record<string, unknown>
 }
@@ -107,16 +127,28 @@ export interface FileSessionState {
    */
   initializeSession(): Promise<void>
   /**
+   * 在当前 Session 的串行状态队列中重新读取完整 `meta.json`，仅替换
+   * `currentModel`，并原子写回全部其它字段。
+   *
+   * @param model 要保存为下一 Turn 选择的完整模型引用。
+   * @throws Error 当模型引用、Session Meta 或原子写入无效时抛出。
+   */
+  writeCurrentModel(model: ModelRef): Promise<void>
+  /**
+   * 每次调用都从磁盘重新打开并校验当前 Session 的 `meta.json`。
+   *
+   * @returns 与解析结果脱离引用关系的当前模型引用。
+   * @throws Error 当 Session Meta 缺失、损坏或不可读取时抛出。
+   */
+  readCurrentModel(): Promise<ModelRef>
+  /**
    * 从已校验 Event Log 全量重建 Usage，并修复已提交的 AGENTS.md / Skill 增量。
    * 该方法不修改 Event Log，也不应用未提交的 Summary。
    *
    * @param events 已由 SessionRuntime 完成结构和生命周期校验的事件。
-   * @returns `meta.json` 当前保存的模型引用。
    * @throws Error 当派生文件无法读取、写入或无法按已确认结构解释时抛出。
    */
-  repairDerivedState(
-    events: readonly SessionEvent[],
-  ): Promise<{ currentModel: ModelRef }>
+  repairDerivedState(events: readonly SessionEvent[]): Promise<void>
   /**
    * 读取已有 Session 在下一 Turn 开始前需要比较的 AGENTS.md 快照和 Skill 状态。
    *
@@ -128,6 +160,12 @@ export interface FileSessionState {
     skills: SessionSkillContextState
   }>
 }
+
+/** Project 分组目录使用的非负数字身份。 */
+export type ProjectId = number
+
+/** Session 目录使用的不含路径分隔符的身份。 */
+export type SessionId = string
 
 const EMPTY_USAGE: RealUsage = {
   inputTokens: 0,
@@ -149,7 +187,7 @@ export function createFileSessionState(options: FileSessionStateOptions): FileSe
     throw new Error(`Session 目录必须是绝对路径：${options.sessionDirectory}`)
   }
   const paths = resolveStatePaths(resolve(options.sessionDirectory))
-  const queue: SerializedQueue = { tail: Promise.resolve() }
+  const queue = getSessionStateQueue(paths.sessionDirectory)
 
   /**
    * 在同一 Session 的状态队列内补齐全部派生文件。
@@ -180,14 +218,16 @@ export function createFileSessionState(options: FileSessionStateOptions): FileSe
 
       if (needsMeta) {
         const additionalMeta = baseline.additionalMeta ?? {}
-        for (const reserved of ["currentModel", "usage", "skills"]) {
+        for (const reserved of ["version", "currentModel", "sandboxMode", "usage", "skills"]) {
           if (reserved in additionalMeta) {
             throw new Error(`当前 Session 基线的 additionalMeta 不得包含保留字段 ${reserved}。`)
           }
         }
         const initialMeta: SessionMeta = {
           ...additionalMeta,
+          version: SESSION_META_VERSION,
           currentModel: turnModel,
+          sandboxMode: DEFAULT_SESSION_SANDBOX_MODE,
           usage: { ...EMPTY_USAGE },
           skills: {
             id: latestSkillEventId,
@@ -226,17 +266,27 @@ export function createFileSessionState(options: FileSessionStateOptions): FileSe
     })
   }
 
+  /** 在当前 Session 的共享状态队列中原子更新模型选择。 */
+  const writeBoundCurrentModel = async (model: ModelRef): Promise<void> => {
+    await writeCurrentModelAtPaths(paths, queue, model)
+  }
+
+  /** 在当前 Session 的共享状态队列中从磁盘重新读取模型选择。 */
+  const readCurrentModel = async (): Promise<ModelRef> => runSerialized(queue, async () => {
+    const meta = await readRequiredJson(paths.metaPath, isSessionMeta, "Session Meta")
+    return structuredClone(meta.currentModel)
+  })
+
   /**
    * 在同一 Session 的状态队列内重放权威事件并原子更新派生文件。
    *
    * @param events 已通过 SessionRuntime 校验的 Event Log。
-   * @returns 修复完成后 `meta.json` 中的当前模型。
    * @throws Error 当派生文件无效或无法持久化修复结果时抛出。
    */
   const repairDerivedState = async (
     events: readonly SessionEvent[],
-  ): Promise<{ currentModel: ModelRef }> => {
-    return runSerialized(queue, async () => {
+  ): Promise<void> => {
+    await runSerialized(queue, async () => {
       const meta = await readRequiredJson(paths.metaPath, isSessionMeta, "Session Meta")
       const contextState = await readRequiredJson(
         paths.contextStatePath,
@@ -299,7 +349,6 @@ export function createFileSessionState(options: FileSessionStateOptions): FileSe
       }
       if (snapshot !== nextSnapshot) await atomicWriteText(paths.agentsSnapshotPath, nextSnapshot)
 
-      return { currentModel: nextMeta.currentModel }
     })
   }
 
@@ -319,7 +368,51 @@ export function createFileSessionState(options: FileSessionStateOptions): FileSe
     }
   })
 
-  return { initializeSession, repairDerivedState, readContextComparisonState }
+  return {
+    initializeSession,
+    writeCurrentModel: writeBoundCurrentModel,
+    readCurrentModel,
+    repairDerivedState,
+    readContextComparisonState,
+  }
+}
+
+/**
+ * 按全局持久化目录定位 Session，并在该 Session 共用的状态队列中更新模型选择。
+ *
+ * 该函数使用 `%USERPROFILE%/.nicode/sessions/<projectId>/<sessionId>/meta.json`；
+ * 已经持有绑定式 {@link FileSessionState} 的 Runtime 应优先调用实例方法。
+ *
+ * @param projectId Session 所属 Project 的非负数字身份。
+ * @param sessionId Session 目录身份。
+ * @param model 要保存的完整模型引用。
+ * @throws Error 当 USERPROFILE、身份、模型引用或 Session Meta 无效时抛出。
+ */
+export async function writeCurrentModel(
+  projectId: ProjectId,
+  sessionId: SessionId,
+  model: ModelRef,
+): Promise<void> {
+  if (!Number.isSafeInteger(projectId) || projectId < 0) {
+    throw new Error(`Project ID 必须是非负安全整数：${projectId}`)
+  }
+  validateSessionId(sessionId)
+  const userProfile = process.env.USERPROFILE
+  if (!userProfile || !isAbsolute(userProfile)) {
+    throw new Error("USERPROFILE 必须是非空的绝对路径。")
+  }
+  const paths = resolveStatePaths(resolve(
+    userProfile,
+    ".nicode",
+    "sessions",
+    String(projectId),
+    sessionId,
+  ))
+  await writeCurrentModelAtPaths(
+    paths,
+    getSessionStateQueue(paths.sessionDirectory),
+    model,
+  )
 }
 
 interface SessionStatePaths {
@@ -711,8 +804,51 @@ async function pathKind(path: string): Promise<"missing" | "file" | "directory" 
   }
 }
 
+/** 按规范化 Session 目录保存跨访问器共享的派生状态队列。 */
+const SESSION_STATE_QUEUES = new Map<string, SerializedQueue>()
+
 /**
- * 单个 SessionState 实例持有的串行队列。
+ * 取得同一 Session 目录唯一的进程内状态队列。
+ *
+ * @param sessionDirectory 已规范化或可规范化的绝对 Session 目录。
+ * @returns 同一路径的绑定访问器和全局写入口共用的串行队列。
+ */
+function getSessionStateQueue(sessionDirectory: string): SerializedQueue {
+  const key = resolve(sessionDirectory)
+  let queue = SESSION_STATE_QUEUES.get(key)
+  if (queue === undefined) {
+    queue = { tail: Promise.resolve() }
+    SESSION_STATE_QUEUES.set(key, queue)
+  }
+  return queue
+}
+
+/**
+ * 重新读取完整 Session Meta，只替换模型选择后原子写回。
+ *
+ * @param paths 已绑定 Session 的派生状态路径。
+ * @param queue 该 Session 唯一的状态串行队列。
+ * @param model 调用方要持久化的完整模型引用。
+ * @throws Error 当模型引用或现有 Session Meta 无效，或写入失败时抛出。
+ */
+async function writeCurrentModelAtPaths(
+  paths: SessionStatePaths,
+  queue: SerializedQueue,
+  model: ModelRef,
+): Promise<void> {
+  if (!isModelRef(model)) throw new Error("currentModel 必须是有效的 ModelRef。")
+  const nextModel = structuredClone(model)
+  await runSerialized(queue, async () => {
+    const meta = await readRequiredJson(paths.metaPath, isSessionMeta, "Session Meta")
+    await atomicWriteJson(paths.metaPath, {
+      ...meta,
+      currentModel: nextModel,
+    })
+  })
+}
+
+/**
+ * 同一 Session 目录的所有 SessionState 访问器共用的串行队列。
  */
 interface SerializedQueue {
   /** 最近一次派生状态操作完成（无论成功或失败）后的队尾。 */
@@ -722,7 +858,7 @@ interface SerializedQueue {
 /**
  * 在当前 Session 上串行执行派生状态文件操作。
  *
- * @param queue 当前对话级 SessionState 实例持有的唯一队列。
+ * @param queue 当前对话目录对应的唯一进程内队列。
  * @param operation 获得当前 Session 写入权后执行的操作。
  * @returns 操作返回值。
  */
@@ -750,7 +886,9 @@ function cloneSkillEntries(entries: readonly SessionSkillContextEntry[]): Sessio
  */
 function isSessionMeta(value: unknown): value is SessionMeta {
   return isRecord(value)
+    && value.version === SESSION_META_VERSION
     && isModelRef(value.currentModel)
+    && isSandboxMode(value.sandboxMode)
     && isRealUsage(value.usage)
     && isSessionSkillContextState(value.skills)
 }
@@ -784,6 +922,16 @@ function isRealUsage(value: unknown): value is RealUsage {
     && isNonNegativeNumber(value.cacheMissTokens)
     && isNonNegativeNumber(value.cacheHitRate)
     && value.cacheHitRate <= 1
+}
+
+/**
+ * 校验 Session 持久化的沙盒模式。
+ *
+ * @param value 待检查的 JSON 值。
+ * @returns 值是否为当前版本支持的对话级沙盒模式。
+ */
+function isSandboxMode(value: unknown): value is SandboxMode {
+  return typeof value === "string" && (SANDBOX_MODES as readonly string[]).includes(value)
 }
 
 /**
