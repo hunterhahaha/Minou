@@ -8,7 +8,7 @@
  * 架构依据：.git/技术文档/开发备忘录1.0.17.md 第 1、4、28、29 节
  */
 
-import { dirname, join } from "node:path"
+import { join } from "node:path"
 
 import {
   SessionRuntimeBindings,
@@ -77,7 +77,7 @@ export interface ElectronStartupOptions {
   ipcMain: IpcMainHandlePort
   /** 主窗口创建与存活状态端口。 */
   windows: MainWindowLifecyclePort
-  /** 每个 default Session 共用的 Runtime 宿主依赖。 */
+  /** 每个 Project Session 共用的 Runtime 宿主依赖。 */
   sessionRuntime: SessionRuntimeStartupDependencies
   /** 后台 Turn 或 Renderer 事件发送失败时的错误出口。 */
   onSessionCompletionFailure: HandleSessionCompletionFailure
@@ -92,8 +92,8 @@ export interface ElectronStartupOptions {
 /**
  * 初始化本地配置、注册 Session IPC，并接入 Electron 窗口生命周期。
  *
- * 当前 IPC 契约不包含 Project 身份，因此所有 Session 都创建在 default 分组。该函数只应在同一个
- * `ipcMain` 上调用一次；重复调用时由 IPC 实现报告重复 handler 注册错误。
+ * IPC 提供的 Project 身份用作 `sessions/<project-id>` 分组目录名。该函数只应在同一个 `ipcMain`
+ * 上调用一次；重复调用时由 IPC 实现报告重复 handler 注册错误。
  *
  * @param options Electron 端口、窗口端口、Runtime 宿主依赖与错误出口。
  * @returns 首个主窗口创建完成后解析的 Promise。
@@ -101,13 +101,20 @@ export interface ElectronStartupOptions {
  */
 export async function startElectronApp(options: ElectronStartupOptions): Promise<void> {
   const configPaths = await initializeConfigFiles(options.userProfile)
-  const defaultGroupDirectory = dirname(configPaths.defaultWorkspacePath)
+  const sessionsDirectory = join(configPaths.rootDir, "sessions")
 
-  const createRuntime: CreateSessionRuntime = (sessionId) => {
+  /**
+   * 为 IPC 请求构建绑定到指定 Project 分组的 Session Runtime。
+   *
+   * @param projectId Session 所属 Project 的数字身份。
+   * @param sessionId 要绑定的 Session 身份。
+   * @returns 使用 `sessions/<project-id>/<session-id>` 目录的 Runtime。
+   */
+  const createRuntime: CreateSessionRuntime = (projectId, sessionId) => {
     const bindings = new SessionRuntimeBindings({
       ...options.sessionRuntime,
       sessionId,
-      sessionDirectory: join(defaultGroupDirectory, sessionId),
+      sessionDirectory: join(sessionsDirectory, String(projectId), sessionId),
     })
     return new SessionRuntimePorts(sessionId, bindings)
   }

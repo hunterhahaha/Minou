@@ -54,11 +54,12 @@ Insert、文件变更汇总与最终 Surface 仍未实现，见下文。
 Insert 与最终 Surface 仍未实现。
 
 **Renderer 的三个 Session 命令**已通过 preload 暴露为
-`window.nicode.startNewSession(input)`、`window.nicode.continueSession(sessionId, input)` 与
-`window.nicode.enqueueSessionMessage(sessionId, input)`。主进程按 `sessionId` 管理活动实例；前两个入口在
+`window.nicode.startNewSession(projectId, input)`、
+`window.nicode.continueSession(projectId, sessionId, input)` 与
+`window.nicode.enqueueSessionMessage(projectId, sessionId, input)`。主进程按 `sessionId` 管理活动实例；
+`projectId` 是对应 `sessions/<project-id>` 分组目录的数字身份；前两个入口在
 首批事件提交后返回 `{ sessionId, turn }`，追加入口返回 `{ sessionId, content }`。主进程后台消费
 Session 事件流，并预留了 Renderer 事件筛选与发送边界；具体筛选名单和 Renderer wire shape 尚未确定。
-当前 IPC 参数没有 Project 身份，因此启动装配创建的 Session 暂时统一落在 default 分组。
 
 尚未开始的模块仍以 `index.ts` 占位；各自文件中注明待实现的职责。
 
@@ -347,7 +348,7 @@ node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types t
 缺失文件补齐、V1 有效配置、字段与引用错误、损坏文件保留，以及非法用户目录。
 
 `test/main/index.test.ts` 使用假 Electron app、ipcMain 与窗口端口验证：配置先于副作用完成、
-三个 Session channel 注册、default SessionRuntime 实际落盘与宿主依赖注入、后台错误和事件转发、
+三个 Session channel 注册、Project SessionRuntime 实际落盘与宿主依赖注入、后台错误和事件转发、
 ready / activate / window-all-closed 生命周期，以及同一 ipcMain 重复启动时保留重复注册错误。
 
 三个 Adapter 的测试分两层：**离线转换**（构造协议侧载荷 → 比对统一事件，不碰网络）与

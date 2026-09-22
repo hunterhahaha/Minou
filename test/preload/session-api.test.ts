@@ -19,6 +19,7 @@ const MODEL: ModelRef = {
   modelId: "model-1",
 }
 const CONTENT = [{ type: "text" as const, text: "你好" }]
+const PROJECT_ID = 17
 
 async function testCallsFixedChannels(): Promise<void> {
   const calls: Array<{ channel: string; args: unknown[] }> = []
@@ -38,29 +39,29 @@ async function testCallsFixedChannels(): Promise<void> {
 
   assert.equal(Object.isFrozen(api), true)
   assert.deepEqual(
-    await api.startNewSession({ content: CONTENT, model: MODEL }),
+    await api.startNewSession(PROJECT_ID, { content: CONTENT, model: MODEL }),
     { sessionId: "new-session", turn: 1 },
   )
   assert.deepEqual(
-    await api.continueSession("existing-session", { content: CONTENT }),
+    await api.continueSession(PROJECT_ID, "existing-session", { content: CONTENT }),
     { sessionId: "existing-session", turn: 4 },
   )
   assert.deepEqual(
-    await api.enqueueSessionMessage("existing-session", { content: CONTENT }),
+    await api.enqueueSessionMessage(PROJECT_ID, "existing-session", { content: CONTENT }),
     { sessionId: "existing-session", content: CONTENT },
   )
   assert.deepEqual(calls, [
     {
       channel: SESSION_IPC_CHANNELS.startNewSession,
-      args: [{ content: CONTENT, model: MODEL }],
+      args: [PROJECT_ID, { content: CONTENT, model: MODEL }],
     },
     {
       channel: SESSION_IPC_CHANNELS.continueSession,
-      args: ["existing-session", { content: CONTENT }],
+      args: [PROJECT_ID, "existing-session", { content: CONTENT }],
     },
     {
       channel: SESSION_IPC_CHANNELS.enqueueSessionMessage,
-      args: ["existing-session", { content: CONTENT }],
+      args: [PROJECT_ID, "existing-session", { content: CONTENT }],
     },
   ])
 }
@@ -90,13 +91,13 @@ async function testExposesOnlyNiCodeApi(): Promise<void> {
 async function testRejectsInvalidMainResponse(): Promise<void> {
   const api = createSessionApi({ invoke: async () => ({ sessionId: "", turn: 0 }) })
   await assert.rejects(
-    api.startNewSession({ content: CONTENT, model: MODEL }),
+    api.startNewSession(PROJECT_ID, { content: CONTENT, model: MODEL }),
     /无效的 Session 启动结果/,
   )
 
   const invalidQueued = createSessionApi({ invoke: async () => ({ sessionId: "session-1", content: null }) })
   await assert.rejects(
-    invalidQueued.enqueueSessionMessage("session-1", { content: CONTENT }),
+    invalidQueued.enqueueSessionMessage(PROJECT_ID, "session-1", { content: CONTENT }),
     /无效的 Session 消息入队结果/,
   )
 }

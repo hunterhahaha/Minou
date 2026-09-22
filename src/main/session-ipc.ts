@@ -37,8 +37,18 @@ export interface SessionCompletionFailure {
 
 export type HandleSessionCompletionFailure = (failure: SessionCompletionFailure) => void
 
-/** 按 Session ID 创建已经绑定全部宿主能力的活动 Runtime。 */
-export type CreateSessionRuntime = (sessionId: string) => SessionRuntimePorts
+/**
+ * 按 Project 和 Session 身份创建已经绑定全部宿主能力的活动 Runtime。
+ *
+ * @param projectId Session 所属 Project 的数字身份。
+ * @param sessionId 要绑定的 Session 身份。
+ * @returns 使用对应 Project Session 目录的活动 Runtime。
+ * @throws Error 当宿主依赖无法完成 Runtime 构造时抛出。
+ */
+export type CreateSessionRuntime = (
+  projectId: number,
+  sessionId: string,
+) => SessionRuntimePorts
 
 /** SessionEvent 到最终 Renderer 事件之间尚待确定的筛选与发送边界。 */
 export interface SessionEventForwardingPort {
@@ -71,13 +81,14 @@ export function registerSessionIpcHandlers(
 ): void {
   const activeSessions = new Map<string, SessionRuntimePorts>()
 
-  ipcMain.handle(SESSION_IPC_CHANNELS.startNewSession, async (_event, rawInput) => {
+  ipcMain.handle(SESSION_IPC_CHANNELS.startNewSession, async (_event, rawProjectId, rawInput) => {
+    const projectId = requireProjectId(rawProjectId)
     const input = requireUserMessageInput(rawInput)
     let sessionId: string
     do sessionId = SessionRuntimePorts.createSessionId()
     while (activeSessions.has(sessionId))
 
-    const runtime = createAndRegisterRuntime(sessionId, activeSessions, createRuntime)
+    const runtime = createAndRegisterRuntime(projectId, sessionId, activeSessions, createRuntime)
     try {
       const started = await startNewSession(input, runtime)
       const processing = runtime.processMessageQueue(started)
@@ -99,14 +110,15 @@ export function registerSessionIpcHandlers(
 
   ipcMain.handle(
     SESSION_IPC_CHANNELS.continueSession,
-    async (_event, rawSessionId, rawInput) => {
+    async (_event, rawProjectId, rawSessionId, rawInput) => {
+      const projectId = requireProjectId(rawProjectId)
       const sessionId = requireSessionId(rawSessionId)
       const input = requireContinueSessionInput(rawInput)
       if (activeSessions.has(sessionId)) {
         throw new Error(`Session 正在运行，请使用 enqueueSessionMessage：${sessionId}`)
       }
 
-      const runtime = createAndRegisterRuntime(sessionId, activeSessions, createRuntime)
+      const runtime = createAndRegisterRuntime(projectId, sessionId, activeSessions, createRuntime)
       try {
         runtime.enqueueSessionMessage(input.content)
         const processing = runtime.processMessageQueue()
@@ -132,7 +144,8 @@ export function registerSessionIpcHandlers(
 
   ipcMain.handle(
     SESSION_IPC_CHANNELS.enqueueSessionMessage,
-    (_event, rawSessionId, rawInput) => {
+    (_event, rawProjectId, rawSessionId, rawInput) => {
+      requireProjectId(rawProjectId)
       const sessionId = requireSessionId(rawSessionId)
       const input = requireEnqueueSessionMessageInput(rawInput)
       const runtime = activeSessions.get(sessionId)
@@ -145,11 +158,12 @@ export function registerSessionIpcHandlers(
 }
 
 function createAndRegisterRuntime(
+  projectId: number,
   sessionId: string,
   activeSessions: Map<string, SessionRuntimePorts>,
   createRuntime: CreateSessionRuntime,
 ): SessionRuntimePorts {
-  const runtime = createRuntime(sessionId)
+  const runtime = createRuntime(projectId, sessionId)
   if (runtime.sessionId !== sessionId) {
     runtime.close()
     throw new Error(
@@ -245,6 +259,20 @@ function requireEnqueueSessionMessageInput(
 function requireSessionId(value: unknown): string {
   if (typeof value !== "string" || value.length === 0) {
     throw new TypeError("continueSession.sessionId 无效")
+  }
+  return value
+}
+
+/**
+ * 把 Renderer 提供的 Project 身份收窄为可安全作为目录名的数字 ID。
+ *
+ * @param value IPC 边界收到的未校验值。
+ * @returns 非负的安全整数 Project ID。
+ * @throws TypeError 当值不能对应既定的数字 Project 身份时抛出。
+ */
+function requireProjectId(value: unknown): number {
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
+    throw new TypeError("projectId 无效")
   }
   return value
 }

@@ -30,12 +30,40 @@ export interface StartedSessionResponse {
 
 /** 暴露为 `window.nicode` 的 Session 命令。 */
 export interface NiCodePreloadApi {
-  startNewSession(input: UserMessageInput): Promise<StartedSessionResponse>
+  /**
+   * 在指定 Project 分组中创建并启动 Session。
+   *
+   * @param projectId Session 所属 Project 的数字身份。
+   * @param input 首轮用户消息与模型选择。
+   * @returns 首批 Turn 事件成功提交后的 Session 身份和 Turn 编号。
+   */
+  startNewSession(
+    projectId: number,
+    input: UserMessageInput,
+  ): Promise<StartedSessionResponse>
+  /**
+   * 在指定 Project 分组中恢复已有 Session。
+   *
+   * @param projectId Session 所属 Project 的数字身份。
+   * @param sessionId 要恢复的 Session 身份。
+   * @param input 新 Turn 的用户消息。
+   * @returns 新 Turn 首批事件成功提交后的 Session 身份和 Turn 编号。
+   */
   continueSession(
+    projectId: number,
     sessionId: string,
     input: ContinueSessionInput,
   ): Promise<StartedSessionResponse>
+  /**
+   * 向指定 Project 中正在运行的 Session 追加消息。
+   *
+   * @param projectId Session 所属 Project 的数字身份。
+   * @param sessionId 正在运行的 Session 身份。
+   * @param input 要入队的用户消息。
+   * @returns Runtime 接受消息后的入队确认。
+   */
   enqueueSessionMessage(
+    projectId: number,
     sessionId: string,
     input: ContinueSessionInput,
   ): Promise<EnqueuedSessionMessageResponse>
@@ -53,17 +81,26 @@ export interface ContextBridgePort {
 
 export function createSessionApi(ipcRenderer: IpcRendererInvokePort): NiCodePreloadApi {
   return Object.freeze({
-    async startNewSession(input: UserMessageInput): Promise<StartedSessionResponse> {
-      const response = await ipcRenderer.invoke(SESSION_IPC_CHANNELS.startNewSession, input)
+    async startNewSession(
+      projectId: number,
+      input: UserMessageInput,
+    ): Promise<StartedSessionResponse> {
+      const response = await ipcRenderer.invoke(
+        SESSION_IPC_CHANNELS.startNewSession,
+        projectId,
+        input,
+      )
       return requireStartedSessionResponse(response)
     },
 
     async continueSession(
+      projectId: number,
       sessionId: string,
       input: ContinueSessionInput,
     ): Promise<StartedSessionResponse> {
       const response = await ipcRenderer.invoke(
         SESSION_IPC_CHANNELS.continueSession,
+        projectId,
         sessionId,
         input,
       )
@@ -71,11 +108,13 @@ export function createSessionApi(ipcRenderer: IpcRendererInvokePort): NiCodePrel
     },
 
     async enqueueSessionMessage(
+      projectId: number,
       sessionId: string,
       input: ContinueSessionInput,
     ): Promise<EnqueuedSessionMessageResponse> {
       const response = await ipcRenderer.invoke(
         SESSION_IPC_CHANNELS.enqueueSessionMessage,
+        projectId,
         sessionId,
         input,
       )

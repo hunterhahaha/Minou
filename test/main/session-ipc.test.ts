@@ -23,6 +23,7 @@ const MODEL: ModelRef = {
   modelId: "model-1",
 }
 const CONTENT = [{ type: "text" as const, text: "你好" }]
+const PROJECT_ID = 17
 
 type IpcHandler = (event: unknown, ...args: unknown[]) => unknown
 
@@ -42,6 +43,7 @@ class FakeIpcMain implements IpcMainHandlePort {
 }
 
 interface RuntimeRecord {
+  projectId: number
   runtime: SessionRuntimePorts
   events: SessionEvent[]
   batches: Array<Parameters<SessionRuntimeBindings["appendTurnStartAndUserMessage"]>[0]>
@@ -70,7 +72,7 @@ function completedSessionEvents(sessionId: string): SessionEvent[] {
 }
 
 function runtimeHarness(options: { blockFirstLoop?: boolean; failInitialization?: boolean } = {}): {
-  createRuntime: (sessionId: string) => SessionRuntimePorts
+  createRuntime: (projectId: number, sessionId: string) => SessionRuntimePorts
   records: Map<string, RuntimeRecord>
   loopStarted: Promise<void>
   releaseFirstLoop(): void
@@ -86,7 +88,7 @@ function runtimeHarness(options: { blockFirstLoop?: boolean; failInitialization?
   let resolveTwoTurns!: () => void
   const twoTurnsEnded = new Promise<void>((resolve) => { resolveTwoTurns = resolve })
 
-  const createRuntime = (sessionId: string): SessionRuntimePorts => {
+  const createRuntime = (projectId: number, sessionId: string): SessionRuntimePorts => {
     const events = sessionId === "existing-session" ? completedSessionEvents(sessionId) : []
     const batches: RuntimeRecord["batches"] = []
     const repairPorts = {
@@ -144,7 +146,7 @@ function runtimeHarness(options: { blockFirstLoop?: boolean; failInitialization?
       repairPorts,
     } as unknown as SessionRuntimeBindings
     const runtime = new SessionRuntimePorts(sessionId, bindings)
-    records.set(sessionId, { runtime, events, batches })
+    records.set(sessionId, { projectId, runtime, events, batches })
     return runtime
   }
 
@@ -172,6 +174,7 @@ async function testStartsNewSessionAndProcessesQueuedMessages(): Promise<void> {
 
   const response = await ipcMain.invoke<StartedSessionResponse>(
     SESSION_IPC_CHANNELS.startNewSession,
+    PROJECT_ID,
     { content: CONTENT, model: MODEL },
   )
   assert.equal(response.turn, 1)
@@ -181,6 +184,7 @@ async function testStartsNewSessionAndProcessesQueuedMessages(): Promise<void> {
   assert.deepEqual(
     await ipcMain.invoke(
       SESSION_IPC_CHANNELS.enqueueSessionMessage,
+      PROJECT_ID,
       response.sessionId,
       { content: queuedContent },
     ),
@@ -189,6 +193,7 @@ async function testStartsNewSessionAndProcessesQueuedMessages(): Promise<void> {
   await assert.rejects(
     ipcMain.invoke(
       SESSION_IPC_CHANNELS.continueSession,
+      PROJECT_ID,
       response.sessionId,
       { content: queuedContent },
     ),
@@ -200,12 +205,14 @@ async function testStartsNewSessionAndProcessesQueuedMessages(): Promise<void> {
   await new Promise<void>((resolve) => setTimeout(resolve, 0))
   const record = harness.records.get(response.sessionId)
   assert.ok(record)
+  assert.equal(record.projectId, PROJECT_ID)
   assert.deepEqual(record.batches.map((batch) => batch[0].turn), [1, 2])
   assert.deepEqual(forwarded.map((event) => event.type), ["user/message", "user/message"])
   assert.deepEqual(failures, [])
   await assert.rejects(
     ipcMain.invoke(
       SESSION_IPC_CHANNELS.enqueueSessionMessage,
+      PROJECT_ID,
       response.sessionId,
       { content: queuedContent },
     ),
@@ -220,12 +227,14 @@ async function testContinuesExistingSessionThroughQueue(): Promise<void> {
 
   const response = await ipcMain.invoke<StartedSessionResponse>(
     SESSION_IPC_CHANNELS.continueSession,
+    PROJECT_ID,
     "existing-session",
     { content: CONTENT },
   )
   assert.deepEqual(response, { sessionId: "existing-session", turn: 2 })
   const record = harness.records.get("existing-session")
   assert.ok(record)
+  assert.equal(record.projectId, PROJECT_ID)
   assert.deepEqual(record.batches[0]?.[0], {
     type: "turn/start",
     turn: 2,
@@ -239,20 +248,29 @@ async function testRejectsInvalidRendererInput(): Promise<void> {
   registerSessionIpcHandlers(ipcMain, harness.createRuntime, () => {})
 
   await assert.rejects(
-    ipcMain.invoke(SESSION_IPC_CHANNELS.startNewSession, { content: CONTENT }),
+    ipcMain.invoke(SESSION_IPC_CHANNELS.startNewSession, PROJECT_ID, { content: CONTENT }),
     /startNewSession 输入无效/,
   )
   await assert.rejects(
-    ipcMain.invoke(SESSION_IPC_CHANNELS.continueSession, "", { content: CONTENT }),
+    ipcMain.invoke(SESSION_IPC_CHANNELS.continueSession, PROJECT_ID, "", { content: CONTENT }),
     /sessionId 无效/,
   )
   await assert.rejects(
     ipcMain.invoke(
       SESSION_IPC_CHANNELS.enqueueSessionMessage,
+      PROJECT_ID,
       "missing-session",
       { content: "invalid" },
     ),
     /enqueueSessionMessage 输入无效/,
+  )
+  await assert.rejects(
+    ipcMain.invoke(
+      SESSION_IPC_CHANNELS.startNewSession,
+      -1,
+      { content: CONTENT, model: MODEL },
+    ),
+    /projectId 无效/,
   )
 }
 
@@ -265,6 +283,7 @@ async function testObservesBackgroundFailureAndCleansRuntime(): Promise<void> {
 
   const response = await ipcMain.invoke<StartedSessionResponse>(
     SESSION_IPC_CHANNELS.startNewSession,
+    PROJECT_ID,
     { content: CONTENT, model: MODEL },
   )
   const failure = await failureSeen
@@ -274,6 +293,7 @@ async function testObservesBackgroundFailureAndCleansRuntime(): Promise<void> {
   await assert.rejects(
     ipcMain.invoke(
       SESSION_IPC_CHANNELS.enqueueSessionMessage,
+      PROJECT_ID,
       response.sessionId,
       { content: CONTENT },
     ),

@@ -1,7 +1,7 @@
 /** Electron 主进程启动装配的配置、IPC、Runtime 与窗口生命周期测试。 */
 
 import assert from "node:assert/strict"
-import { mkdtemp, rm, stat } from "node:fs/promises"
+import { mkdir, mkdtemp, rm, stat } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve, sep } from "node:path"
 
@@ -30,6 +30,7 @@ const MODEL: ModelRef = {
   modelId: "model-1",
 }
 const MESSAGE = [{ type: "text" as const, text: "你好" }]
+const PROJECT_ID = 17
 
 /** FakeIpcMain 保存的通用 IPC handler。 */
 type IpcHandler = (event: unknown, ...args: unknown[]) => unknown
@@ -234,8 +235,8 @@ async function testRegistersIpcAndWindowLifecycle(): Promise<void> {
   })
 }
 
-/** 验证实际 Runtime 闭包使用 default 路径与调用方注入的上下文和事件出口。 */
-async function testCreatesDefaultSessionRuntime(): Promise<void> {
+/** 验证实际 Runtime 闭包使用 Project 路径与调用方注入的上下文和事件出口。 */
+async function testCreatesProjectSessionRuntime(): Promise<void> {
   await withTempProfile(async (profile) => {
     let resolveRequest!: (request: Parameters<ModelAdapter["stream"]>[0]) => void
     const requestSeen = new Promise<Parameters<ModelAdapter["stream"]>[0]>((resolveRequestPromise) => {
@@ -283,14 +284,22 @@ async function testCreatesDefaultSessionRuntime(): Promise<void> {
       },
     })
     await startElectronApp(fixture.options)
+    await mkdir(join(profile, ".nicode", "sessions", String(PROJECT_ID)))
 
     const response = await fixture.ipcMain.invoke<StartedSessionResponse>(
       SESSION_IPC_CHANNELS.startNewSession,
+      PROJECT_ID,
       { content: MESSAGE, model: MODEL },
     )
     assert.equal(response.turn, 1)
     assert.equal(
-      (await stat(join(profile, ".nicode", "sessions", "default", response.sessionId))).isDirectory(),
+      (await stat(join(
+        profile,
+        ".nicode",
+        "sessions",
+        String(PROJECT_ID),
+        response.sessionId,
+      ))).isDirectory(),
       true,
     )
 
@@ -333,8 +342,10 @@ async function testForwardsSessionCompletionFailure(): Promise<void> {
       onSessionCompletionFailure: resolveFailure,
     })
     await startElectronApp(fixture.options)
+    await mkdir(join(profile, ".nicode", "sessions", String(PROJECT_ID)))
     const response = await fixture.ipcMain.invoke<StartedSessionResponse>(
       SESSION_IPC_CHANNELS.startNewSession,
+      PROJECT_ID,
       { content: MESSAGE, model: MODEL },
     )
     const failure = await failureSeen
@@ -355,7 +366,7 @@ async function testRejectsInvalidProfileBeforeRegistration(): Promise<void> {
 /** 依次运行启动装配的全部断言。 */
 async function main(): Promise<void> {
   await testRegistersIpcAndWindowLifecycle()
-  await testCreatesDefaultSessionRuntime()
+  await testCreatesProjectSessionRuntime()
   await testForwardsSessionCompletionFailure()
   await testRejectsInvalidProfileBeforeRegistration()
   console.log("index.test.ts: Electron 主进程启动装配断言通过")
