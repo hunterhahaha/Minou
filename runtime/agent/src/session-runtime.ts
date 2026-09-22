@@ -194,27 +194,25 @@ export class SessionRuntimeBindings {
   }
 
   /**
-   * 提供尚未由 SessionRuntime 装配的 Adapter、工具和取消信号。
-   * 当前 Session 的唯一事件出口由 SessionRuntimePorts 注入。
+   * 提供尚未由 SessionRuntime 装配的 Adapter 和工具。
+   * 当前活动期共享的取消信号与唯一事件出口由 SessionRuntimePorts 注入。
    *
    * @param model 本 Turn 固定使用的模型引用。
-   * @returns 可与 Turn、content 和事件出口合并成 AgentLoopOptions 的运行资源。
+   * @returns 可与 Turn、content、取消信号和事件出口合并成 AgentLoopOptions 的运行资源。
    */
   async createLoopOptions(
     model: ModelRef,
-  ): Promise<Omit<AgentLoopOptions, "turn" | "model" | "content" | "appendEvent">> {
+  ): Promise<Omit<AgentLoopOptions, "turn" | "model" | "content" | "signal" | "appendEvent">> {
     const matching = this.adapters.filter((entry) => modelRefsEqual(entry.model, model))
     if (matching.length !== 1) {
       throw new Error(
         `无法为 ModelRef 选择唯一 Adapter：${modelRefKey(model)}（匹配数量 ${matching.length}）`,
       )
     }
-    const controller = new AbortController()
     return {
       adapter: matching[0].adapter,
       tools: buildTools(model),
       executeTool: this.executeTool,
-      signal: controller.signal,
     }
   }
 
@@ -624,6 +622,8 @@ export class SessionRuntimePorts {
   readonly events: AsyncIterable<SessionEvent>
 
   private readonly bindings: SessionRuntimeBindings
+  /** 当前活动 Runtime 中所有 Turn / Loop 共享的取消控制器。 */
+  private readonly abortController = new AbortController()
   private readonly eventStream = new SessionEventStream()
   private readonly pendingMessages: ModelTextBlock[][] = []
   private processing = false
@@ -715,7 +715,7 @@ export class SessionRuntimePorts {
   }
 
   /**
-   * 创建 Loop 资源，并强制注入当前实例唯一的持久化事件出口。
+   * 创建 Loop 资源，并强制注入当前活动期共享的取消信号与持久化事件出口。
    *
    * @param model 当前 Turn 固定使用的模型。
    * @returns 完整的 AgentLoop 非 Turn 参数。
@@ -725,7 +725,11 @@ export class SessionRuntimePorts {
   ): Promise<Omit<AgentLoopOptions, "turn" | "model" | "content">> {
     this.assertOpen()
     const options = await this.bindings.createLoopOptions(model)
-    return { ...options, appendEvent: (event) => this.appendEvent(event) }
+    return {
+      ...options,
+      signal: this.abortController.signal,
+      appendEvent: (event) => this.appendEvent(event),
+    }
   }
 
   /**
@@ -746,10 +750,13 @@ export class SessionRuntimePorts {
    *
    * @param content 用户文本内容；队列不保存模型或 Turn。
    * @returns Renderer 可保存到内存队列的确认数据。
-   * @throws Error 当前实例已经关闭时抛出。
+   * @throws Error 当前实例已经关闭或正在停止时抛出。
    */
   enqueueSessionMessage(content: ModelTextBlock[]): EnqueuedSessionMessageResponse {
     this.assertOpen()
+    if (this.abortController.signal.aborted) {
+      throw new Error(`Session 正在停止，不能追加消息：${this.sessionId}`)
+    }
     const queued = cloneMessageContent(content)
     this.pendingMessages.push(queued)
     return { sessionId: this.sessionId, content: cloneMessageContent(queued) }
@@ -800,6 +807,17 @@ export class SessionRuntimePorts {
   }
 
   /**
+   * 停止当前 Session Runtime 活动期。
+   *
+   * 同一实例中的所有 Turn / Loop 观察同一个信号；首次调用会使其永久进入
+   * aborted 状态。重复停止或实例已关闭时不产生额外效果。
+   */
+  stop(): void {
+    if (this.closed) return
+    this.abortController.abort()
+  }
+
+  /**
    * 关闭当前活动实例，丢弃尚未启动的消息并结束事件流。
    * 重复关闭不会产生额外效果。
    */
@@ -829,7 +847,7 @@ export class SessionRuntimePorts {
 
         this.activeTurn = current.turn
         const result = await current.completion
-        if (result.stopped) return
+        if (result.stopped || this.abortController.signal.aborted) return
 
         current = undefined
         if (this.pendingMessages.length === 0) return

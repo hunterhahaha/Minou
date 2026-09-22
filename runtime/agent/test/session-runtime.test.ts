@@ -94,7 +94,6 @@ function fixture(
         },
         tools: [],
         executeTool: async () => { throw new Error("unexpected tool call") },
-        signal: new AbortController().signal,
       }
     },
     repairPorts,
@@ -614,11 +613,9 @@ async function testConcreteRuntimeBindings(): Promise<void> {
       { role: "user", content: MESSAGE },
     ])
 
-    const firstOptions = await bindings.createLoopOptions(MODEL)
-    const secondOptions = await bindings.createLoopOptions(MODEL)
-    assert.equal(firstOptions.adapter, adapter)
-    assert.deepEqual(firstOptions.tools, [])
-    assert.notEqual(firstOptions.signal, secondOptions.signal)
+    const loopResources = await bindings.createLoopOptions(MODEL)
+    assert.equal(loopResources.adapter, adapter)
+    assert.deepEqual(loopResources.tools, [])
 
     await bindings.repairPorts.appendEvent({ type: "turn/end", turn: 1, reason: "completed" })
     baseline = {
@@ -687,6 +684,32 @@ async function testConcreteRuntimeBindings(): Promise<void> {
   }
 }
 
+async function testRuntimeScopedCancellation(): Promise<void> {
+  const first = fixture("session-cancellation-1")
+  const second = fixture("session-cancellation-2")
+  const firstOptions = await first.ports.createLoopOptions(MODEL)
+  const nextTurnOptions = await first.ports.createLoopOptions(MODEL)
+  const otherRuntimeOptions = await second.ports.createLoopOptions(MODEL)
+
+  assert.equal(firstOptions.signal, nextTurnOptions.signal)
+  assert.notEqual(firstOptions.signal, otherRuntimeOptions.signal)
+  assert.equal(firstOptions.signal.aborted, false)
+
+  first.ports.stop()
+  first.ports.stop()
+  assert.equal(firstOptions.signal.aborted, true)
+  assert.equal(nextTurnOptions.signal.aborted, true)
+  assert.equal(otherRuntimeOptions.signal.aborted, false)
+  assert.throws(
+    () => first.ports.enqueueSessionMessage(MESSAGE),
+    /正在停止/,
+  )
+
+  first.ports.close()
+  first.ports.stop()
+  second.ports.close()
+}
+
 async function main(): Promise<void> {
   await testNewSession()
   await testContinueSession()
@@ -698,6 +721,7 @@ async function main(): Promise<void> {
   await testRepairPreservesContextAndUncommittedSummary()
   await testCorruptedLogIsRejectedBeforeWrites()
   await testConcreteRuntimeBindings()
+  await testRuntimeScopedCancellation()
   console.log("session-runtime.test.ts: SessionRuntime 入口与恢复断言通过")
 }
 

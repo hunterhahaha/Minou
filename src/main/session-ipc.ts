@@ -20,7 +20,7 @@ import type {
 import {
   SESSION_IPC_CHANNELS,
 } from "../preload/session-api.ts"
-import type { StartedSessionResponse } from "../preload/session-api.ts"
+import type { StartedSessionResponse, StoppedSessionResponse } from "../preload/session-api.ts"
 
 export interface IpcMainHandlePort {
   handle(
@@ -155,6 +155,16 @@ export function registerSessionIpcHandlers(
       return runtime.enqueueSessionMessage(input.content)
     },
   )
+
+  ipcMain.handle(
+    SESSION_IPC_CHANNELS.stopSession,
+    (_event, rawProjectId, rawSessionId): StoppedSessionResponse => {
+      requireProjectId(rawProjectId)
+      const sessionId = requireSessionId(rawSessionId)
+      activeSessions.get(sessionId)?.stop()
+      return { sessionId }
+    },
+  )
 }
 
 function createAndRegisterRuntime(
@@ -258,7 +268,7 @@ function requireEnqueueSessionMessageInput(
 
 function requireSessionId(value: unknown): string {
   if (typeof value !== "string" || value.length === 0) {
-    throw new TypeError("continueSession.sessionId 无效")
+    throw new TypeError("sessionId 无效")
   }
   return value
 }

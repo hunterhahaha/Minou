@@ -213,6 +213,7 @@ async function testRegistersIpcAndWindowLifecycle(): Promise<void> {
       SESSION_IPC_CHANNELS.startNewSession,
       SESSION_IPC_CHANNELS.continueSession,
       SESSION_IPC_CHANNELS.enqueueSessionMessage,
+      SESSION_IPC_CHANNELS.stopSession,
     ])
 
     fixture.app.emit("activate")

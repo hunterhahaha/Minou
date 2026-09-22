@@ -32,6 +32,9 @@ async function testCallsFixedChannels(): Promise<void> {
       if (channel === SESSION_IPC_CHANNELS.continueSession) {
         return { sessionId: "existing-session", turn: 4 }
       }
+      if (channel === SESSION_IPC_CHANNELS.stopSession) {
+        return { sessionId: "existing-session" }
+      }
       return { sessionId: "existing-session", content: CONTENT }
     },
   }
@@ -50,6 +53,10 @@ async function testCallsFixedChannels(): Promise<void> {
     await api.enqueueSessionMessage(PROJECT_ID, "existing-session", { content: CONTENT }),
     { sessionId: "existing-session", content: CONTENT },
   )
+  assert.deepEqual(
+    await api.stopSession(PROJECT_ID, "existing-session"),
+    { sessionId: "existing-session" },
+  )
   assert.deepEqual(calls, [
     {
       channel: SESSION_IPC_CHANNELS.startNewSession,
@@ -62,6 +69,10 @@ async function testCallsFixedChannels(): Promise<void> {
     {
       channel: SESSION_IPC_CHANNELS.enqueueSessionMessage,
       args: [PROJECT_ID, "existing-session", { content: CONTENT }],
+    },
+    {
+      channel: SESSION_IPC_CHANNELS.stopSession,
+      args: [PROJECT_ID, "existing-session"],
     },
   ])
 }
@@ -84,7 +95,7 @@ async function testExposesOnlyNiCodeApi(): Promise<void> {
   assert.equal(exposedApi, api)
   assert.deepEqual(
     Object.keys(exposedApi as NiCodePreloadApi).sort(),
-    ["continueSession", "enqueueSessionMessage", "startNewSession"],
+    ["continueSession", "enqueueSessionMessage", "startNewSession", "stopSession"],
   )
 }
 
@@ -99,6 +110,12 @@ async function testRejectsInvalidMainResponse(): Promise<void> {
   await assert.rejects(
     invalidQueued.enqueueSessionMessage(PROJECT_ID, "session-1", { content: CONTENT }),
     /无效的 Session 消息入队结果/,
+  )
+
+  const invalidStopped = createSessionApi({ invoke: async () => ({ sessionId: "" }) })
+  await assert.rejects(
+    invalidStopped.stopSession(PROJECT_ID, "session-1"),
+    /无效的 Session 停止结果/,
   )
 }
 

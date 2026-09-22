@@ -1,8 +1,9 @@
 import assert from "node:assert/strict"
 
+import { createAbortError } from "../../runtime/error/src/abort.ts"
 import { SessionRuntimePorts } from "../../runtime/agent/src/session-runtime.ts"
 import type { SessionRuntimeBindings } from "../../runtime/agent/src/session-runtime.ts"
-import type { ModelRef } from "../../runtime/model/src/types.ts"
+import type { ModelAdapter, ModelRef } from "../../runtime/model/src/types.ts"
 import type { SessionEvent, SessionEventInput } from "../../runtime/session/src/events.ts"
 import {
   registerSessionIpcHandlers,
@@ -77,6 +78,7 @@ function runtimeHarness(options: { blockFirstLoop?: boolean; failInitialization?
   loopStarted: Promise<void>
   releaseFirstLoop(): void
   twoTurnsEnded: Promise<void>
+  stoppedTurnEnded: Promise<void>
 } {
   const records = new Map<string, RuntimeRecord>()
   let releaseFirstLoop!: () => void
@@ -87,6 +89,8 @@ function runtimeHarness(options: { blockFirstLoop?: boolean; failInitialization?
   let turnEndCount = 0
   let resolveTwoTurns!: () => void
   const twoTurnsEnded = new Promise<void>((resolve) => { resolveTwoTurns = resolve })
+  let resolveStoppedTurn!: () => void
+  const stoppedTurnEnded = new Promise<void>((resolve) => { resolveStoppedTurn = resolve })
 
   const createRuntime = (projectId: number, sessionId: string): SessionRuntimePorts => {
     const events = sessionId === "existing-session" ? completedSessionEvents(sessionId) : []
@@ -103,6 +107,7 @@ function runtimeHarness(options: { blockFirstLoop?: boolean; failInitialization?
         if (event.type === "turn/end") {
           turnEndCount += 1
           if (turnEndCount >= 2) resolveTwoTurns()
+          if (event.reason === "stopped") resolveStoppedTurn()
         }
         return event
       },
@@ -130,18 +135,29 @@ function runtimeHarness(options: { blockFirstLoop?: boolean; failInitialization?
       ],
       createLoopOptions: async () => ({
         adapter: {
-          stream: async function* () {
+          stream: async function* (
+            _request: Parameters<ModelAdapter["stream"]>[0],
+            signal: AbortSignal,
+          ) {
             if (firstLoop) {
               firstLoop = false
               markLoopStarted()
-              if (options.blockFirstLoop) await firstLoopGate
+              if (options.blockFirstLoop) {
+                await Promise.race([
+                  firstLoopGate,
+                  new Promise<never>((_resolve, reject) => {
+                    const stop = (): void => { reject(createAbortError()) }
+                    if (signal.aborted) stop()
+                    else signal.addEventListener("abort", stop, { once: true })
+                  }),
+                ])
+              }
             }
             yield { type: "stream_end" as const, completion: "finished" as const }
           },
         },
         tools: [],
         executeTool: async () => { throw new Error("unexpected tool call") },
-        signal: new AbortController().signal,
       }),
       repairPorts,
     } as unknown as SessionRuntimeBindings
@@ -156,6 +172,7 @@ function runtimeHarness(options: { blockFirstLoop?: boolean; failInitialization?
     loopStarted,
     releaseFirstLoop,
     twoTurnsEnded,
+    stoppedTurnEnded,
   }
 }
 
@@ -242,6 +259,76 @@ async function testContinuesExistingSessionThroughQueue(): Promise<void> {
   })
 }
 
+async function testStopsActiveSessionAndDropsQueuedTurns(): Promise<void> {
+  const harness = runtimeHarness({ blockFirstLoop: true })
+  const ipcMain = new FakeIpcMain()
+  const failures: SessionCompletionFailure[] = []
+  registerSessionIpcHandlers(ipcMain, harness.createRuntime, (failure) => { failures.push(failure) })
+
+  const response = await ipcMain.invoke<StartedSessionResponse>(
+    SESSION_IPC_CHANNELS.startNewSession,
+    PROJECT_ID,
+    { content: CONTENT, model: MODEL },
+  )
+  await harness.loopStarted
+  await ipcMain.invoke(
+    SESSION_IPC_CHANNELS.enqueueSessionMessage,
+    PROJECT_ID,
+    response.sessionId,
+    { content: [{ type: "text", text: "不应启动的排队消息" }] },
+  )
+
+  assert.deepEqual(
+    await ipcMain.invoke(
+      SESSION_IPC_CHANNELS.stopSession,
+      PROJECT_ID,
+      response.sessionId,
+    ),
+    { sessionId: response.sessionId },
+  )
+  await assert.rejects(
+    ipcMain.invoke(
+      SESSION_IPC_CHANNELS.enqueueSessionMessage,
+      PROJECT_ID,
+      response.sessionId,
+      { content: CONTENT },
+    ),
+    /正在停止/,
+  )
+
+  await harness.stoppedTurnEnded
+  await new Promise<void>((resolve) => setTimeout(resolve, 0))
+  const record = harness.records.get(response.sessionId)
+  assert.ok(record)
+  assert.deepEqual(record.batches.map((batch) => batch[0].turn), [1])
+  assert.equal(
+    record.events.some((event) => event.type === "step/end" && event.reason === "stopped"),
+    true,
+  )
+  assert.equal(
+    record.events.some((event) => event.type === "turn/end" && event.reason === "stopped"),
+    true,
+  )
+  assert.deepEqual(failures, [])
+
+  assert.deepEqual(
+    await ipcMain.invoke(
+      SESSION_IPC_CHANNELS.stopSession,
+      PROJECT_ID,
+      response.sessionId,
+    ),
+    { sessionId: response.sessionId },
+  )
+  assert.deepEqual(
+    await ipcMain.invoke(
+      SESSION_IPC_CHANNELS.stopSession,
+      PROJECT_ID,
+      "not-running",
+    ),
+    { sessionId: "not-running" },
+  )
+}
+
 async function testRejectsInvalidRendererInput(): Promise<void> {
   const harness = runtimeHarness()
   const ipcMain = new FakeIpcMain()
@@ -270,6 +357,14 @@ async function testRejectsInvalidRendererInput(): Promise<void> {
       -1,
       { content: CONTENT, model: MODEL },
     ),
+    /projectId 无效/,
+  )
+  await assert.rejects(
+    ipcMain.invoke(SESSION_IPC_CHANNELS.stopSession, PROJECT_ID, ""),
+    /sessionId 无效/,
+  )
+  await assert.rejects(
+    ipcMain.invoke(SESSION_IPC_CHANNELS.stopSession, -1, "session-1"),
     /projectId 无效/,
   )
 }
@@ -304,6 +399,7 @@ async function testObservesBackgroundFailureAndCleansRuntime(): Promise<void> {
 async function main(): Promise<void> {
   await testStartsNewSessionAndProcessesQueuedMessages()
   await testContinuesExistingSessionThroughQueue()
+  await testStopsActiveSessionAndDropsQueuedTurns()
   await testRejectsInvalidRendererInput()
   await testObservesBackgroundFailureAndCleansRuntime()
   console.log("session-ipc.test.ts: 主进程 Session IPC 断言通过")
