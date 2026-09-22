@@ -19,8 +19,8 @@
  *       toolCallId / blockId）并把工具结果追加到 content
  *     → 因为工具结果必须交还模型，本 Step 结束后一定进入下一 Step
  *
- * 工具本体与 ToolExecutor 不在本阶段：`executeTool` 由调用方注入；串并行调度委托给
- * `runtime/tools/src/tool-scheduler.ts`，AgentLoop 自己不判断哪个工具能并发。
+ * ToolExecutor 由 `runtime/tools/src/tool-executor.ts` 创建并由调用方注入；串并行调度委托给
+ * `runtime/tools/src/tool-scheduler.ts`。真实工具与注册表的装配都不进入 AgentLoop。
  *
  * 不做的事（属后续子阶段，见 TODOList 6.2、6.3、6.5、6.6）：压缩检查、Usage 记账、
  * Insert 与完整 Turn 收尾。Queue 和最小 `turn/end` 由外层 SessionRuntime 处理，因此本函数的边界是：
@@ -33,9 +33,10 @@
  *   2. `blockId` 由 `(turn, step, index)` 决定而不随机生成：第 8.4 节只要求同一个块的
  *      Start / Delta / End 使用同一个 `blockId`，而 `index` 在同一 Step 内唯一；确定性 ID
  *      让 Block 修复（第 10.3 节）不需要额外维护映射。
- *   3. 工具的执行入口由调用方注入（`ExecuteToolCall`），串并行调度由 `runToolCalls` 负责；
+ *   3. 工具的执行入口由调用方注入（`ExecuteToolCall`，具体实现由 tools 模块创建），
+ *      串并行调度由 `runToolCalls` 负责；
  *      AgentLoop 只负责把本 Step 的调用按接收顺序交出去，并在每个结果返回时立即写事件与工具结果。
- *      真正的 ToolExecutor 与完整 ToolScheduler 规则在后续阶段接入。
+ *      权限、审批和完整 ToolScheduler 规则仍在后续阶段接入。
  *   4. Turn 边界事件不在本函数内（见上）。
  *
  * 架构依据：.git/技术文档/开发备忘录1.0.17.md 第 6 节（模型协议层）、第 8.2 / 8.4 / 8.5 / 8.6 / 8.9 节、
@@ -61,7 +62,11 @@ import type {
 } from "../../model/src/types.ts"
 import type { AppendSessionEvent } from "../../session/src/events.ts"
 import { runToolCalls } from "../../tools/src/tool-scheduler.ts"
-import type { ToolResult } from "../../tools/src/types.ts"
+import type {
+  ExecuteToolCall as ToolRuntimeExecuteToolCall,
+  ToolCallContext as ToolRuntimeCallContext,
+  ToolResult,
+} from "../../tools/src/types.ts"
 
 /**
  * 本 Step 已结束的 tool_call 块及其事件身份。
@@ -80,25 +85,14 @@ export interface AgentLoopToolCall {
   block: Extract<AssistantContentBlock, { type: "tool_call" }>
 }
 
-/** 一次工具调用的 Runtime 上下文（第 16.4 节 `ToolExecutionContext` 在 AgentLoop 侧的最小形态）。 */
-export interface ToolCallContext {
-  /** 当前工具调用所属的 Turn 编号。 */
-  turn: number
-  /** 当前工具调用所属的 Step 编号。 */
-  step: number
-  /** 工具调用对应的 assistant Block ID。 */
-  blockId: string
-  /** 模型生成的工具调用 ID。 */
-  toolCallId: string
-  /** 本 Agent Loop 的取消信号：已开始的工具应据此尝试取消（第 14、17 节）。 */
-  signal: AbortSignal
-}
+/** tools 模块定义的调用身份；保留本文件的既有导入路径。 */
+export type ToolCallContext = ToolRuntimeCallContext
 
 /**
  * 执行一次工具调用的边界（第 16.4 节「统一 execute」在 AgentLoop 侧的形态）。
  *
- * 真正的 ToolExecutor / ToolScheduler 尚未实现（见 runtime/tools/src/index.ts），
- * 本阶段只约定「工具名 + 参数 + 调用身份 → 统一 ToolResult」。
+ * 具体实现由 `createExecuteToolCall` 基于 ToolRegistry / RenderRegistry 创建，AgentLoop 仍只依赖
+ * 「工具名 + 参数 + 调用身份 → 统一 ToolResult」这一边界。
  *
  * 工具自身的失败（含被取消）也必须以 `status = "error"` 的 ToolResult 返回，不能用抛异常表达 ——
  * 第 16.4 节要求调度器中尚未启动便被取消的调用同样产出 `AppError(CANCELLED)` 并形成 ToolResult；
@@ -110,11 +104,7 @@ export interface ToolCallContext {
  * @returns 工具执行结果；工具自身失败也应通过 `status = "error"` 返回。
  * @throws 工具执行入口发生 Turn 级异常时抛出；工具业务失败不应使用异常表示。
  */
-export type ExecuteToolCall = (
-  toolName: string,
-  toolArguments: unknown,
-  context: ToolCallContext,
-) => Promise<ToolResult>
+export type ExecuteToolCall = ToolRuntimeExecuteToolCall
 
 /** `runAgentLoop` 的结果。Turn 的终态由调用方据此写成 `turn/end`（第 13.5、14 节）。 */
 export interface AgentLoopResult {

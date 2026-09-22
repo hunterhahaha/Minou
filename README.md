@@ -41,8 +41,9 @@ Adapter 与 Usage 转换，含流式调用、双向转换、取消与错误归�
 `runAgentLoop` 跑完「正常模型请求 + 工具调用小轮」这条数据流（Step 生命周期、模型流事件落盘、
 `assistant/message`、`tool/result` 关联、工具结果回填 content），`runtime/tools/src/tool-scheduler.ts`
 负责工具小轮的串并行调度，配套 `runtime/session/src/events.ts` 提供事件结构与事件出口契约、
-`runtime/tools/src/types.ts` 提供统一 `ToolResult` 结构。工具本体与 ToolExecutor、审批屏障、
-压缩、Usage 记账、Insert、文件变更汇总与最终 Surface 仍未实现，见下文。
+`runtime/tools/src/types.ts` 提供统一 `ToolResult` 结构。ToolRegistry、RenderRegistry 与统一
+ToolExecutor 调用入口已经实现；真实工具、ToolExposureManager、审批屏障、压缩、Usage 记账、
+Insert、文件变更汇总与最终 Surface 仍未实现，见下文。
 
 **SessionRuntime 的活动实例与具体绑定**已提供：`SessionRuntimeBindings` 为单个 Session 绑定目录、
 同一写队列中的 Event Log / SessionState、Turn 首批事件原子追加、AGENTS.md / Skill 增量、Event Log
@@ -102,8 +103,9 @@ content + tools + 本 Turn 固定 ModelRef + AbortSignal
 → 有 Tool Call 则一定进入下一 Step（工具结果必须交还模型），否则结束 Loop
 ```
 
-- 工具由调用方通过 `executeTool` 注入（第 16.4 节统一 execute 的边界形态），切轮与串并行调度在
-  `runtime/tools/src/tool-scheduler.ts`；AgentLoop 自己不做调度判断，也不逐个 await。
+- 工具由调用方通过 `executeTool` 注入；具体入口可由 `createExecuteToolCall(toolRegistry, renderRegistry)`
+  创建。切轮与串并行调度在 `runtime/tools/src/tool-scheduler.ts`；AgentLoop 不直接读取注册表，
+  也不逐个 await。
 - `runToolCalls` 是**异步迭代器**，一轮之内交出顺序 = 完成顺序：先结束的调用先落盘、先进入 content，
   不必等最慢的那个（第 16.5 节「完成后即可记录」）。写入顺序与 tool_call 顺序无关，
   配对靠 `toolCallId` 保证（第 8.6 / 11.3 节）。
@@ -124,6 +126,32 @@ content + tools + 本 Turn 固定 ModelRef + AbortSignal
   且不再发起下一次模型请求；其它错误写 `step/end(error)` 后原样抛出，由调用方以 error 终止 Turn。
 - Queue 已由单 Session 活动实例按 FIFO 串行处理；Usage 记账（6.3）、Insert（6.5）、压缩（6.2）
   及完整 Turn 收尾（6.6）仍未实现。
+
+### ToolRegistry / ToolExecutor（第 16 节）
+
+`runtime/tools/src/tool-registry.ts` 提供 ToolRegistry、RenderRegistry 和 `registerTool` 成对登记入口；
+登记项包含基础模型定义、`builtin | mcp` 来源、参数检查器、业务执行函数与对应结果整理器。
+ToolRegistry 拒绝未知内置名称、无实际名称的 `mcp_` 项和重复登记，并按登记顺序提供定义副本。
+
+`runtime/tools/src/tool-executor.ts` 的 `createExecuteToolCall` 创建 AgentLoop 所需的具体执行函数：
+
+```text
+工具名 + 未检查参数 + 调用身份
+→ 同时查找工具与结果整理器
+→ 分离 callDescription
+→ 工具自己的参数检查器
+→ 取消检查
+→ 工具业务函数
+→ 工具自己的结果整理器
+→ ToolResult
+```
+
+- 参数检查失败、工具返回的 AppError、工具执行异常和取消都进入同名结果整理器；不以抛异常表示
+  普通工具失败。业务函数只收到业务参数，完整的已检查参数保存在执行上下文中供未来审批使用。
+- 未登记工具、缺失结果整理器及结果整理器自身失败使用公共错误结果；模型可见文本只包含稳定错误码
+  与说明，不包含堆栈。
+- 当前没有登记任何真实工具，`buildTools()` 仍返回空数组；ToolExposureManager、路径和权限检查、
+  审批、MCP Dispatcher 及各工具专属实现都不在本阶段。
 
 ### ToolScheduler（阶段 6.4，第 17 节）
 
@@ -224,7 +252,9 @@ runtime/                             Runtime 模块，各自含 src/ 与 test/
 └─ tools/                            与工具有关的全部代码
    ├─ src/
    │  ├─ index.ts                    模块入口
-   │  ├─ types.ts                    统一 ToolResult 与内容块（阶段 6.4）
+   │  ├─ types.ts                    统一 ToolResult、调用上下文与执行函数契约
+   │  ├─ tool-registry.ts            ToolRegistry / RenderRegistry 与成对登记
+   │  ├─ tool-executor.ts            统一查表、参数检查、执行与结果整理入口
    │  ├─ tool-scheduler.ts           ToolScheduler：工具小轮的串并行调度（阶段 6.4）
    │  ├─ render/                     工具结果渲染器
    │  ├─ present/                    present 工具
@@ -236,7 +266,7 @@ runtime/                             Runtime 模块，各自含 src/ 与 test/
    │  ├─ skill/                      skill_load 工具
    │  ├─ memory/                     memory_list / memory_read / memory_write 工具
    │  └─ security/                   SandboxPolicy / ApprovalManager（工具权限与审批屏障）
-   └─ test/                          tool-scheduler.test.ts；其余与 src/ 子目录一一对应
+   └─ test/                          注册表、执行入口与调度器的离线测试
 ```
 
 未开始实现的 `test/` 只有 `.gitkeep` 占位。
@@ -300,6 +330,8 @@ node --experimental-strip-types runtime/model/test/chat-completions.test.ts
 node --experimental-strip-types runtime/model/test/responses.test.ts
 node --experimental-strip-types runtime/error/test/normalizer.test.ts
 node --experimental-strip-types runtime/network/test/retry.test.ts
+node --experimental-strip-types runtime/tools/test/tool-registry.test.ts
+node --experimental-strip-types runtime/tools/test/tool-executor.test.ts
 node --experimental-strip-types runtime/tools/test/tool-scheduler.test.ts
 node --experimental-strip-types runtime/agent/test/loop.test.ts
 node --experimental-strip-types runtime/agent/test/session-runtime.test.ts
@@ -335,6 +367,10 @@ ToolScheduler 的测试分两层：切轮规则直接比对 `planToolRounds` 的
 数组，于是「谁先完成、谁先被交出、下一轮何时开始」都能直接从轨迹读出，不依赖墙钟时间。覆盖共享
 只读并发且完成即交出、独占单独一轮、上一轮没结束下一轮不启动（两个方向都测）、空批次、异常传播、
 分组名单（含未登记工具按独占处理）。
+
+ToolRegistry / ToolExecutor 测试使用假工具验证成对登记与冲突回滚、名称来源约束、定义副本、
+`callDescription` 分离、参数错误、业务 AppError、取消与异常归一化，以及专属结果整理器失败时的
+公共错误回退；不访问文件系统或网络。
 
 **不要用 `node --check <文件>.ts` 作为语法检查**：它并不做类型剥离，对 `interface`、
 `const x: number = 1` 这类写法会误报 `SyntaxError`，而对函数参数的类型标注又会通过，
