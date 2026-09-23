@@ -21,6 +21,7 @@ import type { SessionEvent } from "../../runtime/session/src/events.ts"
 import type { CurrentSessionBaseline } from "../../runtime/session/src/session-state.ts"
 import {
   SESSION_IPC_CHANNELS,
+  STARTUP_DATA_IPC_CHANNELS,
 } from "../../src/preload/session-api.ts"
 import type { StartedSessionResponse } from "../../src/preload/session-api.ts"
 
@@ -227,6 +228,9 @@ async function testRegistersIpcAndWindowLifecycle(): Promise<void> {
       SESSION_IPC_CHANNELS.continueSession,
       SESSION_IPC_CHANNELS.enqueueSessionMessage,
       SESSION_IPC_CHANNELS.stopSession,
+      STARTUP_DATA_IPC_CHANNELS.listProjects,
+      STARTUP_DATA_IPC_CHANNELS.listDefaultSessions,
+      STARTUP_DATA_IPC_CHANNELS.listProviders,
     ])
 
     fixture.app.emit("activate")

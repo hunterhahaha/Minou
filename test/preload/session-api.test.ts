@@ -6,6 +6,7 @@ import {
   exposeSessionApi,
   NICODE_PRELOAD_GLOBAL,
   SESSION_IPC_CHANNELS,
+  STARTUP_DATA_IPC_CHANNELS,
 } from "../../src/preload/session-api.ts"
 import type {
   ContextBridgePort,
@@ -26,6 +27,16 @@ async function testCallsFixedChannels(): Promise<void> {
   const ipcRenderer: IpcRendererInvokePort = {
     invoke: async (channel, ...args) => {
       calls.push({ channel, args })
+      if (channel === STARTUP_DATA_IPC_CHANNELS.listProjects) {
+        return [{ projectId: 7, name: "Project", updatedAt: "2026-09-04T00:00:00Z",
+          directories: ["G:\\code\\NiCode"], sessions: [] }]
+      }
+      if (channel === STARTUP_DATA_IPC_CHANNELS.listDefaultSessions) {
+        return [{ sessionId: "default-1", name: "Default", updatedAt: "2026-09-03T00:00:00Z" }]
+      }
+      if (channel === STARTUP_DATA_IPC_CHANNELS.listProviders) {
+        return [{ providerId: "provider-1", name: "Provider", models: [{ modelId: "model-1", name: "model-1" }] }]
+      }
       if (channel === SESSION_IPC_CHANNELS.startNewSession) {
         return { sessionId: "new-session", turn: 1 }
       }
@@ -41,6 +52,16 @@ async function testCallsFixedChannels(): Promise<void> {
   const api = createSessionApi(ipcRenderer)
 
   assert.equal(Object.isFrozen(api), true)
+  assert.deepEqual(await api.listProjects(), [{
+    projectId: 7, name: "Project", updatedAt: "2026-09-04T00:00:00Z",
+    directories: ["G:\\code\\NiCode"], sessions: [],
+  }])
+  assert.deepEqual(await api.listDefaultSessions(), [
+    { sessionId: "default-1", name: "Default", updatedAt: "2026-09-03T00:00:00Z" },
+  ])
+  assert.deepEqual(await api.listProviders(), [{
+    providerId: "provider-1", name: "Provider", models: [{ modelId: "model-1", name: "model-1" }],
+  }])
   assert.deepEqual(
     await api.startNewSession(PROJECT_ID, { content: CONTENT, model: MODEL }),
     { sessionId: "new-session", turn: 1 },
@@ -58,6 +79,9 @@ async function testCallsFixedChannels(): Promise<void> {
     { sessionId: "existing-session" },
   )
   assert.deepEqual(calls, [
+    { channel: STARTUP_DATA_IPC_CHANNELS.listProjects, args: [] },
+    { channel: STARTUP_DATA_IPC_CHANNELS.listDefaultSessions, args: [] },
+    { channel: STARTUP_DATA_IPC_CHANNELS.listProviders, args: [] },
     {
       channel: SESSION_IPC_CHANNELS.startNewSession,
       args: [PROJECT_ID, { content: CONTENT, model: MODEL }],
@@ -95,11 +119,17 @@ async function testExposesOnlyNiCodeApi(): Promise<void> {
   assert.equal(exposedApi, api)
   assert.deepEqual(
     Object.keys(exposedApi as NiCodePreloadApi).sort(),
-    ["continueSession", "enqueueSessionMessage", "startNewSession", "stopSession"],
+    ["continueSession", "enqueueSessionMessage", "listDefaultSessions", "listProjects", "listProviders", "startNewSession", "stopSession"],
   )
 }
 
 async function testRejectsInvalidMainResponse(): Promise<void> {
+  const invalidProjects = createSessionApi({ invoke: async () => [{ projectId: "7", sessions: [] }] })
+  await assert.rejects(invalidProjects.listProjects(), /无效的项目列表/)
+  const invalidSessions = createSessionApi({ invoke: async () => [{ sessionId: "x", name: "X" }] })
+  await assert.rejects(invalidSessions.listDefaultSessions(), /无效的对话列表/)
+  const invalidProviders = createSessionApi({ invoke: async () => [{ providerId: "p", name: "P", models: [{ modelId: "m" }] }] })
+  await assert.rejects(invalidProviders.listProviders(), /无效的 Provider 列表/)
   const api = createSessionApi({ invoke: async () => ({ sessionId: "", turn: 0 }) })
   await assert.rejects(
     api.startNewSession(PROJECT_ID, { content: CONTENT, model: MODEL }),

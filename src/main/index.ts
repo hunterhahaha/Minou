@@ -16,6 +16,7 @@ import {
 } from "../../runtime/agent/src/session-runtime.ts"
 import type { CurrentSessionBaseline } from "../../runtime/session/src/session-state.ts"
 import type { ConfigFilePaths } from "./config-files.ts"
+import { registerStartupDataIpcHandlers } from "./startup-data-ipc.ts"
 import { registerSessionIpcHandlers } from "./session-ipc.ts"
 import type {
   CreateSessionRuntime,
@@ -164,6 +165,7 @@ export async function startElectronApp(options: ElectronStartupOptions): Promise
     options.onSessionCompletionFailure,
     options.sessionEventForwarding,
   )
+  registerStartupDataIpcHandlers(options.ipcMain, options.configPaths)
 
   await options.app.whenReady()
   options.app.on("activate", () => {

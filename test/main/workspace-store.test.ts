@@ -9,6 +9,7 @@ import { DatabaseSync } from "node:sqlite"
 
 import {
   initializeWorkspaceDatabase,
+  listProjectWorkspaces,
   readDefaultWorkspace,
   readProjectWorkspace,
   saveDefaultWorkspace,
@@ -33,6 +34,7 @@ async function main(): Promise<void> {
     assert.equal(existsSync(databasePath), false)
     initializeWorkspaceDatabase(databasePath)
     assert.deepEqual(readDefaultWorkspace(databasePath), { version: 1, sessions: [] })
+    assert.deepEqual(listProjectWorkspaces(databasePath), [])
     assert.throws(() => readProjectWorkspace(databasePath, 17), /项目损坏/)
 
     const sessions = [{
@@ -52,11 +54,21 @@ async function main(): Promise<void> {
     }
     saveProjectWorkspace(databasePath, project)
     saveDefaultWorkspace(databasePath, { version: 1, sessions: [sessions[1], sessions[0]] })
+    saveProjectWorkspace(databasePath, {
+      version: 1, id: 18, name: "Later", updatedAt: "2026-09-24T00:00:00.000Z",
+      directories: [], sessions: [],
+    })
+    saveProjectWorkspace(databasePath, {
+      version: 1, id: 16, name: "Same time", updatedAt: "2026-09-23T01:00:00.000Z",
+      directories: [], sessions: [],
+    })
     initializeWorkspaceDatabase(databasePath)
     assert.deepEqual(readProjectWorkspace(databasePath, 17), project)
     assert.deepEqual(readDefaultWorkspace(databasePath), {
       version: 1, sessions: [sessions[1], sessions[0]],
     })
+    assert.deepEqual(listProjectWorkspaces(databasePath).map((entry) => entry.id), [18, 16, 17])
+    assert.deepEqual(listProjectWorkspaces(databasePath)[2], project)
 
     const changed: ProjectWorkspace = {
       ...project, name: "Renamed", updatedAt: "2026-09-23T02:00:00.000Z",
@@ -64,6 +76,7 @@ async function main(): Promise<void> {
     }
     saveProjectWorkspace(databasePath, changed)
     assert.deepEqual(readProjectWorkspace(databasePath, 17), changed)
+    assert.deepEqual(listProjectWorkspaces(databasePath).map((entry) => entry.id), [18, 17, 16])
     assert.throws(() => saveProjectWorkspace(databasePath, {
       ...project, sessions: [{ ...sessions[0], name: null as unknown as string }],
     }))

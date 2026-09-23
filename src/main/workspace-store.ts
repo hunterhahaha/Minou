@@ -211,6 +211,37 @@ export function readProjectWorkspace(databasePath: string, projectId: number): P
 }
 
 /**
+ * 读取所有非 default Project 及其有序目录、对话索引。
+ * @param databasePath `.nicode/workspace.sqlite` 的绝对路径。
+ * @returns 按更新时间倒序排列的 Project；同一时间按数字 ID 升序排列。
+ * @throws Error 当数据库无法读取或 Project 缺少有效更新时间时抛出。
+ */
+export function listProjectWorkspaces(databasePath: string): ProjectWorkspace[] {
+  return withDatabase(databasePath, true, (db) => {
+    const rows = db.prepare(`SELECT group_id FROM workspace_groups
+      WHERE group_id <> 'default' AND project_id IS NOT NULL`).all() as unknown as Array<{ group_id: string }>
+    const projects = rows.map((row) => {
+      const result = readGroup(db, row.group_id)
+      if (result === null) throw new Error(`Project 分组不存在：${row.group_id}`)
+      const updatedAt = result.group.updated_at
+      if (updatedAt === null || !Number.isFinite(Date.parse(updatedAt))) {
+        throw new Error(`Project ${row.group_id} 的更新时间无效。`)
+      }
+      return {
+        version: result.group.version as 1,
+        id: result.group.project_id as number,
+        name: result.group.name as string,
+        updatedAt,
+        directories: result.directories,
+        sessions: result.sessions,
+      }
+    })
+    return projects.sort((left, right) =>
+      Date.parse(right.updatedAt) - Date.parse(left.updatedAt) || left.id - right.id)
+  })
+}
+
+/**
  * 读取 default 分组及其对话索引。
  * @param databasePath `.nicode/workspace.sqlite` 的绝对路径。
  * @returns default 的原有配置字段。

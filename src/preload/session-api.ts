@@ -1,5 +1,5 @@
 /**
- * Renderer 可调用的 Session 入口，以及 preload 与主进程之间的 IPC 契约。
+ * Renderer 可调用的 Session 入口与启动页面查询，以及 preload 与主进程之间的 IPC 契约。
  *
  * preload 只暴露窄接口，不把 ipcRenderer 本体交给 Renderer。Runtime 仍运行在主进程；
  * 主进程在首批事件提交后返回可结构化克隆的 sessionId / turn，运行中追加返回入队确认，
@@ -24,6 +24,55 @@ export const SESSION_IPC_CHANNELS = {
   stopSession: "nicode:session:stop",
 } as const
 
+/** 启动页面数据查询使用的固定 IPC channel。 */
+export const STARTUP_DATA_IPC_CHANNELS = {
+  listProjects: "nicode:data:projects",
+  listDefaultSessions: "nicode:data:default-sessions",
+  listProviders: "nicode:data:providers",
+} as const
+
+/** 页面列表中的对话索引摘要。 */
+export interface SessionSummary {
+  /** 对话目录使用的身份。 */
+  sessionId: string
+  /** 对话显示名称。 */
+  name: string
+  /** 已保存的最近更新时间。 */
+  updatedAt: string
+}
+
+/** 非 default Project 的页面摘要。 */
+export interface ProjectSummary {
+  /** Project 数字身份。 */
+  projectId: number
+  /** Project 显示名称。 */
+  name: string
+  /** Project 配置最近更新时间。 */
+  updatedAt: string
+  /** 按配置顺序排列的关联目录。 */
+  directories: string[]
+  /** 按索引顺序排列的对话摘要。 */
+  sessions: SessionSummary[]
+}
+
+/** Provider 下模型的页面摘要；name 与 modelId 相同。 */
+export interface ModelSummary {
+  /** 模型全局唯一身份。 */
+  modelId: string
+  /** 当前与 modelId 相同的显示名称。 */
+  name: string
+}
+
+/** 不含凭据和协议连接参数的 Provider 页面摘要。 */
+export interface ProviderSummary {
+  /** Provider 稳定身份。 */
+  providerId: string
+  /** Provider 显示名称。 */
+  name: string
+  /** 按保存顺序排列的模型摘要。 */
+  models: ModelSummary[]
+}
+
 /** 首批 Turn 事件成功提交后即可返回前端的可序列化结果。 */
 export interface StartedSessionResponse {
   sessionId: string
@@ -36,8 +85,26 @@ export interface StoppedSessionResponse {
   sessionId: string
 }
 
-/** 暴露为 `window.nicode` 的 Session 命令。 */
+/** 暴露为 `window.nicode` 的 Session 命令与启动页面查询。 */
 export interface NiCodePreloadApi {
+  /**
+   * 读取非 default Project 的当前页面摘要。
+   * @returns Project 及其目录和对话索引摘要。
+   * @throws Error 当数据库读取失败或主进程返回无效数据时由页面处理。
+   */
+  listProjects(): Promise<ProjectSummary[]>
+  /**
+   * 读取 default 分组的当前对话索引。
+   * @returns default 分组的对话摘要。
+   * @throws Error 当数据库读取失败或主进程返回无效数据时由页面处理。
+   */
+  listDefaultSessions(): Promise<SessionSummary[]>
+  /**
+   * 读取当前 Provider 与模型列表。
+   * @returns 不含凭据的 Provider 及模型摘要。
+   * @throws Error 当数据库读取失败或主进程返回无效数据时由页面处理。
+   */
+  listProviders(): Promise<ProviderSummary[]>
   /**
    * 在指定 Project 分组中创建并启动 Session。
    *
@@ -100,6 +167,18 @@ export interface ContextBridgePort {
 
 export function createSessionApi(ipcRenderer: IpcRendererInvokePort): NiCodePreloadApi {
   return Object.freeze({
+    async listProjects(): Promise<ProjectSummary[]> {
+      return requireProjectSummaries(await ipcRenderer.invoke(STARTUP_DATA_IPC_CHANNELS.listProjects))
+    },
+
+    async listDefaultSessions(): Promise<SessionSummary[]> {
+      return requireSessionSummaries(await ipcRenderer.invoke(STARTUP_DATA_IPC_CHANNELS.listDefaultSessions))
+    },
+
+    async listProviders(): Promise<ProviderSummary[]> {
+      return requireProviderSummaries(await ipcRenderer.invoke(STARTUP_DATA_IPC_CHANNELS.listProviders))
+    },
+
     async startNewSession(
       projectId: number,
       input: UserMessageInput,
@@ -207,6 +286,63 @@ function requireStoppedSessionResponse(value: unknown): StoppedSessionResponse {
     throw new TypeError("主进程返回了无效的 Session 停止结果")
   }
   return { sessionId: value.sessionId }
+}
+
+/**
+ * 检查主进程返回的对话索引摘要，避免把非法值交给页面。
+ * @param value 未经检查的 IPC 结果。
+ * @returns 已检查的对话摘要数组。
+ * @throws TypeError 当结果缺少必需字段时抛出。
+ */
+function requireSessionSummaries(value: unknown): SessionSummary[] {
+  if (!Array.isArray(value) || !value.every((item) =>
+    isRecord(item) && typeof item.sessionId === "string" &&
+    typeof item.name === "string" && typeof item.updatedAt === "string"
+  )) throw new TypeError("主进程返回了无效的对话列表")
+  return value as SessionSummary[]
+}
+
+/**
+ * 检查非 default Project 及其目录、对话索引。
+ * @param value 未经检查的 IPC 结果。
+ * @returns 已检查的 Project 摘要数组。
+ * @throws TypeError 当结果缺少必需字段时抛出。
+ */
+function requireProjectSummaries(value: unknown): ProjectSummary[] {
+  if (!Array.isArray(value) || !value.every((item) =>
+    isRecord(item) && Number.isSafeInteger(item.projectId) &&
+    typeof item.projectId === "number" && item.projectId >= 0 &&
+    typeof item.name === "string" && typeof item.updatedAt === "string" &&
+    Array.isArray(item.directories) && item.directories.every((directory: unknown) => typeof directory === "string") &&
+    Array.isArray(item.sessions) && item.sessions.every((session: unknown) =>
+      isRecord(session) && typeof session.sessionId === "string" &&
+      typeof session.name === "string" && typeof session.updatedAt === "string")
+  )) throw new TypeError("主进程返回了无效的项目列表")
+  return value as ProjectSummary[]
+}
+
+/**
+ * 检查 Provider 和模型摘要中没有缺失的显示字段。
+ * @param value 未经检查的 IPC 结果。
+ * @returns 已检查的 Provider 摘要数组。
+ * @throws TypeError 当结果缺少必需字段时抛出。
+ */
+function requireProviderSummaries(value: unknown): ProviderSummary[] {
+  if (!Array.isArray(value) || !value.every((item) =>
+    isRecord(item) && typeof item.providerId === "string" && typeof item.name === "string" &&
+    Array.isArray(item.models) && item.models.every((model: unknown) =>
+      isRecord(model) && typeof model.modelId === "string" && typeof model.name === "string")
+  )) throw new TypeError("主进程返回了无效的 Provider 列表")
+  return value as ProviderSummary[]
+}
+
+/**
+ * 把未知 IPC 返回值缩小为非数组对象。
+ * @param value 未经检查的值。
+ * @returns 值是非数组对象时为 true。
+ */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
 }
 
 function isTextContent(value: unknown): value is EnqueueSessionMessageInput["content"] {
