@@ -82,11 +82,33 @@ async function main(): Promise<void> {
       db.close()
     }
     initializeWorkspaceDatabase(databasePath)
-    const migrated = readProjectWorkspace(databasePath, 17)
-    assert.equal(migrated.name, "Existing project")
-    assert.equal(new Date(migrated.updatedAt).toISOString(), migrated.updatedAt)
+    const initialized = new DatabaseSync(databasePath)
+    try {
+      const project = initialized.prepare(`SELECT group_id, version, project_id, name
+        FROM workspace_groups WHERE group_id = '17'`).get()
+      assert.ok(project)
+      assert.equal(project.group_id, "17")
+      assert.equal(project.version, 1)
+      assert.equal(project.project_id, 17)
+      assert.equal(project.name, "Existing project")
+      assert.equal(initialized.prepare(`SELECT group_id FROM workspace_groups WHERE group_id = 'default'`).get() !== undefined, true)
+      const columns = initialized.prepare("PRAGMA table_info(workspace_groups)").all() as Array<{ name: string }>
+      assert.equal(columns.some((column) => column.name === "updated_at"), false)
+    } finally {
+      initialized.close()
+    }
     initializeWorkspaceDatabase(databasePath)
-    assert.equal(readProjectWorkspace(databasePath, 17).updatedAt, migrated.updatedAt)
+    const repeated = new DatabaseSync(databasePath)
+    try {
+      const projects = repeated.prepare("SELECT COUNT(*) AS count FROM workspace_groups WHERE project_id IS NOT NULL")
+        .get() as { count: number }
+      assert.equal(projects.count, 1)
+      const defaults = repeated.prepare("SELECT COUNT(*) AS count FROM workspace_groups WHERE group_id = 'default'")
+        .get() as { count: number }
+      assert.equal(defaults.count, 1)
+    } finally {
+      repeated.close()
+    }
   })
   console.log("workspace-store.test.ts: 工作区 SQLite 断言通过")
 }

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { DatabaseSync } from "node:sqlite"
 
-import { createFileSessionEventLog } from "../src/event-log.ts"
+import { createFileSessionEventLog, initializeSessionEventDatabase } from "../src/event-log.ts"
 import type { FileSessionEventLogOptions } from "../src/event-log.ts"
 import type { SessionEvent, TurnStartEventInput, UserMessageEventInput } from "../src/events.ts"
 
@@ -107,6 +107,7 @@ async function testReadFailures(root: string): Promise<void> {
   await assert.rejects(missingDirectory.readEvents(), /Session 目录不存在/)
   const otherDatabase = await fixture(root, "corrupt", "0", { databasePath: join(root, "corrupt.sqlite") })
   await writeFile(otherDatabase.databasePath, "not-a-sqlite-database")
+  await initializeSessionEventDatabase(otherDatabase.databasePath)
   await assert.rejects(createFileSessionEventLog(otherDatabase).readEvents(), /无法读取 Session Event Log/)
 
   const db = new DatabaseSync(join(root, "events.sqlite"))

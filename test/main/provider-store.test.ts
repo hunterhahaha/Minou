@@ -1,4 +1,4 @@
-/** Provider SQLite 的读写顺序、默认模型、事务与损坏边界测试。 */
+/** Provider SQLite 的读写顺序、默认模型、事务与启动文件存在性测试。 */
 
 import assert from "node:assert/strict"
 import { mkdtemp, rm, writeFile } from "node:fs/promises"
@@ -120,12 +120,12 @@ async function testReadAndRollback(): Promise<void> {
   })
 }
 
-/** 验证缺失、版本错误和损坏数据库都带路径失败。 */
+/** 验证普通列表拒绝缺失数据库，启动初始化只要求已有文件存在。 */
 async function testDatabaseErrors(): Promise<void> {
   await withDatabase(async (path) => {
     assert.throws(() => listProviders(path), (error: unknown) => error instanceof Error && error.message.includes(path))
     await writeFile(path, "not sqlite")
-    assert.throws(() => initializeProviderDatabase(path), (error: unknown) => error instanceof Error && error.message.includes(path))
+    assert.doesNotThrow(() => initializeProviderDatabase(path))
   })
   await withDatabase((path) => {
     initializeProviderDatabase(path)
@@ -135,7 +135,7 @@ async function testDatabaseErrors(): Promise<void> {
     } finally {
       db.close()
     }
-    assert.throws(() => initializeProviderDatabase(path), (error: unknown) => error instanceof Error && error.message.includes(path) && error.message.includes("版本 9"))
+    assert.doesNotThrow(() => initializeProviderDatabase(path))
   })
 }
 

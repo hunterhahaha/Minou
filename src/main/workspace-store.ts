@@ -137,7 +137,7 @@ function transaction<T>(db: DatabaseSync, operation: () => T): T {
 }
 
 /**
- * 创建工作区表，并仅在缺失时补入 default 空分组。
+ * 确保工作区表存在，并仅在缺失时补入 default 空分组；不检查或回填已有 Project 内容。
  * @param databasePath `.nicode/workspace.sqlite` 的绝对路径。
  * @throws Error 当数据库无法初始化时抛出，已有记录不会被覆盖。
  */
@@ -147,16 +147,9 @@ export function initializeWorkspaceDatabase(databasePath: string): void {
       db.exec(CREATE_GROUPS)
       db.exec(CREATE_DIRECTORIES)
       db.exec(CREATE_SESSIONS)
-      const columns = db.prepare("PRAGMA table_info(workspace_groups)")
-        .all() as Array<{ name: string }>
-      if (!columns.some((column) => column.name === "updated_at")) {
-        db.exec("ALTER TABLE workspace_groups ADD COLUMN updated_at TEXT")
-      }
-      db.prepare(`UPDATE workspace_groups SET updated_at = ?
-        WHERE project_id IS NOT NULL AND updated_at IS NULL`).run(new Date().toISOString())
       db.prepare(`INSERT OR IGNORE INTO workspace_groups
-        (group_id, version, project_id, name, updated_at)
-        VALUES ('default', 1, NULL, NULL, NULL)`).run()
+        (group_id, version, project_id, name)
+        VALUES ('default', 1, NULL, NULL)`).run()
     }))
   } catch (error) {
     throw new Error(`无法初始化工作区数据库：${databasePath}`, { cause: error })

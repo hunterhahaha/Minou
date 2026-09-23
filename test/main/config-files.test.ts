@@ -63,6 +63,7 @@ async function main(): Promise<void> {
       join(paths.rootDir, "sessions", "default"),
       join(paths.rootDir, "sessions", "default", "workspace"),
     ]) assert.equal((await stat(directory)).isDirectory(), true)
+    assert.equal((await stat(join(paths.rootDir, "events.sqlite"))).isFile(), true)
     assert.deepEqual(JSON.parse(await readFile(paths.configPath, "utf8")), {
       version: 2, mcpServers: [], runtime: { userMessageMode: "queue" },
     })

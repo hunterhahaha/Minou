@@ -164,54 +164,33 @@ function transaction<T>(db: DatabaseSync, operation: () => T): T {
 }
 
 /**
- * 创建空 Provider 数据库；已有数据库只检查，不覆盖任何记录。
+ * 缺失时创建空 Provider 数据库；已有普通文件只确认存在，不读取或检查其内容。
  * @param databasePath `.nicode/providers.sqlite` 的绝对路径。
- * @throws Error 当文件身份、版本、结构或内容完整性检查失败时抛出。
+ * @throws Error 当路径无效、目标不是普通文件或缺失数据库无法创建时抛出。
  */
 export function initializeProviderDatabase(databasePath: string): void {
   const exists = fileExists(databasePath)
-  if (!exists) {
-    let db: DatabaseSync
+  if (exists) return
+
+  let db: DatabaseSync
+  try {
+    db = new DatabaseSync(databasePath)
     try {
-      db = new DatabaseSync(databasePath)
-      try {
-        db.exec("PRAGMA foreign_keys = ON")
-        transaction(db, () => {
-          db.exec(CREATE_PROVIDERS)
-          db.exec(CREATE_MODELS)
-          db.exec(CREATE_CREDENTIALS)
-          db.exec(CREATE_SETTINGS)
-          db.prepare("INSERT INTO provider_settings (id, default_model_id) VALUES (1, NULL)").run()
-          db.exec("PRAGMA user_version = 1")
-        })
-      } finally {
-        db.close()
-      }
-    } catch {
-      throw new Error(`无法初始化 Provider 数据库：${databasePath}`)
+      db.exec("PRAGMA foreign_keys = ON")
+      transaction(db, () => {
+        db.exec(CREATE_PROVIDERS)
+        db.exec(CREATE_MODELS)
+        db.exec(CREATE_CREDENTIALS)
+        db.exec(CREATE_SETTINGS)
+        db.prepare("INSERT INTO provider_settings (id, default_model_id) VALUES (1, NULL)").run()
+        db.exec("PRAGMA user_version = 1")
+      })
+    } finally {
+      db.close()
     }
+  } catch {
+    throw new Error(`无法初始化 Provider 数据库：${databasePath}`)
   }
-  withDatabase(databasePath, true, (db) => {
-    const result = db.prepare("PRAGMA integrity_check").get() as { integrity_check: string }
-    if (result.integrity_check !== "ok") throw new Error("数据库完整性检查失败。")
-    const foreignKeys = db.prepare("PRAGMA foreign_key_check").all()
-    if (foreignKeys.length > 0) throw new Error("数据库外键检查失败。")
-    for (const [name, definition] of [
-      ["providers", CREATE_PROVIDERS], ["models", CREATE_MODELS],
-      ["provider_credentials", CREATE_CREDENTIALS], ["provider_settings", CREATE_SETTINGS],
-    ]) {
-      const table = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?")
-        .get(name) as { sql: string } | undefined
-      if (table?.sql !== definition) throw new Error(`数据库表 ${name} 的结构与 V1 不一致。`)
-    }
-    db.prepare("SELECT id, name, protocol, base_url, default_headers_json FROM providers LIMIT 1").all()
-    db.prepare(`SELECT id, provider_id, context_window, max_output_tokens, supports_reasoning,
-      supports_tools, supports_parallel_tools, supports_response_id FROM models LIMIT 1`).all()
-    db.prepare("SELECT provider_id, api_key FROM provider_credentials LIMIT 1").all()
-    const settings = db.prepare("SELECT default_model_id FROM provider_settings WHERE id = 1").get()
-    if (settings === undefined) throw new Error("缺少默认模型设置记录。")
-    listProvidersInDatabase(db)
-  })
 }
 
 /**

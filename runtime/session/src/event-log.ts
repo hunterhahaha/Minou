@@ -67,12 +67,11 @@ const CREATE_EVENTS_TABLE = `CREATE TABLE IF NOT EXISTS session_events (
 ) STRICT`
 
 /**
- * 确保共享 Event Log 数据库和事件表在 Runtime 启动前可用。
- * 已有数据库内容会保留。
+ * 缺失时创建共享 Event Log 数据库和事件表；已有普通文件只确认存在，不读取或检查其内容。
  *
  * @param databasePath `.nicode/events.sqlite` 的绝对路径。
- * @returns 数据库和事件表检查完成后解析的 Promise。
- * @throws Error 当路径不是普通文件、数据库损坏或事件表结构不可用时抛出。
+ * @returns 缺失数据库创建完成，或已有普通文件确认存在后解析的 Promise。
+ * @throws Error 当路径不是普通文件或缺失数据库无法创建时抛出。
  */
 export async function initializeSessionEventDatabase(databasePath: string): Promise<void> {
   if (!isAbsolute(databasePath)) {
@@ -83,11 +82,11 @@ export async function initializeSessionEventDatabase(databasePath: string): Prom
   if (kind !== "missing" && kind !== "file") {
     throw new Error(`Session Event Log 数据库不是普通文件：${path}`)
   }
+  if (kind === "file") return
+
   try {
     withDatabase(path, (db) => {
       db.exec(CREATE_EVENTS_TABLE)
-      db.prepare(`SELECT seq, event_id, type, created_at, event_json
-        FROM session_events LIMIT 0`).all()
     })
   } catch (error) {
     throw new Error(`无法初始化 Session Event Log 数据库：${path}`, { cause: error })
