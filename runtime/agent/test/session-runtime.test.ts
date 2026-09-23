@@ -698,6 +698,8 @@ async function testConcreteRuntimeBindings(): Promise<void> {
     }
     const createdAdapters: Array<import("../../model/src/types.ts").ModelAdapter> = []
     const bindings = new SessionRuntimeBindings({
+      projectGroupId: "0",
+      databasePath: join(root, "events.sqlite"),
       sessionId,
       sessionDirectory,
       systemPrompt: "system",
@@ -766,10 +768,7 @@ async function testConcreteRuntimeBindings(): Promise<void> {
     assert.equal(content[0]?.role, "system")
     assert.equal(content[0]?.content, "system\n\nworkspace\n\nUse pnpm.\n\nskills-2")
     assert.deepEqual(content.slice(1).map((message) => message.role), ["user", "user", "user", "user"])
-    const log = (await readFile(join(sessionDirectory, "events.jsonl"), "utf8"))
-      .trimEnd()
-      .split("\n")
-      .map((line) => JSON.parse(line) as SessionEvent)
+    const log = await bindings.repairPorts.readEvents() as SessionEvent[]
     const updates = log.filter((event) => event.type === "context_update")
     assert.equal(updates.length, 2)
     assert.match(updates[0].content, /Removed:\nUse npm\./)

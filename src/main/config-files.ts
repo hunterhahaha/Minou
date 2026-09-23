@@ -1,5 +1,5 @@
 /**
- * 启动配置文件的初始化与 V1 结构检查。
+ * 启动配置文件的初始化、V1 结构检查与 Session Event 数据库准备。
  *
  * 架构依据：开发备忘录第 2–4 节，以及配置与凭据、工作区配置文件结构 V1。
  */
@@ -9,6 +9,7 @@ import { isAbsolute, join } from "node:path"
 
 import type { ProviderCredential } from "../../runtime/credential/src/index.ts"
 import type { ModelConfig, Protocol } from "../../runtime/model/src/types.ts"
+import { initializeSessionEventDatabase } from "../../runtime/session/src/event-log.ts"
 import { checkConfig, checkCredentials, checkDefaultWorkspace } from "./config-schema.ts"
 
 const INITIAL_CONFIG = `${JSON.stringify({
@@ -147,13 +148,13 @@ function checkFile<T>(filePath: string, check: () => T): T {
 }
 
 /**
- * 按启动顺序补齐配置目录与文件，并检查三份配置文件的 V1 结构。
+ * 按启动顺序补齐配置目录、配置文件和共享 Session Event 数据库，并检查三份配置文件的 V1 结构。
  * 已有文件不会被覆盖。
  * 检查失败时由调用方决定如何呈现启动错误。
  *
  * @param userProfile 用户目录；省略时读取当前进程的 USERPROFILE。
  * @returns 已初始化并检查通过的固定配置路径。
- * @throws Error 当用户目录无效、目录或文件无法创建读取，或任一配置未通过 V1 检查时抛出。
+ * @throws Error 当用户目录无效、配置或数据库无法创建读取，或任一配置未通过 V1 检查时抛出。
  */
 export async function initializeConfigFiles(
   userProfile: string | undefined = process.env.USERPROFILE,
@@ -169,7 +170,7 @@ export async function initializeConfigFiles(
  *
  * @param userProfile 用户目录；省略时读取当前进程的 USERPROFILE。
  * @returns 固定配置路径，以及本次初始化中读取并通过 V1 检查的普通配置与凭据。
- * @throws Error 当用户目录无效、目录或文件无法创建读取，或任一配置未通过 V1 检查时抛出。
+ * @throws Error 当用户目录无效、配置或数据库无法创建读取，或任一配置未通过 V1 检查时抛出。
  */
 export async function initializeConfigFilesSnapshot(
   userProfile: string | undefined = process.env.USERPROFILE,
@@ -199,6 +200,7 @@ export async function initializeConfigFilesSnapshot(
   const workspace = await ensureJsonObjectFile(defaultWorkspacePath, INITIAL_DEFAULT_WORKSPACE)
   checkFile(defaultWorkspacePath, () => checkDefaultWorkspace(workspace))
   await mkdir(join(defaultDir, "workspace"), { recursive: true })
+  await initializeSessionEventDatabase(join(rootDir, "events.sqlite"))
 
   return {
     paths: { rootDir, configPath, credentialsPath, defaultWorkspacePath },

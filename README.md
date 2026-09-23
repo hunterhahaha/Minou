@@ -18,7 +18,7 @@ NiCode V1 是一个本地运行的 Coding Agent Runtime：浏览器 UI 与本机
 **启动配置文件初始化**已完成：`src/main/config-files.ts` 导出
 `initializeConfigFiles(userProfile?)`，按备忘录第 2–4 节初始化 `.nicode`、
 `config.json`、`credentials.json`、`skills/`、`sessions/`、`logs/` 与
-`sessions/default`。新建 `config.json` 和 default `workspace.json` 使用 V1 空配置，
+`sessions/default`，并创建共享的 `events.sqlite` 数据库和事件表。新建 `config.json` 和 default `workspace.json` 使用 V1 空配置，
 `credentials.json` 使用文档允许的 `{}`。已有文件按 V1 检查版本、字段与引用关系，
 失败时保留原文件并抛出带路径的错误；初始化链在同一次调用中读取并校验普通配置、凭据和 default
 workspace，真实 Electron 入口只保留返回的固定路径，不保留配置或凭据快照。每个 Provider（包括暂时没有模型的
@@ -284,7 +284,7 @@ runtime/                             Runtime 模块，各自含 src/ 与 test/
 │  ├─ src/
 │  │  ├─ index.ts                    模块入口
 │  │  ├─ events.ts                   事件结构与事件出口契约（阶段 6.1 / 6.4：只含 AgentLoop 写出的事件）
-│  │  ├─ event-log.ts                对话级 events.jsonl 读取与恢复事件追加
+│  │  ├─ event-log.ts                共享 events.sqlite 中的对话事件读取与追加
 │  │  └─ session-state.ts             对话级 Session 派生文件初始化与恢复
 │  └─ test/                          event-log.test.ts / session-state.test.ts
 ├─ project/                          Project / ProjectManager / ProjectRules

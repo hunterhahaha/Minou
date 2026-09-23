@@ -82,6 +82,8 @@ export class SessionRuntimeBindings {
   constructor(options: {
     sessionId: string
     sessionDirectory: string
+    projectGroupId: string
+    databasePath: string
     systemPrompt: string
     workspaceInfo: string
     resolveCurrentBaseline(): Promise<CurrentSessionBaseline>
@@ -106,12 +108,15 @@ export class SessionRuntimeBindings {
     this.eventLog = createFileSessionEventLog({
       sessionId: options.sessionId,
       sessionDirectory: this.sessionDirectory,
+      projectGroupId: options.projectGroupId,
+      databasePath: options.databasePath,
       now: options.now,
       createEventId: options.createEventId,
     })
     this.sessionState = createFileSessionState({
       sessionId: options.sessionId,
       sessionDirectory: this.sessionDirectory,
+      databasePath: options.databasePath,
       readEvents: () => this.eventLog.readEvents(),
       resolveCurrentBaseline: () => this.resolveTurnBaseline(),
       estimateSkillTokens: options.estimateSkillTokens,
@@ -953,6 +958,10 @@ export interface FileSessionRepairPortsOptions {
   sessionId: string
   /** 当前 Session 目录的绝对路径。 */
   sessionDirectory: string
+  /** Session 所属 Project/default 分组 ID。 */
+  projectGroupId: string
+  /** 共享 Event Log 数据库绝对路径。 */
+  databasePath: string
   /** 读取恢复当下的 AGENTS.md、Skill、MCP 及其它 Session meta 基线。 */
   resolveCurrentBaseline(): Promise<CurrentSessionBaseline>
   /** 计算 Skill description 的估算 Token，用于重放已提交的 Skill 增量。 */
@@ -979,12 +988,15 @@ export function createFileSessionRepairPorts(
   const eventLog = createFileSessionEventLog({
     sessionId: options.sessionId,
     sessionDirectory: options.sessionDirectory,
+    projectGroupId: options.projectGroupId,
+    databasePath: options.databasePath,
     now: options.now,
     createEventId: options.createEventId,
   })
   const sessionState = createFileSessionState({
     sessionId: options.sessionId,
     sessionDirectory: options.sessionDirectory,
+    databasePath: options.databasePath,
     readEvents: eventLog.readEvents,
     resolveCurrentBaseline: options.resolveCurrentBaseline,
     estimateSkillTokens: options.estimateSkillTokens,

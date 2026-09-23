@@ -92,7 +92,7 @@ export type ResolveSessionRuntimeProjectContext = (
  */
 export type SessionRuntimeStartupDependencies = Omit<
   SessionRuntimeBindingsOptions,
-  "sessionId" | "sessionDirectory" | "workspaceInfo" | "resolveCurrentBaseline"
+  "sessionId" | "sessionDirectory" | "projectGroupId" | "databasePath" | "workspaceInfo" | "resolveCurrentBaseline"
 > & {
   /** 按 Project 身份取得当前 Session 的固定上下文来源。 */
   resolveProjectContext: ResolveSessionRuntimeProjectContext
@@ -144,6 +144,8 @@ export async function startElectronApp(options: ElectronStartupOptions): Promise
     const bindings = new SessionRuntimeBindings({
       sessionId,
       sessionDirectory: join(sessionsDirectory, String(projectId), sessionId),
+      projectGroupId: String(projectId),
+      databasePath: join(options.configPaths.rootDir, "events.sqlite"),
       systemPrompt: options.sessionRuntime.systemPrompt,
       workspaceInfo: projectContext.workspaceInfo,
       resolveCurrentBaseline: () => projectContext.resolveCurrentBaseline(),

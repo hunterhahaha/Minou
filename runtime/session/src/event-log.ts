@@ -1,337 +1,407 @@
-/**
- * 基于文件系统的 Session Event Log 访问实现。
- *
- * 本文件只承担开发备忘录第 8、10 节中已经确定的日志职责：读取 `events.jsonl`、
- * 为恢复事件分配身份并追加落盘。派生状态初始化与修复不属于 Event Log。
- */
+/** 共享 SQLite 数据库中的 Session Event Log。 */
 
 import { randomUUID } from "node:crypto"
-import { appendFile, lstat, readFile } from "node:fs/promises"
-import { isAbsolute, join, resolve } from "node:path"
+import { lstat } from "node:fs/promises"
+import { isAbsolute, resolve } from "node:path"
+import { DatabaseSync } from "node:sqlite"
 
 import type {
-  SessionEvent,
-  SessionEventInput,
-  TurnStartEvent,
-  TurnStartEventInput,
-  UserMessageEvent,
-  UserMessageEventInput,
+  SessionEvent, SessionEventInput, TurnStartEvent, TurnStartEventInput,
+  UserMessageEvent, UserMessageEventInput,
 } from "./events.ts"
 
-/** 文件型 Event Log 创建参数。 */
+/** 单个 Session 的存储位置和事件身份来源。 */
 export interface FileSessionEventLogOptions {
-  /** 当前 Event Log 唯一绑定的 Session ID。 */
+  /** 当前日志绑定的 Session ID。 */
   sessionId: string
+  /** 所属 Project/default 分组 ID。 */
+  projectGroupId: string
   /** 当前 Session 目录的绝对路径。 */
   sessionDirectory: string
-  /** 测试或宿主需要控制时间时使用；默认读取当前系统时间。 */
+  /** 共享的 .nicode/events.sqlite 绝对路径。 */
+  databasePath: string
+  /** 可选时间来源。 */
   now?: () => Date
-  /** 测试或宿主需要控制事件 ID 时使用；默认生成 UUID。 */
+  /** 可选事件 ID 来源。 */
   createEventId?: () => string
 }
 
-/** `SessionRepairPorts` 中 Event Log 部分的文件系统实现。 */
+/** 保持原有异步事件读写契约的 SQLite 访问器。 */
 export interface FileSessionEventLog {
   /**
-   * 检查 Session 目录与日志文件，并逐行解析 JSONL。
-   *
-   * @returns 保持日志顺序、尚待上层结构校验的 JSON 值。
-   * @throws Error 当目录或日志缺失、目标不是期望类型，或任一行不是有效 JSON 时抛出。
+   * 按 seq 读取当前 Session 的已提交事件。
+   * @returns 尚待上层校验的事件值。
+   * @throws Error 当目录、数据库、日志或事件内容无效时抛出。
    */
   readEvents(): Promise<readonly unknown[]>
   /**
-   * 读取日志最后一个序号，为输入分配事件身份，并用一次 appendFile 追加一行 JSONL。
-   * 当前实例绑定的 Session 内，并发追加会严格按调用顺序串行执行。
-   *
-   * @param event 内容完整但尚未分配事件身份的恢复事件。
-   * @returns 已成功追加到日志的完整事件。
-   * @throws Error 当日志不可读、末尾事件没有有效 seq，或追加失败时抛出。
+   * 分配事件身份并提交一条事件。
+   * @param event 尚未分配身份的事件。
+   * @returns 已提交的完整事件。
+   * @throws Error 当日志缺失、seq 无效或事务失败时抛出。
    */
   appendEvent(event: SessionEventInput): Promise<SessionEvent>
   /**
-   * 为一个新 Turn 连续分配身份，并用一次文件追加提交 `turn/start + user/message`。
-   * 新 Session 只允许创建 Turn 1；已有 Session 必须从最后一个已结束 Turn 连续编号。
-   *
-   * @param events 顺序和 Turn 身份已经由 SessionRuntime 确定的两条事件。
-   * @returns 已经成功持久化的完整事件元组。
-   * @throws Error 当日志状态与待提交 Turn 不一致，或批量追加失败时抛出。
+   * 在一个事务内提交新 Turn 的两条首批事件。
+   * @param events 按 turn/start、user/message 排列的事件对。
+   * @returns 已提交的完整事件对。
+   * @throws Error 当 Turn 身份或事务无效时抛出。
    */
   appendTurnStartAndUserMessage(
     events: readonly [TurnStartEventInput, UserMessageEventInput],
   ): Promise<readonly [TurnStartEvent, UserMessageEvent]>
 }
 
-/** 同一进程内按规范化 Event Log 路径共享的写入队列。 */
+/** 同一进程、同一 Session 的共享写入队列。 */
 const WRITE_TAILS = new Map<string, Promise<void>>()
+const CREATE_EVENTS_TABLE = `CREATE TABLE IF NOT EXISTS session_events (
+  project_group_id TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  seq INTEGER NOT NULL,
+  event_id TEXT NOT NULL,
+  type TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  event_json TEXT NOT NULL,
+  PRIMARY KEY (project_group_id, session_id, seq),
+  UNIQUE (project_group_id, session_id, event_id)
+) STRICT`
 
 /**
- * 创建仅绑定到一个 Session 的文件型 Event Log。
- * 调用方应在该 Session 的活动期间复用返回实例，使全部追加共享同一条写入队列。
+ * 确保共享 Event Log 数据库和事件表在 Runtime 启动前可用。
+ * 已有数据库内容会保留。
  *
- * @param options Session 身份、目录及可选的事件身份生成依赖。
- * @returns 只读写该 Session `events.jsonl` 的访问器。
- * @throws Error 当 Session ID 非法或 Session 目录不是绝对路径时抛出。
+ * @param databasePath `.nicode/events.sqlite` 的绝对路径。
+ * @returns 数据库和事件表检查完成后解析的 Promise。
+ * @throws Error 当路径不是普通文件、数据库损坏或事件表结构不可用时抛出。
+ */
+export async function initializeSessionEventDatabase(databasePath: string): Promise<void> {
+  if (!isAbsolute(databasePath)) {
+    throw new Error(`Session Event Log 数据库必须是绝对路径：${databasePath}`)
+  }
+  const path = resolve(databasePath)
+  const kind = await pathKind(path)
+  if (kind !== "missing" && kind !== "file") {
+    throw new Error(`Session Event Log 数据库不是普通文件：${path}`)
+  }
+  try {
+    withDatabase(path, (db) => {
+      db.exec(CREATE_EVENTS_TABLE)
+      db.prepare(`SELECT seq, event_id, type, created_at, event_json
+        FROM session_events LIMIT 0`).all()
+    })
+  } catch (error) {
+    throw new Error(`无法初始化 Session Event Log 数据库：${path}`, { cause: error })
+  }
+}
+
+/**
+ * 创建只访问指定分组和 Session 的 Event Log。
+ * @param options 存储路径、身份及可选时间和 ID 来源。
+ * @returns 异步 Event Log 访问器。
+ * @throws Error 当身份或路径无效时抛出。
  */
 export function createFileSessionEventLog(options: FileSessionEventLogOptions): FileSessionEventLog {
-  validateSessionId(options.sessionId)
+  validateSegment(options.sessionId, "Session ID")
+  validateSegment(options.projectGroupId, "Project 分组 ID")
   if (!isAbsolute(options.sessionDirectory)) {
     throw new Error(`Session 目录必须是绝对路径：${options.sessionDirectory}`)
   }
-
+  if (!isAbsolute(options.databasePath)) {
+    throw new Error(`Session Event Log 数据库必须是绝对路径：${options.databasePath}`)
+  }
   const sessionDirectory = resolve(options.sessionDirectory)
-  const eventsPath = join(sessionDirectory, "events.jsonl")
+  const databasePath = resolve(options.databasePath)
+  const queueKey = JSON.stringify([databasePath, options.projectGroupId, options.sessionId])
   const now = options.now ?? (() => new Date())
   const createEventId = options.createEventId ?? randomUUID
 
   return {
     readEvents: async () => {
-      await waitForWrites(eventsPath)
-      await requireDirectory(sessionDirectory, "Session 目录")
-      await requireFile(eventsPath, "Session Event Log")
-      return readJsonLines(eventsPath)
+      await (WRITE_TAILS.get(queueKey) ?? Promise.resolve())
+      await requireDirectory(sessionDirectory)
+      await requireDatabase(databasePath)
+      return withDatabase(databasePath, (db) =>
+        readSessionEvents(db, options.projectGroupId, options.sessionId, databasePath))
     },
-    appendEvent: (input) => {
-      return runSerializedWrite(eventsPath, async () => {
-        await requireDirectory(sessionDirectory, "Session 目录")
-        await requireFile(eventsPath, "Session Event Log")
-
-        const values = await readJsonLines(eventsPath)
-        const nextSeq = nextSequence(values, eventsPath, 1)
-        const [event] = materializeEvents(
-          [input],
-          options.sessionId,
-          nextSeq,
-          now,
-          createEventId,
-          eventsPath,
-        )
-        const line = serializeEvents([event], eventsPath)
-
-        await appendFile(eventsPath, line, "utf8").catch((error: unknown) => {
-          throw new Error(`无法追加 Session Event：${eventsPath}`, { cause: error })
-        })
+    appendEvent: (input) => runSerializedWrite(queueKey, async () => {
+      await requireDirectory(sessionDirectory)
+      await requireDatabase(databasePath)
+      return withDatabase(databasePath, (db) => transaction(db, () => {
+        const values = readSessionEvents(db, options.projectGroupId, options.sessionId, databasePath)
+        const nextSeq = nextSequence(values, databasePath, 1)
+        const [event] = materializeEvents([input], options.sessionId, nextSeq, now, createEventId, databasePath)
+        insertEvents(db, options.projectGroupId, [event], databasePath)
         return event
-      })
-    },
-    appendTurnStartAndUserMessage: (inputs) => runSerializedWrite(eventsPath, async () => {
-      await requireDirectory(sessionDirectory, "Session 目录")
-      validateTurnBatch(inputs, eventsPath)
-
-      const kind = await pathKind(eventsPath)
-      let nextSeq: number
-      let create = false
-      if (kind === "missing") {
-        if (inputs[0].turn !== 1) {
-          throw new Error(`无法创建 Session Event Log：首个 Turn 必须为 1（${eventsPath}）。`)
-        }
-        nextSeq = 1
-        create = true
-      } else {
-        if (kind !== "file") throw new Error(`Session Event Log 不是普通文件：${eventsPath}`)
-        const values = await readJsonLines(eventsPath)
-        validateNextTurn(values, inputs[0].turn, eventsPath)
-        nextSeq = nextSequence(values, eventsPath, 2)
+      }))
+    }),
+    appendTurnStartAndUserMessage: (inputs) => runSerializedWrite(queueKey, async () => {
+      await requireDirectory(sessionDirectory)
+      validateTurnBatch(inputs, databasePath)
+      const kind = await pathKind(databasePath)
+      if (kind !== "missing" && kind !== "file") {
+        throw new Error(`Session Event Log 数据库不是普通文件：${databasePath}`)
       }
-
-      const written = materializeEvents(
-        inputs,
-        options.sessionId,
-        nextSeq,
-        now,
-        createEventId,
-        eventsPath,
-      ) as [TurnStartEvent, UserMessageEvent]
-      const content = serializeEvents(written, eventsPath)
-      const appendOptions = create
-        ? { encoding: "utf8" as const, flag: "ax" }
-        : { encoding: "utf8" as const, flag: "a" }
-      await appendFile(eventsPath, content, appendOptions).catch((error: unknown) => {
-        throw new Error(`无法批量追加 Session Turn 事件：${eventsPath}`, { cause: error })
-      })
-      return written
+      return withDatabase(databasePath, (db) => transaction(db, () => {
+        db.exec(CREATE_EVENTS_TABLE)
+        const values = readSessionEvents(db, options.projectGroupId, options.sessionId, databasePath, true)
+        let nextSeq = 1
+        if (values.length === 0) {
+          if (inputs[0].turn !== 1) {
+            throw new Error(`无法创建 Session Event Log：首个 Turn 必须为 1（${databasePath}）。`)
+          }
+        } else {
+          validateNextTurn(values, inputs[0].turn, databasePath)
+          nextSeq = nextSequence(values, databasePath, 2)
+        }
+        const written = materializeEvents(
+          inputs, options.sessionId, nextSeq, now, createEventId, databasePath,
+        ) as [TurnStartEvent, UserMessageEvent]
+        insertEvents(db, options.projectGroupId, written, databasePath)
+        return written
+      }))
     }),
   }
 }
 
 /**
- * 在当前 Event Log 的共享队列中串行运行一次写入。
- *
- * @param eventsPath 规范化的 Event Log 路径。
- * @param operation 必须独占当前日志执行的写入操作。
- * @returns 写入操作的结果。
+ * 在当前 Session 的队列中按调用顺序运行写入。
+ * @param key 数据库、分组和 Session 的组合身份。
+ * @param operation 独占的写入操作。
+ * @returns 写入结果。
  */
-function runSerializedWrite<T>(eventsPath: string, operation: () => Promise<T>): Promise<T> {
-  const previous = WRITE_TAILS.get(eventsPath) ?? Promise.resolve()
+function runSerializedWrite<T>(key: string, operation: () => Promise<T>): Promise<T> {
+  const previous = WRITE_TAILS.get(key) ?? Promise.resolve()
   const result = previous.then(operation)
   const settled = result.then(() => undefined, () => undefined)
-  WRITE_TAILS.set(eventsPath, settled)
+  WRITE_TAILS.set(key, settled)
   void settled.then(() => {
-    if (WRITE_TAILS.get(eventsPath) === settled) WRITE_TAILS.delete(eventsPath)
+    if (WRITE_TAILS.get(key) === settled) WRITE_TAILS.delete(key)
   })
   return result
 }
 
-/** @param eventsPath 要等候较早写入完成的 Event Log 路径。 */
-async function waitForWrites(eventsPath: string): Promise<void> {
-  await (WRITE_TAILS.get(eventsPath) ?? Promise.resolve())
-}
-
 /**
- * 校验 Turn 首批事件的顺序与共同身份。
- *
- * @param events 待提交的固定二元组。
- * @param eventsPath 错误定位使用的 Event Log 路径。
- * @throws Error 当事件类型、Turn 或消息身份不符合提交边界时抛出。
+ * 打开数据库并在操作完成后关闭连接。
+ * @param path 数据库绝对路径。
+ * @param operation 使用连接的同步操作。
+ * @returns 操作结果。
+ * @throws Error 当数据库无法打开时抛出。
  */
-function validateTurnBatch(
-  events: readonly [TurnStartEventInput, UserMessageEventInput],
-  eventsPath: string,
-): void {
-  const [start, message] = events
-  if (start.type !== "turn/start" || message.type !== "user/message") {
-    throw new Error(`Session Turn 批次顺序无效：${eventsPath}`)
+function withDatabase<T>(path: string, operation: (db: DatabaseSync) => T): T {
+  let db: DatabaseSync
+  try {
+    db = new DatabaseSync(path)
+  } catch (error) {
+    throw new Error(`无法打开 Session Event Log 数据库：${path}`, { cause: error })
   }
-  if (!isPositiveSafeInteger(start.turn) || message.turn !== start.turn) {
-    throw new Error(`Session Turn 批次编号无效：${eventsPath}`)
-  }
-  if (
-    !isRecord(message.message)
-    || message.message.role !== "user"
-    || typeof message.message.id !== "string"
-    || message.message.id.trim() === ""
-  ) {
-    throw new Error(`Session Turn 批次的用户消息无效：${eventsPath}`)
+  try {
+    return operation(db)
+  } finally {
+    db.close()
   }
 }
 
 /**
- * 根据已有日志确认待写 Turn 是最后一个完整 Turn 的连续下一项。
- *
- * @param values 已从 JSONL 读取的日志值。
- * @param turn 待提交的 Turn 编号。
- * @param eventsPath 错误定位使用的 Event Log 路径。
- * @throws Error 当日志为空、上一 Turn 未结束或 Turn 编号不连续时抛出。
+ * 以一次 SQLite 事务执行操作。
+ * @param db 已打开的数据库。
+ * @param operation 事务内的同步操作。
+ * @returns 已提交操作的结果。
+ * @throws Error 当操作或提交失败时回滚并抛出。
  */
-function validateNextTurn(values: readonly unknown[], turn: number, eventsPath: string): void {
-  if (values.length === 0) throw new Error(`Session Event Log 为空，不能继续 Turn：${eventsPath}`)
-  const lastStart = [...values].reverse().find((value) => isRecord(value) && value.type === "turn/start")
-  const lastEnd = [...values].reverse().find((value) => isRecord(value) && value.type === "turn/end")
-  if (
-    !isRecord(lastStart)
-    || !isPositiveSafeInteger(lastStart.turn)
-    || !isRecord(lastEnd)
-    || lastEnd.turn !== lastStart.turn
-  ) {
-    throw new Error(`上一个 Session Turn 尚未完整结束：${eventsPath}`)
+function transaction<T>(db: DatabaseSync, operation: () => T): T {
+  db.exec("BEGIN IMMEDIATE")
+  try {
+    const result = operation()
+    db.exec("COMMIT")
+    return result
+  } catch (error) {
+    db.exec("ROLLBACK")
+    throw error
   }
-  const expectedTurn = lastStart.turn + 1
-  if (turn !== expectedTurn) {
-    throw new Error(`Session Turn 编号不连续：期望 ${expectedTurn}，实际 ${turn}（${eventsPath}）。`)
-  }
+}
 
-  for (const value of values) {
+/**
+ * 读取当前 Session 的事件并核对索引列。
+ * @param db 已打开的数据库。
+ * @param projectGroupId Project/default 分组 ID。
+ * @param sessionId Session ID。
+ * @param path 错误定位用的数据库路径。
+ * @param allowMissing 是否允许新 Session 没有日志。
+ * @returns 按 seq 排序的事件值。
+ * @throws Error 当表、日志或事件内容无效时抛出。
+ */
+function readSessionEvents(
+  db: DatabaseSync, projectGroupId: string, sessionId: string, path: string, allowMissing = false,
+): unknown[] {
+  let rows: Array<Record<string, unknown>>
+  try {
+    rows = db.prepare(`SELECT seq, event_id, type, created_at, event_json
+      FROM session_events WHERE project_group_id = ? AND session_id = ? ORDER BY seq`)
+      .all(projectGroupId, sessionId) as Array<Record<string, unknown>>
+  } catch (error) {
+    throw new Error(`无法读取 Session Event Log：${path}`, { cause: error })
+  }
+  if (rows.length === 0 && !allowMissing) {
+    throw new Error(`Session Event Log不存在或无法访问：${path}（${projectGroupId}/${sessionId}）`)
+  }
+  return rows.map((row, index) => {
+    if (typeof row.event_json !== "string") {
+      throw new Error(`Session Event Log 第 ${index + 1} 条内容无效：${path}`)
+    }
+    let value: unknown
+    try {
+      value = JSON.parse(row.event_json) as unknown
+    } catch (error) {
+      throw new Error(`Session Event Log 第 ${index + 1} 条不是有效 JSON：${path}`, { cause: error })
+    }
     if (
-      isRecord(value)
-      && value.type === "context_update"
-      && typeof value.turn === "number"
-      && value.turn > lastStart.turn
-      && value.turn !== turn
+      !isRecord(value) || value.seq !== row.seq || value.eventId !== row.event_id
+      || value.type !== row.type || value.createdAt !== row.created_at || value.sessionId !== sessionId
     ) {
-      throw new Error(`Session context_update 不属于待提交 Turn ${turn}：${eventsPath}`)
+      throw new Error(`Session Event Log 第 ${index + 1} 条索引与事件内容不一致：${path}`)
+    }
+    return value
+  })
+}
+
+/**
+ * 插入一批事件；失败时由调用方事务回滚。
+ * @param db 已打开的数据库。
+ * @param projectGroupId Project/default 分组 ID。
+ * @param events 已分配身份的事件。
+ * @param path 错误定位用的数据库路径。
+ * @throws Error 当序列化或插入失败时抛出。
+ */
+function insertEvents(db: DatabaseSync, projectGroupId: string, events: readonly SessionEvent[], path: string): void {
+  const insert = db.prepare(`INSERT INTO session_events
+    (project_group_id, session_id, seq, event_id, type, created_at, event_json)
+    VALUES (?, ?, ?, ?, ?, ?, ?)`)
+  for (const event of events) {
+    let json: string
+    try {
+      json = JSON.stringify(event)
+      if (typeof json !== "string") throw new Error("事件无法表示为 JSON")
+    } catch (error) {
+      throw new Error(`无法序列化 Session Event：${path}`, { cause: error })
+    }
+    try {
+      insert.run(projectGroupId, event.sessionId, event.seq, event.eventId, event.type, event.createdAt, json)
+    } catch (error) {
+      throw new Error(`无法追加 Session Event：${path}`, { cause: error })
     }
   }
 }
 
 /**
- * 计算一批事件可使用的起始序号。
- *
- * @param values 当前日志值。
- * @param eventsPath 错误定位使用的 Event Log 路径。
- * @param count 本次需要分配的事件数量。
- * @returns 第一条新事件应使用的 seq。
+ * 校验首批事件的顺序及共同身份。
+ * @param events 固定事件对。
+ * @param path 错误定位用的数据库路径。
+ * @throws Error 当事件无效时抛出。
  */
-function nextSequence(values: readonly unknown[], eventsPath: string, count: number): number {
+function validateTurnBatch(events: readonly [TurnStartEventInput, UserMessageEventInput], path: string): void {
+  const [start, message] = events
+  if (start.type !== "turn/start" || message.type !== "user/message") {
+    throw new Error(`Session Turn 批次顺序无效：${path}`)
+  }
+  if (!isPositiveSafeInteger(start.turn) || message.turn !== start.turn) {
+    throw new Error(`Session Turn 批次编号无效：${path}`)
+  }
+  if (
+    !isRecord(message.message) || message.message.role !== "user"
+    || typeof message.message.id !== "string" || message.message.id.trim() === ""
+  ) {
+    throw new Error(`Session Turn 批次的用户消息无效：${path}`)
+  }
+}
+
+/**
+ * 校验新 Turn 紧接最后一个已结束 Turn。
+ * @param values 当前 Session 的事件值。
+ * @param turn 待创建的 Turn 编号。
+ * @param path 错误定位用的数据库路径。
+ * @throws Error 当上一 Turn 未结束或编号不连续时抛出。
+ */
+function validateNextTurn(values: readonly unknown[], turn: number, path: string): void {
+  const lastStart = [...values].reverse().find((value) => isRecord(value) && value.type === "turn/start")
+  const lastEnd = [...values].reverse().find((value) => isRecord(value) && value.type === "turn/end")
+  if (
+    !isRecord(lastStart) || !isPositiveSafeInteger(lastStart.turn)
+    || !isRecord(lastEnd) || lastEnd.turn !== lastStart.turn
+  ) {
+    throw new Error(`上一个 Session Turn 尚未完整结束：${path}`)
+  }
+  const expectedTurn = lastStart.turn + 1
+  if (turn !== expectedTurn) {
+    throw new Error(`Session Turn 编号不连续：期望 ${expectedTurn}，实际 ${turn}（${path}）。`)
+  }
+  for (const value of values) {
+    if (
+      isRecord(value) && value.type === "context_update"
+      && typeof value.turn === "number" && value.turn > lastStart.turn && value.turn !== turn
+    ) {
+      throw new Error(`Session context_update 不属于待提交 Turn ${turn}：${path}`)
+    }
+  }
+}
+
+/**
+ * 计算下一批事件的起始 seq。
+ * @param values 当前 Session 的事件值。
+ * @param path 错误定位用的数据库路径。
+ * @param count 本批事件数量。
+ * @returns 下一批第一条事件的 seq。
+ * @throws Error 当末尾 seq 无效或空间不足时抛出。
+ */
+function nextSequence(values: readonly unknown[], path: string, count: number): number {
   const last = values.at(-1)
   if (!isRecord(last) || !isPositiveSafeInteger(last.seq)) {
-    throw new Error(`无法追加 Session Event：${eventsPath} 的末尾事件缺少有效 seq。`)
+    throw new Error(`无法追加 Session Event：${path} 的末尾事件缺少有效 seq。`)
   }
   if (last.seq > Number.MAX_SAFE_INTEGER - count) {
-    throw new Error(`无法追加 Session Event：${eventsPath} 的 seq 已达到安全整数上限。`)
+    throw new Error(`无法追加 Session Event：${path} 的 seq 已达到安全整数上限。`)
   }
   return last.seq + 1
 }
 
 /**
- * 为一组事件输入分配连续身份。
- *
+ * 给事件输入分配连续身份。
  * @param inputs 尚未分配身份的事件。
- * @param sessionId 当前日志绑定的 Session ID。
- * @param firstSeq 第一条事件使用的 seq。
+ * @param sessionId 当前 Session ID。
+ * @param firstSeq 第一条事件的 seq。
  * @param now 时间来源。
  * @param createEventId 事件 ID 来源。
- * @param eventsPath 错误定位使用的 Event Log 路径。
- * @returns 已经分配完整身份、尚未落盘的事件。
+ * @param path 错误定位用的数据库路径。
+ * @returns 尚未提交的完整事件。
+ * @throws Error 当事件 ID 为空时抛出。
  */
 function materializeEvents(
-  inputs: readonly SessionEventInput[],
-  sessionId: string,
-  firstSeq: number,
-  now: () => Date,
-  createEventId: () => string,
-  eventsPath: string,
+  inputs: readonly SessionEventInput[], sessionId: string, firstSeq: number,
+  now: () => Date, createEventId: () => string, path: string,
 ): SessionEvent[] {
   return inputs.map((input, index) => {
     const eventId = createEventId()
     if (eventId.trim() === "") {
-      throw new Error(`无法追加 Session Event：事件 ID 不能为空（${eventsPath}）。`)
+      throw new Error(`无法追加 Session Event：事件 ID 不能为空（${path}）。`)
     }
-    return {
-      ...input,
-      eventId,
-      sessionId,
-      seq: firstSeq + index,
-      createdAt: now().toISOString(),
-    } as SessionEvent
+    return { ...input, eventId, sessionId, seq: firstSeq + index, createdAt: now().toISOString() } as SessionEvent
   })
 }
 
 /**
- * 在实际写文件前一次性序列化全部事件，避免序列化失败产生半批次。
- *
- * @param events 待持久化事件。
- * @param eventsPath 错误定位使用的 Event Log 路径。
- * @returns 以换行结尾的 JSONL 文本。
+ * 校验不含路径分隔符的非空身份。
+ * @param value 待校验的身份。
+ * @param label 错误信息中的身份名称。
+ * @throws Error 当身份无效时抛出。
  */
-function serializeEvents(events: readonly SessionEvent[], eventsPath: string): string {
-  try {
-    return `${events.map((event) => JSON.stringify(event)).join("\n")}\n`
-  } catch (error) {
-    throw new Error(`无法序列化 Session Event：${eventsPath}`, { cause: error })
+function validateSegment(value: string, label: string): void {
+  if (value.trim() === "" || value === "." || value === ".." || value.includes("/") || value.includes("\\")) {
+    throw new Error(`${label} 必须是不含路径分隔符的非空目录名：${value}`)
   }
 }
 
 /**
- * 校验绑定到文件访问器的 Session ID。
- *
- * @param sessionId 调用方提供的 Session ID。
- * @throws Error 当 Session ID 为空、包含路径分隔符或为相对目录标记时抛出。
- */
-function validateSessionId(sessionId: string): void {
-  if (
-    sessionId.trim() === ""
-    || sessionId === "."
-    || sessionId === ".."
-    || sessionId.includes("/")
-    || sessionId.includes("\\")
-  ) {
-    throw new Error(`Session ID 必须是不含路径分隔符的非空目录名：${sessionId}`)
-  }
-}
-
-/**
- * 读取路径当前类型；不存在时返回 `missing`。
- *
- * @param path 待检查路径。
+ * 检查路径类型。
+ * @param path 目标路径。
  * @returns 普通文件、目录、其它节点或不存在。
  */
 async function pathKind(path: string): Promise<"file" | "directory" | "other" | "missing"> {
@@ -341,92 +411,47 @@ async function pathKind(path: string): Promise<"file" | "directory" | "other" | 
     if (stats.isDirectory()) return "directory"
     return "other"
   } catch (error) {
-    if (isFileNotFoundError(error)) return "missing"
+    if (error !== null && typeof error === "object" && "code" in error && error.code === "ENOENT") return "missing"
     throw new Error(`无法检查 Session Event Log：${path}`, { cause: error })
   }
 }
 
-/** @returns 未知异常是否表示目标路径不存在。 */
-function isFileNotFoundError(error: unknown): boolean {
-  return error !== null && typeof error === "object" && "code" in error && error.code === "ENOENT"
-}
-
 /**
- * 要求路径当前是普通目录。
- *
- * @param path 要检查的绝对路径。
- * @param label 错误信息中的目标名称。
- * @throws Error 当路径不可访问或不是目录时抛出。
+ * 要求 Session 目录存在。
+ * @param path Session 目录的绝对路径。
+ * @throws Error 当目标不是目录时抛出。
  */
-async function requireDirectory(path: string, label: string): Promise<void> {
+async function requireDirectory(path: string): Promise<void> {
   const stats = await lstat(path).catch((error: unknown) => {
-    throw new Error(`${label}不存在或无法访问：${path}`, { cause: error })
+    throw new Error(`Session 目录不存在或无法访问：${path}`, { cause: error })
   })
-  if (!stats.isDirectory()) {
-    throw new Error(`${label}不是目录：${path}`)
-  }
+  if (!stats.isDirectory()) throw new Error(`Session 目录不是目录：${path}`)
 }
 
 /**
- * 要求路径当前是普通文件；符号链接及目录均不作为 Event Log 接受。
- *
- * @param path 要检查的绝对路径。
- * @param label 错误信息中的目标名称。
- * @throws Error 当路径不可访问或不是普通文件时抛出。
+ * 要求共享数据库是普通文件。
+ * @param path 数据库绝对路径。
+ * @throws Error 当数据库缺失或不是普通文件时抛出。
  */
-async function requireFile(path: string, label: string): Promise<void> {
-  const stats = await lstat(path).catch((error: unknown) => {
-    throw new Error(`${label}不存在或无法访问：${path}`, { cause: error })
-  })
-  if (!stats.isFile()) {
-    throw new Error(`${label}不是普通文件：${path}`)
-  }
-}
-
-/**
- * 逐行解析 JSONL；仅允许文件末尾由换行产生的一个空片段。
- *
- * @param eventsPath 要读取的 Event Log 绝对路径。
- * @returns 每个非空日志行解析出的 JSON 值。
- * @throws Error 当文件读取失败、日志中出现空行或某一行不是有效 JSON 时抛出。
- */
-async function readJsonLines(eventsPath: string): Promise<unknown[]> {
-  const content = await readFile(eventsPath, "utf8").catch((error: unknown) => {
-    throw new Error(`无法读取 Session Event Log：${eventsPath}`, { cause: error })
-  })
-  if (content === "") return []
-
-  const lines = content.split("\n")
-  if (lines.at(-1) === "") lines.pop()
-
-  return lines.map((rawLine, index) => {
-    const line = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine
-    if (line.trim() === "") {
-      throw new Error(`Session Event Log 第 ${index + 1} 行为空：${eventsPath}`)
-    }
-    try {
-      return JSON.parse(line) as unknown
-    } catch (error) {
-      throw new Error(`Session Event Log 第 ${index + 1} 行不是有效 JSON：${eventsPath}`, { cause: error })
-    }
-  })
+async function requireDatabase(path: string): Promise<void> {
+  const kind = await pathKind(path)
+  if (kind === "missing") throw new Error(`Session Event Log 数据库不存在或无法访问：${path}`)
+  if (kind !== "file") throw new Error(`Session Event Log 数据库不是普通文件：${path}`)
 }
 
 /**
  * 判断未知值是否为非数组对象。
- *
- * @param value 待检查的未知值。
- * @returns 值是否可按字符串字段读取。
+ * @param value 待检查的值。
+ * @returns 是否可按字符串字段读取。
  */
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
 }
 
 /**
- * 判断未知值是否为正的安全整数。
- *
- * @param value 待检查的未知值。
- * @returns 值是否可用作 Session Event seq。
+ * 判断值是否为正的安全整数。
+ * @param value 待检查的值。
+ * @returns 是否可用作 Event seq。
  */
 function isPositiveSafeInteger(value: unknown): value is number {
   return Number.isSafeInteger(value) && (value as number) > 0

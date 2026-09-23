@@ -110,6 +110,8 @@ export interface FileSessionStateOptions {
   sessionId: string
   /** 当前 Session 目录的绝对路径。 */
   sessionDirectory: string
+  /** 共享 Event Log 数据库绝对路径，仅用于定位初始化错误。 */
+  databasePath: string
   /** 从 Event Log 读取尚未窄化的事件；组合实现使用同一个 FileSessionEventLog。 */
   readEvents(): Promise<readonly unknown[]>
   /** 读取恢复当下的 AGENTS.md、Skill、MCP 及其它 Session meta 基线。 */
@@ -186,7 +188,10 @@ export function createFileSessionState(options: FileSessionStateOptions): FileSe
   if (!isAbsolute(options.sessionDirectory)) {
     throw new Error(`Session 目录必须是绝对路径：${options.sessionDirectory}`)
   }
-  const paths = resolveStatePaths(resolve(options.sessionDirectory))
+  if (!isAbsolute(options.databasePath)) {
+    throw new Error(`Session Event Log 数据库必须是绝对路径：${options.databasePath}`)
+  }
+  const paths = resolveStatePaths(resolve(options.sessionDirectory), resolve(options.databasePath))
   const queue = getSessionStateQueue(paths.sessionDirectory)
 
   /**
@@ -407,7 +412,7 @@ export async function writeCurrentModel(
     "sessions",
     String(projectId),
     sessionId,
-  ))
+  ), resolve(userProfile, ".nicode", "events.sqlite"))
   await writeCurrentModelAtPaths(
     paths,
     getSessionStateQueue(paths.sessionDirectory),
@@ -452,12 +457,13 @@ function validateSessionId(sessionId: string): void {
  * 由已经绑定并规范化的 Session 目录生成全部派生状态路径。
  *
  * @param sessionDirectory 当前 Session 的绝对目录。
+ * @param databasePath 共享 Event Log 数据库的绝对路径。
  * @returns 当前 Session 的全部派生状态路径。
  */
-function resolveStatePaths(sessionDirectory: string): SessionStatePaths {
+function resolveStatePaths(sessionDirectory: string, databasePath: string): SessionStatePaths {
   return {
     sessionDirectory,
-    eventsPath: join(sessionDirectory, "events.jsonl"),
+    eventsPath: databasePath,
     metaPath: join(sessionDirectory, "meta.json"),
     contextStatePath: join(sessionDirectory, "contextstate.json"),
     agentsSnapshotPath: join(sessionDirectory, "agents_md.snapshot"),

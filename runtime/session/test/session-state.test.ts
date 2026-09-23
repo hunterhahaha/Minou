@@ -1,19 +1,22 @@
 import assert from "node:assert/strict"
 import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
+import { DatabaseSync } from "node:sqlite"
 
 import { createFileSessionRepairPorts, repairSession } from "../../agent/src/session-runtime.ts"
 import type { ModelRef } from "../../model/src/types.ts"
-import { createFileSessionEventLog } from "../src/event-log.ts"
+import { createFileSessionEventLog as createSqliteSessionEventLog } from "../src/event-log.ts"
+import type { FileSessionEventLogOptions } from "../src/event-log.ts"
 import type { SessionEvent, SessionEventInput } from "../src/events.ts"
 import {
   DEFAULT_SESSION_SANDBOX_MODE,
   SESSION_META_VERSION,
-  createFileSessionState,
+  createFileSessionState as createSqliteSessionState,
   writeCurrentModel,
 } from "../src/session-state.ts"
 import type { CurrentSessionBaseline, SessionContextState, SessionMeta } from "../src/session-state.ts"
+import type { FileSessionStateOptions } from "../src/session-state.ts"
 
 const MODEL: ModelRef = { providerId: "provider-1", protocol: "responses", modelId: "model-1" }
 const OTHER_MODEL: ModelRef = { providerId: "provider-1", protocol: "responses", modelId: "model-2" }
@@ -42,13 +45,39 @@ function initialEvents(sessionId: string): SessionEvent[] {
   ]
 }
 
-/** 用一次写入建立 events.jsonl。 */
+/** 为现有测试建立共享 SQLite 日志。 */
 async function writeEvents(sessionDirectory: string, events: readonly SessionEvent[]): Promise<void> {
-  await writeFile(
-    join(sessionDirectory, "events.jsonl"),
-    `${events.map((event) => JSON.stringify(event)).join("\n")}\n`,
-    "utf8",
-  )
+  const db = new DatabaseSync(join(dirname(sessionDirectory), "events.sqlite"))
+  try {
+    db.exec(`CREATE TABLE IF NOT EXISTS session_events (
+      project_group_id TEXT NOT NULL, session_id TEXT NOT NULL, seq INTEGER NOT NULL,
+      event_id TEXT NOT NULL, type TEXT NOT NULL, created_at TEXT NOT NULL, event_json TEXT NOT NULL,
+      PRIMARY KEY (project_group_id, session_id, seq),
+      UNIQUE (project_group_id, session_id, event_id)
+    ) STRICT`)
+    const insert = db.prepare(`INSERT INTO session_events
+      (project_group_id, session_id, seq, event_id, type, created_at, event_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?)`)
+    for (const event of events) {
+      insert.run("0", event.sessionId, event.seq, event.eventId, event.type, event.createdAt, JSON.stringify(event))
+    }
+  } finally {
+    db.close()
+  }
+}
+
+/** 保持原测试调用形状，并指定 SQLite 的分组与路径。 */
+function createFileSessionEventLog(options: Omit<FileSessionEventLogOptions, "projectGroupId" | "databasePath">) {
+  return createSqliteSessionEventLog({
+    ...options, projectGroupId: "0", databasePath: join(dirname(options.sessionDirectory), "events.sqlite"),
+  })
+}
+
+/** 为派生状态测试提供同一个数据库路径。 */
+function createFileSessionState(options: Omit<FileSessionStateOptions, "databasePath">) {
+  return createSqliteSessionState({
+    ...options, databasePath: join(dirname(options.sessionDirectory), "events.sqlite"),
+  })
 }
 
 /** 读取测试中的 JSON 文件。 */
@@ -443,6 +472,8 @@ async function testCompleteRepairPorts(root: string): Promise<void> {
   const ports = createFileSessionRepairPorts({
     sessionId,
     sessionDirectory,
+    projectGroupId: "0",
+    databasePath: join(dirname(sessionDirectory), "events.sqlite"),
     resolveCurrentBaseline: async () => baseline("complete"),
     estimateSkillTokens: (description) => description.length,
     now: () => new Date(CREATED_AT),
