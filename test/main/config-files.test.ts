@@ -1,4 +1,4 @@
-/** 启动配置的创建、V1 校验及损坏文件保留。 */
+/** 启动配置 V2、Provider 数据库初始化与既有文件保留测试。 */
 
 import assert from "node:assert/strict"
 import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises"
@@ -7,7 +7,10 @@ import { join, resolve, sep } from "node:path"
 
 import { initializeConfigFiles } from "../../src/main/index.ts"
 import type { ConfigFilePaths } from "../../src/main/index.ts"
+import { listProviders, saveProvider } from "../../src/main/provider-store.ts"
+import { readDefaultWorkspace, saveDefaultWorkspace } from "../../src/main/workspace-store.ts"
 
+/** 在独立用户目录运行断言并删除测试数据。 */
 async function withTempProfile(test: (profile: string) => Promise<void>): Promise<void> {
   const profile = await mkdtemp(join(tmpdir(), "nicode-config-"))
   try {
@@ -18,43 +21,23 @@ async function withTempProfile(test: (profile: string) => Promise<void>): Promis
   }
 }
 
-function filePath(paths: ConfigFilePaths, file: "config" | "credentials" | "workspace"): string {
-  return file === "config" ? paths.configPath
-    : file === "credentials" ? paths.credentialsPath : paths.defaultWorkspacePath
-}
-
-async function assertInvalidFile(
-  file: "config" | "credentials" | "workspace",
-  content: string,
-  errorPart: string,
-  setup?: (paths: ConfigFilePaths) => Promise<void>,
-): Promise<void> {
+/** 验证损坏的 config.json 报错并保留原内容。 */
+async function assertInvalidConfig(content: string, errorPart: string): Promise<void> {
   await withTempProfile(async (profile) => {
     const paths = await initializeConfigFiles(profile)
-    if (setup) await setup(paths)
-    const path = filePath(paths, file)
-    await writeFile(path, content)
+    await writeFile(paths.configPath, content)
     await assert.rejects(initializeConfigFiles(profile), (error: unknown) => {
       assert.ok(error instanceof Error)
-      assert.ok(error.message.includes(path))
+      assert.ok(error.message.includes(paths.configPath))
       assert.ok(error.message.includes(errorPart), error.message)
       return true
     })
-    assert.equal(await readFile(path, "utf8"), content)
+    assert.equal(await readFile(paths.configPath, "utf8"), content)
   })
 }
 
 const validConfig = {
-  version: 1,
-  providers: [{
-    id: "example",
-    name: "Example Provider",
-    protocols: {
-      chat_completions: { baseURL: "https://api.example.com/v1", defaultHeaders: { "X-Test": "value" } },
-    },
-    models: [{ id: "coding-model", contextWindow: 128000, maxOutputTokens: 8192, supportsTools: true }],
-  }],
-  defaultModel: "coding-model",
+  version: 2,
   mcpServers: [
     { name: "local", enabled: true, transport: "stdio", command: "server", args: ["--mode", ""] },
     { name: "remote", enabled: false, transport: "streamable-http", url: "https://example.com/mcp" },
@@ -62,14 +45,15 @@ const validConfig = {
   runtime: { userMessageMode: "insert" },
 }
 
+/** 运行启动配置的正常与错误路径。 */
 async function main(): Promise<void> {
   await withTempProfile(async (profile) => {
-    const paths = await initializeConfigFiles(profile)
+    const paths: ConfigFilePaths = await initializeConfigFiles(profile)
     assert.deepEqual(paths, {
       rootDir: join(profile, ".nicode"),
       configPath: join(profile, ".nicode", "config.json"),
-      credentialsPath: join(profile, ".nicode", "credentials.json"),
-      defaultWorkspacePath: join(profile, ".nicode", "sessions", "default", "workspace.json"),
+      providerDatabasePath: join(profile, ".nicode", "providers.sqlite"),
+      workspaceDatabasePath: join(profile, ".nicode", "workspace.sqlite"),
     })
     for (const directory of [
       paths.rootDir,
@@ -80,65 +64,45 @@ async function main(): Promise<void> {
       join(paths.rootDir, "sessions", "default", "workspace"),
     ]) assert.equal((await stat(directory)).isDirectory(), true)
     assert.deepEqual(JSON.parse(await readFile(paths.configPath, "utf8")), {
-      version: 1, providers: [], mcpServers: [], runtime: { userMessageMode: "queue" },
+      version: 2, mcpServers: [], runtime: { userMessageMode: "queue" },
     })
-    assert.deepEqual(JSON.parse(await readFile(paths.credentialsPath, "utf8")), {})
-    assert.deepEqual(JSON.parse(await readFile(paths.defaultWorkspacePath, "utf8")), {
-      version: 1, sessions: [],
-    })
+    assert.equal((await stat(paths.providerDatabasePath)).isFile(), true)
+    assert.deepEqual(listProviders(paths.providerDatabasePath), [])
+    assert.deepEqual(readDefaultWorkspace(paths.workspaceDatabasePath), { version: 1, sessions: [] })
+
+    const credentialsPath = join(paths.rootDir, "credentials.json")
+    const oldWorkspacePath = join(paths.rootDir, "sessions", "default", "workspace.json")
+    await assert.rejects(stat(credentialsPath), { code: "ENOENT" })
+    await assert.rejects(stat(oldWorkspacePath), { code: "ENOENT" })
+    await writeFile(credentialsPath, "invalid legacy credentials")
+    await writeFile(oldWorkspacePath, "legacy workspace content")
 
     const configContent = `${JSON.stringify(validConfig)}\n`
-    const credentialsContent = '{"providers":[{"providerId":"example","apiKey":"secret"}]}\n'
-    const workspaceContent = '{"version":1,"sessions":[{"id":"session_1","name":"配置讨论","createdAt":"2026-09-18T01:00:00.000Z","updatedAt":"2026-09-18T10:00:00+08:00"}]}\n'
     await writeFile(paths.configPath, configContent)
-    await writeFile(paths.credentialsPath, credentialsContent)
-    await writeFile(paths.defaultWorkspacePath, workspaceContent)
+    saveProvider(paths.providerDatabasePath, { id: "example", name: "Example", protocol: "responses" })
+    const defaultWorkspace = { version: 1 as const, sessions: [{
+      id: "session_1", name: "配置讨论",
+      createdAt: "2026-09-18T01:00:00.000Z", updatedAt: "2026-09-18T10:00:00+08:00",
+    }] }
+    saveDefaultWorkspace(paths.workspaceDatabasePath, defaultWorkspace)
+
     assert.deepEqual(await initializeConfigFiles(profile), paths)
     assert.equal(await readFile(paths.configPath, "utf8"), configContent)
-    assert.equal(await readFile(paths.credentialsPath, "utf8"), credentialsContent)
-    assert.equal(await readFile(paths.defaultWorkspacePath, "utf8"), workspaceContent)
-
-    await rm(paths.credentialsPath)
-    await rm(paths.defaultWorkspacePath)
-    await initializeConfigFiles(profile)
-    assert.equal(await readFile(paths.configPath, "utf8"), configContent)
-    assert.deepEqual(JSON.parse(await readFile(paths.credentialsPath, "utf8")), {})
-    assert.deepEqual(JSON.parse(await readFile(paths.defaultWorkspacePath, "utf8")), { version: 1, sessions: [] })
-
+    assert.equal(await readFile(credentialsPath, "utf8"), "invalid legacy credentials")
+    assert.equal(await readFile(oldWorkspacePath, "utf8"), "legacy workspace content")
+    assert.equal(listProviders(paths.providerDatabasePath)[0].id, "example")
+    assert.deepEqual(readDefaultWorkspace(paths.workspaceDatabasePath), defaultWorkspace)
   })
 
-  await assertInvalidFile("config", "", "不是有效的 JSON")
-  await assertInvalidFile("credentials", "{", "不是有效的 JSON")
-  await assertInvalidFile("workspace", "[]", "顶层必须是对象")
-  await assertInvalidFile("config", "null", "顶层必须是对象")
-  await assertInvalidFile("config", "{}", "config.version")
-  await assertInvalidFile("workspace", "{}", "workspace.version")
-  await assertInvalidFile("config", '{"version":2,"providers":[],"mcpServers":[],"runtime":{"userMessageMode":"queue"}}', "config.version")
-  await assertInvalidFile("config", JSON.stringify({ ...validConfig, defaultModel: "missing" }), "config.defaultModel")
-  await assertInvalidFile("config", JSON.stringify({ ...validConfig, providers: [validConfig.providers[0], validConfig.providers[0]] }), ".id 重复")
-  await assertInvalidFile("config", JSON.stringify({ ...validConfig, providers: [validConfig.providers[0], {
-    ...validConfig.providers[0], id: "second", models: [{ id: "coding-model" }],
-  }] }), ".id 重复")
-  await assertInvalidFile("config", JSON.stringify({ ...validConfig, providers: [{ ...validConfig.providers[0], models: [{ id: "coding-model", providerId: "example" }] }] }), "providerId 不是 V1 字段")
-  await assertInvalidFile("config", JSON.stringify({ ...validConfig, providers: [{ ...validConfig.providers[0], protocols: { invalid: {} } }] }), "不是支持的协议")
-  await assertInvalidFile("config", JSON.stringify({ ...validConfig, providers: [{
-    ...validConfig.providers[0], protocols: {}, models: [],
-  }] }), "恰好包含一个协议")
-  await assertInvalidFile("config", JSON.stringify({ ...validConfig, providers: [{
-    ...validConfig.providers[0],
-    protocols: { anthropic_messages: {}, responses: {} },
-    models: [],
-  }] }), "恰好包含一个协议")
-  await assertInvalidFile("config", JSON.stringify({ ...validConfig, runtime: { userMessageMode: "other" } }), "userMessageMode")
-  await assertInvalidFile("config", JSON.stringify({ ...validConfig, mcpServers: [{ name: "x", enabled: true, transport: "stdio" }] }), ".command")
-  await assertInvalidFile("config", JSON.stringify({ ...validConfig, apiKey: "secret" }), "apiKey 不是 V1 字段")
-  await assertInvalidFile("credentials", '{"providers":[{"providerId":"missing","apiKey":"secret"}]}', "未引用已配置的 Provider")
-  await assertInvalidFile("credentials", '{"providers":[{"providerId":"example","apiKey":"secret"},{"providerId":"example","apiKey":"second"}]}', "providerId 重复", async (paths) => {
-    await writeFile(paths.configPath, JSON.stringify(validConfig))
-  })
-  await assertInvalidFile("workspace", '{"version":1,"sessions":[{"id":"s","name":"Session","createdAt":"2026-09-18","updatedAt":"2026-09-18T02:25:00Z"}]}', "createdAt")
-  await assertInvalidFile("workspace", '{"version":1,"sessions":[{"id":"s","name":"Session","createdAt":"2026-02-30T01:00:00Z","updatedAt":"2026-09-18T02:25:00Z"}]}', "createdAt")
-  await assertInvalidFile("workspace", '{"version":1,"sessions":[],"skills":{}}', "skills 不是 V1 字段")
+  await assertInvalidConfig("", "不是有效的 JSON")
+  await assertInvalidConfig("null", "顶层必须是对象")
+  await assertInvalidConfig("{}", "config.version")
+  await assertInvalidConfig('{"version":1,"providers":[],"mcpServers":[],"runtime":{"userMessageMode":"queue"}}', "旧版配置不会自动迁移")
+  await assertInvalidConfig(JSON.stringify({ ...validConfig, providers: [] }), "config.providers 不是 V2 字段")
+  await assertInvalidConfig(JSON.stringify({ ...validConfig, defaultModel: "old" }), "config.defaultModel 不是 V2 字段")
+  await assertInvalidConfig(JSON.stringify({ ...validConfig, runtime: { userMessageMode: "other" } }), "userMessageMode")
+  await assertInvalidConfig(JSON.stringify({ ...validConfig, mcpServers: [{ name: "x", enabled: true, transport: "stdio" }] }), ".command")
+  await assertInvalidConfig(JSON.stringify({ ...validConfig, apiKey: "secret" }), "config.apiKey 不是 V2 字段")
 
   await withTempProfile(async (profile) => {
     const occupiedPath = join(profile, ".nicode", "config.json")

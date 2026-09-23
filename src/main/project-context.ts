@@ -1,14 +1,13 @@
 /**
- * Project 工作区、AGENTS.md 与 Skill 固定上下文的文件系统实现。
+ * Project 工作区数据库、AGENTS.md 与 Skill 固定上下文的实现。
  *
- * `workspace.json` 在同步 Runtime 构造边界读取；可能随 Turn 变化的 AGENTS.md 与 Skill
+ * 工作区数据库在同步 Runtime 构造边界读取；可能随 Turn 变化的 AGENTS.md 与 Skill
  * 内容由异步 baseline 函数重新读取。MCP Runtime 尚未实现，因此当前基线明确返回空 MCP 列表。
  */
 
 import { createHash } from "node:crypto"
 import {
   lstatSync,
-  readFileSync,
 } from "node:fs"
 import {
   lstat,
@@ -24,8 +23,8 @@ import type {
   CurrentSessionBaseline,
   SessionSkillContextEntry,
 } from "../../runtime/session/src/session-state.ts"
-import { checkProjectWorkspace } from "./config-schema.ts"
-import type { ValidatedProjectWorkspace } from "./config-schema.ts"
+import { readProjectWorkspace } from "./workspace-store.ts"
+import type { ProjectWorkspace } from "./workspace-store.ts"
 import type {
   ResolveSessionRuntimeProjectContext,
   SessionRuntimeProjectContext,
@@ -92,7 +91,7 @@ export function createProjectContextResolver(
  * @param options `.nicode` 根目录与共享 Token 估算器。
  * @param projectId IPC 已校验的非负安全整数 Project ID。
  * @returns 当前 Project 的模型可见工作区信息与 baseline 解析函数。
- * @throws Error 当 Project 目录、workspace、配置字段或目录身份无效时抛出。
+ * @throws Error 当 Project 目录或 workspace 目录不可用，或数据库中缺少对应项目配置时抛出。
  */
 function resolveProjectContext(
   options: ProjectContextResolverOptions,
@@ -103,20 +102,10 @@ function resolveProjectContext(
   }
 
   const projectDirectory = join(options.rootDirectory, "sessions", String(projectId))
-  const workspacePath = join(projectDirectory, "workspace.json")
   const workspaceDirectory = join(projectDirectory, "workspace")
   requireDirectorySync(projectDirectory, "Project 配置目录")
   requireDirectorySync(workspaceDirectory, "Project workspace 目录")
-  const workspaceValue = readRequiredJsonObjectSync(workspacePath, "Project workspace 配置")
-  let workspace: ValidatedProjectWorkspace
-  try {
-    workspace = checkProjectWorkspace(workspaceValue, projectId)
-  } catch (error) {
-    throw new Error(
-      `Project workspace 配置检查失败：${workspacePath} ${error instanceof Error ? error.message : String(error)}`,
-      { cause: error },
-    )
-  }
+  const workspace = readProjectWorkspace(join(options.rootDirectory, "workspace.sqlite"), projectId)
   const cwd = workspace.directories[0] ?? workspaceDirectory
   const allowedRoots = workspace.directories.length > 0
     ? [...workspace.directories]
@@ -156,15 +145,15 @@ function resolveProjectContext(
 /**
  * 生成 ContextBuilder 放入 System Message 的 Project Workspace Info。
  *
- * @param workspace 已校验的 Project 配置。
- * @param projectDirectory Project 配置持久化目录。
+ * @param workspace 从数据库读取的 Project 配置。
+ * @param projectDirectory Project 分组目录。
  * @param workspaceDirectory Project 内置工作目录。
  * @param cwd 当前默认工作目录。
  * @param allowedRoots 当前明确允许的根目录。
  * @returns 带稳定字段名的 JSON 文本块。
  */
 function formatWorkspaceInfo(
-  workspace: ValidatedProjectWorkspace,
+  workspace: ProjectWorkspace,
   projectDirectory: string,
   workspaceDirectory: string,
   cwd: string,
@@ -188,7 +177,7 @@ function formatWorkspaceInfo(
  * 目录名不参与身份判断；registry 的 name 只引用扫描得到的 YAML name。
  *
  * @param rootDirectory `.nicode` 根目录。
- * @param projectDirectory 当前 Project 配置目录。
+ * @param projectDirectory 当前 Project 分组目录。
  * @param estimateSkillTokens Skill description 的本地估算器。
  * @returns 当前实际启用 Skill 的模型可见内容、比较条目和 description 映射。
  * @throws Error 当 registry、目录、SKILL.md 或 YAML frontmatter 无效时抛出。
@@ -417,35 +406,6 @@ function requireDirectorySync(path: string, label: string): void {
     throw new Error(`无法检查${label}：${path}`, { cause: error })
   }
   if (!state.isDirectory()) throw new Error(`${label}不是目录：${path}`)
-}
-
-/**
- * 同步读取必需的 JSON 对象。
- *
- * @param filePath JSON 文件绝对路径。
- * @param label 错误中的文件职责。
- * @returns 解析后的普通对象。
- * @throws Error 当文件不是普通文件、无法读取、JSON 损坏或顶层不是对象时抛出。
- */
-function readRequiredJsonObjectSync(
-  filePath: string,
-  label: string,
-): Record<string, unknown> {
-  let state
-  try {
-    state = lstatSync(filePath)
-  } catch (error) {
-    throw new Error(`无法检查${label}：${filePath}`, { cause: error })
-  }
-  if (!state.isFile()) throw new Error(`${label}不是普通文件：${filePath}`)
-
-  let content: string
-  try {
-    content = readFileSync(filePath, "utf8")
-  } catch (error) {
-    throw new Error(`无法读取${label}：${filePath}`, { cause: error })
-  }
-  return parseJsonObject(content, filePath, label)
 }
 
 /** 异步读取必需的 JSON 对象。 */

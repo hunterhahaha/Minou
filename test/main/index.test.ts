@@ -188,8 +188,8 @@ function startupFixture(
     configPaths: {
       rootDir: join(profile, ".nicode"),
       configPath: join(profile, ".nicode", "config.json"),
-      credentialsPath: join(profile, ".nicode", "credentials.json"),
-      defaultWorkspacePath: join(profile, ".nicode", "sessions", "default", "workspace.json"),
+      providerDatabasePath: join(profile, ".nicode", "providers.sqlite"),
+      workspaceDatabasePath: join(profile, ".nicode", "workspace.sqlite"),
     },
     platform: "win32",
     sessionRuntime: {

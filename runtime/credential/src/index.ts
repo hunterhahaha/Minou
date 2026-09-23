@@ -1,8 +1,8 @@
 /**
  * Provider 凭据的只读运行期存储。
  *
- * API Key 与普通 Provider / Protocol / Model 配置分离保存；启动装配在持久化结构通过
- * V1 检查后创建本 Store，Protocol Adapter 只能按 providerId 取得自己的 API Key。
+ * API Key 在 Provider SQLite 的独立表保存；单个 Turn 读取所选 Provider 的快照后
+ * 创建本 Store，Protocol Adapter 只能按 providerId 取得自己的 API Key。
  *
  * 架构依据：.git/技术文档/开发备忘录1.0.17.md 第 3、4、30 节
  */

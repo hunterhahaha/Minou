@@ -17,13 +17,15 @@ NiCode V1 是一个本地运行的 Coding Agent Runtime：浏览器 UI 与本机
 
 **启动配置文件初始化**已完成：`src/main/config-files.ts` 导出
 `initializeConfigFiles(userProfile?)`，按备忘录第 2–4 节初始化 `.nicode`、
-`config.json`、`credentials.json`、`skills/`、`sessions/`、`logs/` 与
-`sessions/default`，并创建共享的 `events.sqlite` 数据库和事件表。新建 `config.json` 和 default `workspace.json` 使用 V1 空配置，
-`credentials.json` 使用文档允许的 `{}`。已有文件按 V1 检查版本、字段与引用关系，
-失败时保留原文件并抛出带路径的错误；初始化链在同一次调用中读取并校验普通配置、凭据和 default
-workspace，真实 Electron 入口只保留返回的固定路径，不保留配置或凭据快照。每个 Provider（包括暂时没有模型的
-Provider）必须恰好配置一个协议。`readModelAdapterConfigSnapshot()` 为每个 Turn 只读重开并重新
-校验 `config.json` 与 `credentials.json`，不重复读取 workspace，也不会创建缺失配置文件。
+`config.json`、`skills/`、`sessions/`、`logs/` 与 `sessions/default`，并创建共享的
+`events.sqlite`、独立的 `workspace.sqlite` 和 `providers.sqlite` 数据库。
+新建 `config.json` 使用 V2 空配置；Provider 数据库首次创建时为空，工作区数据库只在
+default 分组不存在时补入空记录。已有全局配置按 V2 检查；旧 V1 文件不迁移、
+不改写，失败时保留原文件并抛出带路径的错误。旧 `credentials.json` 不再创建或读取。
+旧 `workspace.json` 不迁移、不读取或删除。真实 Electron 入口只保留返回的固定路径，
+不保留 Provider 配置或凭据快照。每个 Provider（包括暂时没有模型的 Provider）必须
+恰好配置一个协议。每个 Turn 只读打开 `providers.sqlite`，在同一数据库快照中取得
+所选模型、协议参数和 API Key；读取不会创建缺失数据库，也不读取 workspace。
 
 **Electron 可执行入口和 `startElectronApp` 参数装配**已完成：package 的 `main` 指向
 `src/main/electron-main.ts` 的编译产物。该入口直接导入真实 Electron `app`、`ipcMain` 和
@@ -49,14 +51,14 @@ await startElectronApp({
 ```
 
 没有 `BuildInput` 或 options builder 公共层，启动时也不创建任何 Provider SDK Client 或 Adapter。
-初始配置结构和 Provider 协议基数在 IPC 注册、Electron ready 和窗口创建前完成检查；空配置和缺少
+初始配置结构和 Provider 数据库在 IPC 注册、Electron ready 和窗口创建前完成检查；空配置和缺少
 凭据仍允许应用启动，真正选中对应模型的 Turn 才会明确失败。
 `src/main/index.ts` 的 `startElectronApp(options)` 只消费这些完成的依赖，注册 Session IPC、等待 ready、
 管理 activate / window-all-closed，并在每次创建 Runtime 时按 `projectId` 使用
 `sessions/<project-id>/<session-id>`。
 
 **Project 固定上下文解析**已接入：`src/main/project-context.ts` 同步读取并检查
-`sessions/<project-id>/workspace.json`，生成包含关联目录、cwd、内置 workspace 和 allowedRoots 的
+`.nicode/workspace.sqlite` 中对应项目的记录，生成包含关联目录、cwd、内置 workspace 和 allowedRoots 的
 Workspace Info；每个 Turn 的 baseline 异步读取当前 cwd 下的 `AGENTS.md`，并合并 Global / Project
 Skills。每个 `skills/` 直接子目录中的 `SKILL.md` 以 YAML frontmatter 的 `name` 为唯一身份，目录名可以
 不同；`registry.json` 的 name 引用 YAML name 并提供 scope / enabled，Project 同名项覆盖 Global，
@@ -89,8 +91,8 @@ Insert、文件变更汇总与最终 Surface 仍未实现，见下文。
 构建在 ToolExposureManager 落地前返回空数组。`SessionRuntimePorts` 维护运行期 FIFO 用户消息队列和
 已持久化事件流。新 Session 保持 Event Log 先于派生文件的提交顺序；显式 Continue 先把请求模型
 原子写入 `meta.json`，Queue 则不保存或覆盖模型。两条路径都会在 Turn 真正开始时重新打开
-`meta.json`，随后重新打开并校验 `config.json` 与 `credentials.json`，创建只供该 Turn 全部 Step 共用的
-新 Adapter。Adapter、CredentialStore、配置快照和 SDK Client 都不跨 Turn 缓存。每个 Turn 会写入最小 `turn/end`，文件变更汇总、
+`meta.json`，随后只读打开 `providers.sqlite`，创建只供该 Turn 全部 Step 共用的
+新 Adapter。Adapter、CredentialStore、数据库读取结果和 SDK Client 都不跨 Turn 缓存。每个 Turn 会写入最小 `turn/end`，文件变更汇总、
 Insert 与最终 Surface 仍未实现。
 
 **Renderer 的四个 Session 命令**已通过 preload 暴露为
@@ -236,11 +238,13 @@ src/                                 Electron 外壳
 │  ├─ electron-main.ts               真实 Electron 可执行入口，直接构造 startElectronApp 参数
 │  ├─ electron-windows.ts            BrowserWindow 创建、静态页面加载与窗口存活检查
 │  ├─ index.ts                       startElectronApp、Project SessionRuntime 工厂与生命周期端口
-│  ├─ model-adapters.ts              每 Turn 重读配置、凭据并创建单个模型 Adapter
+│  ├─ model-adapters.ts              每 Turn 从 Provider 数据库读取并创建单个模型 Adapter
 │  ├─ project-context.ts             workspace、AGENTS.md 与 YAML Skill baseline 解析
 │  ├─ token-estimator.ts             Skill / MCP 元信息的本地 Token 粗估
-│  ├─ config-files.ts                .nicode 初始化及每 Turn 模型配置只读重载
-│  ├─ config-schema.ts               三份启动配置的 V1 字段检查
+│  ├─ config-files.ts                .nicode 初始化与 V2 全局配置读取
+│  ├─ config-schema.ts               全局配置的 V2 字段检查
+│  ├─ provider-store.ts              Provider、模型、协议、API Key 与默认模型 SQLite 读写
+│  ├─ workspace-store.ts              Project/default 工作区配置的 SQLite 读写
 │  └─ session-ipc.ts                 SessionRuntime 的四个 IPC handler
 ├─ preload/
 │  ├─ index.ts                       contextBridge 安装入口
@@ -396,6 +400,8 @@ node --experimental-strip-types runtime/session/test/event-log.test.ts
 node --experimental-strip-types runtime/session/test/session-state.test.ts
 node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types runtime/credential/test/credential-store.test.ts
 node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/main/config-files.test.ts
+node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/main/provider-store.test.ts
+node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/main/workspace-store.test.ts
 node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/main/model-adapters.test.ts
 node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/main/project-context.test.ts
 node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/main/electron-windows.test.ts
@@ -404,15 +410,20 @@ node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types t
 node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/preload/session-api.test.ts
 ```
 
-`test/main/config-files.test.ts` 使用临时用户目录验证：首次创建、重复调用时保留有效内容、
-缺失文件补齐、V1 有效配置、字段与引用错误、损坏文件保留，以及非法用户目录。
+`test/main/config-files.test.ts` 使用临时用户目录验证：V2 配置与空数据库首次创建、
+重复调用保留数据、忽略旧 credentials/workspace JSON、旧 V1 配置报错，以及非法用户目录。
+`test/main/provider-store.test.ts` 验证 Provider、模型、密钥、默认模型的读写顺序、
+重复初始化、关联删除、事务回滚和损坏数据库错误。
+`test/main/workspace-store.test.ts` 验证 Project/default 配置顺序、重复初始化、更新和事务回滚。
+Project 配置新增 `updatedAt`，已有数据库在启动时为旧 Project 记录补入升级时间；
+对话索引沿用现有 `updatedAt` 字段。两者由工作区写入方提供，当前 Session 流程尚未更新对话索引。
 
 `runtime/credential/test/credential-store.test.ts` 验证空 Store、按 Provider 查找、输入复制、
 空字段与重复 Provider 拒绝，以及错误信息不泄露 API Key。
 
 `test/main/model-adapters.test.ts` 验证每 Turn 重读后的模型能力、URL、Headers 与 API Key 热更新，
-相同 ModelRef 不复用 Adapter，以及 Provider、Model、协议、凭据、零协议、多协议和损坏配置错误均带
-对应路径且不泄露 API Key。
+相同 ModelRef 不复用 Adapter，以及 Provider、Model、协议、凭据缺失时的错误均带
+数据库路径且不泄露 API Key。
 
 `runtime/session/test/session-state.test.ts` 验证 `currentModel` 原子写入只修改该字段、每次读取都
 重新访问磁盘、外部修改立即可见、损坏或缺失 Meta 带路径失败，以及全局 project/session 写入口与
@@ -422,8 +433,8 @@ node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types t
 Adapter 失败的事件提交边界、Queue 不覆盖模型、同一 Turn 多 Step 只创建一个 Adapter，以及连续 Turn
 按当时磁盘模型分别创建 Adapter。
 
-`test/main/project-context.test.ts` 验证 Project workspace 与 AGENTS.md、YAML name 身份、任意 Skill
-目录名、registry 引用、Project 覆盖及 disabled 屏蔽、无效 workspace / Skill 配置和 Token 粗估。
+`test/main/project-context.test.ts` 验证数据库中的 Project 配置、旧 JSON 忽略、项目或
+workspace 目录缺失、AGENTS.md、Skill registry 引用及 Project 覆盖。
 
 `test/main/electron-windows.test.ts` 验证 BrowserWindow 参数、preload / Renderer 绝对路径、页面装载
 错误出口，以及窗口创建和存活状态。

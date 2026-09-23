@@ -1,0 +1,528 @@
+/** Provider、模型、协议连接参数与凭据在独立 SQLite 数据库中的持久化。 */
+
+import { lstatSync } from "node:fs"
+import { isAbsolute } from "node:path"
+import { DatabaseSync } from "node:sqlite"
+
+import type { ProviderCredential } from "../../runtime/credential/src/index.ts"
+import { PROTOCOLS } from "../../runtime/model/src/types.ts"
+import type { ModelConfig, ModelRef, Protocol } from "../../runtime/model/src/types.ts"
+
+/** 一个 Provider 唯一协议的连接配置，不包含 API Key。 */
+export interface ProviderRecord {
+  /** 稳定且唯一的 Provider 身份。 */
+  id: string
+  /** 用户可见名称。 */
+  name: string
+  /** 当前 Provider 唯一的协议。 */
+  protocol: Protocol
+  /** 可选的协议服务地址。 */
+  baseURL?: string
+  /** 可选的额外请求头。 */
+  defaultHeaders?: Record<string, string>
+}
+
+/** 数据库存储的模型字段；协议由所属 Provider 决定。 */
+export interface ProviderModelRecord extends Omit<ModelConfig, "protocol"> {}
+
+/** 不含凭据的 Provider 与模型列表项。 */
+export interface ProviderCatalogEntry extends ProviderRecord {
+  /** 按保存顺序排列的模型。 */
+  models: ProviderModelRecord[]
+}
+
+/** 供单个 Turn 创建 Adapter 的同一数据库快照。 */
+export interface TurnProviderSnapshot {
+  /** 当前 Provider 及唯一协议的连接参数。 */
+  provider: ProviderRecord
+  /** 已绑定 Provider 与协议的模型。 */
+  model: ModelConfig
+  /** 当前 Provider 的凭据；尚未配置时为 undefined。 */
+  credential?: ProviderCredential
+}
+
+interface ProviderRow {
+  id: string
+  name: string
+  protocol: string
+  base_url: string | null
+  default_headers_json: string | null
+}
+
+interface ModelRow {
+  id: string
+  provider_id: string
+  context_window: number | null
+  max_output_tokens: number | null
+  supports_reasoning: number | null
+  supports_tools: number | null
+  supports_parallel_tools: number | null
+  supports_response_id: number | null
+}
+
+const CREATE_PROVIDERS = `CREATE TABLE providers (
+  id TEXT PRIMARY KEY NOT NULL CHECK (length(trim(id)) > 0),
+  position INTEGER NOT NULL UNIQUE CHECK (position >= 0),
+  name TEXT NOT NULL CHECK (length(trim(name)) > 0),
+  protocol TEXT NOT NULL CHECK (protocol IN ('anthropic_messages', 'chat_completions', 'responses')),
+  base_url TEXT,
+  default_headers_json TEXT
+) STRICT`
+const CREATE_MODELS = `CREATE TABLE models (
+  id TEXT PRIMARY KEY NOT NULL CHECK (length(trim(id)) > 0),
+  provider_id TEXT NOT NULL REFERENCES providers(id) ON DELETE CASCADE,
+  position INTEGER NOT NULL CHECK (position >= 0),
+  context_window INTEGER CHECK (context_window > 0),
+  max_output_tokens INTEGER CHECK (max_output_tokens > 0),
+  supports_reasoning INTEGER CHECK (supports_reasoning IN (0, 1)),
+  supports_tools INTEGER CHECK (supports_tools IN (0, 1)),
+  supports_parallel_tools INTEGER CHECK (supports_parallel_tools IN (0, 1)),
+  supports_response_id INTEGER CHECK (supports_response_id IN (0, 1)),
+  UNIQUE (provider_id, position)
+) STRICT`
+const CREATE_CREDENTIALS = `CREATE TABLE provider_credentials (
+  provider_id TEXT PRIMARY KEY NOT NULL REFERENCES providers(id) ON DELETE CASCADE,
+  api_key TEXT NOT NULL CHECK (length(trim(api_key)) > 0)
+) STRICT`
+const CREATE_SETTINGS = `CREATE TABLE provider_settings (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  default_model_id TEXT REFERENCES models(id) ON DELETE SET NULL
+) STRICT`
+
+/**
+ * 检查数据库文件身份；普通读写入口不得隐式创建缺失文件。
+ * @param databasePath Provider 数据库绝对路径。
+ * @returns 路径已经存在时为 true。
+ * @throws Error 当路径不是普通文件或不可访问时抛出。
+ */
+function fileExists(databasePath: string): boolean {
+  if (!isAbsolute(databasePath)) throw new Error(`Provider 数据库路径必须是绝对路径：${databasePath}`)
+  try {
+    const state = lstatSync(databasePath)
+    if (!state.isFile()) throw new Error(`Provider 数据库不是普通文件：${databasePath}`)
+    return true
+  } catch (error) {
+    if (error !== null && typeof error === "object" && "code" in error && error.code === "ENOENT") return false
+    throw error
+  }
+}
+
+/**
+ * 打开已有数据库并在操作完成后关闭，错误只报告路径而不包含凭据。
+ * @param databasePath Provider 数据库绝对路径。
+ * @param readOnly 是否只读打开。
+ * @param operation 在连接上执行的操作。
+ * @returns 操作结果。
+ * @throws Error 当数据库缺失、损坏、版本不符或操作失败时抛出。
+ */
+function withDatabase<T>(databasePath: string, readOnly: boolean, operation: (db: DatabaseSync) => T): T {
+  if (!fileExists(databasePath)) throw new Error(`Provider 数据库不存在：${databasePath}`)
+  let db: DatabaseSync
+  try {
+    db = new DatabaseSync(databasePath, { readOnly })
+  } catch {
+    throw new Error(`无法打开 Provider 数据库：${databasePath}`)
+  }
+  try {
+    db.exec("PRAGMA foreign_keys = ON")
+    requireVersion(db)
+    return operation(db)
+  } catch (error) {
+    throw new Error(`Provider 数据库操作失败：${databasePath} ${error instanceof Error ? error.message : String(error)}`)
+  } finally {
+    db.close()
+  }
+}
+
+/**
+ * 要求数据库采用已实现的结构版本。
+ * @param db 已打开的数据库。
+ * @throws Error 当版本不是 1 时抛出。
+ */
+function requireVersion(db: DatabaseSync): void {
+  const version = db.prepare("PRAGMA user_version").get() as { user_version: number }
+  if (version.user_version !== 1) throw new Error(`不支持 Provider 数据库版本 ${version.user_version}。`)
+}
+
+/**
+ * 在一个写事务内提交操作，失败时回滚。
+ * @param db 已打开的数据库。
+ * @param operation 事务内的写入。
+ * @returns 已提交的操作结果。
+ * @throws Error 当任一写入失败时抛出，原状态保留。
+ */
+function transaction<T>(db: DatabaseSync, operation: () => T): T {
+  db.exec("BEGIN IMMEDIATE")
+  try {
+    const result = operation()
+    db.exec("COMMIT")
+    return result
+  } catch (error) {
+    db.exec("ROLLBACK")
+    throw error
+  }
+}
+
+/**
+ * 创建空 Provider 数据库；已有数据库只检查，不覆盖任何记录。
+ * @param databasePath `.nicode/providers.sqlite` 的绝对路径。
+ * @throws Error 当文件身份、版本、结构或内容完整性检查失败时抛出。
+ */
+export function initializeProviderDatabase(databasePath: string): void {
+  const exists = fileExists(databasePath)
+  if (!exists) {
+    let db: DatabaseSync
+    try {
+      db = new DatabaseSync(databasePath)
+      try {
+        db.exec("PRAGMA foreign_keys = ON")
+        transaction(db, () => {
+          db.exec(CREATE_PROVIDERS)
+          db.exec(CREATE_MODELS)
+          db.exec(CREATE_CREDENTIALS)
+          db.exec(CREATE_SETTINGS)
+          db.prepare("INSERT INTO provider_settings (id, default_model_id) VALUES (1, NULL)").run()
+          db.exec("PRAGMA user_version = 1")
+        })
+      } finally {
+        db.close()
+      }
+    } catch {
+      throw new Error(`无法初始化 Provider 数据库：${databasePath}`)
+    }
+  }
+  withDatabase(databasePath, true, (db) => {
+    const result = db.prepare("PRAGMA integrity_check").get() as { integrity_check: string }
+    if (result.integrity_check !== "ok") throw new Error("数据库完整性检查失败。")
+    const foreignKeys = db.prepare("PRAGMA foreign_key_check").all()
+    if (foreignKeys.length > 0) throw new Error("数据库外键检查失败。")
+    for (const [name, definition] of [
+      ["providers", CREATE_PROVIDERS], ["models", CREATE_MODELS],
+      ["provider_credentials", CREATE_CREDENTIALS], ["provider_settings", CREATE_SETTINGS],
+    ]) {
+      const table = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?")
+        .get(name) as { sql: string } | undefined
+      if (table?.sql !== definition) throw new Error(`数据库表 ${name} 的结构与 V1 不一致。`)
+    }
+    db.prepare("SELECT id, name, protocol, base_url, default_headers_json FROM providers LIMIT 1").all()
+    db.prepare(`SELECT id, provider_id, context_window, max_output_tokens, supports_reasoning,
+      supports_tools, supports_parallel_tools, supports_response_id FROM models LIMIT 1`).all()
+    db.prepare("SELECT provider_id, api_key FROM provider_credentials LIMIT 1").all()
+    const settings = db.prepare("SELECT default_model_id FROM provider_settings WHERE id = 1").get()
+    if (settings === undefined) throw new Error("缺少默认模型设置记录。")
+    listProvidersInDatabase(db)
+  })
+}
+
+/**
+ * 检查非空字符串。
+ * @param value 待检查的值。
+ * @param field 字段名称，不包含凭据内容。
+ * @returns 原字符串。
+ * @throws Error 当值为空或类型错误时抛出。
+ */
+function nonEmpty(value: unknown, field: string): string {
+  if (typeof value !== "string" || value.trim() === "") throw new Error(`${field} 必须是非空字符串。`)
+  return value
+}
+
+/**
+ * 将请求头对象校验并复制为可序列化值。
+ * @param value 请求头对象。
+ * @returns 可安全保存的对象；未配置时为 undefined。
+ * @throws Error 当字段类型错误时抛出。
+ */
+function headers(value: unknown): Record<string, string> | undefined {
+  if (value === undefined) return undefined
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Provider defaultHeaders 必须是字符串映射。")
+  }
+  const copy: Record<string, string> = {}
+  for (const [key, entry] of Object.entries(value)) {
+    nonEmpty(key, "Provider defaultHeaders 的键")
+    if (typeof entry !== "string") throw new Error("Provider defaultHeaders 的值必须是字符串。")
+    Object.defineProperty(copy, key, { value: entry, enumerable: true, configurable: true, writable: true })
+  }
+  return copy
+}
+
+/**
+ * 从数据库行恢复协议配置并检查持久化值。
+ * @param row Provider 数据库行。
+ * @returns 不含凭据的 Provider 配置。
+ * @throws Error 当行中有非法协议或 JSON 时抛出。
+ */
+function providerFromRow(row: ProviderRow): ProviderRecord {
+  nonEmpty(row.id, "Provider id")
+  nonEmpty(row.name, "Provider name")
+  if (!(PROTOCOLS as readonly string[]).includes(row.protocol)) throw new Error("Provider 协议无效。")
+  let defaultHeaders: Record<string, string> | undefined
+  if (row.default_headers_json !== null) {
+    defaultHeaders = headers(JSON.parse(row.default_headers_json))
+  }
+  return {
+    id: row.id,
+    name: row.name,
+    protocol: row.protocol as Protocol,
+    ...(row.base_url === null ? {} : { baseURL: nonEmpty(row.base_url, "Provider baseURL") }),
+    ...(defaultHeaders === undefined ? {} : { defaultHeaders }),
+  }
+}
+
+/**
+ * 将 SQLite 的可空能力列恢复成模型的可选字段。
+ * @param row 模型数据库行。
+ * @returns 不含协议的模型字段。
+ * @throws Error 当持久化字段无效时抛出。
+ */
+function modelFromRow(row: ModelRow): ProviderModelRecord {
+  nonEmpty(row.id, "Model id")
+  nonEmpty(row.provider_id, "Model providerId")
+  const model: ProviderModelRecord = { id: row.id, providerId: row.provider_id }
+  for (const [column, field] of [
+    ["context_window", "contextWindow"], ["max_output_tokens", "maxOutputTokens"],
+  ] as const) {
+    const value = row[column]
+    if (value !== null) {
+      if (!Number.isSafeInteger(value) || value <= 0) throw new Error(`Model ${field} 必须是正整数。`)
+      model[field] = value
+    }
+  }
+  for (const [column, field] of [
+    ["supports_reasoning", "supportsReasoning"], ["supports_tools", "supportsTools"],
+    ["supports_parallel_tools", "supportsParallelTools"], ["supports_response_id", "supportsResponseId"],
+  ] as const) {
+    const value = row[column]
+    if (value !== null) {
+      if (value !== 0 && value !== 1) throw new Error(`Model ${field} 必须是布尔值。`)
+      model[field] = value === 1
+    }
+  }
+  return model
+}
+
+/**
+ * 查询 Provider 与模型的有序列表，不接触凭据表。
+ * @param db 已打开的数据库。
+ * @returns Provider 及其模型列表。
+ * @throws Error 当持久化字段无效时抛出。
+ */
+function listProvidersInDatabase(db: DatabaseSync): ProviderCatalogEntry[] {
+  const providerRows = db.prepare(`SELECT id, name, protocol, base_url, default_headers_json
+    FROM providers ORDER BY position, id`).all() as unknown as ProviderRow[]
+  const modelRows = db.prepare(`SELECT id, provider_id, context_window, max_output_tokens,
+    supports_reasoning, supports_tools, supports_parallel_tools, supports_response_id
+    FROM models ORDER BY provider_id, position, id`).all() as unknown as ModelRow[]
+  const models = new Map<string, ProviderModelRecord[]>()
+  for (const row of modelRows) {
+    const list = models.get(row.provider_id) ?? []
+    list.push(modelFromRow(row))
+    models.set(row.provider_id, list)
+  }
+  return providerRows.map((row) => ({ ...providerFromRow(row), models: models.get(row.id) ?? [] }))
+}
+
+/**
+ * 读取不含任何 API Key 的 Provider 与模型有序列表。
+ * @param databasePath Provider 数据库绝对路径。
+ * @returns 当前配置的独立对象列表。
+ * @throws Error 当数据库无法读取或配置损坏时抛出。
+ */
+export function listProviders(databasePath: string): ProviderCatalogEntry[] {
+  return withDatabase(databasePath, true, listProvidersInDatabase)
+}
+
+/**
+ * 读取有效默认模型 ID；未显式设置时选有序列表的第一个模型。
+ * @param databasePath Provider 数据库绝对路径。
+ * @returns 模型 ID，空库时为 undefined。
+ * @throws Error 当数据库无法读取时抛出。
+ */
+export function readDefaultModelId(databasePath: string): string | undefined {
+  return withDatabase(databasePath, true, (db) => {
+    const settings = db.prepare("SELECT default_model_id FROM provider_settings WHERE id = 1")
+      .get() as { default_model_id: string | null } | undefined
+    if (settings === undefined) throw new Error("缺少默认模型设置记录。")
+    if (settings.default_model_id !== null) return settings.default_model_id
+    const first = db.prepare(`SELECT m.id FROM models m JOIN providers p ON p.id = m.provider_id
+      ORDER BY p.position, m.position, m.id LIMIT 1`).get() as { id: string } | undefined
+    return first?.id
+  })
+}
+
+/**
+ * 新增或更新一个 Provider，更新时保留其顺序与模型。
+ * @param databasePath Provider 数据库绝对路径。
+ * @param provider 不含凭据的 Provider 配置。
+ * @throws Error 当配置无效或写入失败时抛出，原状态保留。
+ */
+export function saveProvider(databasePath: string, provider: ProviderRecord): void {
+  const id = nonEmpty(provider.id, "Provider id")
+  const name = nonEmpty(provider.name, "Provider name")
+  if (!(PROTOCOLS as readonly string[]).includes(provider.protocol)) throw new Error("Provider 协议无效。")
+  const baseURL = provider.baseURL === undefined ? null : nonEmpty(provider.baseURL, "Provider baseURL")
+  const defaultHeaders = headers(provider.defaultHeaders)
+  withDatabase(databasePath, false, (db) => transaction(db, () => {
+    const position = db.prepare("SELECT COALESCE(MAX(position) + 1, 0) AS next FROM providers")
+      .get() as { next: number }
+    db.prepare(`INSERT INTO providers (id, position, name, protocol, base_url, default_headers_json)
+      VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET
+      name = excluded.name, protocol = excluded.protocol, base_url = excluded.base_url,
+      default_headers_json = excluded.default_headers_json`)
+      .run(id, position.next, name, provider.protocol, baseURL,
+        defaultHeaders === undefined ? null : JSON.stringify(defaultHeaders))
+  }))
+}
+
+/**
+ * 删除 Provider 及其模型、凭据；被删除的默认模型引用自动清空。
+ * @param databasePath Provider 数据库绝对路径。
+ * @param providerId 要删除的 Provider ID。
+ * @throws Error 当数据库无法写入时抛出。
+ */
+export function deleteProvider(databasePath: string, providerId: string): void {
+  nonEmpty(providerId, "Provider id")
+  withDatabase(databasePath, false, (db) => transaction(db, () => {
+    db.prepare("DELETE FROM providers WHERE id = ?").run(providerId)
+  }))
+}
+
+/**
+ * 新增或更新 Provider 下的模型，更新时保留其顺序与所属 Provider。
+ * @param databasePath Provider 数据库绝对路径。
+ * @param model 模型能力与所属 Provider。
+ * @throws Error 当 Provider 不存在、模型 ID 已属别的 Provider 或能力字段无效时抛出。
+ */
+export function saveModel(databasePath: string, model: ProviderModelRecord): void {
+  const id = nonEmpty(model.id, "Model id")
+  const providerId = nonEmpty(model.providerId, "Model providerId")
+  for (const field of ["contextWindow", "maxOutputTokens"] as const) {
+    const value = model[field]
+    if (value !== undefined && (!Number.isSafeInteger(value) || value <= 0)) {
+      throw new Error(`Model ${field} 必须是正整数。`)
+    }
+  }
+  for (const field of ["supportsReasoning", "supportsTools", "supportsParallelTools", "supportsResponseId"] as const) {
+    const value = model[field]
+    if (value !== undefined && typeof value !== "boolean") throw new Error(`Model ${field} 必须是布尔值。`)
+  }
+  withDatabase(databasePath, false, (db) => transaction(db, () => {
+    const provider = db.prepare("SELECT id FROM providers WHERE id = ?").get(providerId)
+    if (provider === undefined) throw new Error(`Provider ${providerId} 不存在。`)
+    const owner = db.prepare("SELECT provider_id FROM models WHERE id = ?")
+      .get(id) as { provider_id: string } | undefined
+    if (owner !== undefined && owner.provider_id !== providerId) throw new Error(`Model ${id} 已属其他 Provider。`)
+    const position = db.prepare("SELECT COALESCE(MAX(position) + 1, 0) AS next FROM models WHERE provider_id = ?")
+      .get(providerId) as { next: number }
+    db.prepare(`INSERT INTO models (id, provider_id, position, context_window, max_output_tokens,
+      supports_reasoning, supports_tools, supports_parallel_tools, supports_response_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET
+      context_window = excluded.context_window, max_output_tokens = excluded.max_output_tokens,
+      supports_reasoning = excluded.supports_reasoning, supports_tools = excluded.supports_tools,
+      supports_parallel_tools = excluded.supports_parallel_tools, supports_response_id = excluded.supports_response_id`)
+      .run(id, providerId, position.next, model.contextWindow ?? null, model.maxOutputTokens ?? null,
+        booleanColumn(model.supportsReasoning), booleanColumn(model.supportsTools),
+        booleanColumn(model.supportsParallelTools), booleanColumn(model.supportsResponseId))
+  }))
+}
+
+/**
+ * 把可选布尔值转换为 SQLite 的可空整数。
+ * @param value 模型能力值。
+ * @returns 1、0 或 null。
+ */
+function booleanColumn(value: boolean | undefined): number | null {
+  return value === undefined ? null : value ? 1 : 0
+}
+
+/**
+ * 删除模型；若其为显式默认模型，引用自动清空。
+ * @param databasePath Provider 数据库绝对路径。
+ * @param modelId 要删除的全局唯一模型 ID。
+ * @throws Error 当数据库无法写入时抛出。
+ */
+export function deleteModel(databasePath: string, modelId: string): void {
+  nonEmpty(modelId, "Model id")
+  withDatabase(databasePath, false, (db) => transaction(db, () => {
+    db.prepare("DELETE FROM models WHERE id = ?").run(modelId)
+  }))
+}
+
+/**
+ * 设置或移除单个 Provider 的 API Key，错误信息不含密钥内容。
+ * @param databasePath Provider 数据库绝对路径。
+ * @param providerId 已配置的 Provider ID。
+ * @param apiKey 新密钥；null 表示移除。
+ * @throws Error 当 Provider 不存在、密钥为空或写入失败时抛出。
+ */
+export function setProviderApiKey(databasePath: string, providerId: string, apiKey: string | null): void {
+  nonEmpty(providerId, "Provider id")
+  if (apiKey !== null) nonEmpty(apiKey, "API Key")
+  withDatabase(databasePath, false, (db) => transaction(db, () => {
+    if (db.prepare("SELECT id FROM providers WHERE id = ?").get(providerId) === undefined) {
+      throw new Error(`Provider ${providerId} 不存在。`)
+    }
+    if (apiKey === null) {
+      db.prepare("DELETE FROM provider_credentials WHERE provider_id = ?").run(providerId)
+    } else {
+      db.prepare(`INSERT INTO provider_credentials (provider_id, api_key) VALUES (?, ?)
+        ON CONFLICT(provider_id) DO UPDATE SET api_key = excluded.api_key`).run(providerId, apiKey)
+    }
+  }))
+}
+
+/**
+ * 设置显式默认模型；null 表示恢复按顺序选择第一个模型。
+ * @param databasePath Provider 数据库绝对路径。
+ * @param modelId 已配置模型的 ID，或 null。
+ * @throws Error 当模型不存在或数据库无法写入时抛出。
+ */
+export function setDefaultModelId(databasePath: string, modelId: string | null): void {
+  if (modelId !== null) nonEmpty(modelId, "默认模型 ID")
+  withDatabase(databasePath, false, (db) => transaction(db, () => {
+    if (modelId !== null && db.prepare("SELECT id FROM models WHERE id = ?").get(modelId) === undefined) {
+      throw new Error(`默认模型 ${modelId} 不存在。`)
+    }
+    const result = db.prepare("UPDATE provider_settings SET default_model_id = ? WHERE id = 1").run(modelId)
+    if (result.changes !== 1) throw new Error("缺少默认模型设置记录。")
+  }))
+}
+
+/**
+ * 在同一次只读事务中读取所选模型、协议参数和 API Key。
+ * @param databasePath Provider 数据库绝对路径。
+ * @param reference 当前 Turn 的模型引用。
+ * @returns 当前数据库快照中的模型装配输入。
+ * @throws Error 当引用不匹配、配置缺失或数据库损坏时抛出；错误不含 API Key。
+ */
+export function readTurnProviderSnapshot(databasePath: string, reference: ModelRef): TurnProviderSnapshot {
+  return withDatabase(databasePath, true, (db) => {
+    db.exec("BEGIN")
+    try {
+      const providerRow = db.prepare(`SELECT id, name, protocol, base_url, default_headers_json
+        FROM providers WHERE id = ?`).get(reference.providerId) as ProviderRow | undefined
+      if (providerRow === undefined) throw new Error(`Provider ${reference.providerId} 不存在。`)
+      const provider = providerFromRow(providerRow)
+      if (provider.protocol !== reference.protocol) {
+        throw new Error(`Provider ${provider.id} 的唯一协议 ${provider.protocol} 与 Session 协议不一致。`)
+      }
+      const modelRow = db.prepare(`SELECT id, provider_id, context_window, max_output_tokens,
+        supports_reasoning, supports_tools, supports_parallel_tools, supports_response_id
+        FROM models WHERE id = ? AND provider_id = ?`)
+        .get(reference.modelId, reference.providerId) as ModelRow | undefined
+      if (modelRow === undefined) throw new Error(`Provider ${provider.id} 不包含模型 ${reference.modelId}。`)
+      const model = { ...modelFromRow(modelRow), protocol: provider.protocol }
+      const credentialRow = db.prepare("SELECT api_key FROM provider_credentials WHERE provider_id = ?")
+        .get(provider.id) as { api_key: string } | undefined
+      const credential = credentialRow === undefined ? undefined : {
+        providerId: provider.id,
+        apiKey: nonEmpty(credentialRow.api_key, "API Key"),
+      }
+      db.exec("COMMIT")
+      return { provider, model, ...(credential === undefined ? {} : { credential }) }
+    } catch (error) {
+      db.exec("ROLLBACK")
+      throw error
+    }
+  })
+}

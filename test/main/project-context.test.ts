@@ -2,12 +2,14 @@
 
 import assert from "node:assert/strict"
 import { createHash } from "node:crypto"
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve, sep } from "node:path"
+import { DatabaseSync } from "node:sqlite"
 
 import { createProjectContextResolver } from "../../src/main/project-context.ts"
 import { estimateLocalTokens } from "../../src/main/token-estimator.ts"
+import { initializeWorkspaceDatabase, saveProjectWorkspace } from "../../src/main/workspace-store.ts"
 
 const PROJECT_ID = 17
 
@@ -24,20 +26,23 @@ async function withTempRoot(test: (root: string) => Promise<void>): Promise<void
   }
 }
 
-/** 建立一个符合 V1 的 Project 分组。 */
+/** 建立 Project 分组目录和对应的数据库配置。 */
 async function createProject(
   root: string,
   directories: readonly string[] = [],
 ): Promise<string> {
   const projectDirectory = join(root, "sessions", String(PROJECT_ID))
   await mkdir(join(projectDirectory, "workspace"), { recursive: true })
-  await writeFile(join(projectDirectory, "workspace.json"), JSON.stringify({
+  const databasePath = join(root, "workspace.sqlite")
+  initializeWorkspaceDatabase(databasePath)
+  saveProjectWorkspace(databasePath, {
     version: 1,
     id: PROJECT_ID,
     name: "NiCode",
-    directories,
+    updatedAt: "2026-09-23T00:00:00.000Z",
+    directories: [...directories],
     sessions: [],
-  }))
+  })
   return projectDirectory
 }
 
@@ -148,36 +153,40 @@ async function testProjectDisabledSkillSuppressesGlobal(): Promise<void> {
   })
 }
 
-/** 验证 workspace 身份错误和 registry 的无效 YAML 引用包含对应文件路径。 */
+/** 验证缺失数据库记录和 registry 的无效 YAML 引用。 */
 async function testRejectsInvalidProjectAndSkillConfiguration(): Promise<void> {
   await withTempRoot(async (root) => {
     const projectDirectory = await createProject(root)
     const workspacePath = join(projectDirectory, "workspace.json")
-    await writeFile(workspacePath, JSON.stringify({
-      version: 1,
-      id: PROJECT_ID + 1,
-      name: "Wrong",
-      directories: [],
-      sessions: [],
-    }))
+    await writeFile(workspacePath, "旧文件不是有效 JSON")
+    const databasePath = join(root, "workspace.sqlite")
     const resolver = createProjectContextResolver({
       rootDirectory: root,
       estimateSkillTokens: estimateLocalTokens,
     })
+    assert.ok(resolver(PROJECT_ID).workspaceInfo.includes('"projectName": "NiCode"'))
+    const db = new DatabaseSync(databasePath)
+    try {
+      db.prepare("DELETE FROM workspace_groups WHERE group_id = ?").run(String(PROJECT_ID))
+    } finally {
+      db.close()
+    }
     assert.throws(() => resolver(PROJECT_ID), (error: unknown) => {
       assert.ok(error instanceof Error)
-      assert.ok(error.message.includes(String(PROJECT_ID)))
-      assert.ok(error.message.includes(workspacePath))
+      assert.ok(error.message.includes("项目损坏"))
+      assert.ok(error.message.includes(databasePath))
       return true
     })
 
-    await writeFile(workspacePath, JSON.stringify({
+    saveProjectWorkspace(databasePath, {
       version: 1,
       id: PROJECT_ID,
       name: "NiCode",
+      updatedAt: "2026-09-23T00:00:00.000Z",
       directories: [],
       sessions: [],
-    }))
+    })
+    assert.equal(await readFile(workspacePath, "utf8"), "旧文件不是有效 JSON")
     const globalSkills = join(root, "skills")
     await writeSkill(globalSkills, "unrelated-directory", "actual-yaml-name", "Description")
     await writeRegistry(globalSkills, "global", [{ name: "registry-name", enabled: true }])
@@ -190,6 +199,21 @@ async function testRejectsInvalidProjectAndSkillConfiguration(): Promise<void> {
         return true
       },
     )
+  })
+}
+
+/** 数据库配置存在时仍要求 Project 和内置 workspace 目录可用。 */
+async function testRequiresProjectDirectories(): Promise<void> {
+  await withTempRoot(async (root) => {
+    const projectDirectory = await createProject(root)
+    const resolver = createProjectContextResolver({
+      rootDirectory: root,
+      estimateSkillTokens: estimateLocalTokens,
+    })
+    await rm(join(projectDirectory, "workspace"), { recursive: true })
+    assert.throws(() => resolver(PROJECT_ID), /Project workspace 目录/)
+    await rm(projectDirectory, { recursive: true })
+    assert.throws(() => resolver(PROJECT_ID), /Project 配置目录/)
   })
 }
 
@@ -206,6 +230,7 @@ async function main(): Promise<void> {
   await testResolvesWorkspaceAgentsAndSkills()
   await testProjectDisabledSkillSuppressesGlobal()
   await testRejectsInvalidProjectAndSkillConfiguration()
+  await testRequiresProjectDirectories()
   testTokenEstimator()
   console.log("project-context.test.ts: Project 与 Skill baseline 断言通过")
 }

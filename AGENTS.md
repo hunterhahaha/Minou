@@ -1,10 +1,11 @@
 # NiCode 开发规则
 
 `.git/技术文档/开发备忘录1.0.17.md` 是当前项目的架构事实源。
-`config.json` 与 `credentials.json` 的已确认持久化结构见
-`.git/技术文档/配置与凭据文件结构V1.md`；这两份文件的结构以该文档为准。
-`workspace.json` 的已确认持久化结构见
-`.git/技术文档/工作区配置文件结构V1.md`；该文件的结构以此文档为准。
+`config.json` 的当前持久化结构见 `.git/技术文档/配置文件结构V2.md`；
+Provider、Model、协议参数和 API Key 的结构见 `.git/技术文档/Provider数据库结构V1.md`。
+`.git/技术文档/配置与凭据文件结构V1.md` 只记录旧格式，不作为当前写入依据。
+`workspace.sqlite` 的已确认持久化结构见
+`.git/技术文档/工作区配置文件结构V1.md`；该数据库的结构以此文档为准。
 Global 与 Project Skill 的 `registry.json` 结构见
 `.git/技术文档/Skill管理文件结构V1.md`；该文件的结构以此文档为准。
 
@@ -29,28 +30,33 @@ Global 与 Project Skill 的 `registry.json` 结构见
 `sessions/default/` 和 `sessions/default/workspace/`，并初始化或检查：
 
 - `.nicode/config.json`
-- `.nicode/credentials.json`
-- `.nicode/sessions/default/workspace.json`
+- `.nicode/providers.sqlite`（Provider / Model / API Key）
+- `.nicode/workspace.sqlite`（Project / default 工作区配置）
 
-缺失的 `config.json` 和 default `workspace.json` 分别按 V1 空配置创建；
-`credentials.json` 以文档允许的 `{}` 创建。
-已有文件必须是普通文件，且通过 V1 版本、字段与引用检查；失败时抛出带路径的错误，
-保留原文件。校验逻辑在 `src/main/config-schema.ts`。
-Provider、Protocol、Models、凭据与 Skill 管理文件的结构已在上述 V1 文档中确定；
+缺失的 `config.json` 按 V2 空配置创建；Provider 数据库首次创建时为空；
+工作区数据库缺失时创建，并仅在 default 分组记录不存在时补入空配置。
+已有 `config.json` 必须是普通文件，且通过 V2 版本与字段检查；失败时抛出
+带路径的错误并保留原文件。校验逻辑在 `src/main/config-schema.ts`。
+旧 V1 配置不迁移、不改写；旧 `credentials.json` 不创建、不读取、不删除。
+工作区配置只按 Project ID 检查数据库记录是否存在；缺失时报项目损坏，
+不再读取或检查旧 `workspace.json`。
+Provider、Protocol、Models、凭据与 Skill 管理文件的结构已在上述当前文档中确定；
 当前初始化入口尚未创建或校验 `skills/registry.json`，不得自行补充文档外的字段默认值。
 
-Project / default 的 `workspace.json` 保存分组配置与 `sessions` 对话索引；
+Project / default 的 `workspace.sqlite` 保存分组配置与 `sessions` 对话索引；
+每个 Project 保存由写入方提供的 `updatedAt` 更新时间；
 每个对话索引项保存 `id`、`name`、`createdAt`、`updatedAt`。
-`workspace.json` 不保存 Skill 信息；Global 与 Project 的各自 `skills/` 目录中
+工作区数据库不保存 Skill 信息；Global 与 Project 的各自 `skills/` 目录中
 分别由 `registry.json` 记录当前目录 Skill 的 `name`、`scope`、`enabled`。
 全局目录条目的 `scope` 为 `global`，Project 目录条目的 `scope` 为 `project`。
 
-每个 Provider 在自己的配置项下维护 `protocols` 和 `models`；模型条目不保存
-`providerId` 或 `protocol`。`defaultModel` 保存模型 `id`，省略时选配置顺序中的第一个模型。
+Provider 数据库中每个 Provider 恰好保存一个协议，模型通过 `provider_id` 归属
+Provider，不单独保存协议。默认模型记录保存模型 `id`；未设置时选 Provider 与模型
+顺序中的第一个模型。API Key 在独立凭据表中按 Provider 保存，不进入普通列表接口。
 Sandbox Mode 以对话为作用域，不属于全局 `config.json`。同一 Provider 配置多种协议时的
 模型绑定规则尚未确定，不得自行选取协议。
 
-`src/main/index.ts` 只转出该入口，尚未接入 Electron 启动生命周期。后续实现启动装配时应显式调用它，并处理其错误。
+`src/main/electron-main.ts` 在 Electron 启动时显式调用该入口并处理错误。
 对应测试位于 `test/main/config-files.test.ts`，运行命令见 README 的「验证方式」。
 
 ## 基本原则

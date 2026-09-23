@@ -1,7 +1,7 @@
-/** 每 Turn 从磁盘重读配置、凭据并创建唯一 Protocol Adapter 的测试。 */
+/** 每 Turn 从 Provider 数据库重读配置与凭据并创建独立 Adapter 的测试。 */
 
 import assert from "node:assert/strict"
-import { mkdtemp, rm, writeFile } from "node:fs/promises"
+import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -13,6 +13,7 @@ import {
   createTurnModelAdapter,
   resolveTurnModelAdapterSpecification,
 } from "../../src/main/model-adapters.ts"
+import { deleteProvider, saveModel, saveProvider, setProviderApiKey } from "../../src/main/provider-store.ts"
 
 const MODEL: ModelRef = {
   providerId: "configured",
@@ -20,44 +21,7 @@ const MODEL: ModelRef = {
   modelId: "model-a",
 }
 
-function config(overrides: Record<string, unknown> = {}): Record<string, unknown> {
-  return {
-    version: 1,
-    providers: [{
-      id: "configured",
-      name: "Configured Provider",
-      protocols: {
-        chat_completions: {
-          baseURL: "https://api.example.com/v1",
-          defaultHeaders: { "X-Test": "value" },
-        },
-      },
-      models: [{
-        id: "model-a",
-        contextWindow: 128000,
-        maxOutputTokens: 4096,
-        supportsReasoning: true,
-        supportsTools: true,
-        supportsParallelTools: true,
-        supportsResponseId: true,
-      }],
-    }],
-    mcpServers: [],
-    runtime: { userMessageMode: "queue" },
-    ...overrides,
-  }
-}
-
-async function writeConfig(paths: ConfigFilePaths, value: unknown): Promise<void> {
-  await writeFile(paths.configPath, `${JSON.stringify(value, null, 2)}\n`, "utf8")
-}
-
-async function writeCredentials(paths: ConfigFilePaths, apiKey: string): Promise<void> {
-  await writeFile(paths.credentialsPath, `${JSON.stringify({
-    providers: [{ providerId: "configured", apiKey }],
-  }, null, 2)}\n`, "utf8")
-}
-
+/** 在隔离配置目录运行 Turn Adapter 断言。 */
 async function withPaths(test: (paths: ConfigFilePaths) => Promise<void>): Promise<void> {
   const profile = await mkdtemp(join(tmpdir(), "nicode-turn-adapter-"))
   try {
@@ -67,145 +31,91 @@ async function withPaths(test: (paths: ConfigFilePaths) => Promise<void>): Promi
   }
 }
 
-async function testResolvesCurrentDiskConfiguration(): Promise<void> {
+/** 验证连续 Turn 能取得更新后的模型、连接参数和密钥。 */
+async function testResolvesCurrentDatabaseConfiguration(): Promise<void> {
   await withPaths(async (paths) => {
-    await writeConfig(paths, config())
-    await writeCredentials(paths, "first-secret")
+    const database = paths.providerDatabasePath
+    saveProvider(database, {
+      id: "configured", name: "Configured Provider", protocol: "chat_completions",
+      baseURL: "https://api.example.com/v1", defaultHeaders: { "X-Test": "value" },
+    })
+    saveModel(database, {
+      providerId: "configured", id: "model-a", contextWindow: 128000,
+      maxOutputTokens: 4096, supportsReasoning: true, supportsTools: true,
+      supportsParallelTools: true, supportsResponseId: true,
+    })
+    setProviderApiKey(database, "configured", "first-secret")
     const first = await resolveTurnModelAdapterSpecification(paths, MODEL)
     assert.deepEqual(first.modelConfig, {
-      id: "model-a",
-      contextWindow: 128000,
-      maxOutputTokens: 4096,
-      supportsReasoning: true,
-      supportsTools: true,
-      supportsParallelTools: true,
-      supportsResponseId: true,
-      providerId: "configured",
-      protocol: "chat_completions",
+      id: "model-a", providerId: "configured", protocol: "chat_completions",
+      contextWindow: 128000, maxOutputTokens: 4096, supportsReasoning: true,
+      supportsTools: true, supportsParallelTools: true, supportsResponseId: true,
     })
     assert.deepEqual(first.clientOptions, {
-      apiKey: "first-secret",
-      baseURL: "https://api.example.com/v1",
+      apiKey: "first-secret", baseURL: "https://api.example.com/v1",
       defaultHeaders: { "X-Test": "value" },
     })
 
-    await writeConfig(paths, config({
-      providers: [{
-        id: "configured",
-        name: "Updated Provider",
-        protocols: {
-          chat_completions: {
-            baseURL: "https://updated.example.com/v2",
-            defaultHeaders: { "X-Updated": "yes" },
-          },
-        },
-        models: [{ id: "model-a", contextWindow: 64000, supportsTools: false }],
-      }],
-    }))
-    await writeCredentials(paths, "second-secret")
+    saveProvider(database, {
+      id: "configured", name: "Updated Provider", protocol: "chat_completions",
+      baseURL: "https://updated.example.com/v2", defaultHeaders: { "X-Updated": "yes" },
+    })
+    saveModel(database, { providerId: "configured", id: "model-a", contextWindow: 64000, supportsTools: false })
+    setProviderApiKey(database, "configured", "second-secret")
     const second = await resolveTurnModelAdapterSpecification(paths, MODEL)
     assert.deepEqual(second.modelConfig, {
-      id: "model-a",
-      contextWindow: 64000,
-      supportsTools: false,
-      providerId: "configured",
-      protocol: "chat_completions",
+      id: "model-a", providerId: "configured", protocol: "chat_completions",
+      contextWindow: 64000, supportsTools: false,
     })
     assert.deepEqual(second.clientOptions, {
-      apiKey: "second-secret",
-      baseURL: "https://updated.example.com/v2",
+      apiKey: "second-secret", baseURL: "https://updated.example.com/v2",
       defaultHeaders: { "X-Updated": "yes" },
     })
 
     initNetworkDispatcher()
     const firstAdapter = await createTurnModelAdapter(paths, MODEL)
     const secondAdapter = await createTurnModelAdapter(paths, MODEL)
-    assert.notEqual(firstAdapter, secondAdapter, "相同 ModelRef 的连续 Turn 也不得复用 Adapter")
+    assert.notEqual(firstAdapter, secondAdapter)
   })
 }
 
+/** 验证缺失与不匹配错误带数据库路径且不泄露密钥。 */
 async function testRejectsInvalidBindingsWithoutSecrets(): Promise<void> {
   await withPaths(async (paths) => {
-    await writeConfig(paths, config())
-    await writeCredentials(paths, "must-not-leak")
+    const database = paths.providerDatabasePath
+    saveProvider(database, { id: "configured", name: "Configured", protocol: "chat_completions" })
+    saveModel(database, { providerId: "configured", id: "model-a" })
+    setProviderApiKey(database, "configured", "must-not-leak")
     for (const model of [
       { ...MODEL, providerId: "missing-provider" },
       { ...MODEL, protocol: "responses" as const },
       { ...MODEL, modelId: "missing-model" },
     ]) {
-      await assert.rejects(
-        resolveTurnModelAdapterSpecification(paths, model),
-        (error: unknown) => {
-          assert.ok(error instanceof Error)
-          assert.ok(error.message.includes(paths.configPath))
-          assert.equal(error.message.includes("must-not-leak"), false)
-          return true
-        },
-      )
-    }
-
-    await writeFile(paths.credentialsPath, "{}\n", "utf8")
-    await assert.rejects(
-      resolveTurnModelAdapterSpecification(paths, MODEL),
-      (error: unknown) => {
+      await assert.rejects(resolveTurnModelAdapterSpecification(paths, model), (error: unknown) => {
         assert.ok(error instanceof Error)
-        assert.ok(error.message.includes(paths.credentialsPath))
-        assert.ok(error.message.includes("configured"))
+        assert.ok(error.message.includes(database))
         assert.equal(error.message.includes("must-not-leak"), false)
         return true
-      },
-    )
-  })
-}
-
-async function testRejectsProviderProtocolCardinalityAndDamagedFiles(): Promise<void> {
-  await withPaths(async (paths) => {
-    for (const protocols of [
-      {},
-      { anthropic_messages: {}, responses: {} },
-    ]) {
-      await writeConfig(paths, config({
-        providers: [{
-          id: "configured",
-          name: "Configured Provider",
-          protocols,
-          models: [],
-        }],
-      }))
-      await writeCredentials(paths, "secret")
-      await assert.rejects(
-        resolveTurnModelAdapterSpecification(paths, MODEL),
-        (error: unknown) => {
-          assert.ok(error instanceof Error)
-          assert.ok(error.message.includes(paths.configPath))
-          assert.ok(error.message.includes("configured"))
-          assert.match(error.message, /恰好包含一个协议/)
-          assert.equal(error.message.includes("secret"), false)
-          return true
-        },
-      )
+      })
     }
-
-    await writeFile(paths.configPath, "not-json\n", "utf8")
-    await assert.rejects(
-      resolveTurnModelAdapterSpecification(paths, MODEL),
-      (error: unknown) => error instanceof Error && error.message.includes(paths.configPath),
-    )
-
-    await writeConfig(paths, config())
-    await writeFile(paths.credentialsPath, "not-json\n", "utf8")
-    await assert.rejects(
-      resolveTurnModelAdapterSpecification(paths, MODEL),
-      (error: unknown) => error instanceof Error && error.message.includes(paths.credentialsPath),
-    )
+    setProviderApiKey(database, "configured", null)
+    await assert.rejects(resolveTurnModelAdapterSpecification(paths, MODEL), (error: unknown) => {
+      assert.ok(error instanceof Error)
+      assert.ok(error.message.includes(database))
+      assert.ok(error.message.includes("configured"))
+      assert.equal(error.message.includes("must-not-leak"), false)
+      return true
+    })
+    deleteProvider(database, "configured")
+    await assert.rejects(resolveTurnModelAdapterSpecification(paths, MODEL), /Provider configured 不存在/)
   })
 }
 
+/** 运行 Turn Adapter 的全部断言。 */
 async function main(): Promise<void> {
-  await testResolvesCurrentDiskConfiguration()
+  await testResolvesCurrentDatabaseConfiguration()
   await testRejectsInvalidBindingsWithoutSecrets()
-  await testRejectsProviderProtocolCardinalityAndDamagedFiles()
-  console.log("model-adapters.test.ts: 每 Turn 磁盘配置与 Adapter 断言通过")
+  console.log("model-adapters.test.ts: Provider 数据库与 Adapter 断言通过")
 }
 
 main().catch((error: unknown) => {
