@@ -15,6 +15,7 @@ import {
   SessionRuntimePorts,
 } from "../../runtime/agent/src/session-runtime.ts"
 import type { CurrentSessionBaseline } from "../../runtime/session/src/session-state.ts"
+import type { ProjectId } from "../../runtime/session/src/project-id.ts"
 import type { ConfigFilePaths } from "./config-files.ts"
 import { registerStartupDataIpcHandlers } from "./startup-data-ipc.ts"
 import { registerSessionIpcHandlers } from "./session-ipc.ts"
@@ -77,12 +78,12 @@ export interface SessionRuntimeProjectContext {
 /**
  * 按 Project 身份取得一个 SessionRuntime 的固定上下文来源。
  *
- * @param projectId IPC 边界已经检查过的非负安全整数 Project ID。
+ * @param projectId IPC 边界已经检查过的 UUID 或 default。
  * @returns 当前 Project 的工作区说明与异步 baseline 解析函数。
  * @throws Error 当 Project 尚未初始化或其上下文来源无法建立时抛出。
  */
 export type ResolveSessionRuntimeProjectContext = (
-  projectId: number,
+  projectId: ProjectId,
 ) => SessionRuntimeProjectContext
 
 /**
@@ -93,7 +94,7 @@ export type ResolveSessionRuntimeProjectContext = (
  */
 export type SessionRuntimeStartupDependencies = Omit<
   SessionRuntimeBindingsOptions,
-  "sessionId" | "sessionDirectory" | "projectGroupId" | "databasePath" | "workspaceInfo" | "resolveCurrentBaseline"
+  "sessionId" | "sessionDirectory" | "projectGroupId" | "databasePath" | "metaDatabasePath" | "workspaceInfo" | "resolveCurrentBaseline"
 > & {
   /** 按 Project 身份取得当前 Session 的固定上下文来源。 */
   resolveProjectContext: ResolveSessionRuntimeProjectContext
@@ -136,7 +137,7 @@ export async function startElectronApp(options: ElectronStartupOptions): Promise
   /**
    * 为 IPC 请求构建绑定到指定 Project 分组的 Session Runtime。
    *
-   * @param projectId Session 所属 Project 的数字身份。
+   * @param projectId Session 所属 Project UUID 或 default。
    * @param sessionId 要绑定的 Session 身份。
    * @returns 使用 `sessions/<project-id>/<session-id>` 目录的 Runtime。
    */
@@ -147,6 +148,7 @@ export async function startElectronApp(options: ElectronStartupOptions): Promise
       sessionDirectory: join(sessionsDirectory, String(projectId), sessionId),
       projectGroupId: String(projectId),
       databasePath: join(options.configPaths.rootDir, "events.sqlite"),
+      metaDatabasePath: options.configPaths.metaDatabasePath,
       systemPrompt: options.sessionRuntime.systemPrompt,
       workspaceInfo: projectContext.workspaceInfo,
       resolveCurrentBaseline: () => projectContext.resolveCurrentBaseline(),

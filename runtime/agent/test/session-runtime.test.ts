@@ -5,6 +5,7 @@ import { join } from "node:path"
 
 import type { ModelAdapter, ModelRef, ModelStreamEvent } from "../../model/src/types.ts"
 import type { CurrentSessionBaseline } from "../../session/src/session-state.ts"
+import { initializeSessionMetaDatabase } from "../../session/src/meta-store.ts"
 import type {
   SessionEvent,
   SessionEventInput,
@@ -697,9 +698,12 @@ async function testConcreteRuntimeBindings(): Promise<void> {
       mcp: [],
     }
     const createdAdapters: Array<import("../../model/src/types.ts").ModelAdapter> = []
+    const metaDatabasePath = join(root, "meta.sqlite")
+    initializeSessionMetaDatabase(metaDatabasePath)
     const bindings = new SessionRuntimeBindings({
-      projectGroupId: "0",
+      projectGroupId: "00000000-0000-4000-8000-000000000001",
       databasePath: join(root, "events.sqlite"),
+      metaDatabasePath,
       sessionId,
       sessionDirectory,
       systemPrompt: "system",

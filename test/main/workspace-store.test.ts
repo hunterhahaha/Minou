@@ -1,129 +1,68 @@
-/** 工作区 SQLite 配置的创建、读写顺序与事务测试。 */
+/** V1 工作区数据库的 UUID Project 与 default 读写测试。 */
 
 import assert from "node:assert/strict"
-import { existsSync } from "node:fs"
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve, sep } from "node:path"
 import { DatabaseSync } from "node:sqlite"
 
 import {
-  initializeWorkspaceDatabase,
-  listProjectWorkspaces,
-  readDefaultWorkspace,
-  readProjectWorkspace,
-  saveDefaultWorkspace,
-  saveProjectWorkspace,
+  initializeWorkspaceDatabase, listProjectWorkspaces, readDefaultWorkspace,
+  readProjectWorkspace, saveDefaultWorkspace, saveProjectWorkspace,
 } from "../../src/main/workspace-store.ts"
-import type { ProjectWorkspace } from "../../src/main/workspace-store.ts"
 
-/** 在临时数据库上完成读写后安全清理。 */
-async function withTempDatabase(test: (databasePath: string) => void): Promise<void> {
+const FIRST_ID = "00000000-0000-4000-8000-000000000017"
+const SECOND_ID = "00000000-0000-4000-8000-000000000018"
+
+async function main(): Promise<void> {
   const directory = await mkdtemp(join(tmpdir(), "nicode-workspace-store-"))
   try {
-    test(join(directory, "workspace.sqlite"))
+    const path = join(directory, "workspace.sqlite")
+    initializeWorkspaceDatabase(path)
+    initializeWorkspaceDatabase(path)
+    assert.deepEqual(readDefaultWorkspace(path), { version: 1, sessions: [] })
+    assert.deepEqual(listProjectWorkspaces(path), [])
+    assert.throws(() => readProjectWorkspace(path, FIRST_ID), /项目损坏/)
+
+    const session = {
+      id: "session-1", name: "新对话", createdAt: "2026-09-24T00:00:00Z",
+      updatedAt: "2026-09-24T00:00:00Z",
+    }
+    const first = {
+      version: 1 as const, id: FIRST_ID, name: "First", updatedAt: "2026-09-24T01:00:00Z",
+      directories: ["G:\\code\\NiCode"], sessions: [session],
+    }
+    const second = {
+      version: 1 as const, id: SECOND_ID, name: "Second", updatedAt: "2026-09-24T02:00:00Z",
+      directories: [], sessions: [],
+    }
+    saveProjectWorkspace(path, first)
+    saveProjectWorkspace(path, second)
+    saveDefaultWorkspace(path, { version: 1, sessions: [session] })
+    assert.deepEqual(readProjectWorkspace(path, FIRST_ID), first)
+    assert.deepEqual(readDefaultWorkspace(path), { version: 1, sessions: [session] })
+    assert.deepEqual(listProjectWorkspaces(path), [second, first])
+
+    const renamed = { ...first, name: "Renamed", updatedAt: "2026-09-24T03:00:00Z" }
+    saveProjectWorkspace(path, renamed)
+    assert.deepEqual(listProjectWorkspaces(path), [renamed, second])
+    assert.throws(() => saveProjectWorkspace(path, { ...first, id: "default" }), /不能是 default/)
+    assert.throws(() => saveProjectWorkspace(path, { ...first, id: "17" }), /projectId 无效/)
+    assert.throws(() => readProjectWorkspace(path, "../other"), /projectId 无效/)
+
+    const db = new DatabaseSync(path, { readOnly: true })
+    try {
+      const columns = db.prepare("PRAGMA table_info(workspace_groups)").all() as Array<{ name: string }>
+      assert.equal(columns.some((column) => column.name === "project_id"), false)
+      assert.ok(columns.some((column) => column.name === "group_id"))
+    } finally {
+      db.close()
+    }
   } finally {
     assert.ok(resolve(directory).startsWith(`${resolve(tmpdir())}${sep}`))
     await rm(directory, { recursive: true, force: true })
   }
-}
-
-async function main(): Promise<void> {
-  await withTempDatabase((databasePath) => {
-    assert.throws(() => readProjectWorkspace(databasePath, 17))
-    assert.equal(existsSync(databasePath), false)
-    initializeWorkspaceDatabase(databasePath)
-    assert.deepEqual(readDefaultWorkspace(databasePath), { version: 1, sessions: [] })
-    assert.deepEqual(listProjectWorkspaces(databasePath), [])
-    assert.throws(() => readProjectWorkspace(databasePath, 17), /项目损坏/)
-
-    const sessions = [{
-      id: "second", name: "第二个会话",
-      createdAt: "2026-09-18T01:00:00.000Z", updatedAt: "2026-09-18T02:00:00.000Z",
-    }, {
-      id: "first", name: "第一个会话",
-      createdAt: "2026-09-17T01:00:00.000Z", updatedAt: "2026-09-18T03:00:00.000Z",
-    }]
-    const project: ProjectWorkspace = {
-      version: 1,
-      id: 17,
-      name: "NiCode",
-      updatedAt: "2026-09-23T01:00:00.000Z",
-      directories: ["G:\\code\\NiCode", "D:\\other"],
-      sessions,
-    }
-    saveProjectWorkspace(databasePath, project)
-    saveDefaultWorkspace(databasePath, { version: 1, sessions: [sessions[1], sessions[0]] })
-    saveProjectWorkspace(databasePath, {
-      version: 1, id: 18, name: "Later", updatedAt: "2026-09-24T00:00:00.000Z",
-      directories: [], sessions: [],
-    })
-    saveProjectWorkspace(databasePath, {
-      version: 1, id: 16, name: "Same time", updatedAt: "2026-09-23T01:00:00.000Z",
-      directories: [], sessions: [],
-    })
-    initializeWorkspaceDatabase(databasePath)
-    assert.deepEqual(readProjectWorkspace(databasePath, 17), project)
-    assert.deepEqual(readDefaultWorkspace(databasePath), {
-      version: 1, sessions: [sessions[1], sessions[0]],
-    })
-    assert.deepEqual(listProjectWorkspaces(databasePath).map((entry) => entry.id), [18, 16, 17])
-    assert.deepEqual(listProjectWorkspaces(databasePath)[2], project)
-
-    const changed: ProjectWorkspace = {
-      ...project, name: "Renamed", updatedAt: "2026-09-23T02:00:00.000Z",
-      directories: [project.directories[1]], sessions: [sessions[1]],
-    }
-    saveProjectWorkspace(databasePath, changed)
-    assert.deepEqual(readProjectWorkspace(databasePath, 17), changed)
-    assert.deepEqual(listProjectWorkspaces(databasePath).map((entry) => entry.id), [18, 17, 16])
-    assert.throws(() => saveProjectWorkspace(databasePath, {
-      ...project, sessions: [{ ...sessions[0], name: null as unknown as string }],
-    }))
-    assert.deepEqual(readProjectWorkspace(databasePath, 17), changed)
-  })
-  await withTempDatabase((databasePath) => {
-    const db = new DatabaseSync(databasePath)
-    try {
-      db.exec(`CREATE TABLE workspace_groups (
-        group_id TEXT PRIMARY KEY, version INTEGER NOT NULL,
-        project_id INTEGER UNIQUE, name TEXT
-      ) STRICT`)
-      db.prepare(`INSERT INTO workspace_groups (group_id, version, project_id, name)
-        VALUES ('17', 1, 17, 'Existing project')`).run()
-    } finally {
-      db.close()
-    }
-    initializeWorkspaceDatabase(databasePath)
-    const initialized = new DatabaseSync(databasePath)
-    try {
-      const project = initialized.prepare(`SELECT group_id, version, project_id, name
-        FROM workspace_groups WHERE group_id = '17'`).get()
-      assert.ok(project)
-      assert.equal(project.group_id, "17")
-      assert.equal(project.version, 1)
-      assert.equal(project.project_id, 17)
-      assert.equal(project.name, "Existing project")
-      assert.equal(initialized.prepare(`SELECT group_id FROM workspace_groups WHERE group_id = 'default'`).get() !== undefined, true)
-      const columns = initialized.prepare("PRAGMA table_info(workspace_groups)").all() as Array<{ name: string }>
-      assert.equal(columns.some((column) => column.name === "updated_at"), false)
-    } finally {
-      initialized.close()
-    }
-    initializeWorkspaceDatabase(databasePath)
-    const repeated = new DatabaseSync(databasePath)
-    try {
-      const projects = repeated.prepare("SELECT COUNT(*) AS count FROM workspace_groups WHERE project_id IS NOT NULL")
-        .get() as { count: number }
-      assert.equal(projects.count, 1)
-      const defaults = repeated.prepare("SELECT COUNT(*) AS count FROM workspace_groups WHERE group_id = 'default'")
-        .get() as { count: number }
-      assert.equal(defaults.count, 1)
-    } finally {
-      repeated.close()
-    }
-  })
-  console.log("workspace-store.test.ts: 工作区 SQLite 断言通过")
+  console.log("workspace-store.test.ts: UUID Project 工作区断言通过")
 }
 
 main().catch((error: unknown) => {

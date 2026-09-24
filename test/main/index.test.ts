@@ -19,6 +19,7 @@ import type {
 import type { ModelAdapter, ModelRef } from "../../runtime/model/src/types.ts"
 import type { SessionEvent } from "../../runtime/session/src/events.ts"
 import type { CurrentSessionBaseline } from "../../runtime/session/src/session-state.ts"
+import { initializeSessionMetaDatabase } from "../../runtime/session/src/meta-store.ts"
 import {
   SESSION_IPC_CHANNELS,
   STARTUP_DATA_IPC_CHANNELS,
@@ -31,7 +32,7 @@ const MODEL: ModelRef = {
   modelId: "model-1",
 }
 const MESSAGE = [{ type: "text" as const, text: "你好" }]
-const PROJECT_ID = 17
+const PROJECT_ID = "00000000-0000-4000-8000-000000000017"
 
 /** FakeIpcMain 保存的通用 IPC handler。 */
 type IpcHandler = (event: unknown, ...args: unknown[]) => unknown
@@ -138,6 +139,8 @@ class FakeWindows implements MainWindowLifecyclePort {
 async function withTempProfile(test: (profile: string) => Promise<void>): Promise<void> {
   const profile = await mkdtemp(join(tmpdir(), "nicode-electron-startup-"))
   try {
+    await mkdir(join(profile, ".nicode"))
+    initializeSessionMetaDatabase(join(profile, ".nicode", "meta.sqlite"))
     await test(profile)
   } finally {
     assert.ok(resolve(profile).startsWith(`${resolve(tmpdir())}${sep}`))
@@ -191,6 +194,7 @@ function startupFixture(
       configPath: join(profile, ".nicode", "config.json"),
       providerDatabasePath: join(profile, ".nicode", "providers.sqlite"),
       workspaceDatabasePath: join(profile, ".nicode", "workspace.sqlite"),
+      metaDatabasePath: join(profile, ".nicode", "meta.sqlite"),
     },
     platform: "win32",
     sessionRuntime: {
@@ -346,8 +350,11 @@ async function testCreatesProjectSessionRuntime(): Promise<void> {
 /** 验证每次 Runtime 构造都按当前 projectId 取得独立固定上下文。 */
 async function testResolvesContextForEachProject(): Promise<void> {
   await withTempProfile(async (profile) => {
-    const projectIds = [17, 18]
-    const requestedProjects: number[] = []
+    const projectIds = [
+      "00000000-0000-4000-8000-000000000017",
+      "00000000-0000-4000-8000-000000000018",
+    ]
+    const requestedProjects: string[] = []
     const systemMessages: string[] = []
     let resolveRequests!: () => void
     const requestsSeen = new Promise<void>((resolve) => { resolveRequests = resolve })
@@ -409,8 +416,10 @@ async function testResolvesContextForEachProject(): Promise<void> {
     await turnsCompleted
 
     assert.deepEqual(requestedProjects, projectIds)
-    assert.equal(systemMessages.some((message) => message.includes("Workspace 17\n\nRules 17")), true)
-    assert.equal(systemMessages.some((message) => message.includes("Workspace 18\n\nRules 18")), true)
+    for (const projectId of projectIds) {
+      assert.equal(systemMessages.some((message) =>
+        message.includes(`Workspace ${projectId}\n\nRules ${projectId}`)), true)
+    }
   })
 }
 

@@ -14,6 +14,7 @@ import type {
   EnqueuedSessionMessageResponse,
 } from "../../runtime/agent/src/session-runtime.ts"
 import type { UserMessageInput } from "../../runtime/session/src/events.ts"
+import { isProjectId } from "../../runtime/session/src/project-id.ts"
 
 export const NICODE_PRELOAD_GLOBAL = "nicode"
 
@@ -43,8 +44,8 @@ export interface SessionSummary {
 
 /** 非 default Project 的页面摘要。 */
 export interface ProjectSummary {
-  /** Project 数字身份。 */
-  projectId: number
+  /** Project UUID 身份。 */
+  projectId: string
   /** Project 显示名称。 */
   name: string
   /** Project 配置最近更新时间。 */
@@ -108,49 +109,49 @@ export interface NiCodePreloadApi {
   /**
    * 在指定 Project 分组中创建并启动 Session。
    *
-   * @param projectId Session 所属 Project 的数字身份。
+   * @param projectId Session 所属 Project UUID 或 default。
    * @param input 首轮用户消息与模型选择。
    * @returns 首批 Turn 事件成功提交后的 Session 身份和 Turn 编号。
    */
   startNewSession(
-    projectId: number,
+    projectId: string,
     input: UserMessageInput,
   ): Promise<StartedSessionResponse>
   /**
    * 在指定 Project 分组中恢复已有 Session。
    *
-   * @param projectId Session 所属 Project 的数字身份。
+   * @param projectId Session 所属 Project UUID 或 default。
    * @param sessionId 要恢复的 Session 身份。
    * @param input 新 Turn 的用户消息与要先保存到 Session Meta 的模型选择。
    * @returns 新 Turn 首批事件成功提交后的 Session 身份和 Turn 编号。
    */
   continueSession(
-    projectId: number,
+    projectId: string,
     sessionId: string,
     input: ContinueSessionInput,
   ): Promise<StartedSessionResponse>
   /**
    * 向指定 Project 中正在运行的 Session 追加消息。
    *
-   * @param projectId Session 所属 Project 的数字身份。
+   * @param projectId Session 所属 Project UUID 或 default。
    * @param sessionId 正在运行的 Session 身份。
    * @param input 要入队的用户消息。
    * @returns Runtime 接受消息后的入队确认。
    */
   enqueueSessionMessage(
-    projectId: number,
+    projectId: string,
     sessionId: string,
     input: EnqueueSessionMessageInput,
   ): Promise<EnqueuedSessionMessageResponse>
   /**
    * 停止指定 Project 中的活动 Session Runtime。
    *
-   * @param projectId Session 所属 Project 的数字身份。
+   * @param projectId Session 所属 Project UUID 或 default。
    * @param sessionId 要停止的 Session 身份。
    * @returns 主进程已完成幂等 Stop 处理的确认。
    */
   stopSession(
-    projectId: number,
+    projectId: string,
     sessionId: string,
   ): Promise<StoppedSessionResponse>
 }
@@ -180,7 +181,7 @@ export function createSessionApi(ipcRenderer: IpcRendererInvokePort): NiCodePrel
     },
 
     async startNewSession(
-      projectId: number,
+      projectId: string,
       input: UserMessageInput,
     ): Promise<StartedSessionResponse> {
       const response = await ipcRenderer.invoke(
@@ -192,7 +193,7 @@ export function createSessionApi(ipcRenderer: IpcRendererInvokePort): NiCodePrel
     },
 
     async continueSession(
-      projectId: number,
+      projectId: string,
       sessionId: string,
       input: ContinueSessionInput,
     ): Promise<StartedSessionResponse> {
@@ -206,7 +207,7 @@ export function createSessionApi(ipcRenderer: IpcRendererInvokePort): NiCodePrel
     },
 
     async enqueueSessionMessage(
-      projectId: number,
+      projectId: string,
       sessionId: string,
       input: EnqueueSessionMessageInput,
     ): Promise<EnqueuedSessionMessageResponse> {
@@ -220,7 +221,7 @@ export function createSessionApi(ipcRenderer: IpcRendererInvokePort): NiCodePrel
     },
 
     async stopSession(
-      projectId: number,
+      projectId: string,
       sessionId: string,
     ): Promise<StoppedSessionResponse> {
       const response = await ipcRenderer.invoke(
@@ -310,8 +311,7 @@ function requireSessionSummaries(value: unknown): SessionSummary[] {
  */
 function requireProjectSummaries(value: unknown): ProjectSummary[] {
   if (!Array.isArray(value) || !value.every((item) =>
-    isRecord(item) && Number.isSafeInteger(item.projectId) &&
-    typeof item.projectId === "number" && item.projectId >= 0 &&
+    isRecord(item) && isProjectId(item.projectId) && item.projectId !== "default" &&
     typeof item.name === "string" && typeof item.updatedAt === "string" &&
     Array.isArray(item.directories) && item.directories.every((directory: unknown) => typeof directory === "string") &&
     Array.isArray(item.sessions) && item.sessions.every((session: unknown) =>

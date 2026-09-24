@@ -4,6 +4,7 @@ import assert from "node:assert/strict"
 import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve, sep } from "node:path"
+import { DatabaseSync } from "node:sqlite"
 
 import { initializeConfigFiles } from "../../src/main/index.ts"
 import type { ConfigFilePaths } from "../../src/main/index.ts"
@@ -54,6 +55,7 @@ async function main(): Promise<void> {
       configPath: join(profile, ".nicode", "config.json"),
       providerDatabasePath: join(profile, ".nicode", "providers.sqlite"),
       workspaceDatabasePath: join(profile, ".nicode", "workspace.sqlite"),
+      metaDatabasePath: join(profile, ".nicode", "meta.sqlite"),
     })
     for (const directory of [
       paths.rootDir,
@@ -64,6 +66,7 @@ async function main(): Promise<void> {
       join(paths.rootDir, "sessions", "default", "workspace"),
     ]) assert.equal((await stat(directory)).isDirectory(), true)
     assert.equal((await stat(join(paths.rootDir, "events.sqlite"))).isFile(), true)
+    assert.equal((await stat(paths.metaDatabasePath)).isFile(), true)
     assert.deepEqual(JSON.parse(await readFile(paths.configPath, "utf8")), {
       version: 2, mcpServers: [], runtime: { userMessageMode: "queue" },
     })
@@ -116,6 +119,30 @@ async function main(): Promise<void> {
     assert.equal((await stat(occupiedPath)).isDirectory(), true)
   })
   await assert.rejects(initializeConfigFiles("relative-profile"), /USERPROFILE/)
+  await withTempProfile(async (profile) => {
+    const paths = await initializeConfigFiles(profile)
+    await rm(paths.metaDatabasePath)
+    await mkdir(paths.metaDatabasePath)
+    await assert.rejects(initializeConfigFiles(profile), /Session Meta 数据库不是普通文件/)
+  })
+  await withTempProfile(async (profile) => {
+    const paths = await initializeConfigFiles(profile)
+    await rm(paths.metaDatabasePath)
+    await writeFile(paths.metaDatabasePath, "not sqlite")
+    await assert.rejects(initializeConfigFiles(profile))
+    assert.equal(await readFile(paths.metaDatabasePath, "utf8"), "not sqlite")
+  })
+  await withTempProfile(async (profile) => {
+    const paths = await initializeConfigFiles(profile)
+    const db = new DatabaseSync(paths.metaDatabasePath)
+    try {
+      db.exec("DROP TABLE session_meta")
+      db.exec("CREATE TABLE session_meta (project_id TEXT)")
+    } finally {
+      db.close()
+    }
+    await assert.rejects(initializeConfigFiles(profile), /表结构无效/)
+  })
 }
 
 main().catch((error: unknown) => {

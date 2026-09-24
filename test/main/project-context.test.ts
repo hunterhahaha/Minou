@@ -11,7 +11,7 @@ import { createProjectContextResolver } from "../../src/main/project-context.ts"
 import { estimateLocalTokens } from "../../src/main/token-estimator.ts"
 import { initializeWorkspaceDatabase, saveProjectWorkspace } from "../../src/main/workspace-store.ts"
 
-const PROJECT_ID = 17
+const PROJECT_ID = "00000000-0000-4000-8000-000000000017"
 
 /** 在临时 `.nicode` 根目录运行测试并安全清理。 */
 async function withTempRoot(test: (root: string) => Promise<void>): Promise<void> {
@@ -104,7 +104,7 @@ async function testResolvesWorkspaceAgentsAndSkills(): Promise<void> {
     })
     const context = resolver(PROJECT_ID)
     assert.ok(context.workspaceInfo.includes(`"cwd": "${associatedDirectory.replaceAll("\\", "\\\\")}"`))
-    assert.ok(context.workspaceInfo.includes(`"projectId": ${PROJECT_ID}`))
+    assert.ok(context.workspaceInfo.includes(`"projectId": "${PROJECT_ID}"`))
 
     const baseline = await context.resolveCurrentBaseline()
     assert.equal(baseline.agentsmd.path, join(associatedDirectory, "AGENTS.md"))
@@ -217,6 +217,30 @@ async function testRequiresProjectDirectories(): Promise<void> {
   })
 }
 
+/** default 使用内置 workspace 和 Global Skill，不读取 Project Skill。 */
+async function testDefaultContext(): Promise<void> {
+  await withTempRoot(async (root) => {
+    const workspace = join(root, "sessions", "default", "workspace")
+    await mkdir(workspace, { recursive: true })
+    initializeWorkspaceDatabase(join(root, "workspace.sqlite"))
+    await writeSkill(join(root, "skills"), "global-folder", "global-skill", "Global description")
+    await writeRegistry(join(root, "skills"), "global", [{ name: "global-skill", enabled: true }])
+    await writeSkill(join(root, "sessions", "default", "skills"), "project-folder", "project-skill", "Ignore")
+    await writeRegistry(join(root, "sessions", "default", "skills"), "project", [
+      { name: "project-skill", enabled: true },
+    ])
+    const context = createProjectContextResolver({
+      rootDirectory: root, estimateSkillTokens: estimateLocalTokens,
+    })("default")
+    assert.ok(context.workspaceInfo.includes('"projectId": "default"'))
+    assert.ok(context.workspaceInfo.includes(`"cwd": "${workspace.replaceAll("\\", "\\\\")}"`))
+    const current = await context.resolveCurrentBaseline()
+    assert.deepEqual(current.skills.entries.map((entry) => entry.name), ["global-skill"])
+    assert.equal(current.skills.content.includes("project-skill"), false)
+    assert.equal(current.agentsmd.path, join(workspace, "AGENTS.md"))
+  })
+}
+
 /** 验证 Token 粗估边界。 */
 function testTokenEstimator(): void {
   assert.equal(estimateLocalTokens(""), 0)
@@ -231,6 +255,7 @@ async function main(): Promise<void> {
   await testProjectDisabledSkillSuppressesGlobal()
   await testRejectsInvalidProjectAndSkillConfiguration()
   await testRequiresProjectDirectories()
+  await testDefaultContext()
   testTokenEstimator()
   console.log("project-context.test.ts: Project 与 Skill baseline 断言通过")
 }

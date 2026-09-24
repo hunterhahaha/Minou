@@ -1,7 +1,7 @@
 /**
  * Session 派生持久化状态的文件实现。
  *
- * Event Log 是事实来源；本文件只创建和修复 `meta.json`、`contextstate.json`、
+ * Event Log 是事实来源；本文件创建和修复共享 SQLite Meta、`contextstate.json`、
  * `agents_md.snapshot` 与 `tool_output/`。首次初始化中断按项目负责人确认的规则，
  * 使用恢复当下的 AGENTS.md / Skill / MCP 状态建立基线。
  */
@@ -14,11 +14,16 @@ import { isDeepStrictEqual } from "node:util"
 import { PROTOCOLS } from "../../model/src/types.ts"
 import type { ModelRef, UnifiedToolDefinition } from "../../model/src/types.ts"
 import type { ContextUpdateEvent, SessionEvent, SkillContextChange, SkillScope } from "./events.ts"
+import { INITIAL_SESSION_NAME, readSessionMeta, saveSessionMeta } from "./meta-store.ts"
+import { requireProjectId } from "./project-id.ts"
+import type { ProjectId } from "./project-id.ts"
 
-/** 当前 `meta.json` 已确认的持久化结构版本。 */
+export type { ProjectId } from "./project-id.ts"
+
+/** 当前 Session Meta 已确认的持久化结构版本。 */
 export const SESSION_META_VERSION = 1 as const
 
-/** `meta.json.sandboxMode` 支持的对话级沙盒模式。 */
+/** Session Meta sandboxMode 支持的对话级沙盒模式。 */
 export const SANDBOX_MODES = [
   "full-access",
   "sandbox-full-access",
@@ -31,7 +36,7 @@ export type SandboxMode = (typeof SANDBOX_MODES)[number]
 /** 新 Session 创建时使用的默认沙盒模式。 */
 export const DEFAULT_SESSION_SANDBOX_MODE: SandboxMode = "sandbox-full-access"
 
-/** `meta.json.usage` 的 V1 派生结构。 */
+/** Session Meta usage 的 V1 派生结构。 */
 export interface RealUsage {
   /** 最近一次正常 Agent 请求的完整输入 Token。 */
   inputTokens: number
@@ -43,7 +48,7 @@ export interface RealUsage {
   cacheHitRate: number
 }
 
-/** `meta.json` 中用于下一 Turn Skill 增量比较的条目。 */
+/** Session Meta 中用于下一 Turn Skill 增量比较的条目。 */
 export interface SessionSkillContextEntry {
   name: string
   scope: SkillScope
@@ -51,15 +56,21 @@ export interface SessionSkillContextEntry {
   estimatedTokens: number
 }
 
-/** `meta.json` 中的 Session Skill 比较状态。 */
+/** Session Meta 中的 Session Skill 比较状态。 */
 export interface SessionSkillContextState {
   id: string | null
   entries: SessionSkillContextEntry[]
 }
 
-/** 当前已确认的 `meta.json` 字段；其它 Runtime 字段由初始化提供者原样保留。 */
+/** 当前已确认的 Session Meta 字段；其它 Runtime 字段由初始化提供者原样保留。 */
 export interface SessionMeta {
-  /** `meta.json` 的持久化结构版本。 */
+  /** 所属 Project UUID 或 default。 */
+  projectId: ProjectId
+  /** 当前对话身份。 */
+  sessionId: string
+  /** 当前对话显示名称。 */
+  name: string
+  /** Meta 的持久化结构版本。 */
   version: typeof SESSION_META_VERSION
   currentModel: ModelRef
   /** 当前 Session 的工具权限模式；不从全局或 Project 配置继承。 */
@@ -99,19 +110,23 @@ export interface CurrentSessionBaseline {
   mcp: UnifiedToolDefinition[]
   /**
    * 尚未在架构文档中固定字段名的其它 meta 状态，例如 Session Loaded MCP Tools。
-   * 不得包含 `version`、`currentModel`、`sandboxMode`、`usage` 或 `skills`，这些字段由本模块维护。
+   * 不得包含身份、名称、版本或其它由本模块维护的 Meta 字段。
    */
   additionalMeta?: Record<string, unknown>
 }
 
 /** 文件型 SessionState 创建参数。 */
 export interface FileSessionStateOptions {
+  /** 当前 Session 所属 Project UUID 或 default。 */
+  projectId: ProjectId
   /** 当前 SessionState 唯一绑定的 Session ID。 */
   sessionId: string
   /** 当前 Session 目录的绝对路径。 */
   sessionDirectory: string
   /** 共享 Event Log 数据库绝对路径，仅用于定位初始化错误。 */
   databasePath: string
+  /** 所有 Session 共用的 Meta 数据库绝对路径。 */
+  metaDatabasePath: string
   /** 从 Event Log 读取尚未窄化的事件；组合实现使用同一个 FileSessionEventLog。 */
   readEvents(): Promise<readonly unknown[]>
   /** 读取恢复当下的 AGENTS.md、Skill、MCP 及其它 Session meta 基线。 */
@@ -129,15 +144,14 @@ export interface FileSessionState {
    */
   initializeSession(): Promise<void>
   /**
-   * 在当前 Session 的串行状态队列中重新读取完整 `meta.json`，仅替换
-   * `currentModel`，并原子写回全部其它字段。
+   * 在当前 Session 的串行状态队列中重新读取 Meta，仅替换当前模型。
    *
    * @param model 要保存为下一 Turn 选择的完整模型引用。
    * @throws Error 当模型引用、Session Meta 或原子写入无效时抛出。
    */
   writeCurrentModel(model: ModelRef): Promise<void>
   /**
-   * 每次调用都从磁盘重新打开并校验当前 Session 的 `meta.json`。
+   * 每次调用都从数据库重新读取并校验当前 Session 的 Meta。
    *
    * @returns 与解析结果脱离引用关系的当前模型引用。
    * @throws Error 当 Session Meta 缺失、损坏或不可读取时抛出。
@@ -163,9 +177,6 @@ export interface FileSessionState {
   }>
 }
 
-/** Project 分组目录使用的非负数字身份。 */
-export type ProjectId = number
-
 /** Session 目录使用的不含路径分隔符的身份。 */
 export type SessionId = string
 
@@ -184,6 +195,7 @@ const EMPTY_USAGE: RealUsage = {
  * @throws Error 当 Session ID 非法或 Session 目录不是绝对路径时抛出。
  */
 export function createFileSessionState(options: FileSessionStateOptions): FileSessionState {
+  requireProjectId(options.projectId)
   validateSessionId(options.sessionId)
   if (!isAbsolute(options.sessionDirectory)) {
     throw new Error(`Session 目录必须是绝对路径：${options.sessionDirectory}`)
@@ -191,7 +203,13 @@ export function createFileSessionState(options: FileSessionStateOptions): FileSe
   if (!isAbsolute(options.databasePath)) {
     throw new Error(`Session Event Log 数据库必须是绝对路径：${options.databasePath}`)
   }
-  const paths = resolveStatePaths(resolve(options.sessionDirectory), resolve(options.databasePath))
+  if (!isAbsolute(options.metaDatabasePath)) {
+    throw new Error(`Session Meta 数据库必须是绝对路径：${options.metaDatabasePath}`)
+  }
+  const paths = resolveStatePaths(
+    resolve(options.sessionDirectory), resolve(options.databasePath), resolve(options.metaDatabasePath),
+    options.projectId, options.sessionId,
+  )
   const queue = getSessionStateQueue(paths.sessionDirectory)
 
   /**
@@ -203,11 +221,12 @@ export function createFileSessionState(options: FileSessionStateOptions): FileSe
     await runSerialized(queue, async () => {
       await requireDirectory(paths.sessionDirectory, "Session 目录")
 
-      const [meta, contextState, snapshot] = await Promise.all([
-        readOptionalJson(paths.metaPath, isSessionMeta),
+      const [rawMeta, contextState, snapshot] = await Promise.all([
+        Promise.resolve(readSessionMeta(paths.metaDatabasePath, paths.projectId, paths.sessionId)),
         readOptionalJson(paths.contextStatePath, isSessionContextState),
         readOptionalTextFile(paths.agentsSnapshotPath),
       ])
+      const meta = isSessionMeta(rawMeta, paths.projectId, paths.sessionId) ? rawMeta : undefined
       await ensureDirectory(paths.toolOutputDirectory, "Session Tool Output 目录")
 
       const needsMeta = meta === undefined
@@ -223,13 +242,16 @@ export function createFileSessionState(options: FileSessionStateOptions): FileSe
 
       if (needsMeta) {
         const additionalMeta = baseline.additionalMeta ?? {}
-        for (const reserved of ["version", "currentModel", "sandboxMode", "usage", "skills"]) {
+        for (const reserved of ["projectId", "sessionId", "name", "version", "currentModel", "sandboxMode", "usage", "skills"]) {
           if (reserved in additionalMeta) {
             throw new Error(`当前 Session 基线的 additionalMeta 不得包含保留字段 ${reserved}。`)
           }
         }
         const initialMeta: SessionMeta = {
           ...additionalMeta,
+          projectId: paths.projectId,
+          sessionId: paths.sessionId,
+          name: INITIAL_SESSION_NAME,
           version: SESSION_META_VERSION,
           currentModel: turnModel,
           sandboxMode: DEFAULT_SESSION_SANDBOX_MODE,
@@ -239,7 +261,7 @@ export function createFileSessionState(options: FileSessionStateOptions): FileSe
             entries: cloneSkillEntries(baseline.skills.entries),
           },
         }
-        await atomicWriteJson(paths.metaPath, initialMeta)
+        saveSessionMeta(paths.metaDatabasePath, initialMeta)
       }
 
       let nextContextState = contextState
@@ -278,7 +300,7 @@ export function createFileSessionState(options: FileSessionStateOptions): FileSe
 
   /** 在当前 Session 的共享状态队列中从磁盘重新读取模型选择。 */
   const readCurrentModel = async (): Promise<ModelRef> => runSerialized(queue, async () => {
-    const meta = await readRequiredJson(paths.metaPath, isSessionMeta, "Session Meta")
+    const meta = readRequiredMeta(paths)
     return structuredClone(meta.currentModel)
   })
 
@@ -292,7 +314,7 @@ export function createFileSessionState(options: FileSessionStateOptions): FileSe
     events: readonly SessionEvent[],
   ): Promise<void> => {
     await runSerialized(queue, async () => {
-      const meta = await readRequiredJson(paths.metaPath, isSessionMeta, "Session Meta")
+      const meta = readRequiredMeta(paths)
       const contextState = await readRequiredJson(
         paths.contextStatePath,
         isSessionContextState,
@@ -348,7 +370,7 @@ export function createFileSessionState(options: FileSessionStateOptions): FileSe
         }
       }
 
-      if (!isDeepStrictEqual(meta, nextMeta)) await atomicWriteJson(paths.metaPath, nextMeta)
+      if (!isDeepStrictEqual(meta, nextMeta)) saveSessionMeta(paths.metaDatabasePath, nextMeta)
       if (!isDeepStrictEqual(contextState, nextContextState)) {
         await atomicWriteJson(paths.contextStatePath, nextContextState)
       }
@@ -362,7 +384,7 @@ export function createFileSessionState(options: FileSessionStateOptions): FileSe
     agentsSnapshot: string
     skills: SessionSkillContextState
   }> => runSerialized(queue, async () => {
-    const meta = await readRequiredJson(paths.metaPath, isSessionMeta, "Session Meta")
+    const meta = readRequiredMeta(paths)
     const agentsSnapshot = await readRequiredTextFile(paths.agentsSnapshotPath, "AGENTS.md 比较快照")
     return {
       agentsSnapshot,
@@ -385,10 +407,10 @@ export function createFileSessionState(options: FileSessionStateOptions): FileSe
 /**
  * 按全局持久化目录定位 Session，并在该 Session 共用的状态队列中更新模型选择。
  *
- * 该函数使用 `%USERPROFILE%/.nicode/sessions/<projectId>/<sessionId>/meta.json`；
+ * 该函数使用 `%USERPROFILE%/.nicode/meta.sqlite`；
  * 已经持有绑定式 {@link FileSessionState} 的 Runtime 应优先调用实例方法。
  *
- * @param projectId Session 所属 Project 的非负数字身份。
+ * @param projectId Session 所属 Project UUID 或 default。
  * @param sessionId Session 目录身份。
  * @param model 要保存的完整模型引用。
  * @throws Error 当 USERPROFILE、身份、模型引用或 Session Meta 无效时抛出。
@@ -398,9 +420,7 @@ export async function writeCurrentModel(
   sessionId: SessionId,
   model: ModelRef,
 ): Promise<void> {
-  if (!Number.isSafeInteger(projectId) || projectId < 0) {
-    throw new Error(`Project ID 必须是非负安全整数：${projectId}`)
-  }
+  requireProjectId(projectId)
   validateSessionId(sessionId)
   const userProfile = process.env.USERPROFILE
   if (!userProfile || !isAbsolute(userProfile)) {
@@ -410,9 +430,10 @@ export async function writeCurrentModel(
     userProfile,
     ".nicode",
     "sessions",
-    String(projectId),
+    projectId,
     sessionId,
-  ), resolve(userProfile, ".nicode", "events.sqlite"))
+  ), resolve(userProfile, ".nicode", "events.sqlite"),
+  resolve(userProfile, ".nicode", "meta.sqlite"), projectId, sessionId)
   await writeCurrentModelAtPaths(
     paths,
     getSessionStateQueue(paths.sessionDirectory),
@@ -425,8 +446,12 @@ interface SessionStatePaths {
   sessionDirectory: string
   /** 当前 Session Event Log；仅用于错误定位。 */
   eventsPath: string
-  /** Session 元数据文件。 */
-  metaPath: string
+  /** 共享 Session Meta 数据库。 */
+  metaDatabasePath: string
+  /** 当前分组身份。 */
+  projectId: ProjectId
+  /** 当前 Session 身份。 */
+  sessionId: string
   /** Session 固定上下文状态文件。 */
   contextStatePath: string
   /** AGENTS.md 增量比较快照。 */
@@ -458,13 +483,21 @@ function validateSessionId(sessionId: string): void {
  *
  * @param sessionDirectory 当前 Session 的绝对目录。
  * @param databasePath 共享 Event Log 数据库的绝对路径。
+ * @param metaDatabasePath 共享 Meta 数据库的绝对路径。
+ * @param projectId 当前分组身份。
+ * @param sessionId 当前对话身份。
  * @returns 当前 Session 的全部派生状态路径。
  */
-function resolveStatePaths(sessionDirectory: string, databasePath: string): SessionStatePaths {
+function resolveStatePaths(
+  sessionDirectory: string, databasePath: string, metaDatabasePath: string,
+  projectId: ProjectId, sessionId: string,
+): SessionStatePaths {
   return {
     sessionDirectory,
     eventsPath: databasePath,
-    metaPath: join(sessionDirectory, "meta.json"),
+    metaDatabasePath,
+    projectId,
+    sessionId,
     contextStatePath: join(sessionDirectory, "contextstate.json"),
     agentsSnapshotPath: join(sessionDirectory, "agents_md.snapshot"),
     toolOutputDirectory: join(sessionDirectory, "tool_output"),
@@ -514,7 +547,7 @@ function findLatestSkillEventId(values: readonly unknown[]): string | null {
  * 缺失缓存字段按项目负责人确认的规则作为 0；Compression Usage 不进入该结构。
  *
  * @param events 已通过 SessionRuntime 校验的 Event Log。
- * @returns 可覆盖写入 `meta.json` 的四项 Usage 派生统计。
+ * @returns 可覆盖写入 Session Meta 的四项 Usage 派生统计。
  */
 function rebuildUsage(events: readonly SessionEvent[]): RealUsage {
   const usage: RealUsage = { ...EMPTY_USAGE }
@@ -845,8 +878,8 @@ async function writeCurrentModelAtPaths(
   if (!isModelRef(model)) throw new Error("currentModel 必须是有效的 ModelRef。")
   const nextModel = structuredClone(model)
   await runSerialized(queue, async () => {
-    const meta = await readRequiredJson(paths.metaPath, isSessionMeta, "Session Meta")
-    await atomicWriteJson(paths.metaPath, {
+    const meta = readRequiredMeta(paths)
+    saveSessionMeta(paths.metaDatabasePath, {
       ...meta,
       currentModel: nextModel,
     })
@@ -885,18 +918,37 @@ function cloneSkillEntries(entries: readonly SessionSkillContextEntry[]): Sessio
 }
 
 /**
- * 校验 `meta.json` 的当前已确认字段。
+ * 校验当前 Session Meta 的身份和结构。
  *
  * @param value 待检查的 JSON 值。
+ * @param projectId 当前分组身份。
+ * @param sessionId 当前对话身份。
  * @returns 值是否包含有效 currentModel、usage 与 skills。
  */
-function isSessionMeta(value: unknown): value is SessionMeta {
+function isSessionMeta(value: unknown, projectId: ProjectId, sessionId: string): value is SessionMeta {
   return isRecord(value)
+    && value.projectId === projectId
+    && value.sessionId === sessionId
+    && typeof value.name === "string" && value.name.trim() !== ""
     && value.version === SESSION_META_VERSION
     && isModelRef(value.currentModel)
     && isSandboxMode(value.sandboxMode)
     && isRealUsage(value.usage)
     && isSessionSkillContextState(value.skills)
+}
+
+/**
+ * 读取修复阶段必须存在且有效的 Session Meta。
+ * @param paths 已绑定的 Session 数据库路径和身份。
+ * @returns 已校验的 Session Meta。
+ * @throws Error 当记录缺失或结构无效时抛出。
+ */
+function readRequiredMeta(paths: SessionStatePaths): SessionMeta {
+  const value = readSessionMeta(paths.metaDatabasePath, paths.projectId, paths.sessionId)
+  if (!isSessionMeta(value, paths.projectId, paths.sessionId)) {
+    throw new Error(`Session Meta 缺失或结构无效：${paths.metaDatabasePath}（${paths.projectId}/${paths.sessionId}）`)
+  }
+  return value
 }
 
 /**

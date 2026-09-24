@@ -9,10 +9,12 @@ import type { FileSessionEventLogOptions } from "../src/event-log.ts"
 import type { SessionEvent, TurnStartEventInput, UserMessageEventInput } from "../src/events.ts"
 
 const CREATED_AT = "2026-09-19T00:00:00.000Z"
+const FIRST_PROJECT_ID = "00000000-0000-4000-8000-000000000001"
+const SECOND_PROJECT_ID = "00000000-0000-4000-8000-000000000002"
 const MODEL = { providerId: "provider-1", protocol: "responses" as const, modelId: "model-1" }
 
 /** 为每个测试 Session 建立目录并指向同一个测试数据库。 */
-async function fixture(root: string, sessionId: string, group = "0", overrides = {}): Promise<FileSessionEventLogOptions> {
+async function fixture(root: string, sessionId: string, group = FIRST_PROJECT_ID, overrides = {}): Promise<FileSessionEventLogOptions> {
   const sessionDirectory = join(root, group, sessionId)
   await mkdir(sessionDirectory, { recursive: true })
   return {
@@ -37,7 +39,7 @@ function turnBatch(
 /** 验证首次事务提交、顺序读取和单条追加。 */
 async function testCreateReadAppend(root: string): Promise<void> {
   let nextId = 1
-  const options = await fixture(root, "normal", "0", { createEventId: () => `event-${nextId++}` })
+  const options = await fixture(root, "normal", FIRST_PROJECT_ID, { createEventId: () => `event-${nextId++}` })
   const log = createFileSessionEventLog(options)
   await assert.rejects(log.readEvents(), /数据库不存在/)
   const first = await log.appendTurnStartAndUserMessage(turnBatch(1))
@@ -66,9 +68,9 @@ async function testConcurrentAppend(root: string): Promise<void> {
 
 /** 验证一个数据库内同名 Session 在不同分组中隔离。 */
 async function testIsolation(root: string): Promise<void> {
-  const left = createFileSessionEventLog(await fixture(root, "same-id", "0"))
-  const right = createFileSessionEventLog(await fixture(root, "same-id", "7"))
-  const sibling = createFileSessionEventLog(await fixture(root, "another-id", "0"))
+  const left = createFileSessionEventLog(await fixture(root, "same-id", FIRST_PROJECT_ID))
+  const right = createFileSessionEventLog(await fixture(root, "same-id", SECOND_PROJECT_ID))
+  const sibling = createFileSessionEventLog(await fixture(root, "another-id", FIRST_PROJECT_ID))
   await left.appendTurnStartAndUserMessage(turnBatch(1, "left"))
   await right.appendTurnStartAndUserMessage(turnBatch(1, "right"))
   await sibling.appendTurnStartAndUserMessage(turnBatch(1, "sibling"))
@@ -91,7 +93,7 @@ async function testTurnBatch(root: string): Promise<void> {
   const second = await log.appendTurnStartAndUserMessage(turnBatch(2))
   assert.deepEqual(second.map((event) => event.seq), [4, 5])
 
-  const duplicate = createFileSessionEventLog(await fixture(root, "duplicate-id", "0", {
+  const duplicate = createFileSessionEventLog(await fixture(root, "duplicate-id", FIRST_PROJECT_ID, {
     createEventId: () => "same-id",
   }))
   await assert.rejects(duplicate.appendTurnStartAndUserMessage(turnBatch(1)), /无法追加/)
@@ -101,11 +103,11 @@ async function testTurnBatch(root: string): Promise<void> {
 /** 验证数据库缺失、损坏和事件内容损坏会明确报错。 */
 async function testReadFailures(root: string): Promise<void> {
   const missingDirectory = createFileSessionEventLog({
-    sessionId: "missing", projectGroupId: "0",
+    sessionId: "missing", projectGroupId: FIRST_PROJECT_ID,
     sessionDirectory: join(root, "missing"), databasePath: join(root, "events.sqlite"),
   })
   await assert.rejects(missingDirectory.readEvents(), /Session 目录不存在/)
-  const otherDatabase = await fixture(root, "corrupt", "0", { databasePath: join(root, "corrupt.sqlite") })
+  const otherDatabase = await fixture(root, "corrupt", FIRST_PROJECT_ID, { databasePath: join(root, "corrupt.sqlite") })
   await writeFile(otherDatabase.databasePath, "not-a-sqlite-database")
   await initializeSessionEventDatabase(otherDatabase.databasePath)
   await assert.rejects(createFileSessionEventLog(otherDatabase).readEvents(), /无法读取 Session Event Log/)
@@ -113,7 +115,7 @@ async function testReadFailures(root: string): Promise<void> {
   const db = new DatabaseSync(join(root, "events.sqlite"))
   try {
     db.prepare("UPDATE session_events SET event_json = ? WHERE project_group_id = ? AND session_id = ? AND seq = ?")
-      .run("not-json", "0", "normal", 1)
+      .run("not-json", FIRST_PROJECT_ID, "normal", 1)
   } finally {
     db.close()
   }
@@ -123,16 +125,20 @@ async function testReadFailures(root: string): Promise<void> {
 
 /** 验证非法身份、序号边界和单事件写入失败不改变日志。 */
 async function testAppendFailures(root: string): Promise<void> {
+  assert.throws(() => createFileSessionEventLog({
+    sessionId: "session", projectGroupId: "0", sessionDirectory: root,
+    databasePath: join(root, "events.sqlite"),
+  }), /projectId 无效/)
   for (const sessionId of ["", ".", "..", "nested/session", "nested\\session"]) {
     assert.throws(() => createFileSessionEventLog({
-      sessionId, projectGroupId: "0", sessionDirectory: root, databasePath: join(root, "events.sqlite"),
+      sessionId, projectGroupId: FIRST_PROJECT_ID, sessionDirectory: root, databasePath: join(root, "events.sqlite"),
     }), /Session ID 必须/)
   }
   assert.throws(() => createFileSessionEventLog({
-    sessionId: "relative", projectGroupId: "0",
+    sessionId: "relative", projectGroupId: FIRST_PROJECT_ID,
     sessionDirectory: "relative/path", databasePath: join(root, "events.sqlite"),
   }), /Session 目录必须是绝对路径/)
-  const options = await fixture(root, "empty-id", "0", { createEventId: () => "" })
+  const options = await fixture(root, "empty-id", FIRST_PROJECT_ID, { createEventId: () => "" })
   const log = createFileSessionEventLog(options)
   await assert.rejects(log.appendTurnStartAndUserMessage(turnBatch(1)), /事件 ID 不能为空/)
   await assert.rejects(log.readEvents(), /不存在或无法访问/)
@@ -157,11 +163,11 @@ async function testSequenceFailures(root: string): Promise<void> {
       const event = (await log.readEvents() as SessionEvent[])[1]
       if (seq === 0) {
         db.prepare("DELETE FROM session_events WHERE project_group_id = ? AND session_id = ? AND seq = 1")
-          .run("0", sessionId)
+          .run(FIRST_PROJECT_ID, sessionId)
       }
       db.prepare(`UPDATE session_events SET seq = ?, event_json = ?
         WHERE project_group_id = ? AND session_id = ? AND seq = 2`)
-        .run(seq, JSON.stringify({ ...event, seq }), "0", sessionId)
+        .run(seq, JSON.stringify({ ...event, seq }), FIRST_PROJECT_ID, sessionId)
     } finally {
       db.close()
     }

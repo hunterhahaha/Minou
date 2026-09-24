@@ -20,7 +20,7 @@ const MODEL: ModelRef = {
   modelId: "model-1",
 }
 const CONTENT = [{ type: "text" as const, text: "你好" }]
-const PROJECT_ID = 17
+const PROJECT_ID = "00000000-0000-4000-8000-000000000017"
 
 async function testCallsFixedChannels(): Promise<void> {
   const calls: Array<{ channel: string; args: unknown[] }> = []
@@ -28,7 +28,7 @@ async function testCallsFixedChannels(): Promise<void> {
     invoke: async (channel, ...args) => {
       calls.push({ channel, args })
       if (channel === STARTUP_DATA_IPC_CHANNELS.listProjects) {
-        return [{ projectId: 7, name: "Project", updatedAt: "2026-09-04T00:00:00Z",
+        return [{ projectId: PROJECT_ID, name: "Project", updatedAt: "2026-09-04T00:00:00Z",
           directories: ["G:\\code\\NiCode"], sessions: [] }]
       }
       if (channel === STARTUP_DATA_IPC_CHANNELS.listDefaultSessions) {
@@ -53,7 +53,7 @@ async function testCallsFixedChannels(): Promise<void> {
 
   assert.equal(Object.isFrozen(api), true)
   assert.deepEqual(await api.listProjects(), [{
-    projectId: 7, name: "Project", updatedAt: "2026-09-04T00:00:00Z",
+    projectId: PROJECT_ID, name: "Project", updatedAt: "2026-09-04T00:00:00Z",
     directories: ["G:\\code\\NiCode"], sessions: [],
   }])
   assert.deepEqual(await api.listDefaultSessions(), [

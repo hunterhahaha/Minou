@@ -8,6 +8,7 @@ import { lstat, mkdir, readFile, writeFile } from "node:fs/promises"
 import { isAbsolute, join } from "node:path"
 
 import { initializeSessionEventDatabase } from "../../runtime/session/src/event-log.ts"
+import { initializeSessionMetaDatabase } from "../../runtime/session/src/meta-store.ts"
 import { checkConfig } from "./config-schema.ts"
 import { initializeProviderDatabase } from "./provider-store.ts"
 import { initializeWorkspaceDatabase } from "./workspace-store.ts"
@@ -26,6 +27,8 @@ export interface ConfigFilePaths {
   providerDatabasePath: string
   /** Project 与 default 共用的工作区配置数据库。 */
   workspaceDatabasePath: string
+  /** 所有 Session 共用的 Meta 数据库。 */
+  metaDatabasePath: string
 }
 
 /** Electron 启动入口消费的已校验 config.json 内容。 */
@@ -101,7 +104,7 @@ function checkFile<T>(filePath: string, check: () => T): T {
 }
 
 /**
- * 按启动顺序补齐配置目录、配置文件和三份 SQLite 数据库，并检查全局配置的 V2 结构。
+ * 按启动顺序补齐配置目录、配置文件和四份 SQLite 数据库，并检查全局配置的 V2 结构。
  * 已有文件不会被覆盖。
  * 检查失败时由调用方决定如何呈现启动错误。
  *
@@ -138,6 +141,7 @@ export async function initializeConfigFilesSnapshot(
   const sessionsDir = join(rootDir, "sessions")
   const defaultDir = join(sessionsDir, "default")
   const workspaceDatabasePath = join(rootDir, "workspace.sqlite")
+  const metaDatabasePath = join(rootDir, "meta.sqlite")
 
   await mkdir(rootDir, { recursive: true })
   const config = await ensureJsonObjectFile(configPath, INITIAL_CONFIG)
@@ -152,9 +156,10 @@ export async function initializeConfigFilesSnapshot(
   initializeProviderDatabase(providerDatabasePath)
   initializeWorkspaceDatabase(workspaceDatabasePath)
   await initializeSessionEventDatabase(join(rootDir, "events.sqlite"))
+  initializeSessionMetaDatabase(metaDatabasePath)
 
   return {
-    paths: { rootDir, configPath, providerDatabasePath, workspaceDatabasePath },
+    paths: { rootDir, configPath, providerDatabasePath, workspaceDatabasePath, metaDatabasePath },
     config: config as unknown as ValidatedStartupConfig,
   }
 }

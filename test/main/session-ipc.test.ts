@@ -29,7 +29,7 @@ const OTHER_MODEL: ModelRef = {
   modelId: "model-2",
 }
 const CONTENT = [{ type: "text" as const, text: "你好" }]
-const PROJECT_ID = 17
+const PROJECT_ID = "00000000-0000-4000-8000-000000000017"
 
 type IpcHandler = (event: unknown, ...args: unknown[]) => unknown
 
@@ -49,7 +49,7 @@ class FakeIpcMain implements IpcMainHandlePort {
 }
 
 interface RuntimeRecord {
-  projectId: number
+  projectId: string
   runtime: SessionRuntimePorts
   events: SessionEvent[]
   batches: Array<Parameters<SessionRuntimeBindings["appendTurnStartAndUserMessage"]>[0]>
@@ -78,7 +78,7 @@ function completedSessionEvents(sessionId: string): SessionEvent[] {
 }
 
 function runtimeHarness(options: { blockFirstLoop?: boolean; failInitialization?: boolean } = {}): {
-  createRuntime: (projectId: number, sessionId: string) => SessionRuntimePorts
+  createRuntime: (projectId: string, sessionId: string) => SessionRuntimePorts
   records: Map<string, RuntimeRecord>
   loopStarted: Promise<void>
   releaseFirstLoop(): void
@@ -97,7 +97,7 @@ function runtimeHarness(options: { blockFirstLoop?: boolean; failInitialization?
   let resolveStoppedTurn!: () => void
   const stoppedTurnEnded = new Promise<void>((resolve) => { resolveStoppedTurn = resolve })
 
-  const createRuntime = (projectId: number, sessionId: string): SessionRuntimePorts => {
+  const createRuntime = (projectId: string, sessionId: string): SessionRuntimePorts => {
     const events = sessionId === "existing-session" ? completedSessionEvents(sessionId) : []
     const batches: RuntimeRecord["batches"] = []
     let diskModel = structuredClone(MODEL)
@@ -431,12 +431,33 @@ async function testObservesBackgroundFailureAndCleansRuntime(): Promise<void> {
   )
 }
 
+/** default 作为分组身份进入 Runtime，活动命令仍按联合身份隔离。 */
+async function testDefaultProjectIdentity(): Promise<void> {
+  const harness = runtimeHarness({ blockFirstLoop: true })
+  const ipcMain = new FakeIpcMain()
+  registerSessionIpcHandlers(ipcMain, harness.createRuntime, () => {})
+  const response = await ipcMain.invoke<StartedSessionResponse>(
+    SESSION_IPC_CHANNELS.startNewSession, "default", { content: CONTENT, model: MODEL },
+  )
+  await harness.loopStarted
+  assert.equal(harness.records.get(response.sessionId)?.projectId, "default")
+  await assert.rejects(
+    ipcMain.invoke(SESSION_IPC_CHANNELS.enqueueSessionMessage, PROJECT_ID, response.sessionId, { content: CONTENT }),
+    /当前未运行/,
+  )
+  await ipcMain.invoke(SESSION_IPC_CHANNELS.stopSession, PROJECT_ID, response.sessionId)
+  assert.equal(harness.records.get(response.sessionId)?.runtime.currentTurn, 1)
+  await ipcMain.invoke(SESSION_IPC_CHANNELS.stopSession, "default", response.sessionId)
+  await harness.stoppedTurnEnded
+}
+
 async function main(): Promise<void> {
   await testStartsNewSessionAndProcessesQueuedMessages()
   await testContinuesExistingSessionExplicitly()
   await testStopsActiveSessionAndDropsQueuedTurns()
   await testRejectsInvalidRendererInput()
   await testObservesBackgroundFailureAndCleansRuntime()
+  await testDefaultProjectIdentity()
   console.log("session-ipc.test.ts: 主进程 Session IPC 断言通过")
 }
 

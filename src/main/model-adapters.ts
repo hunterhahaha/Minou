@@ -2,7 +2,7 @@
  * 单个 Turn 的磁盘模型选择到 Protocol Adapter 的装配链。
  *
  * 本模块不保存配置、凭据、规格、SDK Client 或 Adapter。每次调用都重新读取
- * Provider 数据库中 `meta.json.currentModel` 指定的唯一模型，并创建新的 Adapter。
+ * Provider 数据库中 Session Meta 的 currentModel 指定的唯一模型，并创建新的 Adapter。
  */
 
 import { CredentialStore } from "../../runtime/credential/src/index.ts"
@@ -30,7 +30,7 @@ export interface TurnModelAdapterSpecification {
  * 数据库结构保证所有 Provider 恰好包含一个协议，读取时核对 Session Meta 中的协议。
  *
  * @param paths 启动时确定、每 Turn 重新读取的 Provider 数据库路径。
- * @param model 本 Turn 已经从 Session `meta.json` 独立重读的模型引用。
+ * @param model 本 Turn 已经从 Session Meta 独立重读的模型引用。
  * @returns 只属于本次调用的模型配置与客户端参数。
  * @throws Error 当数据库损坏、Provider/Model/协议不匹配或 API Key 缺失时抛出。
  * 错误包含数据库路径和模型引用，但不会包含 API Key。

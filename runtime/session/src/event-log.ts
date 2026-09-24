@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto"
 import { lstat } from "node:fs/promises"
 import { isAbsolute, resolve } from "node:path"
 import { DatabaseSync } from "node:sqlite"
+import { requireProjectId } from "./project-id.ts"
 
 import type {
   SessionEvent, SessionEventInput, TurnStartEvent, TurnStartEventInput,
@@ -101,7 +102,7 @@ export async function initializeSessionEventDatabase(databasePath: string): Prom
  */
 export function createFileSessionEventLog(options: FileSessionEventLogOptions): FileSessionEventLog {
   validateSegment(options.sessionId, "Session ID")
-  validateSegment(options.projectGroupId, "Project 分组 ID")
+  requireProjectId(options.projectGroupId)
   if (!isAbsolute(options.sessionDirectory)) {
     throw new Error(`Session 目录必须是绝对路径：${options.sessionDirectory}`)
   }

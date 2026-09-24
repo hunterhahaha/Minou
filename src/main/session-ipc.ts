@@ -6,6 +6,8 @@
  */
 
 import type { ModelRef } from "../../runtime/model/src/types.ts"
+import { requireProjectId } from "../../runtime/session/src/project-id.ts"
+import type { ProjectId } from "../../runtime/session/src/project-id.ts"
 import type { SessionEvent, UserMessageInput } from "../../runtime/session/src/events.ts"
 import {
   continueSession,
@@ -41,13 +43,13 @@ export type HandleSessionCompletionFailure = (failure: SessionCompletionFailure)
 /**
  * 按 Project 和 Session 身份创建已经绑定全部宿主能力的活动 Runtime。
  *
- * @param projectId Session 所属 Project 的数字身份。
+ * @param projectId Session 所属 Project UUID 或 default。
  * @param sessionId 要绑定的 Session 身份。
  * @returns 使用对应 Project Session 目录的活动 Runtime。
  * @throws Error 当宿主依赖无法完成 Runtime 构造时抛出。
  */
 export type CreateSessionRuntime = (
-  projectId: number,
+  projectId: ProjectId,
   sessionId: string,
 ) => SessionRuntimePorts
 
@@ -87,14 +89,16 @@ export function registerSessionIpcHandlers(
     const input = requireUserMessageInput(rawInput)
     let sessionId: string
     do sessionId = SessionRuntimePorts.createSessionId()
-    while (activeSessions.has(sessionId))
+    while (activeSessions.has(sessionKey(projectId, sessionId)))
 
+    const key = sessionKey(projectId, sessionId)
     const runtime = createAndRegisterRuntime(projectId, sessionId, activeSessions, createRuntime)
     try {
       const started = await startNewSession(input, runtime)
       const processing = runtime.processMessageQueue(started)
       observeActiveRuntime(
         runtime,
+        key,
         started,
         processing,
         activeSessions,
@@ -103,7 +107,7 @@ export function registerSessionIpcHandlers(
       )
       return startedResponse(started)
     } catch (error) {
-      removeActiveRuntime(runtime, activeSessions)
+      removeActiveRuntime(runtime, key, activeSessions)
       runtime.close()
       throw error
     }
@@ -114,8 +118,9 @@ export function registerSessionIpcHandlers(
     async (_event, rawProjectId, rawSessionId, rawInput) => {
       const projectId = requireProjectId(rawProjectId)
       const sessionId = requireSessionId(rawSessionId)
+      const key = sessionKey(projectId, sessionId)
       const input = requireContinueSessionInput(rawInput)
-      if (activeSessions.has(sessionId)) {
+      if (activeSessions.has(key)) {
         throw new Error(`Session 正在运行，请使用 enqueueSessionMessage：${sessionId}`)
       }
 
@@ -125,6 +130,7 @@ export function registerSessionIpcHandlers(
         const processing = runtime.processMessageQueue(started)
         observeActiveRuntime(
           runtime,
+          key,
           started,
           processing,
           activeSessions,
@@ -133,7 +139,7 @@ export function registerSessionIpcHandlers(
         )
         return startedResponse(started)
       } catch (error) {
-        removeActiveRuntime(runtime, activeSessions)
+        removeActiveRuntime(runtime, key, activeSessions)
         runtime.close()
         throw error
       }
@@ -143,10 +149,10 @@ export function registerSessionIpcHandlers(
   ipcMain.handle(
     SESSION_IPC_CHANNELS.enqueueSessionMessage,
     (_event, rawProjectId, rawSessionId, rawInput) => {
-      requireProjectId(rawProjectId)
+      const projectId = requireProjectId(rawProjectId)
       const sessionId = requireSessionId(rawSessionId)
       const input = requireEnqueueSessionMessageInput(rawInput)
-      const runtime = activeSessions.get(sessionId)
+      const runtime = activeSessions.get(sessionKey(projectId, sessionId))
       if (runtime === undefined) {
         throw new Error(`Session 当前未运行，不能追加消息：${sessionId}`)
       }
@@ -157,16 +163,16 @@ export function registerSessionIpcHandlers(
   ipcMain.handle(
     SESSION_IPC_CHANNELS.stopSession,
     (_event, rawProjectId, rawSessionId): StoppedSessionResponse => {
-      requireProjectId(rawProjectId)
+      const projectId = requireProjectId(rawProjectId)
       const sessionId = requireSessionId(rawSessionId)
-      activeSessions.get(sessionId)?.stop()
+      activeSessions.get(sessionKey(projectId, sessionId))?.stop()
       return { sessionId }
     },
   )
 }
 
 function createAndRegisterRuntime(
-  projectId: number,
+  projectId: ProjectId,
   sessionId: string,
   activeSessions: Map<string, SessionRuntimePorts>,
   createRuntime: CreateSessionRuntime,
@@ -178,12 +184,13 @@ function createAndRegisterRuntime(
       `SessionRuntime 工厂返回了错误实例：期望 ${sessionId}，实际 ${runtime.sessionId}`,
     )
   }
-  activeSessions.set(sessionId, runtime)
+  activeSessions.set(sessionKey(projectId, sessionId), runtime)
   return runtime
 }
 
 function observeActiveRuntime(
   runtime: SessionRuntimePorts,
+  key: string,
   started: StartedSessionTurn,
   processing: SessionRuntimeProcessing,
   activeSessions: Map<string, SessionRuntimePorts>,
@@ -193,10 +200,10 @@ function observeActiveRuntime(
   void consumeSessionEvents(started.events, runtime, onCompletionFailure, eventForwarding)
   void processing.completion.then(
     () => {
-      removeActiveRuntime(runtime, activeSessions)
+      removeActiveRuntime(runtime, key, activeSessions)
     },
     (error: unknown) => {
-      removeActiveRuntime(runtime, activeSessions)
+      removeActiveRuntime(runtime, key, activeSessions)
       onCompletionFailure({
         sessionId: runtime.sessionId,
         turn: runtime.currentTurn ?? started.turn,
@@ -230,11 +237,22 @@ async function consumeSessionEvents(
 
 function removeActiveRuntime(
   runtime: SessionRuntimePorts,
+  key: string,
   activeSessions: Map<string, SessionRuntimePorts>,
 ): void {
-  if (activeSessions.get(runtime.sessionId) === runtime) {
-    activeSessions.delete(runtime.sessionId)
+  if (activeSessions.get(key) === runtime) {
+    activeSessions.delete(key)
   }
+}
+
+/**
+ * 以 Project 和 Session 联合身份定位活动 Runtime。
+ * @param projectId Project UUID 或 default。
+ * @param sessionId 对话身份。
+ * @returns 不会产生简单拼接歧义的 Map 键。
+ */
+function sessionKey(projectId: ProjectId, sessionId: string): string {
+  return JSON.stringify([projectId, sessionId])
 }
 
 function startedResponse(started: StartedSessionTurn): StartedSessionResponse {
@@ -271,20 +289,6 @@ function requireEnqueueSessionMessageInput(
 function requireSessionId(value: unknown): string {
   if (typeof value !== "string" || value.length === 0) {
     throw new TypeError("sessionId 无效")
-  }
-  return value
-}
-
-/**
- * 把 Renderer 提供的 Project 身份收窄为可安全作为目录名的数字 ID。
- *
- * @param value IPC 边界收到的未校验值。
- * @returns 非负的安全整数 Project ID。
- * @throws TypeError 当值不能对应既定的数字 Project 身份时抛出。
- */
-function requireProjectId(value: unknown): number {
-  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) {
-    throw new TypeError("projectId 无效")
   }
   return value
 }

@@ -19,11 +19,12 @@ import { isAbsolute, join } from "node:path"
 import { parseDocument } from "yaml"
 
 import type { SkillScope } from "../../runtime/session/src/events.ts"
+import { requireProjectId } from "../../runtime/session/src/project-id.ts"
 import type {
   CurrentSessionBaseline,
   SessionSkillContextEntry,
 } from "../../runtime/session/src/session-state.ts"
-import { readProjectWorkspace } from "./workspace-store.ts"
+import { readDefaultWorkspace, readProjectWorkspace } from "./workspace-store.ts"
 import type { ProjectWorkspace } from "./workspace-store.ts"
 import type {
   ResolveSessionRuntimeProjectContext,
@@ -69,7 +70,7 @@ interface SkillRegistry {
 }
 
 /**
- * 创建按数字 Project ID 解析真实文件系统上下文的同步工厂。
+ * 创建按 UUID/default 分组身份解析真实文件系统上下文的同步工厂。
  *
  * @param options `.nicode` 根目录与共享 Token 估算器。
  * @returns 可直接传给 `ElectronStartupOptions.sessionRuntime.resolveProjectContext` 的函数。
@@ -89,23 +90,28 @@ export function createProjectContextResolver(
  * 同步读取一个 Project 的身份和路径，并建立其异步 baseline 来源。
  *
  * @param options `.nicode` 根目录与共享 Token 估算器。
- * @param projectId IPC 已校验的非负安全整数 Project ID。
+ * @param projectId IPC 已校验的 UUID 或 default。
  * @returns 当前 Project 的模型可见工作区信息与 baseline 解析函数。
  * @throws Error 当 Project 目录或 workspace 目录不可用，或数据库中缺少对应项目配置时抛出。
  */
 function resolveProjectContext(
   options: ProjectContextResolverOptions,
-  projectId: number,
+  projectId: string,
 ): SessionRuntimeProjectContext {
-  if (!Number.isSafeInteger(projectId) || projectId < 0) {
-    throw new Error(`Project ID 必须是非负安全整数：${projectId}`)
-  }
+  requireProjectId(projectId)
 
-  const projectDirectory = join(options.rootDirectory, "sessions", String(projectId))
+  const projectDirectory = join(options.rootDirectory, "sessions", projectId)
   const workspaceDirectory = join(projectDirectory, "workspace")
   requireDirectorySync(projectDirectory, "Project 配置目录")
   requireDirectorySync(workspaceDirectory, "Project workspace 目录")
-  const workspace = readProjectWorkspace(join(options.rootDirectory, "workspace.sqlite"), projectId)
+  const workspacePath = join(options.rootDirectory, "workspace.sqlite")
+  let workspace: Pick<ProjectWorkspace, "id" | "name" | "directories"> | { id: "default"; name: null; directories: string[] }
+  if (projectId === "default") {
+    readDefaultWorkspace(workspacePath)
+    workspace = { id: "default", name: null, directories: [] }
+  } else {
+    workspace = readProjectWorkspace(workspacePath, projectId)
+  }
   const cwd = workspace.directories[0] ?? workspaceDirectory
   const allowedRoots = workspace.directories.length > 0
     ? [...workspace.directories]
@@ -127,6 +133,7 @@ function resolveProjectContext(
           options.rootDirectory,
           projectDirectory,
           options.estimateSkillTokens,
+          projectId !== "default",
         ),
       ])
       return {
@@ -145,7 +152,7 @@ function resolveProjectContext(
 /**
  * 生成 ContextBuilder 放入 System Message 的 Project Workspace Info。
  *
- * @param workspace 从数据库读取的 Project 配置。
+ * @param workspace 从数据库读取的 Project/default 配置。
  * @param projectDirectory Project 分组目录。
  * @param workspaceDirectory Project 内置工作目录。
  * @param cwd 当前默认工作目录。
@@ -153,7 +160,7 @@ function resolveProjectContext(
  * @returns 带稳定字段名的 JSON 文本块。
  */
 function formatWorkspaceInfo(
-  workspace: ProjectWorkspace,
+  workspace: Pick<ProjectWorkspace, "id" | "name" | "directories"> | { id: "default"; name: null; directories: string[] },
   projectDirectory: string,
   workspaceDirectory: string,
   cwd: string,
@@ -179,6 +186,7 @@ function formatWorkspaceInfo(
  * @param rootDirectory `.nicode` 根目录。
  * @param projectDirectory 当前 Project 分组目录。
  * @param estimateSkillTokens Skill description 的本地估算器。
+ * @param includeProjectSkills 是否读取 Project Skill；default 只使用 Global Skill。
  * @returns 当前实际启用 Skill 的模型可见内容、比较条目和 description 映射。
  * @throws Error 当 registry、目录、SKILL.md 或 YAML frontmatter 无效时抛出。
  */
@@ -186,10 +194,11 @@ async function resolveEffectiveSkills(
   rootDirectory: string,
   projectDirectory: string,
   estimateSkillTokens: (description: string) => number,
+  includeProjectSkills: boolean,
 ): Promise<CurrentSessionBaseline["skills"]> {
   const [globalSkills, projectSkills] = await Promise.all([
     readSkillSource(join(rootDirectory, "skills"), "global"),
-    readSkillSource(join(projectDirectory, "skills"), "project"),
+    includeProjectSkills ? readSkillSource(join(projectDirectory, "skills"), "project") : Promise.resolve([]),
   ])
   const effective = new Map<string, RegisteredSkill>()
   for (const skill of globalSkills) effective.set(skill.name, skill)

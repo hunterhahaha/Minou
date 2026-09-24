@@ -2,6 +2,7 @@
 
 import { isAbsolute } from "node:path"
 import { DatabaseSync } from "node:sqlite"
+import { requireProjectId } from "../../runtime/session/src/project-id.ts"
 
 /** 工作区配置中的对话索引条目。 */
 export interface WorkspaceSession {
@@ -19,8 +20,8 @@ export interface WorkspaceSession {
 export interface ProjectWorkspace {
   /** 原有工作区配置版本。 */
   version: 1
-  /** Project 数字身份。 */
-  id: number
+  /** Project UUID 身份。 */
+  id: string
   /** Project 显示名称。 */
   name: string
   /** Project 配置最近更新时间，由写入方提供。 */
@@ -42,7 +43,6 @@ export interface DefaultWorkspace {
 /** 分组表的查询结果；不对值重复执行 V1 结构检查。 */
 interface GroupRow {
   version: number
-  project_id: number | null
   name: string | null
   updated_at: string | null
 }
@@ -63,7 +63,6 @@ interface SessionRow {
 const CREATE_GROUPS = `CREATE TABLE IF NOT EXISTS workspace_groups (
   group_id TEXT PRIMARY KEY,
   version INTEGER NOT NULL,
-  project_id INTEGER UNIQUE,
   name TEXT,
   updated_at TEXT
 ) STRICT`
@@ -148,8 +147,7 @@ export function initializeWorkspaceDatabase(databasePath: string): void {
       db.exec(CREATE_DIRECTORIES)
       db.exec(CREATE_SESSIONS)
       db.prepare(`INSERT OR IGNORE INTO workspace_groups
-        (group_id, version, project_id, name)
-        VALUES ('default', 1, NULL, NULL)`).run()
+        (group_id, version, name) VALUES ('default', 1, NULL)`).run()
     }))
   } catch (error) {
     throw new Error(`无法初始化工作区数据库：${databasePath}`, { cause: error })
@@ -168,7 +166,7 @@ function readGroup(db: DatabaseSync, groupId: string): {
   directories: string[]
   sessions: WorkspaceSession[]
 } | null {
-  const group = db.prepare(`SELECT version, project_id, name, updated_at
+  const group = db.prepare(`SELECT version, name, updated_at
     FROM workspace_groups WHERE group_id = ?`)
     .get(groupId) as GroupRow | undefined
   if (group === undefined) return null
@@ -195,14 +193,16 @@ function readGroup(db: DatabaseSync, groupId: string): {
  * @returns 数据库中对应项目的原有配置字段。
  * @throws Error 当项目记录不存在时报告项目损坏；数据库错误包含路径。
  */
-export function readProjectWorkspace(databasePath: string, projectId: number): ProjectWorkspace {
-  const result = withDatabase(databasePath, true, (db) => readGroup(db, String(projectId)))
+export function readProjectWorkspace(databasePath: string, projectId: string): ProjectWorkspace {
+  if (projectId === "default") throw new TypeError("Project ID 不能是 default")
+  requireProjectId(projectId)
+  const result = withDatabase(databasePath, true, (db) => readGroup(db, projectId))
   if (result === null) {
     throw new Error(`项目损坏：工作区数据库中不存在 Project ${projectId} 的配置（${databasePath}）。`)
   }
   return {
     version: result.group.version as 1,
-    id: result.group.project_id as number,
+    id: projectId,
     name: result.group.name as string,
     updatedAt: result.group.updated_at as string,
     directories: result.directories,
@@ -213,14 +213,15 @@ export function readProjectWorkspace(databasePath: string, projectId: number): P
 /**
  * 读取所有非 default Project 及其有序目录、对话索引。
  * @param databasePath `.nicode/workspace.sqlite` 的绝对路径。
- * @returns 按更新时间倒序排列的 Project；同一时间按数字 ID 升序排列。
+ * @returns 按更新时间倒序排列的 Project；同一时间按 UUID 字符串升序排列。
  * @throws Error 当数据库无法读取或 Project 缺少有效更新时间时抛出。
  */
 export function listProjectWorkspaces(databasePath: string): ProjectWorkspace[] {
   return withDatabase(databasePath, true, (db) => {
     const rows = db.prepare(`SELECT group_id FROM workspace_groups
-      WHERE group_id <> 'default' AND project_id IS NOT NULL`).all() as unknown as Array<{ group_id: string }>
+      WHERE group_id <> 'default'`).all() as unknown as Array<{ group_id: string }>
     const projects = rows.map((row) => {
+      requireProjectId(row.group_id)
       const result = readGroup(db, row.group_id)
       if (result === null) throw new Error(`Project 分组不存在：${row.group_id}`)
       const updatedAt = result.group.updated_at
@@ -229,7 +230,7 @@ export function listProjectWorkspaces(databasePath: string): ProjectWorkspace[] 
       }
       return {
         version: result.group.version as 1,
-        id: result.group.project_id as number,
+        id: row.group_id,
         name: result.group.name as string,
         updatedAt,
         directories: result.directories,
@@ -237,7 +238,7 @@ export function listProjectWorkspaces(databasePath: string): ProjectWorkspace[] 
       }
     })
     return projects.sort((left, right) =>
-      Date.parse(right.updatedAt) - Date.parse(left.updatedAt) || left.id - right.id)
+      Date.parse(right.updatedAt) - Date.parse(left.updatedAt) || left.id.localeCompare(right.id))
   })
 }
 
@@ -259,7 +260,6 @@ export function readDefaultWorkspace(databasePath: string): DefaultWorkspace {
  * 事务式写入一个分组的字段和有序列表。
  * @param databasePath `.nicode/workspace.sqlite` 的绝对路径。
  * @param groupId Project ID 字符串或 default。
- * @param projectId Project 数字 ID；default 为 null。
  * @param name Project 名称；default 为 null。
  * @param updatedAt Project 配置更新时间；default 为 null。
  * @param version 原有工作区配置版本。
@@ -270,7 +270,6 @@ export function readDefaultWorkspace(databasePath: string): DefaultWorkspace {
 function saveGroup(
   databasePath: string,
   groupId: string,
-  projectId: number | null,
   name: string | null,
   updatedAt: string | null,
   version: 1,
@@ -278,11 +277,10 @@ function saveGroup(
   sessions: readonly WorkspaceSession[],
 ): void {
   withDatabase(databasePath, false, (db) => transaction(db, () => {
-    db.prepare(`INSERT INTO workspace_groups (group_id, version, project_id, name, updated_at)
-      VALUES (?, ?, ?, ?, ?) ON CONFLICT(group_id) DO UPDATE SET
-      version = excluded.version, project_id = excluded.project_id,
-      name = excluded.name, updated_at = excluded.updated_at`)
-      .run(groupId, version, projectId, name, updatedAt)
+    db.prepare(`INSERT INTO workspace_groups (group_id, version, name, updated_at)
+      VALUES (?, ?, ?, ?) ON CONFLICT(group_id) DO UPDATE SET
+      version = excluded.version, name = excluded.name, updated_at = excluded.updated_at`)
+      .run(groupId, version, name, updatedAt)
     db.prepare("DELETE FROM workspace_directories WHERE group_id = ?").run(groupId)
     db.prepare("DELETE FROM workspace_sessions WHERE group_id = ?").run(groupId)
     const insertDirectory = db.prepare(`INSERT INTO workspace_directories
@@ -303,8 +301,10 @@ function saveGroup(
  * @throws Error 当数据库写入失败时抛出，原配置保持不变。
  */
 export function saveProjectWorkspace(databasePath: string, workspace: ProjectWorkspace): void {
+  if (workspace.id === "default") throw new TypeError("Project ID 不能是 default")
+  requireProjectId(workspace.id)
   saveGroup(
-    databasePath, String(workspace.id), workspace.id, workspace.name, workspace.updatedAt,
+    databasePath, workspace.id, workspace.name, workspace.updatedAt,
     workspace.version, workspace.directories, workspace.sessions,
   )
 }
@@ -316,5 +316,5 @@ export function saveProjectWorkspace(databasePath: string, workspace: ProjectWor
  * @throws Error 当数据库写入失败时抛出，原配置保持不变。
  */
 export function saveDefaultWorkspace(databasePath: string, workspace: DefaultWorkspace): void {
-  saveGroup(databasePath, "default", null, null, null, workspace.version, [], workspace.sessions)
+  saveGroup(databasePath, "default", null, null, workspace.version, [], workspace.sessions)
 }

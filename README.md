@@ -63,7 +63,7 @@ Workspace Info；每个 Turn 的 baseline 异步读取当前 cwd 下的 `AGENTS.
 Skills。每个 `skills/` 直接子目录中的 `SKILL.md` 以 YAML frontmatter 的 `name` 为唯一身份，目录名可以
 不同；`registry.json` 的 name 引用 YAML name 并提供 scope / enabled，Project 同名项覆盖 Global，
 包括 disabled Project 项屏蔽同名 Global Skill。YAML `description` 进入固定 Skill Context；Token 粗估
-暂按 `Math.ceil(text.length / 4)`。MCP Runtime 尚未实现，因此 baseline 的 MCP 列表仍明确为空。
+暂按 `Math.ceil(text.length / 4)`。default 分组仅使用 Global Skill。MCP Runtime 尚未实现，因此 baseline 的 MCP 列表仍明确为空。
 
 真实 BrowserWindow 使用编译后的 preload 与无框架静态 `src/renderer/index.html`；构建脚本把 HTML
 复制到 `dist`。Renderer 保持 `contextIsolation=true`、`nodeIntegration=false`。由于 preload 目前是
@@ -89,9 +89,10 @@ Insert、文件变更汇总与最终 Surface 仍未实现，见下文。
 同一写队列中的 Event Log / SessionState、Turn 首批事件原子追加、AGENTS.md / Skill 增量、Event Log
 上下文回放以及每 Turn Adapter 工厂 / 执行器；固定基线由 Electron 入口接入的 Project Context resolver 提供，Tool Definition
 构建在 ToolExposureManager 落地前返回空数组。`SessionRuntimePorts` 维护运行期 FIFO 用户消息队列和
-已持久化事件流。新 Session 保持 Event Log 先于派生文件的提交顺序；显式 Continue 先把请求模型
-原子写入 `meta.json`，Queue 则不保存或覆盖模型。两条路径都会在 Turn 真正开始时重新打开
-`meta.json`，随后只读打开 `providers.sqlite`，创建只供该 Turn 全部 Step 共用的
+已持久化事件流。新 Session 保持 Event Log 先于派生状态的提交顺序；所有 Session Meta 保存在
+`.nicode/meta.sqlite`，由 Project ID 与 Session ID 联合定位。模型、沙盒模式、Usage、Skills 和额外 Meta
+各占独立 JSON 列，名称独立存列，初始为“新对话”。显式 Continue 先把请求模型写入 Meta，Queue 则不保存或覆盖模型。
+两条路径都会在 Turn 真正开始时重新读取 Meta，随后只读打开 `providers.sqlite`，创建只供该 Turn 全部 Step 共用的
 新 Adapter。Adapter、CredentialStore、数据库读取结果和 SDK Client 都不跨 Turn 缓存。每个 Turn 会写入最小 `turn/end`，文件变更汇总、
 Insert 与最终 Surface 仍未实现。
 
@@ -99,8 +100,8 @@ Insert 与最终 Surface 仍未实现。
 `window.nicode.startNewSession(projectId, input)`、
 `window.nicode.continueSession(projectId, sessionId, input)` 与
 `window.nicode.enqueueSessionMessage(projectId, sessionId, input)`、
-`window.nicode.stopSession(projectId, sessionId)`。主进程按 `sessionId` 管理活动实例；
-`projectId` 是对应 `sessions/<project-id>` 分组目录的数字身份；前两个入口在
+`window.nicode.stopSession(projectId, sessionId)`。主进程按 Project ID 与 Session ID 的组合管理活动实例；
+`projectId` 是对应 `sessions/<project-id>` 分组目录的 UUID 字符串，default 分组使用 `"default"`；前两个入口在
 首批事件提交后返回 `{ sessionId, turn }`，追加入口返回 `{ sessionId, content }`，
 其中 start 与 continue 输入都包含 `{ content, model }`，enqueue 只包含 `{ content }`。Stop 入口幂等返回
 `{ sessionId }`。每个活动 `SessionRuntimePorts` 中的所有 Turn / Loop 共享同一取消信号；

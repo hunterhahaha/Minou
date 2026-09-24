@@ -72,7 +72,7 @@ async function main(): Promise<void> {
       updatedAt: "2026-09-02T00:00:00Z",
     }
     saveProjectWorkspace(workspaceDatabasePath, {
-      version: 1, id: 7, name: "Project", updatedAt: "2026-09-04T00:00:00Z",
+      version: 1, id: "00000000-0000-4000-8000-000000000007", name: "Project", updatedAt: "2026-09-04T00:00:00Z",
       directories: ["G:\\code\\NiCode", "D:\\other"], sessions: [firstSession, secondSession],
     })
     saveDefaultWorkspace(workspaceDatabasePath, { version: 1, sessions: [secondSession, firstSession] })
@@ -82,7 +82,7 @@ async function main(): Promise<void> {
     setProviderApiKey(providerDatabasePath, "provider-1", "private-api-key")
 
     assert.deepEqual(ipc.invoke(STARTUP_DATA_IPC_CHANNELS.listProjects), [{
-      projectId: 7, name: "Project", updatedAt: "2026-09-04T00:00:00Z",
+      projectId: "00000000-0000-4000-8000-000000000007", name: "Project", updatedAt: "2026-09-04T00:00:00Z",
       directories: ["G:\\code\\NiCode", "D:\\other"],
       sessions: [
         { sessionId: "session-2", name: "Second", updatedAt: "2026-09-03T00:00:00Z" },

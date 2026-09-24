@@ -84,6 +84,7 @@ export class SessionRuntimeBindings {
     sessionDirectory: string
     projectGroupId: string
     databasePath: string
+    metaDatabasePath: string
     systemPrompt: string
     workspaceInfo: string
     resolveCurrentBaseline(): Promise<CurrentSessionBaseline>
@@ -114,9 +115,11 @@ export class SessionRuntimeBindings {
       createEventId: options.createEventId,
     })
     this.sessionState = createFileSessionState({
+      projectId: options.projectGroupId,
       sessionId: options.sessionId,
       sessionDirectory: this.sessionDirectory,
       databasePath: options.databasePath,
+      metaDatabasePath: options.metaDatabasePath,
       readEvents: () => this.eventLog.readEvents(),
       resolveCurrentBaseline: () => this.resolveTurnBaseline(),
       estimateSkillTokens: options.estimateSkillTokens,
@@ -212,7 +215,7 @@ export class SessionRuntimeBindings {
     return this.sessionState.writeCurrentModel(model)
   }
 
-  /** @returns 每次都从当前 Session `meta.json` 重新读取的模型选择。 */
+  /** @returns 每次都从当前 Session Meta 重新读取的模型选择。 */
   readCurrentModel(): Promise<ModelRef> {
     return this.sessionState.readCurrentModel()
   }
@@ -714,7 +717,7 @@ export class SessionRuntimePorts {
     return this.bindings.writeCurrentModel(model)
   }
 
-  /** @returns 每次都从当前 Session `meta.json` 重新读取的模型选择。 */
+  /** @returns 每次都从当前 Session Meta 重新读取的模型选择。 */
   readCurrentModel(): Promise<ModelRef> {
     this.assertOpen()
     return this.bindings.readCurrentModel()
@@ -962,6 +965,8 @@ export interface FileSessionRepairPortsOptions {
   projectGroupId: string
   /** 共享 Event Log 数据库绝对路径。 */
   databasePath: string
+  /** 共享 Session Meta 数据库绝对路径。 */
+  metaDatabasePath: string
   /** 读取恢复当下的 AGENTS.md、Skill、MCP 及其它 Session meta 基线。 */
   resolveCurrentBaseline(): Promise<CurrentSessionBaseline>
   /** 计算 Skill description 的估算 Token，用于重放已提交的 Skill 增量。 */
@@ -994,9 +999,11 @@ export function createFileSessionRepairPorts(
     createEventId: options.createEventId,
   })
   const sessionState = createFileSessionState({
+    projectId: options.projectGroupId,
     sessionId: options.sessionId,
     sessionDirectory: options.sessionDirectory,
     databasePath: options.databasePath,
+    metaDatabasePath: options.metaDatabasePath,
     readEvents: eventLog.readEvents,
     resolveCurrentBaseline: options.resolveCurrentBaseline,
     estimateSkillTokens: options.estimateSkillTokens,
@@ -1166,7 +1173,7 @@ export async function continueSession(
 /**
  * 为 Queue 中的 content-only 消息启动下一 Turn。
  *
- * Queue 不覆盖模型；增量准备结束后重新打开 `meta.json`，并在提交新 Turn 前完成
+ * Queue 不覆盖模型；增量准备结束后重新读取 Session Meta，并在提交新 Turn 前完成
  * 本 Turn Adapter 创建。失败时不会留下半提交的 `turn/start`。
  *
  * @param input Queue 中仅保存的用户文本。
