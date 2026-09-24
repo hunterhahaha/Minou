@@ -82,19 +82,19 @@ Adapter 与 Usage 转换，含流式调用、双向转换、取消与错误归�
 `assistant/message`、`tool/result` 关联、工具结果回填 content），`runtime/tools/src/tool-scheduler.ts`
 负责工具小轮的串并行调度，配套 `runtime/session/src/events.ts` 提供事件结构与事件出口契约、
 `runtime/tools/src/types.ts` 提供统一 `ToolResult` 结构。ToolRegistry、RenderRegistry 与统一
-ToolExecutor 调用入口已经实现；真实工具、ToolExposureManager、审批屏障、压缩、Usage 记账、
-Insert、文件变更汇总与最终 Surface 仍未实现，见下文。
+ToolExecutor 调用入口以及 glob、grep、read、write、edit、present 六个文件工具与 render 已实现；
+ToolExposureManager、Renderer 审批接线、压缩、Usage 记账、Insert 与最终 Surface 仍未实现，见下文。
 
 **SessionRuntime 的活动实例与具体绑定**已提供：`SessionRuntimeBindings` 为单个 Session 绑定目录、
 同一写队列中的 Event Log / SessionState、Turn 首批事件原子追加、AGENTS.md / Skill 增量、Event Log
-上下文回放以及每 Turn Adapter 工厂 / 执行器；固定基线由 Electron 入口接入的 Project Context resolver 提供，Tool Definition
-构建在 ToolExposureManager 落地前返回空数组。`SessionRuntimePorts` 维护运行期 FIFO 用户消息队列和
+上下文回放以及每 Turn Adapter 工厂 / 执行器；固定基线由 Electron 入口接入的 Project Context resolver 提供。
+Electron 入口向模型提供六个文件工具的定义。`SessionRuntimePorts` 维护运行期 FIFO 用户消息队列和
 已持久化事件流。新 Session 保持 Event Log 先于派生状态的提交顺序；所有 Session Meta 保存在
 `.nicode/meta.sqlite`，由 Project ID 与 Session ID 联合定位。模型、沙盒模式、Usage、Skills 和额外 Meta
 各占独立 JSON 列，名称独立存列，初始为“新对话”。显式 Continue 先把请求模型写入 Meta，Queue 则不保存或覆盖模型。
 两条路径都会在 Turn 真正开始时重新读取 Meta，随后只读打开 `providers.sqlite`，创建只供该 Turn 全部 Step 共用的
-新 Adapter。Adapter、CredentialStore、数据库读取结果和 SDK Client 都不跨 Turn 缓存。每个 Turn 会写入最小 `turn/end`，文件变更汇总、
-Insert 与最终 Surface 仍未实现。
+新 Adapter。Adapter、CredentialStore、数据库读取结果和 SDK Client 都不跨 Turn 缓存。每个 Turn 在
+`turn/end` 前写入有净变化时的 `turn/file_changes`；Insert 与最终 Surface 仍未实现。
 
 **Renderer 的四个 Session 命令**已通过 preload 暴露为
 `window.nicode.startNewSession(projectId, input)`、
@@ -166,8 +166,8 @@ content + tools + 本 Turn 固定 ModelRef + AbortSignal
   Session 级调度状态都还没实现（见 `runtime/tools/src/tool-scheduler.ts` 文件头）。
 - `appendEvent` 返回**已落盘**事件，因为 `tool/result.toolCallEventId` 要指向工具调用块的
   `block_end.eventId`；`seq` 只能由 Event Log 分配，调用方不自行推算。
-- SessionRuntime 入口在进入 Loop 前成批提交 `turn/start + user/message`；Loop 退出后提交最小
-  `turn/end(completed|stopped|error)`。`turn/file_changes`、`app/error` 与最终 Surface 属于后续收尾实现。
+- SessionRuntime 入口在进入 Loop 前成批提交 `turn/start + user/message`；Loop 退出后先提交存在净变化的
+  `turn/file_changes`，再提交 `turn/end(completed|stopped|error)`。`app/error` 与最终 Surface 属于后续收尾实现。
 - `blockId` 由 `(turn, step, index)` 决定，不随机生成，便于 Block 修复按同一规则重建。
 - Adapter 由调用方用 `createModelAdapter(config, options)` 创建后注入；AgentLoop 不接触凭据与
   Provider 配置，只依赖 `ModelAdapter` 接口。
@@ -200,8 +200,9 @@ ToolRegistry 拒绝未知内置名称、无实际名称的 `mcp_` 项和重复�
   普通工具失败。业务函数只收到业务参数，完整的已检查参数保存在执行上下文中供未来审批使用。
 - 未登记工具、缺失结果整理器及结果整理器自身失败使用公共错误结果；模型可见文本只包含稳定错误码
   与说明，不包含堆栈。
-- 当前没有登记任何真实工具，`buildTools()` 仍返回空数组；ToolExposureManager、路径和权限检查、
-  审批、MCP Dispatcher 及各工具专属实现都不在本阶段。
+- Electron 入口登记六个文件工具与专属 render，并把定义交给每 Turn 模型调用；工具执行时重读
+  Session Meta 和 Project Workspace 数据库，按沙箱模式检查规范路径。审批请求写入 Event Log 并等待
+  决定或 Stop；提交决定的后端接口已保留，Renderer 推送与决定接收尚未接线。
 
 ### ToolScheduler（阶段 6.4，第 17 节）
 
@@ -367,12 +368,16 @@ src/main/config-files.ts     →   test/main/config-files.test.ts
 | `openai` | ^7.15.0 | Chat Completions 与 Responses 两个协议的官方 SDK |
 | `@anthropic-ai/sdk` | ^0.126.0 | Anthropic Messages 协议的官方 SDK |
 | `yaml` | ^2.9.1 | 解析每个 `SKILL.md` 开头的 YAML frontmatter |
+| `@vscode/ripgrep` | 1.18.0 | 提供当前平台的 ripgrep 二进制，不查系统 PATH |
+| `diff` | 9.0.0 | 计算 Turn 文件变化的三行上下文 diff |
 | `electron`（dev） | ^44.4.3 | 桌面主进程、preload 与 BrowserWindow |
 | `typescript`（dev） | ^5.9.3 | 类型检查与产出 |
 | `@types/node`（dev） | ^24.13.5 | Node 全局类型 |
 
 `npm start` 先构建 TypeScript 和静态页面，再通过 package 的 `main` 启动 Electron。主进程生命周期
 与窗口管理仍保留最小同形端口，离线测试无需启动真实 GUI。
+文件工具只从 `@vscode/ripgrep` 的平台包解析 `rg`。当前工程尚无安装包构建器；以后打包时须将
+目标平台可执行文件保留在可直接执行的位置，不能仅放入不可直接执行的 `asar` 内容。
 
 未选 TypeScript 7：TS 7 已移除 `moduleResolution: node10`（本项目配置中的 `"Node"` 即该值），
 实测报 `TS5108`，需先调整 `moduleResolution` 才能使用。
@@ -395,16 +400,20 @@ node --experimental-strip-types runtime/network/test/retry.test.ts
 node --experimental-strip-types runtime/tools/test/tool-registry.test.ts
 node --experimental-strip-types runtime/tools/test/tool-executor.test.ts
 node --experimental-strip-types runtime/tools/test/tool-scheduler.test.ts
+node --experimental-strip-types runtime/tools/test/file-tools.test.ts
 node --experimental-strip-types runtime/agent/test/loop.test.ts
 node --experimental-strip-types runtime/agent/test/session-runtime.test.ts
+node --experimental-strip-types runtime/agent/test/file-turn.test.ts
 node --experimental-strip-types runtime/session/test/event-log.test.ts
 node --experimental-strip-types runtime/session/test/session-state.test.ts
+node --experimental-strip-types runtime/session/test/file-changes.test.ts
 node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types runtime/credential/test/credential-store.test.ts
 node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/main/config-files.test.ts
 node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/main/provider-store.test.ts
 node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/main/workspace-store.test.ts
 node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/main/model-adapters.test.ts
 node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/main/project-context.test.ts
+node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/main/file-access.test.ts
 node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/main/electron-windows.test.ts
 node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/main/index.test.ts
 node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/main/session-ipc.test.ts

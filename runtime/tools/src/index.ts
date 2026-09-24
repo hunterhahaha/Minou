@@ -2,7 +2,7 @@
  * Tool 模块入口。
  *
  * 模块职责：Tool Runtime 核心组件 —— ToolRegistry（工具定义、参数 Schema、执行函数与来源元数据）、
- * RenderRegistry、ToolExposureManager（基础内置工具 + 当前 Session 已加载且有效的 MCP Tools）、
+ * RenderRegistry、文件工具与专属 render、
  * ToolExecutor（统一校验、权限、执行与 render）、ToolScheduler（共享只读与独占执行调度、
  * 审批屏障）、ToolOutputStore（超过 64 KB 的工具输出落盘）。
  *
@@ -24,8 +24,9 @@
  *   memory/      memory_list / memory_read / memory_write 工具（Memory Runtime 本体在 runtime/memory/）
  *   security/    SandboxPolicy / ApprovalManager 工具权限与审批屏障
  *
- * 当前已实现的部分：统一 ToolResult、ToolRegistry / RenderRegistry、统一 ToolExecutor 调用入口，
- * 以及 ToolScheduler 的串并行调度。真实工具及其专属 render、ToolExposureManager、权限与审批尚未实现；
+ * 当前已实现的部分：统一 ToolResult、ToolRegistry / RenderRegistry、统一 ToolExecutor 调用入口、
+ * ToolScheduler 的串并行调度，以及六个文件工具及其路径权限检查与专属 render。
+ * 文件工具审批等待由 SessionRuntime 提供，Renderer 审批接线尚未实现；
  * AgentLoop 继续通过注入的执行入口调用工具（见 runtime/agent/src/loop.ts）。
  *
  * 位置说明：与工具有关的代码统一收在本目录下，因此 runtime/ 顶层没有独立的
@@ -33,9 +34,11 @@
  *
  * 架构依据：.git/技术文档/开发备忘录1.0.17.md 第 16 节（Tool Runtime）、第 17 节（Tool Scheduler）、
  * 第 19–24 节、第 26 节
- * 实施阶段：阶段 6.4 的调度接线 + 第 16 节通用注册与执行入口；真实工具与完整 Scheduler 规则不实现
+ * 实施阶段：阶段 6.4 的调度接线、第 16 节通用注册与执行入口及第 18 节文件工具
  */
 export * from "./types.ts"
 export * from "./tool-registry.ts"
 export * from "./tool-executor.ts"
 export * from "./tool-scheduler.ts"
+export * from "./file/index.ts"
+export * from "./filesystem/index.ts"

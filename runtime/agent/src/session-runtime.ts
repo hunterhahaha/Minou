@@ -41,12 +41,14 @@ import type {
 import { createFileSessionEventLog } from "../../session/src/event-log.ts"
 import type { FileSessionEventLog } from "../../session/src/event-log.ts"
 import { createFileSessionState } from "../../session/src/session-state.ts"
+import { TurnFileChangeTracker } from "../../session/src/file-changes.ts"
+import type { ApprovalDecision, FileChange } from "../../session/src/events.ts"
 import type {
   CurrentSessionBaseline,
   FileSessionState,
   SessionSkillContextEntry,
 } from "../../session/src/session-state.ts"
-import type { ToolResult } from "../../tools/src/types.ts"
+import type { ToolExecutionContext, ToolResult } from "../../tools/src/types.ts"
 import { runAgentLoop } from "./loop.ts"
 import type { AgentLoopOptions, AgentLoopResult, ExecuteToolCall } from "./loop.ts"
 
@@ -70,6 +72,8 @@ export class SessionRuntimeBindings {
   private readonly workspaceInfo: string
   private readonly createTurnModelAdapter: (model: ModelRef) => Promise<ModelAdapter>
   private readonly executeTool: ExecuteToolCall
+  readonly projectGroupId: string
+  private readonly listToolDefinitions: () => UnifiedToolDefinition[]
   private readonly resolveCurrentBaselineSource: () => Promise<CurrentSessionBaseline>
   private turnBaseline: Promise<CurrentSessionBaseline> | undefined
 
@@ -91,6 +95,7 @@ export class SessionRuntimeBindings {
     estimateSkillTokens(description: string): number
     createTurnModelAdapter(model: ModelRef): Promise<ModelAdapter>
     executeTool: ExecuteToolCall
+    listToolDefinitions?: () => UnifiedToolDefinition[]
     now?: () => Date
     createEventId?: () => string
   }) {
@@ -104,6 +109,8 @@ export class SessionRuntimeBindings {
     this.workspaceInfo = options.workspaceInfo
     this.createTurnModelAdapter = options.createTurnModelAdapter
     this.executeTool = options.executeTool
+    this.projectGroupId = options.projectGroupId
+    this.listToolDefinitions = options.listToolDefinitions ?? (() => [])
     this.resolveCurrentBaselineSource = options.resolveCurrentBaseline
 
     this.eventLog = createFileSessionEventLog({
@@ -205,7 +212,7 @@ export class SessionRuntimeBindings {
     const adapter = await this.createTurnModelAdapter(structuredClone(model))
     return {
       adapter,
-      tools: buildTools(model),
+      tools: this.listToolDefinitions(),
       executeTool: this.executeTool,
     }
   }
@@ -280,19 +287,6 @@ export class SessionRuntimeBindings {
       await this.sessionState.repairDerivedState([...events, ...appended])
     }
   }
-}
-
-/**
- * 当前阶段的 Tool Definition 构建出口。
- *
- * ToolExposureManager 尚未落地；项目负责人已确认本任务只保留空工具构建占位，不能在这里伪造工具能力。
- *
- * @param _model 当前 Turn 的模型引用，后续 ToolExposureManager 可据模型能力筛选工具。
- * @returns 当前阶段不向模型暴露任何工具。
- */
-function buildTools(_model: ModelRef): UnifiedToolDefinition[] {
-  // TODO: ToolExposureManager 落地后，由它按当前 Session 与模型能力构建工具定义。
-  return []
 }
 
 /**
@@ -623,6 +617,9 @@ export class SessionRuntimePorts {
   private readonly abortController = new AbortController()
   private readonly eventStream = new SessionEventStream()
   private readonly pendingMessages: EnqueueSessionMessageInput[] = []
+  private readonly fileTrackers = new Map<number, TurnFileChangeTracker>()
+  private readonly pendingApprovals = new Map<string, (decision: ApprovalDecision) => void>()
+  private approvalTail: Promise<void> = Promise.resolve()
   private processing = false
   private closed = false
   private activeTurn: number | undefined
@@ -736,6 +733,15 @@ export class SessionRuntimePorts {
     const options = await this.bindings.createLoopOptions(model)
     return {
       ...options,
+      executeTool: (name, args, context) => options.executeTool(name, args, {
+        ...context,
+        fileRuntime: {
+          projectId: this.bindings.projectGroupId,
+          sessionId: this.sessionId,
+          tracker: this.trackerFor(context.turn),
+          requestApproval: (toolName, path, execution) => this.requestFileApproval(toolName, path, execution),
+        },
+      }),
       signal: this.abortController.signal,
       appendEvent: (event) => this.appendEvent(event),
     }
@@ -752,6 +758,95 @@ export class SessionRuntimePorts {
     const written = await this.bindings.repairPorts.appendEvent(event)
     this.publishPersistedEvent(written, event.type)
     return written
+  }
+
+  /**
+   * 供未来 Renderer IPC 入口提交等待中的人工审批决定。
+   * @param approvalId 审批请求事件的身份。
+   * @param decision 用户明确作出的允许或拒绝决定。
+   * @returns 找到当前等待请求时为 true。
+   */
+  decideApproval(approvalId: string, decision: "approved" | "denied"): boolean {
+    const resolve = this.pendingApprovals.get(approvalId)
+    if (resolve === undefined) return false
+    this.pendingApprovals.delete(approvalId)
+    resolve(decision)
+    return true
+  }
+
+  /**
+   * 在 turn/end 前持久化当前 Turn 的文件净变化。
+   * @param turn 当前已完成执行的 Turn。
+   * @returns 实际写入的文件变化；无净变化时为空。
+   */
+  async appendTurnFileChanges(turn: number): Promise<FileChange[]> {
+    const tracker = this.fileTrackers.get(turn)
+    if (tracker === undefined) return []
+    const files = tracker.summarize()
+    if (files.length > 0) await this.appendEvent({ type: "turn/file_changes", turn, files })
+    this.fileTrackers.delete(turn)
+    return files
+  }
+
+  /** @param turn 当前 Turn。 @returns 该 Turn 唯一的临时文件追踪器。 */
+  private trackerFor(turn: number): TurnFileChangeTracker {
+    let tracker = this.fileTrackers.get(turn)
+    if (tracker === undefined) {
+      tracker = new TurnFileChangeTracker()
+      this.fileTrackers.set(turn, tracker)
+    }
+    return tracker
+  }
+
+  /**
+   * 顺序写入审批请求、等待外部决定或 Stop，再写入审批结果。
+   * @param toolName 待审批工具。
+   * @param path 已规范化路径。
+   * @param context 完整的调用身份与参数。
+   * @returns 明确决定或取消。
+   */
+  private async requestFileApproval(
+    toolName: string,
+    path: string,
+    context: ToolExecutionContext<object>,
+  ): Promise<ApprovalDecision> {
+    const previous = this.approvalTail
+    let release!: () => void
+    this.approvalTail = new Promise<void>((resolve) => { release = resolve })
+    await previous
+    try {
+      if (context.signal.aborted) return "cancelled"
+      if (context.toolCallEventId === undefined) throw new Error("审批缺少工具调用事件身份")
+      const approvalId = randomUUID()
+      let settle!: (value: ApprovalDecision) => void
+      const response = new Promise<ApprovalDecision>((resolve) => { settle = resolve })
+      const abort = () => {
+        this.pendingApprovals.delete(approvalId)
+        settle("cancelled")
+      }
+      this.pendingApprovals.set(approvalId, (value) => {
+        context.signal.removeEventListener("abort", abort)
+        settle(value)
+      })
+      context.signal.addEventListener("abort", abort, { once: true })
+      try {
+        await this.appendEvent({
+          type: "approval/request", turn: context.turn, step: context.step,
+          approvalId, toolCallEventId: context.toolCallEventId,
+          toolCallId: context.toolCallId, blockId: context.blockId,
+          toolName, arguments: context.validatedArguments,
+          reason: `文件路径需要授权：${path}`,
+        })
+      } catch (error) {
+        this.pendingApprovals.delete(approvalId)
+        context.signal.removeEventListener("abort", abort)
+        throw error
+      }
+      if (context.signal.aborted) abort()
+      const decision = await response
+      await this.appendEvent({ type: "approval/result", turn: context.turn, step: context.step, approvalId, decision })
+      return decision
+    } finally { release() }
   }
 
   /**
@@ -1223,13 +1318,21 @@ async function runCommittedTurn(
     result = await run()
   } catch (error) {
     try {
-      await ports.appendEvent({ type: "turn/end", turn, reason: "error" })
+      await ports.appendTurnFileChanges(turn)
     } catch {
-      // 保留原始运行错误；下次 repairSession 会修复仍未闭合的 Turn。
+      // 保留原始运行错误，仍尝试结束 Turn。
     }
+    try { await ports.appendEvent({ type: "turn/end", turn, reason: "error" }) }
+    catch { /* 下次 repairSession 会修复仍未闭合的 Turn。 */ }
     throw error
   }
 
+  try { await ports.appendTurnFileChanges(turn) }
+  catch (error) {
+    try { await ports.appendEvent({ type: "turn/end", turn, reason: "error" }) }
+    catch { /* 下次 repairSession 会修复仍未闭合的 Turn。 */ }
+    throw error
+  }
   await ports.appendEvent({
     type: "turn/end",
     turn,

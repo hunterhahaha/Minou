@@ -388,6 +388,7 @@ async function runToolRound(params: ToolRoundParams): Promise<void> {
         step,
         blockId: call.blockId,
         toolCallId: call.block.toolCallId,
+        toolCallEventId: call.toolCallEventId,
         signal,
       }),
   )

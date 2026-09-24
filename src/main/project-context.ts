@@ -113,9 +113,7 @@ function resolveProjectContext(
     workspace = readProjectWorkspace(workspacePath, projectId)
   }
   const cwd = workspace.directories[0] ?? workspaceDirectory
-  const allowedRoots = workspace.directories.length > 0
-    ? [...workspace.directories]
-    : [workspaceDirectory]
+  const allowedRoots = [workspaceDirectory, ...workspace.directories]
   const agentsMdPath = join(cwd, "AGENTS.md")
 
   return {

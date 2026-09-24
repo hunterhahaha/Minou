@@ -6,7 +6,7 @@
  * 因此这里是「工具 → 上下文 / Event Log」这条数据流的契约。
  *
  * 本文件还定义 AgentLoop 与统一 ToolExecutor 共享的调用边界；注册表与具体执行编排分别位于
- * `tool-registry.ts`、`tool-executor.ts`。真实工具及其专属结果结构仍由后续子模块实现。
+ * `tool-registry.ts`、`tool-executor.ts`。文件工具的专属结果结构位于 `file/types.ts`。
  *
  * 架构依据：.git/技术文档/开发备忘录1.0.17.md 第 16.2 节（统一 ToolResult 与内容块）、
  *          第 16.4 节（统一 execute 流程）、第 16.5 节（日志、上下文与 UI）
@@ -14,6 +14,8 @@
  */
 
 import type { AppError } from "../../error/src/types.ts"
+import type { ApprovalDecision } from "../../session/src/events.ts"
+import type { TurnFileChangeTracker } from "../../session/src/file-changes.ts"
 
 /** 模型附在工具参数上的 Runtime 调用说明；它不属于工具的业务参数。 */
 export interface ToolCallMeta {
@@ -35,14 +37,36 @@ export interface ToolCallContext {
   blockId: string
   /** 模型生成的工具调用 ID。 */
   toolCallId: string
+  /** 已持久化工具调用块的事件身份；审批事件需要引用它。 */
+  toolCallEventId?: string
   /** 当前 AgentLoop 的取消信号。 */
   signal: AbortSignal
+  /** 由 SessionRuntime 注入的当前 Session 文件工具资源。 */
+  fileRuntime?: FileToolRuntimeContext
+}
+
+/** 文件工具调用所需的 Session 身份、Turn 追踪器和审批出口。 */
+export interface FileToolRuntimeContext {
+  /** 当前 Project/default 分组身份。 */
+  projectId: string
+  /** 当前对话身份。 */
+  sessionId: string
+  /** 当前 Turn 的临时文件快照字典。 */
+  tracker: TurnFileChangeTracker
+  /**
+   * 写审批事件并等待本次调用的决定。
+   * @param toolName 当前工具名称。
+   * @param path 已规范化的绝对目标路径。
+   * @param context 当前工具调用身份及完整参数。
+   * @returns 用户决定或 Stop 产生的 cancelled。
+   */
+  requestApproval(toolName: string, path: string, context: ToolExecutionContext<object>): Promise<ApprovalDecision>
 }
 
 /**
  * 已完成参数检查后传给已登记工具的执行上下文。
  *
- * `validatedArguments` 保留完整业务参数和可选 `callDescription`，用于未来的审批记录；
+ * `validatedArguments` 保留完整业务参数和可选 `callDescription`，用于审批记录；
  * 工具业务函数自己的第一个参数不含 `callDescription`。
  */
 export interface ToolExecutionContext<TArguments extends object = Record<string, unknown>>

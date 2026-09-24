@@ -19,3 +19,4 @@
 export * from "./events.ts"
 export * from "./event-log.ts"
 export * from "./session-state.ts"
+export * from "./file-changes.ts"

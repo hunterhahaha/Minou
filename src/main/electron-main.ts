@@ -12,6 +12,8 @@ import { app, BrowserWindow, ipcMain } from "electron"
 import { initNetworkDispatcher } from "../../runtime/network/src/dispatcher.ts"
 import {
   createExecuteToolCall,
+  registerFileTools,
+  bundledRipgrepPath,
   RenderRegistry,
   ToolRegistry,
 } from "../../runtime/tools/src/index.ts"
@@ -21,6 +23,7 @@ import { startElectronApp } from "./index.ts"
 import { createTurnModelAdapter } from "./model-adapters.ts"
 import { createProjectContextResolver } from "./project-context.ts"
 import { estimateLocalTokens } from "./token-estimator.ts"
+import { loadFileAccessState } from "./file-access.ts"
 
 const SYSTEM_PROMPT = "You are an AI agent powered by NiCode."
 
@@ -36,6 +39,10 @@ async function main(): Promise<void> {
   initNetworkDispatcher()
   const toolRegistry = new ToolRegistry()
   const renderRegistry = new RenderRegistry()
+  registerFileTools(toolRegistry, renderRegistry, {
+    rgPath: bundledRipgrepPath(join(__dirname, "../../..")),
+    loadAccess: (projectId, sessionId) => loadFileAccessState(paths, projectId, sessionId),
+  })
   const executeTool = createExecuteToolCall(toolRegistry, renderRegistry)
   const resolveProjectContext = createProjectContextResolver({
     rootDirectory: paths.rootDir,
@@ -60,6 +67,16 @@ async function main(): Promise<void> {
       estimateSkillTokens: estimateLocalTokens,
       createTurnModelAdapter: (model) => createTurnModelAdapter(paths, model),
       executeTool,
+      listToolDefinitions: () => toolRegistry.listDefinitions().map((tool) => ({
+        ...tool,
+        inputSchema: {
+          ...tool.inputSchema,
+          properties: {
+            ...(tool.inputSchema.properties as Record<string, unknown>),
+            callDescription: { type: "string" },
+          },
+        },
+      })),
     },
     onSessionCompletionFailure: ({ sessionId, turn, error }) => {
       console.error(`Session ${sessionId} 的 Turn ${turn} 在后台失败。`, error)

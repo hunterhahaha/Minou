@@ -1,13 +1,27 @@
+/** 文件工具的沙箱目录判定。审批等待由当前 SessionRuntime 提供。 */
+import type { SandboxMode } from "../../../session/src/session-state.ts"
+import { isWithinRoot } from "../filesystem/index.ts"
+
+/** SandboxPolicy 对一个文件调用的决定。 */
+export type FileAccessDecision = "ALLOW" | "APPROVAL"
+
 /**
- * 目录占位，阶段 0 无实现。
- *
- * 模块职责：工具执行的权限与审批屏障。
- * SandboxPolicy（Full Access / Sandbox Full Access / Sandbox Read Only 三种模式的路径权限判定）、
- * ApprovalManager（等待必要的人工审批，对应 approval/request 与 approval/result 事件）。
- *
- * 位置说明：权限判定与审批只服务于工具执行，故收在 tools/ 下；文档第 30 节的顶层 security/ 只是参考结构。
- *
- * 架构依据：.git/技术文档/开发备忘录1.0.17.md 第 8.12 节、第 17 节、第 19 节、第 21 节
- * 实施阶段：不在 TODOList 阶段 1–6 范围内（阶段 6.6 仅需按第 14 节处理未处理审批的取消路径）
+ * 按对话沙箱模式、工具和规范路径判定权限。
+ * @param mode 当前 Session Meta 的沙箱模式。
+ * @param toolName 当前文件工具名称。
+ * @param target 已规范化目标路径。
+ * @param roots 已规范化允许根目录。
+ * @returns 可立即执行或需要人工审批。
  */
-export {}
+export function fileAccessDecision(
+  mode: SandboxMode,
+  toolName: "glob" | "grep" | "read" | "write" | "edit",
+  target: string,
+  roots: readonly string[],
+): FileAccessDecision {
+  if (mode === "full-access") return "ALLOW"
+  const inside = roots.some((root) => isWithinRoot(target, root))
+  if (mode === "sandbox-full-access") return inside ? "ALLOW" : "APPROVAL"
+  return inside && (toolName === "glob" || toolName === "grep" || toolName === "read")
+    ? "ALLOW" : "APPROVAL"
+}

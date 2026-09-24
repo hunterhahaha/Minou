@@ -11,6 +11,8 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.126.0",
+    "@vscode/ripgrep": "1.18.0",
+    "diff": "9.0.0",
     "openai": "^7.15.0",
     "undici": "^8.10.2",
     "yaml": "^2.9.1"
