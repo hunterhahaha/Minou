@@ -36,7 +36,7 @@ async function testCallsFixedChannels(): Promise<void> {
         return [{ sessionId: "default-1", name: "Default", updatedAt: "2026-09-03T00:00:00Z" }]
       }
       if (channel === STARTUP_DATA_IPC_CHANNELS.listProviders) {
-        return [{ providerId: "provider-1", name: "Provider", models: [{ modelId: "model-1", name: "model-1" }] }]
+        return [{ providerId: "provider-1", name: "Provider", protocol: "responses", models: [{ modelId: "model-1", name: "model-1" }] }]
       }
       if (channel === PROJECT_IPC_CHANNELS.selectDirectory) return { path: "C:\\Work", name: "Work" }
       if (channel === PROJECT_IPC_CHANNELS.createProject) {
@@ -77,7 +77,7 @@ async function testCallsFixedChannels(): Promise<void> {
     { sessionId: "default-1", name: "Default", updatedAt: "2026-09-03T00:00:00Z" },
   ])
   assert.deepEqual(await api.listProviders(), [{
-    providerId: "provider-1", name: "Provider", models: [{ modelId: "model-1", name: "model-1" }],
+    providerId: "provider-1", name: "Provider", protocol: "responses", models: [{ modelId: "model-1", name: "model-1" }],
   }])
   assert.deepEqual(
     await api.startNewSession(PROJECT_ID, { content: CONTENT, model: MODEL }),
@@ -159,6 +159,10 @@ async function testRejectsInvalidMainResponse(): Promise<void> {
   await assert.rejects(invalidSessions.listDefaultSessions(), /无效的对话列表/)
   const invalidProviders = createSessionApi({ invoke: async () => [{ providerId: "p", name: "P", models: [{ modelId: "m" }] }] })
   await assert.rejects(invalidProviders.listProviders(), /无效的 Provider 列表/)
+  const missingProtocol = createSessionApi({ invoke: async () => [{ providerId: "p", name: "P", models: [] }] })
+  await assert.rejects(missingProtocol.listProviders(), /无效的 Provider 列表/)
+  const invalidProtocol = createSessionApi({ invoke: async () => [{ providerId: "p", name: "P", protocol: "invalid", models: [] }] })
+  await assert.rejects(invalidProtocol.listProviders(), /无效的 Provider 列表/)
   const api = createSessionApi({ invoke: async () => ({ sessionId: "", turn: 0 }) })
   await assert.rejects(
     api.startNewSession(PROJECT_ID, { content: CONTENT, model: MODEL }),

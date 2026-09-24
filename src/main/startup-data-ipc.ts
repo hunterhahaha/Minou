@@ -45,6 +45,7 @@ export function registerStartupDataIpcHandlers(
     listProviders(paths.providerDatabasePath).map((provider) => ({
       providerId: provider.id,
       name: provider.name,
+      protocol: provider.protocol,
       models: provider.models.map((model) => ({ modelId: model.id, name: model.id })),
     })))
 }

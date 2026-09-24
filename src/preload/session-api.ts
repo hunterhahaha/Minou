@@ -13,6 +13,8 @@ import type {
   EnqueueSessionMessageInput,
   EnqueuedSessionMessageResponse,
 } from "../../runtime/agent/src/session-runtime.ts"
+import { PROTOCOLS } from "../../runtime/model/src/types.ts"
+import type { Protocol } from "../../runtime/model/src/types.ts"
 import type { UserMessageInput } from "../../runtime/session/src/events.ts"
 import { isProjectId } from "../../runtime/session/src/project-id.ts"
 
@@ -81,12 +83,14 @@ export interface ModelSummary {
   name: string
 }
 
-/** 不含凭据和协议连接参数的 Provider 页面摘要。 */
+/** 不含凭据与协议连接参数的 Provider 页面摘要。 */
 export interface ProviderSummary {
   /** Provider 稳定身份。 */
   providerId: string
   /** Provider 显示名称。 */
   name: string
+  /** 当前 Provider 唯一的协议。 */
+  protocol: Protocol
   /** 按保存顺序排列的模型摘要。 */
   models: ModelSummary[]
 }
@@ -403,7 +407,7 @@ function requireProjectDirectoryResult(value: unknown): ProjectDirectoryResult {
 }
 
 /**
- * 检查 Provider 和模型摘要中没有缺失的显示字段。
+ * 检查 Provider 协议与 Provider、模型摘要的必需字段。
  * @param value 未经检查的 IPC 结果。
  * @returns 已检查的 Provider 摘要数组。
  * @throws TypeError 当结果缺少必需字段时抛出。
@@ -411,6 +415,7 @@ function requireProjectDirectoryResult(value: unknown): ProjectDirectoryResult {
 function requireProviderSummaries(value: unknown): ProviderSummary[] {
   if (!Array.isArray(value) || !value.every((item) =>
     isRecord(item) && typeof item.providerId === "string" && typeof item.name === "string" &&
+    (PROTOCOLS as readonly unknown[]).includes(item.protocol) &&
     Array.isArray(item.models) && item.models.every((model: unknown) =>
       isRecord(model) && typeof model.modelId === "string" && typeof model.name === "string")
   )) throw new TypeError("主进程返回了无效的 Provider 列表")

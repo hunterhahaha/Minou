@@ -95,7 +95,7 @@ async function main(): Promise<void> {
     ])
     const providers = ipc.invoke(STARTUP_DATA_IPC_CHANNELS.listProviders)
     assert.deepEqual(providers, [{
-      providerId: "provider-1", name: "Provider",
+      providerId: "provider-1", name: "Provider", protocol: "responses",
       models: [{ modelId: "model-b", name: "model-b" }, { modelId: "model-a", name: "model-a" }],
     }])
     assert.equal(JSON.stringify(providers).includes("private-api-key"), false)
