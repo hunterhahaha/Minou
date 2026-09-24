@@ -10,12 +10,8 @@
 
 import { join } from "node:path"
 
-import {
-  SessionRuntimeBindings,
-  SessionRuntimePorts,
-} from "../../runtime/agent/src/session-runtime.ts"
-import type { CurrentSessionBaseline } from "../../runtime/session/src/session-state.ts"
-import type { ProjectId } from "../../runtime/session/src/project-id.ts"
+import { SessionRuntime } from "../../runtime/agent/src/session-runtime.ts"
+import type { SessionRuntimeGlobal } from "./session-runtime-global.ts"
 import type { ConfigFilePaths } from "./config-files.ts"
 import { registerStartupDataIpcHandlers } from "./startup-data-ipc.ts"
 import { registerSessionIpcHandlers } from "./session-ipc.ts"
@@ -60,44 +56,10 @@ export interface MainWindowLifecyclePort {
   hasOpenWindows(): boolean
 }
 
-/** `SessionRuntimeBindings` 当前构造函数接受的完整参数。 */
-type SessionRuntimeBindingsOptions = ConstructorParameters<typeof SessionRuntimeBindings>[0]
-
-/** 一个 Project/default 分组为 SessionRuntime 提供的固定上下文来源。 */
-export interface SessionRuntimeProjectContext {
-  /** 当前 Project/default 的工作区说明。 */
-  workspaceInfo: string
-  /**
-   * 读取当前 Project 的 AGENTS.md、Skill 与 MCP 基线。
-   *
-   * @returns 当前 Turn 开始与上下文构建共同使用的固定基线。
-   */
-  resolveCurrentBaseline(): Promise<CurrentSessionBaseline>
-}
-
-/**
- * 按 Project 身份取得一个 SessionRuntime 的固定上下文来源。
- *
- * @param projectId IPC 边界已经检查过的 UUID 或 default。
- * @returns 当前 Project 的工作区说明与异步 baseline 解析函数。
- * @throws Error 当 Project 尚未初始化或其上下文来源无法建立时抛出。
- */
-export type ResolveSessionRuntimeProjectContext = (
-  projectId: ProjectId,
-) => SessionRuntimeProjectContext
-
-/**
- * 启动期共享的 SessionRuntime 宿主依赖。
- *
- * Session 身份、目录、workspaceInfo 与 baseline 由每次 IPC 请求依据 projectId 填写，
- * 不允许启动入口提前固化为所有 Project 共用的一份值。
- */
-export type SessionRuntimeStartupDependencies = Omit<
-  SessionRuntimeBindingsOptions,
-  "sessionId" | "sessionDirectory" | "projectGroupId" | "databasePath" | "metaDatabasePath" | "workspaceInfo" | "resolveCurrentBaseline"
-> & {
-  /** 按 Project 身份取得当前 Session 的固定上下文来源。 */
-  resolveProjectContext: ResolveSessionRuntimeProjectContext
+/** 主进程为所有 Session 共用的运行能力与基础 System Prompt。 */
+export interface SessionRuntimeStartupDependencies {
+  systemPrompt: string
+  global: SessionRuntimeGlobal
 }
 
 /** Electron 可执行入口完成真实依赖装配后交给 `startElectronApp` 的输入。 */
@@ -142,23 +104,15 @@ export async function startElectronApp(options: ElectronStartupOptions): Promise
    * @returns 使用 `sessions/<project-id>/<session-id>` 目录的 Runtime。
    */
   const createRuntime: CreateSessionRuntime = (projectId, sessionId) => {
-    const projectContext = options.sessionRuntime.resolveProjectContext(projectId)
-    const bindings = new SessionRuntimeBindings({
+    return new SessionRuntime({
       sessionId,
       sessionDirectory: join(sessionsDirectory, String(projectId), sessionId),
       projectGroupId: String(projectId),
       databasePath: join(options.configPaths.rootDir, "events.sqlite"),
       metaDatabasePath: options.configPaths.metaDatabasePath,
       systemPrompt: options.sessionRuntime.systemPrompt,
-      workspaceInfo: projectContext.workspaceInfo,
-      resolveCurrentBaseline: () => projectContext.resolveCurrentBaseline(),
-      estimateSkillTokens: options.sessionRuntime.estimateSkillTokens,
-      createTurnModelAdapter: options.sessionRuntime.createTurnModelAdapter,
-      executeTool: options.sessionRuntime.executeTool,
-      now: options.sessionRuntime.now,
-      createEventId: options.sessionRuntime.createEventId,
+      global: options.sessionRuntime.global,
     })
-    return new SessionRuntimePorts(sessionId, bindings)
   }
 
   registerSessionIpcHandlers(

@@ -7,7 +7,7 @@ import { tmpdir } from "node:os"
 import { join, resolve, sep } from "node:path"
 import { DatabaseSync } from "node:sqlite"
 
-import { createProjectContextResolver } from "../../src/main/project-context.ts"
+import { resolveProjectContext } from "../../src/main/project-context.ts"
 import { estimateLocalTokens } from "../../src/main/token-estimator.ts"
 import { initializeWorkspaceDatabase, saveProjectWorkspace } from "../../src/main/workspace-store.ts"
 
@@ -98,11 +98,10 @@ async function testResolvesWorkspaceAgentsAndSkills(): Promise<void> {
       { name: "disabled", enabled: false },
     ])
 
-    const resolver = createProjectContextResolver({
+    const context = resolveProjectContext({
       rootDirectory: root,
       estimateSkillTokens: estimateLocalTokens,
-    })
-    const context = resolver(PROJECT_ID)
+    }, PROJECT_ID)
     assert.ok(context.workspaceInfo.includes(`"cwd": "${associatedDirectory.replaceAll("\\", "\\\\")}"`))
     assert.ok(context.workspaceInfo.includes(`"projectId": "${PROJECT_ID}"`))
 
@@ -144,10 +143,10 @@ async function testProjectDisabledSkillSuppressesGlobal(): Promise<void> {
     await writeSkill(join(projectDirectory, "skills"), "project-folder", "review", "Project review")
     await writeRegistry(join(projectDirectory, "skills"), "project", [{ name: "review", enabled: false }])
 
-    const baseline = await createProjectContextResolver({
+    const baseline = await resolveProjectContext({
       rootDirectory: root,
       estimateSkillTokens: estimateLocalTokens,
-    })(PROJECT_ID).resolveCurrentBaseline()
+    }, PROJECT_ID).resolveCurrentBaseline()
     assert.deepEqual(baseline.skills, { content: "", entries: [], descriptions: {} })
     assert.equal(baseline.agentsmd.content, "")
   })
@@ -160,18 +159,18 @@ async function testRejectsInvalidProjectAndSkillConfiguration(): Promise<void> {
     const workspacePath = join(projectDirectory, "workspace.json")
     await writeFile(workspacePath, "旧文件不是有效 JSON")
     const databasePath = join(root, "workspace.sqlite")
-    const resolver = createProjectContextResolver({
+    const options = {
       rootDirectory: root,
       estimateSkillTokens: estimateLocalTokens,
-    })
-    assert.ok(resolver(PROJECT_ID).workspaceInfo.includes('"projectName": "NiCode"'))
+    }
+    assert.ok(resolveProjectContext(options, PROJECT_ID).workspaceInfo.includes('"projectName": "NiCode"'))
     const db = new DatabaseSync(databasePath)
     try {
       db.prepare("DELETE FROM workspace_groups WHERE group_id = ?").run(String(PROJECT_ID))
     } finally {
       db.close()
     }
-    assert.throws(() => resolver(PROJECT_ID), (error: unknown) => {
+    assert.throws(() => resolveProjectContext(options, PROJECT_ID), (error: unknown) => {
       assert.ok(error instanceof Error)
       assert.ok(error.message.includes("项目损坏"))
       assert.ok(error.message.includes(databasePath))
@@ -191,7 +190,7 @@ async function testRejectsInvalidProjectAndSkillConfiguration(): Promise<void> {
     await writeSkill(globalSkills, "unrelated-directory", "actual-yaml-name", "Description")
     await writeRegistry(globalSkills, "global", [{ name: "registry-name", enabled: true }])
     await assert.rejects(
-      resolver(PROJECT_ID).resolveCurrentBaseline(),
+      resolveProjectContext(options, PROJECT_ID).resolveCurrentBaseline(),
       (error: unknown) => {
         assert.ok(error instanceof Error)
         assert.ok(error.message.includes(join(globalSkills, "registry.json")))
@@ -206,14 +205,14 @@ async function testRejectsInvalidProjectAndSkillConfiguration(): Promise<void> {
 async function testRequiresProjectDirectories(): Promise<void> {
   await withTempRoot(async (root) => {
     const projectDirectory = await createProject(root)
-    const resolver = createProjectContextResolver({
+    const options = {
       rootDirectory: root,
       estimateSkillTokens: estimateLocalTokens,
-    })
+    }
     await rm(join(projectDirectory, "workspace"), { recursive: true })
-    assert.throws(() => resolver(PROJECT_ID), /Project workspace 目录/)
+    assert.throws(() => resolveProjectContext(options, PROJECT_ID), /Project workspace 目录/)
     await rm(projectDirectory, { recursive: true })
-    assert.throws(() => resolver(PROJECT_ID), /Project 配置目录/)
+    assert.throws(() => resolveProjectContext(options, PROJECT_ID), /Project 配置目录/)
   })
 }
 
@@ -229,9 +228,9 @@ async function testDefaultContext(): Promise<void> {
     await writeRegistry(join(root, "sessions", "default", "skills"), "project", [
       { name: "project-skill", enabled: true },
     ])
-    const context = createProjectContextResolver({
+    const context = resolveProjectContext({
       rootDirectory: root, estimateSkillTokens: estimateLocalTokens,
-    })("default")
+    }, "default")
     assert.ok(context.workspaceInfo.includes('"projectId": "default"'))
     assert.ok(context.workspaceInfo.includes(`"cwd": "${workspace.replaceAll("\\", "\\\\")}"`))
     const current = await context.resolveCurrentBaseline()

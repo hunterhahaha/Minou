@@ -11,14 +11,12 @@ import type {
   SessionEventInput,
 } from "../../session/src/events.ts"
 import {
-  continueSession,
-  createRepairSession,
-  SessionRuntimeBindings,
-  SessionRuntimePorts,
+  repairSession,
+  SessionRuntime,
   SessionLogCorruptedError,
-  startNewSession,
 } from "../src/session-runtime.ts"
 import type { SessionRepairPorts } from "../src/session-runtime.ts"
+import type { SessionRuntimeGlobal } from "../../../src/main/session-runtime-global.ts"
 
 const MODEL: ModelRef = { providerId: "provider-1", protocol: "anthropic_messages", modelId: "model-1" }
 const OTHER_MODEL: ModelRef = { providerId: "provider-2", protocol: "responses", modelId: "model-2" }
@@ -28,11 +26,11 @@ function fixture(
   sessionId = "session-1",
   initialEvents: readonly SessionEvent[] = [],
 ): {
-  ports: SessionRuntimePorts
-  bindings: SessionRuntimeBindings
+  ports: SessionRuntime
+  global: SessionRuntimeGlobal
   repairPorts: SessionRepairPorts
   calls: string[]
-  batches: Parameters<SessionRuntimeBindings["appendTurnStartAndUserMessage"]>[0][]
+  batches: Parameters<SessionRuntime["appendTurnStartAndUserMessage"]>[0][]
   events: SessionEvent[]
   loopEvents: SessionEventInput[]
   seenModels: ModelRef[]
@@ -40,7 +38,7 @@ function fixture(
   queueReadModels(...models: ModelRef[]): void
 } {
   const calls: string[] = []
-  const batches: Parameters<SessionRuntimeBindings["appendTurnStartAndUserMessage"]>[0][] = []
+  const batches: Parameters<SessionRuntime["appendTurnStartAndUserMessage"]>[0][] = []
   const events = [...initialEvents]
   const loopEvents: SessionEventInput[] = []
   const seenModels: ModelRef[] = []
@@ -64,10 +62,10 @@ function fixture(
       return event
     },
   }
-  const bindings = {
+  const overrides = {
     createSessionDirectory: async () => { calls.push("createDirectory") },
     appendTurnStartAndUserMessage: async (
-      inputs: Parameters<SessionRuntimeBindings["appendTurnStartAndUserMessage"]>[0],
+      inputs: Parameters<SessionRuntime["appendTurnStartAndUserMessage"]>[0],
     ) => {
       calls.push("appendBatch")
       batches.push(inputs)
@@ -111,12 +109,45 @@ function fixture(
         executeTool: async () => { throw new Error("unexpected tool call") },
       }
     },
-    repairPorts,
-  } as unknown as SessionRuntimeBindings
-  const ports = new SessionRuntimePorts(sessionId, bindings)
+  }
+  const global = {
+    resolveProjectContext: () => ({
+      workspaceInfo: "test",
+      resolveCurrentBaseline: async () => { throw new Error("unexpected baseline") },
+    }),
+    estimateSkillTokens: () => 0,
+    createTurnModelAdapter: async (model: ModelRef) => (await overrides.createLoopOptions(model)).adapter,
+    listToolDefinitions: () => [],
+    executeTool: async () => { throw new Error("unexpected tool") },
+  } as unknown as SessionRuntimeGlobal
+  const ports = new SessionRuntime({
+    sessionId,
+    sessionDirectory: join(tmpdir(), sessionId),
+    projectGroupId: "default",
+    databasePath: join(tmpdir(), "unused-events.sqlite"),
+    metaDatabasePath: join(tmpdir(), "unused-meta.sqlite"),
+    systemPrompt: "test",
+    global,
+  })
+  Object.assign(ports, {
+    eventLog: {
+      readEvents: () => repairPorts.readEvents(),
+      appendEvent: (input: SessionEventInput) => repairPorts.appendEvent(input),
+      appendTurnStartAndUserMessage: overrides.appendTurnStartAndUserMessage,
+    },
+    sessionState: {
+      initializeSession: () => repairPorts.initializeSession(),
+      repairDerivedState: (values: readonly SessionEvent[]) => repairPorts.repairDerivedState(values),
+    },
+    createSessionDirectory: overrides.createSessionDirectory,
+    prepareExistingTurn: overrides.prepareExistingTurn,
+    writeCurrentModel: overrides.writeCurrentModel,
+    readCurrentModel: overrides.readCurrentModel,
+    buildContent: overrides.buildContent,
+  })
   return {
     ports,
-    bindings,
+    global,
     repairPorts,
     calls,
     batches,
@@ -185,7 +216,7 @@ function repairFixture(initial: readonly SessionEvent[]): {
     },
   }
   const sessionId = initial[0]?.sessionId ?? "session-repair"
-  return { events, calls, repair: createRepairSession(sessionId, ports), ports }
+  return { events, calls, repair: () => repairSession(sessionId, ports), ports }
 }
 
 async function testNewSession(): Promise<void> {
@@ -197,7 +228,7 @@ async function testNewSession(): Promise<void> {
     await initializationGate
   }
 
-  const started = await startNewSession({ content: MESSAGE, model: MODEL }, ports)
+  const started = await ports.startNewSession({ content: MESSAGE, model: MODEL })
   const processing = ports.processMessageQueue(started)
   const streamed: SessionEvent[] = []
   const streamDone = (async () => {
@@ -244,7 +275,7 @@ async function testContinueSession(): Promise<void> {
     completedSessionEvents("session-existing"),
   )
   state.queueReadModels(OTHER_MODEL)
-  const started = await continueSession({ content: MESSAGE, model: MODEL }, state.ports)
+  const started = await state.ports.continueSession({ content: MESSAGE, model: MODEL })
   assert.equal(started.sessionId, "session-existing")
   assert.equal(started.turn, 2)
   await started.completion
@@ -272,7 +303,7 @@ async function testOneAdapterServesAllStepsInTurn(): Promise<void> {
   const state = fixture("session-multi-step")
   let adapterFactoryCalls = 0
   let modelRequests = 0
-  state.bindings.createLoopOptions = async (model: ModelRef) => {
+  state.global.createTurnModelAdapter = async (model: ModelRef) => {
     adapterFactoryCalls += 1
     const adapter: ModelAdapter = {
       stream: async function* (): AsyncGenerator<ModelStreamEvent> {
@@ -295,17 +326,14 @@ async function testOneAdapterServesAllStepsInTurn(): Promise<void> {
         yield { type: "stream_end", completion: "finished" }
       },
     }
-    return {
-      adapter,
-      tools: [],
-      executeTool: async () => ({
-        status: "success" as const,
-        content: [{ type: "text" as const, text: "ok" }],
-      }),
-    }
+    return adapter
   }
+  state.global.executeTool = async () => ({
+    status: "success",
+    content: [{ type: "text", text: "ok" }],
+  })
 
-  const started = await startNewSession({ content: MESSAGE, model: MODEL }, state.ports)
+  const started = await state.ports.startNewSession({ content: MESSAGE, model: MODEL })
   const processing = state.ports.processMessageQueue(started)
   await processing.completion
   assert.equal(adapterFactoryCalls, 1)
@@ -321,7 +349,7 @@ async function testQueuedMessagesRunInOrder(): Promise<void> {
     state.calls.push("initialize")
     await initializationGate
   }
-  const started = await startNewSession({ content: MESSAGE, model: MODEL }, state.ports)
+  const started = await state.ports.startNewSession({ content: MESSAGE, model: MODEL })
   const processing = state.ports.processMessageQueue(started)
   const second = [{ type: "text" as const, text: "第二条" }]
   const third = [{ type: "text" as const, text: "第三条" }]
@@ -347,21 +375,21 @@ async function testQueuedMessagesRunInOrder(): Promise<void> {
 
 async function testFailureBoundaries(): Promise<void> {
   const failedBatch = fixture()
-  failedBatch.bindings.appendTurnStartAndUserMessage = async () => { throw new Error("batch failed") }
-  await assert.rejects(startNewSession({ content: MESSAGE, model: MODEL }, failedBatch.ports), /batch failed/)
+  failedBatch.ports.appendTurnStartAndUserMessage = async () => { throw new Error("batch failed") }
+  await assert.rejects(failedBatch.ports.startNewSession({ content: MESSAGE, model: MODEL }), /batch failed/)
   assert.deepEqual(failedBatch.calls, ["createDirectory"])
 
   const failedRepair = fixture("session-existing", completedSessionEvents("session-existing"))
   failedRepair.repairPorts.readEvents = async () => { throw new Error("repair failed") }
   await assert.rejects(
-    continueSession({ content: MESSAGE, model: MODEL }, failedRepair.ports),
+    failedRepair.ports.continueSession({ content: MESSAGE, model: MODEL }),
     /repair failed/,
   )
   assert.deepEqual(failedRepair.calls, [])
 
   const failedInitialization = fixture()
   failedInitialization.repairPorts.initializeSession = async () => { throw new Error("initialize failed") }
-  const started = await startNewSession({ content: MESSAGE, model: MODEL }, failedInitialization.ports)
+  const started = await failedInitialization.ports.startNewSession({ content: MESSAGE, model: MODEL })
   await assert.rejects(started.completion, /initialize failed/)
   assert.deepEqual(
     failedInitialization.loopEvents.map((event) => event.type),
@@ -369,12 +397,11 @@ async function testFailureBoundaries(): Promise<void> {
   )
 
   const failedNewAdapter = fixture("session-new-adapter-failure")
-  failedNewAdapter.bindings.createLoopOptions = async () => {
+  failedNewAdapter.global.createTurnModelAdapter = async () => {
     throw new Error("new adapter failed")
   }
-  const failedNewTurn = await startNewSession(
+  const failedNewTurn = await failedNewAdapter.ports.startNewSession(
     { content: MESSAGE, model: MODEL },
-    failedNewAdapter.ports,
   )
   await assert.rejects(failedNewTurn.completion, /new adapter failed/)
   assert.deepEqual(
@@ -386,11 +413,11 @@ async function testFailureBoundaries(): Promise<void> {
     "session-adapter-failure",
     completedSessionEvents("session-adapter-failure"),
   )
-  failedAdapter.bindings.createLoopOptions = async () => {
+  failedAdapter.global.createTurnModelAdapter = async () => {
     throw new Error("adapter failed")
   }
   await assert.rejects(
-    continueSession({ content: MESSAGE, model: OTHER_MODEL }, failedAdapter.ports),
+    failedAdapter.ports.continueSession({ content: MESSAGE, model: OTHER_MODEL }),
     /adapter failed/,
   )
   assert.deepEqual(failedAdapter.writtenModels, [OTHER_MODEL])
@@ -700,55 +727,60 @@ async function testConcreteRuntimeBindings(): Promise<void> {
     const createdAdapters: Array<import("../../model/src/types.ts").ModelAdapter> = []
     const metaDatabasePath = join(root, "meta.sqlite")
     initializeSessionMetaDatabase(metaDatabasePath)
-    const bindings = new SessionRuntimeBindings({
+    const runtime = new SessionRuntime({
       projectGroupId: "00000000-0000-4000-8000-000000000001",
       databasePath: join(root, "events.sqlite"),
       metaDatabasePath,
       sessionId,
       sessionDirectory,
       systemPrompt: "system",
-      workspaceInfo: "workspace",
-      resolveCurrentBaseline: async () => baseline,
-      estimateSkillTokens: (description) => description.length,
-      createTurnModelAdapter: async (model) => {
-        if (model.modelId === "missing") throw new Error("model missing")
-        const adapter = {
-          stream: async function* () {
-            yield { type: "stream_end" as const, completion: "finished" as const }
-          },
-        }
-        createdAdapters.push(adapter)
-        return adapter
-      },
-      executeTool: async () => ({ status: "success", content: [] }),
+      global: {
+        resolveProjectContext: () => ({
+          workspaceInfo: "workspace",
+          resolveCurrentBaseline: async () => baseline,
+        }),
+        estimateSkillTokens: (description: string) => description.length,
+        createTurnModelAdapter: async (model: ModelRef) => {
+          if (model.modelId === "missing") throw new Error("model missing")
+          const adapter = {
+            stream: async function* () {
+              yield { type: "stream_end" as const, completion: "finished" as const }
+            },
+          }
+          createdAdapters.push(adapter)
+          return adapter
+        },
+        listToolDefinitions: () => [],
+        executeTool: async () => ({ status: "success", content: [] }),
+      } as unknown as SessionRuntimeGlobal,
       now: () => new Date("2026-09-21T00:00:00.000Z"),
       createEventId: (() => {
         let id = 0
-        return () => `concrete-${++id}`
+        return () => "concrete-" + ++id
       })(),
     })
 
-    await bindings.createSessionDirectory()
-    await assert.rejects(bindings.createSessionDirectory(), /无法创建 Session 目录/)
-    const first = await bindings.appendTurnStartAndUserMessage([
+    await runtime.createSessionDirectory()
+    await assert.rejects(runtime.createSessionDirectory(), /无法创建 Session 目录/)
+    const first = await runtime.appendTurnStartAndUserMessage([
       { type: "turn/start", turn: 1, model: MODEL },
       { type: "user/message", turn: 1, message: { id: "user-1", role: "user", content: MESSAGE } },
     ])
     assert.deepEqual(first.map((event) => event.seq), [1, 2])
-    await bindings.repairPorts.initializeSession()
-    assert.deepEqual(await bindings.buildContent(1), [
+    await runtime.initializeSession()
+    assert.deepEqual(await runtime.buildContent(1), [
       { role: "system", content: "system\n\nworkspace\n\nUse npm.\n\nskills-1" },
       { role: "user", content: MESSAGE },
     ])
 
-    const loopResources = await bindings.createLoopOptions(MODEL)
+    const loopResources = await runtime.createLoopOptions(MODEL)
     assert.equal(loopResources.adapter, createdAdapters[0])
     assert.deepEqual(loopResources.tools, [])
-    const nextTurnResources = await bindings.createLoopOptions(MODEL)
+    const nextTurnResources = await runtime.createLoopOptions(MODEL)
     assert.notEqual(loopResources.adapter, nextTurnResources.adapter)
     assert.equal(createdAdapters.length, 2)
 
-    await bindings.repairPorts.appendEvent({ type: "turn/end", turn: 1, reason: "completed" })
+    await runtime.appendEvent({ type: "turn/end", turn: 1, reason: "completed" })
     baseline = {
       agentsmd: {
         path: join(root, "AGENTS.md"),
@@ -762,17 +794,17 @@ async function testConcreteRuntimeBindings(): Promise<void> {
       },
       mcp: [],
     }
-    await bindings.prepareExistingTurn((event) => bindings.repairPorts.appendEvent(event))
-    await bindings.appendTurnStartAndUserMessage([
+    await runtime.prepareExistingTurn()
+    await runtime.appendTurnStartAndUserMessage([
       { type: "turn/start", turn: 2, model: MODEL },
       { type: "user/message", turn: 2, message: { id: "user-2", role: "user", content: [{ type: "text", text: "继续" }] } },
     ])
 
-    const content = await bindings.buildContent(2)
+    const content = await runtime.buildContent(2)
     assert.equal(content[0]?.role, "system")
     assert.equal(content[0]?.content, "system\n\nworkspace\n\nUse pnpm.\n\nskills-2")
     assert.deepEqual(content.slice(1).map((message) => message.role), ["user", "user", "user", "user"])
-    const log = await bindings.repairPorts.readEvents() as SessionEvent[]
+    const log = await runtime.readEvents() as SessionEvent[]
     const updates = log.filter((event) => event.type === "context_update")
     assert.equal(updates.length, 2)
     assert.match(updates[0].content, /Removed:\nUse npm\./)
@@ -785,26 +817,26 @@ async function testConcreteRuntimeBindings(): Promise<void> {
       ],
     })
 
-    await bindings.repairPorts.appendEvent({
+    await runtime.appendEvent({
       type: "summary/start",
       turn: 2,
       summaryId: "summary-1",
       throughEventSeq: 5,
     })
-    await bindings.repairPorts.appendEvent({
+    await runtime.appendEvent({
       type: "summary/end",
       turn: 2,
       summaryId: "summary-1",
       summary: "Earlier context summary.",
       throughEventSeq: 5,
     })
-    assert.deepEqual(await bindings.buildContent(2), [
+    assert.deepEqual(await runtime.buildContent(2), [
       { role: "system", content: "system\n\nworkspace\n\nUse pnpm.\n\nskills-2" },
       { role: "user", content: "Earlier context summary." },
       { role: "user", content: [{ type: "text", text: "继续" }] },
     ])
     await assert.rejects(
-      bindings.createLoopOptions({ ...MODEL, modelId: "missing" }),
+      runtime.createLoopOptions({ ...MODEL, modelId: "missing" }),
       /model missing/,
     )
   } finally {

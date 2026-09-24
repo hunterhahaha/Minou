@@ -11,7 +11,6 @@ import { app, BrowserWindow, ipcMain } from "electron"
 
 import { initNetworkDispatcher } from "../../runtime/network/src/dispatcher.ts"
 import {
-  createExecuteToolCall,
   registerFileTools,
   bundledRipgrepPath,
   RenderRegistry,
@@ -20,9 +19,7 @@ import {
 import { initializeConfigFiles } from "./config-files.ts"
 import { createElectronWindowManager } from "./electron-windows.ts"
 import { startElectronApp } from "./index.ts"
-import { createTurnModelAdapter } from "./model-adapters.ts"
-import { createProjectContextResolver } from "./project-context.ts"
-import { estimateLocalTokens } from "./token-estimator.ts"
+import { SessionRuntimeGlobal } from "./session-runtime-global.ts"
 import { loadFileAccessState } from "./file-access.ts"
 
 const SYSTEM_PROMPT = "You are an AI agent powered by NiCode."
@@ -43,11 +40,7 @@ async function main(): Promise<void> {
     rgPath: bundledRipgrepPath(join(__dirname, "../../..")),
     loadAccess: (projectId, sessionId) => loadFileAccessState(paths, projectId, sessionId),
   })
-  const executeTool = createExecuteToolCall(toolRegistry, renderRegistry)
-  const resolveProjectContext = createProjectContextResolver({
-    rootDirectory: paths.rootDir,
-    estimateSkillTokens: estimateLocalTokens,
-  })
+  const sessionRuntimeGlobal = new SessionRuntimeGlobal(paths, toolRegistry, renderRegistry)
   const windows = createElectronWindowManager(BrowserWindow, {
     preloadPath: join(__dirname, "../preload/index.js"),
     rendererHtmlPath: join(__dirname, "../renderer/index.html"),
@@ -63,20 +56,7 @@ async function main(): Promise<void> {
     configPaths: paths,
     sessionRuntime: {
       systemPrompt: SYSTEM_PROMPT,
-      resolveProjectContext,
-      estimateSkillTokens: estimateLocalTokens,
-      createTurnModelAdapter: (model) => createTurnModelAdapter(paths, model),
-      executeTool,
-      listToolDefinitions: () => toolRegistry.listDefinitions().map((tool) => ({
-        ...tool,
-        inputSchema: {
-          ...tool.inputSchema,
-          properties: {
-            ...(tool.inputSchema.properties as Record<string, unknown>),
-            callDescription: { type: "string" },
-          },
-        },
-      })),
+      global: sessionRuntimeGlobal,
     },
     onSessionCompletionFailure: ({ sessionId, turn, error }) => {
       console.error(`Session ${sessionId} 的 Turn ${turn} 在后台失败。`, error)

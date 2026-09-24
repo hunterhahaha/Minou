@@ -29,10 +29,11 @@ default 分组不存在时补入空记录。已有全局配置按 V2 检查；�
 
 **Electron 可执行入口和 `startElectronApp` 参数装配**已完成：package 的 `main` 指向
 `src/main/electron-main.ts` 的编译产物。该入口直接导入真实 Electron `app`、`ipcMain` 和
-`BrowserWindow`，依次初始化并首次校验配置文件、初始化全局 Network Dispatcher、空 Tool / Render
-Registry 的统一执行入口和 Project Context resolver，随后逐字段调用：
+`BrowserWindow`，依次初始化并首次校验配置文件、初始化全局 Network Dispatcher、Tool / Render
+Registry，并创建一个进程级 SessionRuntimeGlobal，随后逐字段调用：
 
 ```ts
+const sessionRuntimeGlobal = new SessionRuntimeGlobal(paths, toolRegistry, renderRegistry)
 await startElectronApp({
   app,
   ipcMain,
@@ -40,11 +41,7 @@ await startElectronApp({
   configPaths: paths,
   sessionRuntime: {
     systemPrompt: "You are an AI agent powered by NiCode.",
-    resolveProjectContext,
-    estimateSkillTokens: estimateLocalTokens,
-    createTurnModelAdapter: (model) =>
-      createTurnModelAdapter(paths, model),
-    executeTool,
+    global: sessionRuntimeGlobal,
   },
   onSessionCompletionFailure,
 })
@@ -85,11 +82,11 @@ Adapter 与 Usage 转换，含流式调用、双向转换、取消与错误归�
 ToolExecutor 调用入口以及 glob、grep、read、write、edit、present 六个文件工具与 render 已实现；
 ToolExposureManager、Renderer 审批接线、压缩、Usage 记账、Insert 与最终 Surface 仍未实现，见下文。
 
-**SessionRuntime 的活动实例与具体绑定**已提供：`SessionRuntimeBindings` 为单个 Session 绑定目录、
-同一写队列中的 Event Log / SessionState、Turn 首批事件原子追加、AGENTS.md / Skill 增量、Event Log
-上下文回放以及每 Turn Adapter 工厂 / 执行器；固定基线由 Electron 入口接入的 Project Context resolver 提供。
-Electron 入口向模型提供六个文件工具的定义。`SessionRuntimePorts` 维护运行期 FIFO 用户消息队列和
-已持久化事件流。新 Session 保持 Event Log 先于派生状态的提交顺序；所有 Session Meta 保存在
+**SessionRuntime 的活动实例**按 Session 创建，直接持有目录、Event Log / SessionState、
+Turn 首批事件提交、AGENTS.md / Skill 增量、上下文回放、FIFO 用户消息队列和持久化事件流。
+启动时创建的同一个 SessionRuntimeGlobal 为所有实例提供 Project Context、每 Turn Adapter、
+工具定义和统一工具执行能力。Electron 入口向模型提供六个文件工具的定义。
+新 Session 保持 Event Log 先于派生状态的提交顺序；所有 Session Meta 保存在
 `.nicode/meta.sqlite`，由 Project ID 与 Session ID 联合定位。模型、沙盒模式、Usage、Skills 和额外 Meta
 各占独立 JSON 列，名称独立存列，初始为“新对话”。显式 Continue 先把请求模型写入 Meta，Queue 则不保存或覆盖模型。
 两条路径都会在 Turn 真正开始时重新读取 Meta，随后只读打开 `providers.sqlite`，创建只供该 Turn 全部 Step 共用的
@@ -104,7 +101,7 @@ Electron 入口向模型提供六个文件工具的定义。`SessionRuntimePorts
 `projectId` 是对应 `sessions/<project-id>` 分组目录的 UUID 字符串，default 分组使用 `"default"`；前两个入口在
 首批事件提交后返回 `{ sessionId, turn }`，追加入口返回 `{ sessionId, content }`，
 其中 start 与 continue 输入都包含 `{ content, model }`，enqueue 只包含 `{ content }`。Stop 入口幂等返回
-`{ sessionId }`。每个活动 `SessionRuntimePorts` 中的所有 Turn / Loop 共享同一取消信号；
+`{ sessionId }`。每个活动 `SessionRuntime` 中的所有 Turn / Loop 共享同一取消信号；
 取消后不再消费后续内存 Queue。主进程后台消费
 Session 事件流，并预留了 Renderer 事件筛选与发送边界；具体筛选名单和 Renderer wire shape 尚未确定。
 
@@ -242,6 +239,7 @@ src/                                 Electron 外壳
 │  ├─ index.ts                       startElectronApp、Project SessionRuntime 工厂与生命周期端口
 │  ├─ model-adapters.ts              每 Turn 从 Provider 数据库读取并创建单个模型 Adapter
 │  ├─ project-context.ts             workspace、AGENTS.md 与 YAML Skill baseline 解析
+│  ├─ session-runtime-global.ts      进程级 Project、模型与工具能力
 │  ├─ token-estimator.ts             Skill / MCP 元信息的本地 Token 粗估
 │  ├─ config-files.ts                .nicode 初始化与 V2 全局配置读取
 │  ├─ config-schema.ts               全局配置的 V2 字段检查
@@ -266,7 +264,7 @@ runtime/                             Runtime 模块，各自含 src/ 与 test/
 │  ├─ src/
 │  │  ├─ index.ts                    模块入口
 │  │  ├─ loop.ts                     AgentLoop 的 Step 循环与工具小轮（阶段 6.1 / 6.4）
-│  │  └─ session-runtime.ts          Session 具体绑定、活动实例与新建/继续 Turn 入口
+│  │  └─ session-runtime.ts          单 Session 活动实例、新建/继续 Turn 与恢复
 │  └─ test/                          loop.test.ts / session-runtime.test.ts
 ├─ context/                          ContextBuilder / WindowManager / Compressor / Recovery / Projector / SurfaceBuilder
 ├─ model/
@@ -413,6 +411,7 @@ node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types t
 node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/main/workspace-store.test.ts
 node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/main/model-adapters.test.ts
 node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/main/project-context.test.ts
+node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/main/session-runtime-global.test.ts
 node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/main/file-access.test.ts
 node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/main/electron-windows.test.ts
 node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/main/index.test.ts

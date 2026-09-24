@@ -9,11 +9,7 @@ import type { ModelRef } from "../../runtime/model/src/types.ts"
 import { requireProjectId } from "../../runtime/session/src/project-id.ts"
 import type { ProjectId } from "../../runtime/session/src/project-id.ts"
 import type { SessionEvent, UserMessageInput } from "../../runtime/session/src/events.ts"
-import {
-  continueSession,
-  SessionRuntimePorts,
-  startNewSession,
-} from "../../runtime/agent/src/session-runtime.ts"
+import { SessionRuntime } from "../../runtime/agent/src/session-runtime.ts"
 import type {
   ContinueSessionInput,
   EnqueueSessionMessageInput,
@@ -51,7 +47,7 @@ export type HandleSessionCompletionFailure = (failure: SessionCompletionFailure)
 export type CreateSessionRuntime = (
   projectId: ProjectId,
   sessionId: string,
-) => SessionRuntimePorts
+) => SessionRuntime
 
 /** SessionEvent 到最终 Renderer 事件之间尚待确定的筛选与发送边界。 */
 export interface SessionEventForwardingPort {
@@ -82,19 +78,19 @@ export function registerSessionIpcHandlers(
   onCompletionFailure: HandleSessionCompletionFailure,
   eventForwarding: SessionEventForwardingPort = NO_SESSION_EVENT_FORWARDING,
 ): void {
-  const activeSessions = new Map<string, SessionRuntimePorts>()
+  const activeSessions = new Map<string, SessionRuntime>()
 
   ipcMain.handle(SESSION_IPC_CHANNELS.startNewSession, async (_event, rawProjectId, rawInput) => {
     const projectId = requireProjectId(rawProjectId)
     const input = requireUserMessageInput(rawInput)
     let sessionId: string
-    do sessionId = SessionRuntimePorts.createSessionId()
+    do sessionId = SessionRuntime.createSessionId()
     while (activeSessions.has(sessionKey(projectId, sessionId)))
 
     const key = sessionKey(projectId, sessionId)
     const runtime = createAndRegisterRuntime(projectId, sessionId, activeSessions, createRuntime)
     try {
-      const started = await startNewSession(input, runtime)
+      const started = await runtime.startNewSession(input)
       const processing = runtime.processMessageQueue(started)
       observeActiveRuntime(
         runtime,
@@ -126,7 +122,7 @@ export function registerSessionIpcHandlers(
 
       const runtime = createAndRegisterRuntime(projectId, sessionId, activeSessions, createRuntime)
       try {
-        const started = await continueSession(input, runtime)
+        const started = await runtime.continueSession(input)
         const processing = runtime.processMessageQueue(started)
         observeActiveRuntime(
           runtime,
@@ -174,9 +170,9 @@ export function registerSessionIpcHandlers(
 function createAndRegisterRuntime(
   projectId: ProjectId,
   sessionId: string,
-  activeSessions: Map<string, SessionRuntimePorts>,
+  activeSessions: Map<string, SessionRuntime>,
   createRuntime: CreateSessionRuntime,
-): SessionRuntimePorts {
+): SessionRuntime {
   const runtime = createRuntime(projectId, sessionId)
   if (runtime.sessionId !== sessionId) {
     runtime.close()
@@ -189,11 +185,11 @@ function createAndRegisterRuntime(
 }
 
 function observeActiveRuntime(
-  runtime: SessionRuntimePorts,
+  runtime: SessionRuntime,
   key: string,
   started: StartedSessionTurn,
   processing: SessionRuntimeProcessing,
-  activeSessions: Map<string, SessionRuntimePorts>,
+  activeSessions: Map<string, SessionRuntime>,
   onCompletionFailure: HandleSessionCompletionFailure,
   eventForwarding: SessionEventForwardingPort,
 ): void {
@@ -215,7 +211,7 @@ function observeActiveRuntime(
 
 async function consumeSessionEvents(
   events: AsyncIterable<SessionEvent>,
-  runtime: SessionRuntimePorts,
+  runtime: SessionRuntime,
   onCompletionFailure: HandleSessionCompletionFailure,
   eventForwarding: SessionEventForwardingPort,
 ): Promise<void> {
@@ -236,9 +232,9 @@ async function consumeSessionEvents(
 }
 
 function removeActiveRuntime(
-  runtime: SessionRuntimePorts,
+  runtime: SessionRuntime,
   key: string,
-  activeSessions: Map<string, SessionRuntimePorts>,
+  activeSessions: Map<string, SessionRuntime>,
 ): void {
   if (activeSessions.get(key) === runtime) {
     activeSessions.delete(key)

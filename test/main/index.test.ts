@@ -6,6 +6,7 @@ import { tmpdir } from "node:os"
 import { join, resolve, sep } from "node:path"
 
 import type { SessionCompletionFailure } from "../../src/main/index.ts"
+import type { SessionRuntimeGlobal } from "../../src/main/session-runtime-global.ts"
 import {
   startElectronApp,
 } from "../../src/main/index.ts"
@@ -199,13 +200,16 @@ function startupFixture(
     platform: "win32",
     sessionRuntime: {
       systemPrompt: "System prompt.",
-      resolveProjectContext: () => ({
-        workspaceInfo: "Default workspace.",
-        resolveCurrentBaseline: async () => baseline,
-      }),
-      estimateSkillTokens: (description) => description.length,
-      createTurnModelAdapter: async () => adapter,
-      executeTool: async () => ({ status: "success", content: [] }),
+      global: {
+        resolveProjectContext: () => ({
+          workspaceInfo: "Default workspace.",
+          resolveCurrentBaseline: async () => baseline,
+        }),
+        estimateSkillTokens: (description: string) => description.length,
+        createTurnModelAdapter: async () => adapter,
+        listToolDefinitions: () => [],
+        executeTool: async () => ({ status: "success", content: [] }),
+      } as unknown as SessionRuntimeGlobal,
     },
     onSessionCompletionFailure: () => {},
     ...overrides,
@@ -218,7 +222,7 @@ async function testRegistersIpcAndWindowLifecycle(): Promise<void> {
   await withTempProfile(async (profile) => {
     const fixture = startupFixture(profile)
     let adapterFactoryCalls = 0
-    fixture.options.sessionRuntime.createTurnModelAdapter = async () => {
+    fixture.options.sessionRuntime.global.createTurnModelAdapter = async () => {
       adapterFactoryCalls += 1
       throw new Error("启动阶段不得创建 Adapter")
     }
@@ -277,25 +281,28 @@ async function testCreatesProjectSessionRuntime(): Promise<void> {
     const fixture = startupFixture(profile, {
       sessionRuntime: {
         systemPrompt: "Injected system prompt.",
-        resolveProjectContext: (projectId) => ({
-          workspaceInfo: `Injected workspace info for ${projectId}.`,
-          resolveCurrentBaseline: async () => ({
-            agentsmd: {
-              path: join(profile, "AGENTS.md"),
-              hash: "injected-agents-hash",
-              content: "Injected AGENTS content.",
-            },
-            skills: {
-              content: "Injected skills content.",
-              entries: [],
-              descriptions: {},
-            },
-            mcp: [],
+        global: {
+          resolveProjectContext: (projectId: string) => ({
+            workspaceInfo: `Injected workspace info for ${projectId}.`,
+            resolveCurrentBaseline: async () => ({
+              agentsmd: {
+                path: join(profile, "AGENTS.md"),
+                hash: "injected-agents-hash",
+                content: "Injected AGENTS content.",
+              },
+              skills: {
+                content: "Injected skills content.",
+                entries: [],
+                descriptions: {},
+              },
+              mcp: [],
+            }),
           }),
-        }),
-        estimateSkillTokens: (description) => description.length,
-        createTurnModelAdapter: async () => adapter,
-        executeTool: async () => ({ status: "success", content: [] }),
+          estimateSkillTokens: (description: string) => description.length,
+          createTurnModelAdapter: async () => adapter,
+          listToolDefinitions: () => [],
+          executeTool: async () => ({ status: "success", content: [] }),
+        } as unknown as SessionRuntimeGlobal,
       },
       onSessionCompletionFailure: (failure) => { failures.push(failure) },
       sessionEventForwarding: {
@@ -374,22 +381,25 @@ async function testResolvesContextForEachProject(): Promise<void> {
     const fixture = startupFixture(profile, {
       sessionRuntime: {
         ...startupFixture(profile).options.sessionRuntime,
-        resolveProjectContext: (projectId) => {
-          requestedProjects.push(projectId)
-          return {
-            workspaceInfo: `Workspace ${projectId}`,
-            resolveCurrentBaseline: async () => ({
-              agentsmd: {
-                path: join(profile, `AGENTS-${projectId}.md`),
-                hash: `agents-${projectId}`,
-                content: `Rules ${projectId}`,
-              },
-              skills: { content: "", entries: [], descriptions: {} },
-              mcp: [],
-            }),
-          }
-        },
-        createTurnModelAdapter: async () => adapter,
+        global: {
+          ...startupFixture(profile).options.sessionRuntime.global,
+          resolveProjectContext: (projectId: string) => {
+            requestedProjects.push(projectId)
+            return {
+              workspaceInfo: `Workspace ${projectId}`,
+              resolveCurrentBaseline: async () => ({
+                agentsmd: {
+                  path: join(profile, `AGENTS-${projectId}.md`),
+                  hash: `agents-${projectId}`,
+                  content: `Rules ${projectId}`,
+                },
+                skills: { content: "", entries: [], descriptions: {} },
+                mcp: [],
+              }),
+            }
+          },
+          createTurnModelAdapter: async () => adapter,
+        } as unknown as SessionRuntimeGlobal,
       },
       sessionEventForwarding: {
         filterSessionEventForRenderer: (event) => event,
@@ -437,7 +447,10 @@ async function testForwardsSessionCompletionFailure(): Promise<void> {
     const fixture = startupFixture(profile, {
       sessionRuntime: {
         ...startupFixture(profile).options.sessionRuntime,
-        createTurnModelAdapter: async () => adapter,
+        global: {
+          ...startupFixture(profile).options.sessionRuntime.global,
+          createTurnModelAdapter: async () => adapter,
+        } as unknown as SessionRuntimeGlobal,
       },
       onSessionCompletionFailure: resolveFailure,
     })
@@ -461,9 +474,12 @@ async function testRejectsProjectContextBeforeSessionCreation(): Promise<void> {
     const fixture = startupFixture(profile, {
       sessionRuntime: {
         ...startupFixture(profile).options.sessionRuntime,
-        resolveProjectContext: () => {
-          throw new Error("Project context unavailable")
-        },
+        global: {
+          ...startupFixture(profile).options.sessionRuntime.global,
+          resolveProjectContext: () => {
+            throw new Error("Project context unavailable")
+          },
+        } as unknown as SessionRuntimeGlobal,
       },
     })
     await startElectronApp(fixture.options)

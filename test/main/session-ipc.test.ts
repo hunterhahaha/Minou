@@ -1,8 +1,10 @@
 import assert from "node:assert/strict"
 
 import { createAbortError } from "../../runtime/error/src/abort.ts"
-import { SessionRuntimePorts } from "../../runtime/agent/src/session-runtime.ts"
-import type { SessionRuntimeBindings } from "../../runtime/agent/src/session-runtime.ts"
+import { SessionRuntime } from "../../runtime/agent/src/session-runtime.ts"
+import type { SessionRuntimeGlobal } from "../../src/main/session-runtime-global.ts"
+import { join } from "node:path"
+import { tmpdir } from "node:os"
 import type { ModelAdapter, ModelRef } from "../../runtime/model/src/types.ts"
 import type { SessionEvent, SessionEventInput } from "../../runtime/session/src/events.ts"
 import {
@@ -50,9 +52,9 @@ class FakeIpcMain implements IpcMainHandlePort {
 
 interface RuntimeRecord {
   projectId: string
-  runtime: SessionRuntimePorts
+  runtime: SessionRuntime
   events: SessionEvent[]
-  batches: Array<Parameters<SessionRuntimeBindings["appendTurnStartAndUserMessage"]>[0]>
+  batches: Array<Parameters<SessionRuntime["appendTurnStartAndUserMessage"]>[0]>
 }
 
 function persistedEvent(sessionId: string, seq: number, input: SessionEventInput): SessionEvent {
@@ -78,7 +80,7 @@ function completedSessionEvents(sessionId: string): SessionEvent[] {
 }
 
 function runtimeHarness(options: { blockFirstLoop?: boolean; failInitialization?: boolean } = {}): {
-  createRuntime: (projectId: string, sessionId: string) => SessionRuntimePorts
+  createRuntime: (projectId: string, sessionId: string) => SessionRuntime
   records: Map<string, RuntimeRecord>
   loopStarted: Promise<void>
   releaseFirstLoop(): void
@@ -97,7 +99,7 @@ function runtimeHarness(options: { blockFirstLoop?: boolean; failInitialization?
   let resolveStoppedTurn!: () => void
   const stoppedTurnEnded = new Promise<void>((resolve) => { resolveStoppedTurn = resolve })
 
-  const createRuntime = (projectId: string, sessionId: string): SessionRuntimePorts => {
+  const createRuntime = (projectId: string, sessionId: string): SessionRuntime => {
     const events = sessionId === "existing-session" ? completedSessionEvents(sessionId) : []
     const batches: RuntimeRecord["batches"] = []
     let diskModel = structuredClone(MODEL)
@@ -118,10 +120,10 @@ function runtimeHarness(options: { blockFirstLoop?: boolean; failInitialization?
         return event
       },
     }
-    const bindings = {
+    const fake = {
       createSessionDirectory: async () => {},
       appendTurnStartAndUserMessage: async (
-        inputs: Parameters<SessionRuntimeBindings["appendTurnStartAndUserMessage"]>[0],
+        inputs: Parameters<SessionRuntime["appendTurnStartAndUserMessage"]>[0],
       ) => {
         batches.push(inputs)
         const start = persistedEvent(sessionId, events.length + 1, inputs[0])
@@ -168,8 +170,41 @@ function runtimeHarness(options: { blockFirstLoop?: boolean; failInitialization?
         executeTool: async () => { throw new Error("unexpected tool call") },
       }),
       repairPorts,
-    } as unknown as SessionRuntimeBindings
-    const runtime = new SessionRuntimePorts(sessionId, bindings)
+     }
+    const runtime = new SessionRuntime({
+      sessionId,
+      sessionDirectory: join(tmpdir(), sessionId),
+      projectGroupId: projectId,
+      databasePath: join(tmpdir(), "unused-events.sqlite"),
+      metaDatabasePath: join(tmpdir(), "unused-meta.sqlite"),
+      systemPrompt: "test",
+      global: {
+        resolveProjectContext: () => ({
+          workspaceInfo: "test",
+          resolveCurrentBaseline: async () => { throw new Error("unexpected baseline") },
+        }),
+        estimateSkillTokens: () => 0,
+        createTurnModelAdapter: async () => (await fake.createLoopOptions()).adapter,
+        listToolDefinitions: () => [],
+        executeTool: async () => { throw new Error("unexpected tool call") },
+      } as unknown as SessionRuntimeGlobal,
+    })
+    Object.assign(runtime, {
+      eventLog: {
+        readEvents: () => repairPorts.readEvents(),
+        appendEvent: (input: SessionEventInput) => repairPorts.appendEvent(input),
+        appendTurnStartAndUserMessage: fake.appendTurnStartAndUserMessage,
+      },
+      sessionState: {
+        initializeSession: () => repairPorts.initializeSession(),
+        repairDerivedState: () => repairPorts.repairDerivedState(),
+      },
+      createSessionDirectory: fake.createSessionDirectory,
+      prepareExistingTurn: fake.prepareExistingTurn,
+      writeCurrentModel: fake.writeCurrentModel,
+      readCurrentModel: fake.readCurrentModel,
+      buildContent: fake.buildContent,
+    })
     records.set(sessionId, { projectId, runtime, events, batches })
     return runtime
   }

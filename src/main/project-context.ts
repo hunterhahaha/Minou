@@ -26,10 +26,6 @@ import type {
 } from "../../runtime/session/src/session-state.ts"
 import { readDefaultWorkspace, readProjectWorkspace } from "./workspace-store.ts"
 import type { ProjectWorkspace } from "./workspace-store.ts"
-import type {
-  ResolveSessionRuntimeProjectContext,
-  SessionRuntimeProjectContext,
-} from "./index.ts"
 
 /** Project Context resolver 的固定进程级输入。 */
 export interface ProjectContextResolverOptions {
@@ -70,34 +66,20 @@ interface SkillRegistry {
 }
 
 /**
- * 创建按 UUID/default 分组身份解析真实文件系统上下文的同步工厂。
- *
- * @param options `.nicode` 根目录与共享 Token 估算器。
- * @returns 可直接传给 `ElectronStartupOptions.sessionRuntime.resolveProjectContext` 的函数。
- * @throws Error 当根目录不是绝对路径时立即抛出；具体 Project 错误在解析该 ID 时抛出。
- */
-export function createProjectContextResolver(
-  options: ProjectContextResolverOptions,
-): ResolveSessionRuntimeProjectContext {
-  if (!isAbsolute(options.rootDirectory)) {
-    throw new Error(`Project Context 根目录必须是绝对路径：${options.rootDirectory}`)
-  }
-
-  return (projectId) => resolveProjectContext(options, projectId)
-}
-
-/**
  * 同步读取一个 Project 的身份和路径，并建立其异步 baseline 来源。
  *
  * @param options `.nicode` 根目录与共享 Token 估算器。
  * @param projectId IPC 已校验的 UUID 或 default。
  * @returns 当前 Project 的模型可见工作区信息与 baseline 解析函数。
- * @throws Error 当 Project 目录或 workspace 目录不可用，或数据库中缺少对应项目配置时抛出。
+ * @throws Error 当根目录不是绝对路径、Project 目录或 workspace 目录不可用，或数据库中缺少对应项目配置时抛出。
  */
-function resolveProjectContext(
+export function resolveProjectContext(
   options: ProjectContextResolverOptions,
   projectId: string,
-): SessionRuntimeProjectContext {
+) {
+  if (!isAbsolute(options.rootDirectory)) {
+    throw new Error(`Project Context 根目录必须是绝对路径：${options.rootDirectory}`)
+  }
   requireProjectId(projectId)
 
   const projectDirectory = join(options.rootDirectory, "sessions", projectId)
@@ -124,7 +106,7 @@ function resolveProjectContext(
       cwd,
       allowedRoots,
     ),
-    resolveCurrentBaseline: async () => {
+    resolveCurrentBaseline: async (): Promise<CurrentSessionBaseline> => {
       const [agentsContent, skills] = await Promise.all([
         readOptionalTextFile(agentsMdPath, "AGENTS.md"),
         resolveEffectiveSkills(

@@ -3,7 +3,10 @@ import assert from "node:assert/strict"
 import type { ModelAdapter, ModelRef } from "../../model/src/types.ts"
 import type { SessionEvent, SessionEventInput } from "../../session/src/events.ts"
 import type { ToolExecutionContext, ToolResult } from "../../tools/src/types.ts"
-import { SessionRuntimePorts, startNewSession, type SessionRuntimeBindings } from "../src/session-runtime.ts"
+import { SessionRuntime } from "../src/session-runtime.ts"
+import type { SessionRuntimeGlobal } from "../../../src/main/session-runtime-global.ts"
+import { join } from "node:path"
+import { tmpdir } from "node:os"
 
 const MODEL: ModelRef = { providerId: "p", protocol: "responses", modelId: "m" }
 const MESSAGE = [{ type: "text" as const, text: "test" }]
@@ -15,7 +18,7 @@ async function run(scenario: Scenario): Promise<SessionEvent[]> {
   const sessionId = `file-turn-${scenario}`
   const events: SessionEvent[] = []
   let requestCount = 0
-  let ports!: SessionRuntimePorts
+  let ports!: SessionRuntime
   const append = async (input: SessionEventInput): Promise<SessionEvent> => {
     const event = { ...input, sessionId, eventId: `event-${events.length + 1}`, seq: events.length + 1, createdAt: "2026-09-24T00:00:00Z" } as SessionEvent
     events.push(event)
@@ -42,7 +45,7 @@ async function run(scenario: Scenario): Promise<SessionEvent[]> {
       yield { type: "stream_end", completion: "tool_calls" }
     },
   }
-  const bindings = {
+  const fake = {
     projectGroupId: "default",
     repairPorts: { appendEvent: append, initializeSession: async () => {}, readEvents: async () => events, repairDerivedState: async () => {} },
     createSessionDirectory: async () => {},
@@ -69,9 +72,42 @@ async function run(scenario: Scenario): Promise<SessionEvent[]> {
         return { status: "success", content: [{ type: "text", text: "ok" }] }
       },
     }),
-  } as unknown as SessionRuntimeBindings
-  ports = new SessionRuntimePorts(sessionId, bindings)
-  const started = await startNewSession({ content: MESSAGE, model: MODEL }, ports)
+  }
+  const resources = await fake.createLoopOptions()
+  ports = new SessionRuntime({
+    sessionId,
+    sessionDirectory: join(tmpdir(), sessionId),
+    projectGroupId: "default",
+    databasePath: join(tmpdir(), "unused-events.sqlite"),
+    metaDatabasePath: join(tmpdir(), "unused-meta.sqlite"),
+    systemPrompt: "test",
+    global: {
+      resolveProjectContext: () => ({
+        workspaceInfo: "test",
+        resolveCurrentBaseline: async () => { throw new Error("unexpected baseline") },
+      }),
+      estimateSkillTokens: () => 0,
+      createTurnModelAdapter: async () => adapter,
+      listToolDefinitions: () => [],
+      executeTool: resources.executeTool,
+    } as unknown as SessionRuntimeGlobal,
+  })
+  Object.assign(ports, {
+    eventLog: {
+      readEvents: fake.repairPorts.readEvents,
+      appendEvent: fake.repairPorts.appendEvent,
+      appendTurnStartAndUserMessage: fake.appendTurnStartAndUserMessage,
+    },
+    sessionState: {
+      initializeSession: fake.repairPorts.initializeSession,
+      repairDerivedState: fake.repairPorts.repairDerivedState,
+    },
+    createSessionDirectory: fake.createSessionDirectory,
+    writeCurrentModel: fake.writeCurrentModel,
+    readCurrentModel: fake.readCurrentModel,
+    buildContent: fake.buildContent,
+  })
+  const started = await ports.startNewSession({ content: MESSAGE, model: MODEL })
   if (scenario === "error") await assert.rejects(started.completion, /tool failed/)
   else await started.completion
   return events

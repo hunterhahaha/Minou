@@ -9,7 +9,7 @@
  *   session-runtime.ts   单 Session 活动实例、首次 / 继续入口、Queue 与恢复
  *
  * 当前已实现 `runAgentLoop` 的正常模型请求及工具小轮，并提供 SessionRuntime 的两个入口
- * 与 Event Log 确定性恢复。SessionRuntimeBindings 已提供具体文件系统实现，负责 Turn 首批事件、
+ * 与 Event Log 确定性恢复。SessionRuntime 活动实例直接负责 Turn 首批事件、
  * AGENTS.md / Skill 增量、磁盘 currentModel 读写、Event Log 上下文回放和按 Turn Adapter 资源装配；
  * 当前固定基线仍通过已有解析函数提供。
  * Queue 与最小 Turn 收尾已经接入；压缩、运行期 Usage 记账、
