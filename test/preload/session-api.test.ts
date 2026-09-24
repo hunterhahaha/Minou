@@ -7,6 +7,7 @@ import {
   NICODE_PRELOAD_GLOBAL,
   SESSION_IPC_CHANNELS,
   STARTUP_DATA_IPC_CHANNELS,
+  PROJECT_IPC_CHANNELS,
 } from "../../src/preload/session-api.ts"
 import type {
   ContextBridgePort,
@@ -37,6 +38,13 @@ async function testCallsFixedChannels(): Promise<void> {
       if (channel === STARTUP_DATA_IPC_CHANNELS.listProviders) {
         return [{ providerId: "provider-1", name: "Provider", models: [{ modelId: "model-1", name: "model-1" }] }]
       }
+      if (channel === PROJECT_IPC_CHANNELS.selectDirectory) return { path: "C:\\Work", name: "Work" }
+      if (channel === PROJECT_IPC_CHANNELS.createProject) {
+        return { projectId: PROJECT_ID, name: "Project", updatedAt: "2026-09-04T00:00:00Z",
+          directories: [], sessions: [] }
+      }
+      if (channel === PROJECT_IPC_CHANNELS.addProjectDirectory) return { success: true }
+      if (channel === PROJECT_IPC_CHANNELS.removeProjectDirectory) return { success: false, error: "不存在" }
       if (channel === SESSION_IPC_CHANNELS.startNewSession) {
         return { sessionId: "new-session", turn: 1 }
       }
@@ -52,6 +60,15 @@ async function testCallsFixedChannels(): Promise<void> {
   const api = createSessionApi(ipcRenderer)
 
   assert.equal(Object.isFrozen(api), true)
+  assert.deepEqual(await api.selectDirectory(), { path: "C:\\Work", name: "Work" })
+  assert.deepEqual(await api.createProject("Project"), {
+    projectId: PROJECT_ID, name: "Project", updatedAt: "2026-09-04T00:00:00Z",
+    directories: [], sessions: [],
+  })
+  assert.deepEqual(await api.addProjectDirectory(PROJECT_ID, "C:\\Work"), { success: true })
+  assert.deepEqual(await api.removeProjectDirectory(PROJECT_ID, "C:\\Work"), {
+    success: false, error: "不存在",
+  })
   assert.deepEqual(await api.listProjects(), [{
     projectId: PROJECT_ID, name: "Project", updatedAt: "2026-09-04T00:00:00Z",
     directories: ["G:\\code\\NiCode"], sessions: [],
@@ -79,6 +96,10 @@ async function testCallsFixedChannels(): Promise<void> {
     { sessionId: "existing-session" },
   )
   assert.deepEqual(calls, [
+    { channel: PROJECT_IPC_CHANNELS.selectDirectory, args: [] },
+    { channel: PROJECT_IPC_CHANNELS.createProject, args: ["Project", undefined] },
+    { channel: PROJECT_IPC_CHANNELS.addProjectDirectory, args: [PROJECT_ID, "C:\\Work"] },
+    { channel: PROJECT_IPC_CHANNELS.removeProjectDirectory, args: [PROJECT_ID, "C:\\Work"] },
     { channel: STARTUP_DATA_IPC_CHANNELS.listProjects, args: [] },
     { channel: STARTUP_DATA_IPC_CHANNELS.listDefaultSessions, args: [] },
     { channel: STARTUP_DATA_IPC_CHANNELS.listProviders, args: [] },
@@ -119,11 +140,19 @@ async function testExposesOnlyNiCodeApi(): Promise<void> {
   assert.equal(exposedApi, api)
   assert.deepEqual(
     Object.keys(exposedApi as NiCodePreloadApi).sort(),
-    ["continueSession", "enqueueSessionMessage", "listDefaultSessions", "listProjects", "listProviders", "startNewSession", "stopSession"],
+    ["addProjectDirectory", "continueSession", "createProject", "enqueueSessionMessage", "listDefaultSessions", "listProjects", "listProviders", "removeProjectDirectory", "selectDirectory", "startNewSession", "stopSession"],
   )
 }
 
 async function testRejectsInvalidMainResponse(): Promise<void> {
+  const invalidDirectory = createSessionApi({ invoke: async () => ({ path: "" }) })
+  await assert.rejects(invalidDirectory.selectDirectory(), /无效的目录选择结果/)
+  const canceled = createSessionApi({ invoke: async () => null })
+  assert.equal(await canceled.selectDirectory(), null)
+  const invalidCreate = createSessionApi({ invoke: async () => ({ projectId: "7" }) })
+  await assert.rejects(invalidCreate.createProject("Project"), /无效的项目列表/)
+  const invalidChange = createSessionApi({ invoke: async () => ({ success: false }) })
+  await assert.rejects(invalidChange.addProjectDirectory(PROJECT_ID, "C:\\Work"), /无效的项目目录操作结果/)
   const invalidProjects = createSessionApi({ invoke: async () => [{ projectId: "7", sessions: [] }] })
   await assert.rejects(invalidProjects.listProjects(), /无效的项目列表/)
   const invalidSessions = createSessionApi({ invoke: async () => [{ sessionId: "x", name: "X" }] })

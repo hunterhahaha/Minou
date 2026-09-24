@@ -105,6 +105,12 @@ Turn 首批事件提交、AGENTS.md / Skill 增量、上下文回放、FIFO 用�
 取消后不再消费后续内存 Queue。主进程后台消费
 Session 事件流，并预留了 Renderer 事件筛选与发送边界；具体筛选名单和 Renderer wire shape 尚未确定。
 
+Project 管理通过 `window.nicode.selectDirectory()`、`createProject(name, directories?)`、
+`addProjectDirectory(projectId, directory)` 与 `removeProjectDirectory(projectId, directory)` 暴露。
+目录选择取消时返回 `null`；创建项目返回不含对话的 Project 摘要。目录增删返回
+`{ success: true }` 或 `{ success: false, error }`，传入的关联路径必须是现存绝对目录。
+工作区数据库时间统一保存为 UTC 的 ISO 8601 字符串。
+
 尚未开始的模块仍以 `index.ts` 占位；各自文件中注明待实现的职责。
 
 ### 三个 Adapter 的内容划分
@@ -409,6 +415,7 @@ node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types r
 node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/main/config-files.test.ts
 node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/main/provider-store.test.ts
 node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/main/workspace-store.test.ts
+node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/main/project-ipc.test.ts
 node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/main/model-adapters.test.ts
 node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/main/project-context.test.ts
 node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/main/session-runtime-global.test.ts
@@ -425,7 +432,7 @@ node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types t
 重复初始化、关联删除、事务回滚和损坏数据库错误。
 `test/main/workspace-store.test.ts` 验证 Project/default 配置顺序、重复初始化、更新和事务回滚。
 Project 配置新增 `updatedAt`，已有数据库在启动时为旧 Project 记录补入升级时间；
-对话索引沿用现有 `updatedAt` 字段。两者由工作区写入方提供，当前 Session 流程尚未更新对话索引。
+对话索引沿用现有 `updatedAt` 字段。写入方提供时间，工作区数据库写入时转换为 UTC；当前 Session 流程尚未更新对话索引。
 
 `runtime/credential/test/credential-store.test.ts` 验证空 Store、按 Provider 查找、输入复制、
 空字段与重复 Provider 拒绝，以及错误信息不泄露 API Key。

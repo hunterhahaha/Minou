@@ -7,7 +7,7 @@
 
 import { join } from "node:path"
 
-import { app, BrowserWindow, ipcMain } from "electron"
+import { app, BrowserWindow, dialog, ipcMain } from "electron"
 
 import { initNetworkDispatcher } from "../../runtime/network/src/dispatcher.ts"
 import {
@@ -52,6 +52,7 @@ async function main(): Promise<void> {
   await startElectronApp({
     app,
     ipcMain,
+    dialog,
     windows,
     configPaths: paths,
     sessionRuntime: {

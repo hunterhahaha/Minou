@@ -275,12 +275,19 @@ function saveGroup(
   version: 1,
   directories: readonly string[],
   sessions: readonly WorkspaceSession[],
+  insertOnly = false,
 ): void {
+  const utcUpdatedAt = updatedAt === null ? null : toUtcTimestamp(updatedAt, "Project.updatedAt")
+  const utcSessions = sessions.map((session) => ({
+    ...session,
+    createdAt: toUtcTimestamp(session.createdAt, "Session.createdAt"),
+    updatedAt: toUtcTimestamp(session.updatedAt, "Session.updatedAt"),
+  }))
   withDatabase(databasePath, false, (db) => transaction(db, () => {
     db.prepare(`INSERT INTO workspace_groups (group_id, version, name, updated_at)
-      VALUES (?, ?, ?, ?) ON CONFLICT(group_id) DO UPDATE SET
-      version = excluded.version, name = excluded.name, updated_at = excluded.updated_at`)
-      .run(groupId, version, name, updatedAt)
+      VALUES (?, ?, ?, ?) ${insertOnly ? "" : `ON CONFLICT(group_id) DO UPDATE SET
+      version = excluded.version, name = excluded.name, updated_at = excluded.updated_at`}`)
+      .run(groupId, version, name, utcUpdatedAt)
     db.prepare("DELETE FROM workspace_directories WHERE group_id = ?").run(groupId)
     db.prepare("DELETE FROM workspace_sessions WHERE group_id = ?").run(groupId)
     const insertDirectory = db.prepare(`INSERT INTO workspace_directories
@@ -288,10 +295,27 @@ function saveGroup(
     directories.forEach((directory, position) => insertDirectory.run(groupId, position, directory))
     const insertSession = db.prepare(`INSERT INTO workspace_sessions
       (group_id, position, session_id, name, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`)
-    sessions.forEach((session, position) => insertSession.run(
+    utcSessions.forEach((session, position) => insertSession.run(
       groupId, position, session.id, session.name, session.createdAt, session.updatedAt,
     ))
   }))
+}
+
+/**
+ * 将带时区的 ISO 时间转换为数据库统一使用的 UTC 时间。
+ * @param value 写入方提供的时间。
+ * @param field 报错时使用的字段名称。
+ * @returns 以 Z 结尾的 ISO 8601 时间。
+ * @throws TypeError 当时间不是带时区的有效 ISO 时间时抛出。
+ */
+function toUtcTimestamp(value: string, field: string): string {
+  if (typeof value !== "string" ||
+      !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(value)) {
+    throw new TypeError(`${field} 必须是带时区的 ISO 8601 时间`)
+  }
+  const time = new Date(value)
+  if (!Number.isFinite(time.getTime())) throw new TypeError(`${field} 不是有效时间`)
+  return value.endsWith("Z") ? value : time.toISOString()
 }
 
 /**
@@ -306,6 +330,21 @@ export function saveProjectWorkspace(databasePath: string, workspace: ProjectWor
   saveGroup(
     databasePath, workspace.id, workspace.name, workspace.updatedAt,
     workspace.version, workspace.directories, workspace.sessions,
+  )
+}
+
+/**
+ * 仅插入新 Project；已有相同 ID 时失败，不覆盖原有分组。
+ * @param databasePath `.nicode/workspace.sqlite` 的绝对路径。
+ * @param workspace 已准备好 ID、名称、目录和 UTC 时间的项目。
+ * @throws Error 当 ID 已存在或数据库写入失败时抛出。
+ */
+export function insertProjectWorkspace(databasePath: string, workspace: ProjectWorkspace): void {
+  if (workspace.id === "default") throw new TypeError("Project ID 不能是 default")
+  requireProjectId(workspace.id)
+  saveGroup(
+    databasePath, workspace.id, workspace.name, workspace.updatedAt,
+    workspace.version, workspace.directories, workspace.sessions, true,
   )
 }
 

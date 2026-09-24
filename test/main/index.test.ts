@@ -24,6 +24,7 @@ import { initializeSessionMetaDatabase } from "../../runtime/session/src/meta-st
 import {
   SESSION_IPC_CHANNELS,
   STARTUP_DATA_IPC_CHANNELS,
+  PROJECT_IPC_CHANNELS,
 } from "../../src/preload/session-api.ts"
 import type { StartedSessionResponse } from "../../src/preload/session-api.ts"
 
@@ -189,6 +190,7 @@ function startupFixture(
   const options: ElectronStartupOptions = {
     app,
     ipcMain,
+    dialog: { showOpenDialog: async () => ({ canceled: true, filePaths: [] }) },
     windows,
     configPaths: {
       rootDir: join(profile, ".nicode"),
@@ -239,6 +241,10 @@ async function testRegistersIpcAndWindowLifecycle(): Promise<void> {
       STARTUP_DATA_IPC_CHANNELS.listProjects,
       STARTUP_DATA_IPC_CHANNELS.listDefaultSessions,
       STARTUP_DATA_IPC_CHANNELS.listProviders,
+      PROJECT_IPC_CHANNELS.selectDirectory,
+      PROJECT_IPC_CHANNELS.createProject,
+      PROJECT_IPC_CHANNELS.addProjectDirectory,
+      PROJECT_IPC_CHANNELS.removeProjectDirectory,
     ])
 
     fixture.app.emit("activate")

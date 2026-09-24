@@ -32,6 +32,23 @@ export const STARTUP_DATA_IPC_CHANNELS = {
   listProviders: "nicode:data:providers",
 } as const
 
+/** Project 创建和目录操作的固定 IPC channel。 */
+export const PROJECT_IPC_CHANNELS = {
+  selectDirectory: "nicode:project:select-directory",
+  createProject: "nicode:project:create",
+  addProjectDirectory: "nicode:project:add-directory",
+  removeProjectDirectory: "nicode:project:remove-directory",
+} as const
+
+/** 系统目录选择窗口返回的目录。 */
+export interface DirectorySelection {
+  path: string
+  name: string
+}
+
+/** 关联目录变更的确认或失败原因。 */
+export type ProjectDirectoryResult = { success: true } | { success: false; error: string }
+
 /** 页面列表中的对话索引摘要。 */
 export interface SessionSummary {
   /** 对话目录使用的身份。 */
@@ -88,6 +105,29 @@ export interface StoppedSessionResponse {
 
 /** 暴露为 `window.nicode` 的 Session 命令与启动页面查询。 */
 export interface NiCodePreloadApi {
+  /** @returns 选中的目录及名称；用户取消时为 null。 */
+  selectDirectory(): Promise<DirectorySelection | null>
+  /**
+   * 创建没有关联对话的新 Project。
+   * @param name 非空的项目名称。
+   * @param directories 可选的现存绝对目录路径列表。
+   * @returns 新项目的页面摘要。
+   */
+  createProject(name: string, directories?: string[]): Promise<ProjectSummary>
+  /**
+   * 将现存目录追加到 Project 关联列表末尾。
+   * @param projectId Project UUID。
+   * @param directory 现存目录的绝对路径。
+   * @returns 成功确认或失败原因。
+   */
+  addProjectDirectory(projectId: string, directory: string): Promise<ProjectDirectoryResult>
+  /**
+   * 从 Project 的关联列表中移除目录。
+   * @param projectId Project UUID。
+   * @param directory 现存目录的绝对路径。
+   * @returns 成功确认或失败原因。
+   */
+  removeProjectDirectory(projectId: string, directory: string): Promise<ProjectDirectoryResult>
   /**
    * 读取非 default Project 的当前页面摘要。
    * @returns Project 及其目录和对话索引摘要。
@@ -168,6 +208,22 @@ export interface ContextBridgePort {
 
 export function createSessionApi(ipcRenderer: IpcRendererInvokePort): NiCodePreloadApi {
   return Object.freeze({
+    async selectDirectory(): Promise<DirectorySelection | null> {
+      return requireDirectorySelection(await ipcRenderer.invoke(PROJECT_IPC_CHANNELS.selectDirectory))
+    },
+
+    async createProject(name: string, directories?: string[]): Promise<ProjectSummary> {
+      return requireProjectSummary(await ipcRenderer.invoke(PROJECT_IPC_CHANNELS.createProject, name, directories))
+    },
+
+    async addProjectDirectory(projectId: string, directory: string): Promise<ProjectDirectoryResult> {
+      return requireProjectDirectoryResult(await ipcRenderer.invoke(PROJECT_IPC_CHANNELS.addProjectDirectory, projectId, directory))
+    },
+
+    async removeProjectDirectory(projectId: string, directory: string): Promise<ProjectDirectoryResult> {
+      return requireProjectDirectoryResult(await ipcRenderer.invoke(PROJECT_IPC_CHANNELS.removeProjectDirectory, projectId, directory))
+    },
+
     async listProjects(): Promise<ProjectSummary[]> {
       return requireProjectSummaries(await ipcRenderer.invoke(STARTUP_DATA_IPC_CHANNELS.listProjects))
     },
@@ -319,6 +375,31 @@ function requireProjectSummaries(value: unknown): ProjectSummary[] {
       typeof session.name === "string" && typeof session.updatedAt === "string")
   )) throw new TypeError("主进程返回了无效的项目列表")
   return value as ProjectSummary[]
+}
+
+/** @returns 已检查的单个 Project 摘要；无效时抛出 TypeError。 */
+function requireProjectSummary(value: unknown): ProjectSummary {
+  return requireProjectSummaries([value])[0]
+}
+
+/** @returns 已检查的目录选择结果；取消时为 null。 */
+function requireDirectorySelection(value: unknown): DirectorySelection | null {
+  if (value === null) return null
+  if (!isRecord(value) || typeof value.path !== "string" ||
+      typeof value.name !== "string" || value.path.length === 0 || value.name.length === 0) {
+    throw new TypeError("主进程返回了无效的目录选择结果")
+  }
+  return { path: value.path, name: value.name }
+}
+
+/** @returns 已检查的目录变更结果。 */
+function requireProjectDirectoryResult(value: unknown): ProjectDirectoryResult {
+  if (isRecord(value) && value.success === true) return { success: true }
+  if (isRecord(value) && value.success === false &&
+      typeof value.error === "string" && value.error.length > 0) {
+    return { success: false, error: value.error }
+  }
+  throw new TypeError("主进程返回了无效的项目目录操作结果")
 }
 
 /**
