@@ -21,6 +21,7 @@ class FakeBrowserWindow {
   readonly listeners = new Map<string, Listener>()
   readonly options: BrowserWindowConstructorOptions
   loadedPath: string | undefined
+  loadedUrl: string | undefined
   showCalls = 0
 
   constructor(options: BrowserWindowConstructorOptions) {
@@ -43,6 +44,11 @@ class FakeBrowserWindow {
 
   async loadFile(path: string): Promise<void> {
     this.loadedPath = path
+    if (FakeBrowserWindow.loadFailure !== undefined) throw FakeBrowserWindow.loadFailure
+  }
+
+  async loadURL(url: string): Promise<void> {
+    this.loadedUrl = url
     if (FakeBrowserWindow.loadFailure !== undefined) throw FakeBrowserWindow.loadFailure
   }
 
@@ -73,6 +79,12 @@ async function testCreatesAndLoadsWindow(): Promise<void> {
   const window = FakeBrowserWindow.instances[0]
   assert.equal(windows.hasOpenWindows(), true)
   assert.equal(window.loadedPath, rendererHtmlPath)
+  assert.equal(window.options.backgroundColor, "#fbfcfe")
+  assert.equal(window.options.titleBarStyle, "hidden")
+  assert.deepEqual(window.options.titleBarOverlay, {
+    color: "#f6f8fb", symbolColor: "#626c78", height: 40,
+  })
+  assert.equal(window.options.autoHideMenuBar, true)
   assert.deepEqual(window.options.webPreferences, {
     preload: preloadPath,
     contextIsolation: true,
@@ -82,6 +94,27 @@ async function testCreatesAndLoadsWindow(): Promise<void> {
   window.emit("ready-to-show")
   assert.equal(window.showCalls, 1)
   assert.deepEqual(failures, [])
+}
+
+/** 验证开发模式使用 Vite 地址加载 Renderer。 */
+async function testLoadsRendererFromDevServer(): Promise<void> {
+  FakeBrowserWindow.instances = []
+  FakeBrowserWindow.loadFailure = undefined
+  const rendererUrl = "http://127.0.0.1:5173/"
+  const windows = createElectronWindowManager(
+    FakeBrowserWindow as unknown as BrowserWindowConstructorPort,
+    {
+      preloadPath: join(process.cwd(), "dist", "src", "preload", "index.js"),
+      rendererHtmlPath: join(process.cwd(), "dist", "src", "renderer", "index.html"),
+      rendererUrl,
+      onWindowLoadFailure: () => {},
+    },
+  )
+
+  windows.createMainWindow()
+  await Promise.resolve()
+  assert.equal(FakeBrowserWindow.instances[0].loadedUrl, rendererUrl)
+  assert.equal(FakeBrowserWindow.instances[0].loadedPath, undefined)
 }
 
 /** 验证路径检查和异步 loadFile 失败出口。 */
@@ -115,6 +148,7 @@ async function testRejectsRelativePathsAndForwardsLoadFailure(): Promise<void> {
 /** 依次运行 BrowserWindow 适配断言。 */
 async function main(): Promise<void> {
   await testCreatesAndLoadsWindow()
+  await testLoadsRendererFromDevServer()
   await testRejectsRelativePathsAndForwardsLoadFailure()
   console.log("electron-windows.test.ts: BrowserWindow 适配断言通过")
 }

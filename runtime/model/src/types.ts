@@ -45,8 +45,8 @@ export interface ModelConfig {
   /** 该模型使用的协议。 */
   protocol: Protocol
 
-  /** 模型声明的上下文窗口；缺失时由 `resolveContextWindow` 使用 Runtime 默认值。 */
-  contextWindow?: number
+  /** 已解析的有效上下文窗口；构造运行时配置前由 `resolveContextWindow` 补齐默认值。 */
+  contextWindow: number
   /** 协议请求允许的最大输出 Token；是否使用由具体 Adapter 决定。 */
   maxOutputTokens?: number
 
@@ -65,13 +65,13 @@ export interface ModelConfig {
 export const DEFAULT_CONTEXT_WINDOW = 256000
 
 /**
- * 模型的有效上下文窗口：`contextWindow ?? 256000`（第 6 节，已定义）。
+ * 从可缺省的模型记录解析有效上下文窗口：`contextWindow ?? 256000`（第 6 节）。
  * Skill / MCP 预算与压缩阈值均使用同一个有效窗口值。
  *
- * @param model 只需提供可选 `contextWindow` 的模型配置或配置片段。
- * @returns 配置声明的窗口，或配置缺失时的 Runtime 默认窗口。
+ * @param model 可缺省 `contextWindow` 的 Provider 模型记录或配置片段。
+ * @returns 记录中的窗口，或缺失时的 Runtime 默认窗口；返回值用于填充必需的 `ModelConfig.contextWindow`。
  */
-export function resolveContextWindow(model: Pick<ModelConfig, "contextWindow">): number {
+export function resolveContextWindow(model: { contextWindow?: number }): number {
   return model.contextWindow ?? DEFAULT_CONTEXT_WINDOW
 }
 

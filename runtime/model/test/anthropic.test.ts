@@ -36,6 +36,7 @@ const MODEL: ModelConfig = {
   id: "claude-test",
   providerId: "anthropic",
   protocol: "anthropic_messages",
+  contextWindow: 256000,
 }
 
 /** 离线转换入口：协议事件数组 → 统一事件流（真实 SDK 的流本身就是异步可迭代的）。 */

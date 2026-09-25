@@ -34,6 +34,7 @@ const MODEL: ModelConfig = {
   id: "test-model",
   providerId: "test-provider",
   protocol: "anthropic_messages",
+  contextWindow: 256000,
 }
 
 function requestWith(

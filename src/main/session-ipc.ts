@@ -21,13 +21,6 @@ import {
 } from "../preload/session-api.ts"
 import type { StartedSessionResponse, StoppedSessionResponse } from "../preload/session-api.ts"
 
-export interface IpcMainHandlePort {
-  handle(
-    channel: string,
-    listener: (event: unknown, ...args: unknown[]) => unknown,
-  ): void
-}
-
 export interface SessionCompletionFailure {
   sessionId: string
   turn: number
@@ -73,7 +66,7 @@ const NO_SESSION_EVENT_FORWARDING: SessionEventForwardingPort = {
 
 /** 注册一次；Electron 启动装配负责传入 ipcMain、Runtime 工厂和后台错误出口。 */
 export function registerSessionIpcHandlers(
-  ipcMain: IpcMainHandlePort,
+  ipcMain: Electron.IpcMain,
   createRuntime: CreateSessionRuntime,
   onCompletionFailure: HandleSessionCompletionFailure,
   eventForwarding: SessionEventForwardingPort = NO_SESSION_EVENT_FORWARDING,

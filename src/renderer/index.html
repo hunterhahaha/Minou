@@ -4,63 +4,13 @@
     <meta charset="UTF-8">
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:"
+      content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:"
     >
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>NiCode</title>
-    <style>
-      :root {
-        color-scheme: dark;
-        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-        background: #111318;
-        color: #edf0f7;
-      }
-
-      body {
-        min-height: 100vh;
-        margin: 0;
-        display: grid;
-        place-items: center;
-        background:
-          radial-gradient(circle at 20% 20%, rgb(71 98 255 / 18%), transparent 34rem),
-          #111318;
-      }
-
-      main {
-        width: min(36rem, calc(100vw - 4rem));
-        padding: 2.5rem;
-        border: 1px solid #2d3341;
-        border-radius: 1.25rem;
-        background: rgb(24 27 35 / 88%);
-        box-shadow: 0 1.5rem 5rem rgb(0 0 0 / 30%);
-      }
-
-      p {
-        margin: 0;
-        color: #9ba5ba;
-        line-height: 1.65;
-      }
-
-      h1 {
-        margin: 0.4rem 0 1rem;
-        font-size: clamp(2rem, 7vw, 3.25rem);
-        letter-spacing: -0.04em;
-      }
-
-      .eyebrow {
-        color: #8ea1ff;
-        font-size: 0.78rem;
-        font-weight: 700;
-        letter-spacing: 0.16em;
-        text-transform: uppercase;
-      }
-    </style>
   </head>
   <body>
-    <main>
-      <p class="eyebrow">NiCode Runtime</p>
-      <h1>桌面运行时已启动</h1>
-      <p>Electron 主进程、Session IPC 与本地 Runtime 已完成装配。交互式工作区界面将在后续 UI 阶段接入。</p>
-    </main>
+    <div id="root"></div>
+    <script type="module" src="/main.tsx"></script>
   </body>
 </html>

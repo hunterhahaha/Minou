@@ -8,6 +8,7 @@ import {
   SESSION_IPC_CHANNELS,
   STARTUP_DATA_IPC_CHANNELS,
   PROJECT_IPC_CHANNELS,
+  PROVIDER_IPC_CHANNELS,
 } from "../../src/preload/session-api.ts"
 import type {
   ContextBridgePort,
@@ -22,6 +23,8 @@ const MODEL: ModelRef = {
 }
 const CONTENT = [{ type: "text" as const, text: "你好" }]
 const PROJECT_ID = "00000000-0000-4000-8000-000000000017"
+const PROVIDER_MODEL = { modelId: "model-1", contextWindow: 256000, maxOutputTokens: 4096, supportsTools: true }
+const PROVIDER_REFERENCE = { providerId: "provider-1", modelId: "model-1" }
 
 async function testCallsFixedChannels(): Promise<void> {
   const calls: Array<{ channel: string; args: unknown[] }> = []
@@ -36,7 +39,16 @@ async function testCallsFixedChannels(): Promise<void> {
         return [{ sessionId: "default-1", name: "Default", updatedAt: "2026-09-03T00:00:00Z" }]
       }
       if (channel === STARTUP_DATA_IPC_CHANNELS.listProviders) {
-        return [{ providerId: "provider-1", name: "Provider", protocol: "responses", models: [{ modelId: "model-1", name: "model-1" }] }]
+        return [{
+          providerId: "provider-1", name: "Provider", protocol: "responses",
+          models: [{ modelId: "model-1", contextWindow: 256000, isDefault: true }],
+        }]
+      }
+      if (channel === PROVIDER_IPC_CHANNELS.createProvider) {
+        return {
+          providerId: "created-provider", name: "Created", protocol: "responses",
+          models: [{ modelId: "model-1", contextWindow: 256000, isDefault: false }],
+        }
       }
       if (channel === PROJECT_IPC_CHANNELS.selectDirectory) return { path: "C:\\Work", name: "Work" }
       if (channel === PROJECT_IPC_CHANNELS.createProject) {
@@ -77,8 +89,21 @@ async function testCallsFixedChannels(): Promise<void> {
     { sessionId: "default-1", name: "Default", updatedAt: "2026-09-03T00:00:00Z" },
   ])
   assert.deepEqual(await api.listProviders(), [{
-    providerId: "provider-1", name: "Provider", protocol: "responses", models: [{ modelId: "model-1", name: "model-1" }],
+    providerId: "provider-1", name: "Provider", protocol: "responses", models: [{
+      modelId: "model-1", contextWindow: 256000, isDefault: true,
+    }],
   }])
+  assert.deepEqual(await api.createProvider("Created", "api-key", "responses", "https://example.com", [PROVIDER_MODEL]), {
+    providerId: "created-provider", name: "Created", protocol: "responses",
+    models: [{ modelId: "model-1", contextWindow: 256000, isDefault: false }],
+  })
+  await api.deleteProvider("provider-1")
+  await api.updateApiKey("provider-1", null)
+  await api.createModel("provider-1", PROVIDER_MODEL)
+  await api.updateModel(PROVIDER_REFERENCE, { contextWindow: 128000, supportsTools: null })
+  await api.deleteModel(PROVIDER_REFERENCE)
+  await api.setDefaultModel(PROVIDER_REFERENCE)
+  await api.setDefaultModel(null)
   assert.deepEqual(
     await api.startNewSession(PROJECT_ID, { content: CONTENT, model: MODEL }),
     { sessionId: "new-session", turn: 1 },
@@ -103,6 +128,17 @@ async function testCallsFixedChannels(): Promise<void> {
     { channel: STARTUP_DATA_IPC_CHANNELS.listProjects, args: [] },
     { channel: STARTUP_DATA_IPC_CHANNELS.listDefaultSessions, args: [] },
     { channel: STARTUP_DATA_IPC_CHANNELS.listProviders, args: [] },
+    {
+      channel: PROVIDER_IPC_CHANNELS.createProvider,
+      args: ["Created", "api-key", "responses", "https://example.com", [PROVIDER_MODEL]],
+    },
+    { channel: PROVIDER_IPC_CHANNELS.deleteProvider, args: ["provider-1"] },
+    { channel: PROVIDER_IPC_CHANNELS.updateApiKey, args: ["provider-1", null] },
+    { channel: PROVIDER_IPC_CHANNELS.createModel, args: ["provider-1", PROVIDER_MODEL] },
+    { channel: PROVIDER_IPC_CHANNELS.updateModel, args: [PROVIDER_REFERENCE, { contextWindow: 128000, supportsTools: null }] },
+    { channel: PROVIDER_IPC_CHANNELS.deleteModel, args: [PROVIDER_REFERENCE] },
+    { channel: PROVIDER_IPC_CHANNELS.setDefaultModel, args: [PROVIDER_REFERENCE] },
+    { channel: PROVIDER_IPC_CHANNELS.setDefaultModel, args: [null] },
     {
       channel: SESSION_IPC_CHANNELS.startNewSession,
       args: [PROJECT_ID, { content: CONTENT, model: MODEL }],
@@ -140,7 +176,7 @@ async function testExposesOnlyNiCodeApi(): Promise<void> {
   assert.equal(exposedApi, api)
   assert.deepEqual(
     Object.keys(exposedApi as NiCodePreloadApi).sort(),
-    ["addProjectDirectory", "continueSession", "createProject", "enqueueSessionMessage", "listDefaultSessions", "listProjects", "listProviders", "removeProjectDirectory", "selectDirectory", "startNewSession", "stopSession"],
+    ["addProjectDirectory", "continueSession", "createModel", "createProject", "createProvider", "deleteModel", "deleteProvider", "enqueueSessionMessage", "listDefaultSessions", "listProjects", "listProviders", "removeProjectDirectory", "selectDirectory", "setDefaultModel", "startNewSession", "stopSession", "updateApiKey", "updateModel"],
   )
 }
 
@@ -163,6 +199,11 @@ async function testRejectsInvalidMainResponse(): Promise<void> {
   await assert.rejects(missingProtocol.listProviders(), /无效的 Provider 列表/)
   const invalidProtocol = createSessionApi({ invoke: async () => [{ providerId: "p", name: "P", protocol: "invalid", models: [] }] })
   await assert.rejects(invalidProtocol.listProviders(), /无效的 Provider 列表/)
+  const missingDefaultMarker = createSessionApi({ invoke: async () => [{
+    providerId: "p", name: "P", protocol: "responses",
+    models: [{ modelId: "m", contextWindow: 256000 }],
+  }] })
+  await assert.rejects(missingDefaultMarker.listProviders(), /无效的 Provider 列表/)
   const api = createSessionApi({ invoke: async () => ({ sessionId: "", turn: 0 }) })
   await assert.rejects(
     api.startNewSession(PROJECT_ID, { content: CONTENT, model: MODEL }),

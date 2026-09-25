@@ -1,0 +1,501 @@
+/** Electron 工作区首屏：读取启动摘要并显示 default 分组的新聊天页。 */
+import { useEffect, useRef, useState } from "react"
+import { createRoot } from "react-dom/client"
+import {
+  IconChevronDown,
+  IconFolder,
+  IconFolderPlus,
+  IconFolders,
+  IconLayoutSidebarLeftCollapse,
+  IconLayoutSidebarLeftExpand,
+  IconMessageCirclePlus,
+  IconMessages,
+  IconPencilPlus,
+  IconPlus,
+  IconSend,
+  IconSettings,
+  IconX,
+} from "@tabler/icons-react"
+import type { DirectorySelection, ProjectSummary, ProviderSummary, SessionSummary } from "../preload/session-api.ts"
+import "./workspace.css"
+
+/** 一项启动数据的加载、成功或失败状态。 */
+type LoadState<T> = { status: "loading" } | { status: "ready"; value: T } | { status: "error" }
+/** 当前新聊天页面的工作区范围；项目范围用 Project ID 标识。 */
+type WorkspaceRoute =
+  | { page: "new-chat"; group: "default" }
+  | { page: "new-chat"; group: "project"; projectId: string }
+/** 本页可切换的权限展示状态；对话创建前仅保存在渲染进程。 */
+type Permission = "default" | "workspace-read-only" | "workspace-read-write" | "full-access"
+const permissionLabels: Record<Permission, string> = {
+  default: "默认", "workspace-read-only": "工作区只读",
+  "workspace-read-write": "工作区读写", "full-access": "完全访问",
+}
+const permissionOptions: Permission[] = ["workspace-read-only", "workspace-read-write", "full-access"]
+
+/**
+ * 从 Electron 窗口的 hash 地址读取当前新聊天分组。
+ * @param hash 浏览器当前的 hash 地址。
+ * @returns 有效的 default 或 Project 新聊天路由；其它地址回退到 default。
+ */
+function parseWorkspaceRoute(hash: string): WorkspaceRoute {
+  const segments = hash.replace(/^#\/?/, "").split("/").filter(Boolean)
+  if (segments[0] === "projects" && segments.length === 3 && segments[2] === "new-chat") {
+    try {
+      const projectId = decodeURIComponent(segments[1])
+      if (projectId !== "") return { page: "new-chat", group: "project", projectId }
+    } catch {
+      return { page: "new-chat", group: "default" }
+    }
+  }
+  return { page: "new-chat", group: "default" }
+}
+
+/**
+ * 将当前新聊天分组转成可在 file:// 与开发服务器下使用的 hash 地址。
+ * @param route 要显示的新聊天分组。
+ * @returns 对应的 hash 路由地址。
+ */
+function serializeWorkspaceRoute(route: WorkspaceRoute): string {
+  return route.group === "default"
+    ? "#/default/new-chat"
+    : `#/projects/${encodeURIComponent(route.projectId)}/new-chat`
+}
+
+/**
+ * 按持久化索引顺序显示一个分组的对话名称。
+ * @param props 已取得的对话摘要列表。
+ * @returns 只读的对话名称列表。
+ */
+function SessionList({ sessions }: { sessions: SessionSummary[] }) {
+  return <ul className="session-list">{sessions.map((session) =>
+    <li className="session-name" key={session.sessionId} title={session.name}>{session.name}</li>,
+  )}</ul>
+}
+
+/**
+ * 为单个启动数据区域显示加载状态或失败重试入口。
+ * @param props 数据状态和对应的重试操作。
+ * @returns 状态提示；成功时不渲染提示。
+ */
+function DataStatus({ state, retry }: { state: LoadState<unknown>; retry: () => void }) {
+  if (state.status === "loading") return <p className="data-status" role="status">加载中…</p>
+  if (state.status === "error") return <p className="data-status" role="alert">加载失败 <button className="retry-button" type="button" onClick={retry}>重试</button></p>
+  return null
+}
+
+/**
+ * 分别读取三份启动数据，并按 Figma 工作区原型显示与切换首屏状态。
+ * @returns 带独立加载状态的工作区首屏。
+ */
+function Workspace() {
+  const [projects, setProjects] = useState<LoadState<ProjectSummary[]>>({ status: "loading" })
+  const [defaultSessions, setDefaultSessions] = useState<LoadState<SessionSummary[]>>({ status: "loading" })
+  const [providers, setProviders] = useState<LoadState<ProviderSummary[]>>({ status: "loading" })
+  const [workspaceRoute, setWorkspaceRoute] = useState<WorkspaceRoute>(() => parseWorkspaceRoute(window.location.hash))
+  const [selectedModelKey, setSelectedModelKey] = useState<string | undefined>()
+  const [permission, setPermission] = useState<Permission>("default")
+  const [openMenu, setOpenMenu] = useState<"permission" | "model" | null>(null)
+  const [sidebarOpen, setSidebarOpen] = useState(true)
+  const [projectsOpen, setProjectsOpen] = useState(true)
+  const [chatsOpen, setChatsOpen] = useState(true)
+  const [expandedProjects, setExpandedProjects] = useState<Set<string>>(new Set())
+  const composerRef = useRef<HTMLTextAreaElement>(null)
+  const createdProjectsRef = useRef<ProjectSummary[]>([])
+  const [projectDialogOpen, setProjectDialogOpen] = useState(false)
+  const [projectName, setProjectName] = useState("")
+  const [projectDirectories, setProjectDirectories] = useState<DirectorySelection[]>([])
+  const [projectDialogError, setProjectDialogError] = useState<string | null>(null)
+  const [selectingProjectDirectory, setSelectingProjectDirectory] = useState(false)
+  const [creatingProject, setCreatingProject] = useState(false)
+
+  /** @returns 项目查询结束后的 Promise；失败会转成当前区域的错误状态。 */
+  async function loadProjects(): Promise<void> {
+    setProjects({ status: "loading" })
+    try {
+      const loaded = await window.nicode.listProjects()
+      const value = [...loaded]
+      for (const createdProject of createdProjectsRef.current) {
+        const existingIndex = value.findIndex((project) => project.projectId === createdProject.projectId)
+        if (existingIndex === -1) value.push(createdProject)
+        else value[existingIndex] = createdProject
+      }
+      setProjects({ status: "ready", value })
+      setExpandedProjects(new Set(value.length > 0 ? [value[0].projectId] : []))
+    } catch (error) {
+      console.error("加载项目列表失败", error)
+      setProjects({ status: "error" })
+    }
+  }
+
+  /** @returns default 对话查询结束后的 Promise；失败会转成当前区域的错误状态。 */
+  async function loadDefaultSessions(): Promise<void> {
+    setDefaultSessions({ status: "loading" })
+    try {
+      setDefaultSessions({ status: "ready", value: await window.nicode.listDefaultSessions() })
+    } catch (error) {
+      console.error("加载 default 对话列表失败", error)
+      setDefaultSessions({ status: "error" })
+    }
+  }
+
+  /** @returns Provider 查询结束后的 Promise；失败会转成当前区域的错误状态。 */
+  async function loadProviders(): Promise<void> {
+    setProviders({ status: "loading" })
+    try {
+      setProviders({ status: "ready", value: await window.nicode.listProviders() })
+    } catch (error) {
+      console.error("加载模型列表失败", error)
+      setProviders({ status: "error" })
+    }
+  }
+
+  /**
+   * 只切换一个项目索引的展开状态。
+   * @param projectId 项目数据库标识。
+   */
+  function toggleProject(projectId: string): void {
+    setExpandedProjects((current) => {
+      const next = new Set(current)
+      if (next.has(projectId)) next.delete(projectId)
+      else next.add(projectId)
+      return next
+    })
+  }
+
+  /**
+   * 切换新聊天的分组并同步到 Electron 窗口 URL。
+   * @param projectId 指定时表示项目分组；省略时表示 default 分组。
+   * @returns 更新当前路由时无返回值。
+   */
+  function navigateToNewChat(projectId?: string): void {
+    const route: WorkspaceRoute = projectId === undefined
+      ? { page: "new-chat", group: "default" }
+      : { page: "new-chat", group: "project", projectId }
+    setWorkspaceRoute(route)
+    setOpenMenu(null)
+    const hash = serializeWorkspaceRoute(route)
+    if (window.location.hash !== hash) window.location.hash = hash
+  }
+
+  /**
+   * 切换到指定分组的新聊天并聚焦任务输入框。
+   * @param projectId 指定时使用该项目；省略时使用 default 分组。
+   * @returns 输入框获得焦点时无返回值；已有草稿保持不变。
+   */
+  function focusNewChatComposer(projectId?: string): void {
+    navigateToNewChat(projectId)
+    composerRef.current?.focus()
+  }
+
+  /**
+   * 打开创建项目弹窗并开始一份空白表单。
+   * @returns 弹窗打开时无返回值。
+   */
+  function openProjectDialog(): void {
+    setOpenMenu(null)
+    setProjectName("")
+    setProjectDirectories([])
+    setProjectDialogError(null)
+    setProjectDialogOpen(true)
+  }
+
+  /**
+   * 关闭创建项目弹窗；项目创建提交期间保持弹窗打开。
+   * @returns 弹窗关闭时无返回值。
+   */
+  function closeProjectDialog(): void {
+    if (creatingProject) return
+    setProjectDialogOpen(false)
+    setProjectDirectories([])
+  }
+
+  /**
+   * 通过主进程系统目录选择器读取并追加项目关联目录；相同绝对路径只保留一次。
+   * @returns 用户选中目录或取消选择后无返回值。
+   */
+  async function selectProjectDirectory(): Promise<void> {
+    setProjectDialogError(null)
+    setSelectingProjectDirectory(true)
+    try {
+      const selection = await window.nicode.selectDirectory()
+      if (selection !== null) {
+        setProjectDirectories((current) => current.some((directory) => directory.path === selection.path)
+          ? current
+          : [...current, selection])
+      }
+    } catch (error) {
+      console.error("选择项目目录失败", error)
+      setProjectDialogError("选择目录失败，请重试。")
+    } finally {
+      setSelectingProjectDirectory(false)
+    }
+  }
+
+  /**
+   * 从当前创建项目表单的临时目录列表中移除指定绝对路径。
+   * @param path 要移除的目录绝对路径。
+   * @returns 更新临时目录列表时无返回值。
+   */
+  function removeProjectDirectory(path: string): void {
+    setProjectDirectories((current) => current.filter((directory) => directory.path !== path))
+  }
+
+  /**
+   * 创建项目并把主进程返回的摘要追加到当前侧栏列表。
+   * @returns 创建成功后关闭弹窗；失败时保留表单并显示错误。
+   */
+  async function submitProjectCreation(): Promise<void> {
+    const name = projectName.trim()
+    if (name === "" || creatingProject || selectingProjectDirectory) return
+
+    setCreatingProject(true)
+    setProjectDialogError(null)
+    try {
+      const createdProject = await window.nicode.createProject(
+        name,
+        projectDirectories.length === 0 ? undefined : projectDirectories.map((directory) => directory.path),
+      )
+      createdProjectsRef.current = [
+        ...createdProjectsRef.current.filter((project) => project.projectId !== createdProject.projectId),
+        createdProject,
+      ]
+      setProjects((current) => {
+        const value = current.status === "ready" ? current.value : []
+        const existingIndex = value.findIndex((project) => project.projectId === createdProject.projectId)
+        if (existingIndex === -1) return { status: "ready", value: [...value, createdProject] }
+        return {
+          status: "ready",
+          value: value.map((project) => project.projectId === createdProject.projectId ? createdProject : project),
+        }
+      })
+      setProjectDialogOpen(false)
+      setProjectDirectories([])
+    } catch (error) {
+      console.error("创建项目失败", error)
+      setProjectDialogError("创建项目失败，请检查名称和目录后重试。")
+    } finally {
+      setCreatingProject(false)
+    }
+  }
+
+  useEffect(() => {
+    void Promise.allSettled([loadProjects(), loadDefaultSessions(), loadProviders()])
+  }, [])
+
+  useEffect(() => {
+    /** 读取地址栏 hash，支持初始直达和浏览器前进/后退。 */
+    function syncWorkspaceRoute(): void {
+      const route = parseWorkspaceRoute(window.location.hash)
+      setWorkspaceRoute(route)
+      const hash = serializeWorkspaceRoute(route)
+      if (window.location.hash !== hash) window.location.hash = hash
+    }
+    window.addEventListener("hashchange", syncWorkspaceRoute)
+    syncWorkspaceRoute()
+    return () => window.removeEventListener("hashchange", syncWorkspaceRoute)
+  }, [])
+
+  useEffect(() => {
+    if (openMenu === null) return
+    /** @param event 键盘事件；Escape 关闭当前弹层。 */
+    function closeOnEscape(event: KeyboardEvent): void {
+      if (event.key === "Escape") setOpenMenu(null)
+    }
+    window.addEventListener("keydown", closeOnEscape)
+    return () => window.removeEventListener("keydown", closeOnEscape)
+  }, [openMenu])
+
+  useEffect(() => {
+    if (!projectDialogOpen) return
+    /** @param event 键盘事件；Escape 在提交期间不关闭弹窗。 */
+    function closeProjectDialogOnEscape(event: KeyboardEvent): void {
+      if (event.key === "Escape" && !creatingProject) closeProjectDialog()
+    }
+    window.addEventListener("keydown", closeProjectDialogOnEscape)
+    return () => window.removeEventListener("keydown", closeProjectDialogOnEscape)
+  }, [projectDialogOpen, creatingProject])
+
+  const modelOptions = providers.status === "ready"
+    ? providers.value.flatMap((provider) => {
+        const seenModelIds = new Set<string>()
+        return provider.models.flatMap((model) => {
+          if (seenModelIds.has(model.modelId)) return []
+          seenModelIds.add(model.modelId)
+          return [{
+            ...model,
+            providerId: provider.providerId,
+            providerName: provider.name,
+            protocol: provider.protocol,
+            selectionKey: JSON.stringify([provider.providerId, model.modelId]),
+          }]
+        })
+      })
+    : []
+  const defaultModel = modelOptions.find((model) => model.isDefault)
+  const selectedModel = modelOptions.find((model) => model.selectionKey === selectedModelKey) ?? defaultModel
+  const activeProject = workspaceRoute.group === "project" && projects.status === "ready"
+    ? projects.value.find((project) => project.projectId === workspaceRoute.projectId)
+    : undefined
+
+  return <div className="app-shell">
+    <header className="titlebar">
+      <div className="brand-mark" aria-hidden="true">N</div>
+      <span className="brand-name">NiCode</span>
+      <button className="sidebar-toggle" type="button" aria-label={sidebarOpen ? "收起侧栏" : "展开侧栏"} aria-pressed={!sidebarOpen} onClick={() => setSidebarOpen((current) => !current)}>{sidebarOpen ? <IconLayoutSidebarLeftCollapse size={16} stroke={1.5} aria-hidden="true" /> : <IconLayoutSidebarLeftExpand size={16} stroke={1.5} aria-hidden="true" />}</button>
+      <nav className="titlebar-menu" aria-label="应用菜单"><span>文件</span><span>编辑</span><span>视图</span><span>帮助</span></nav>
+    </header>
+
+    <div className="workspace-shell">
+      {sidebarOpen && <aside className="sidebar" aria-label="工作区侧栏">
+        <button className="new-chat" type="button" aria-current={workspaceRoute.group === "default" ? "page" : undefined} onClick={() => focusNewChatComposer()}><IconMessageCirclePlus size={18} stroke={1.5} aria-hidden="true" /><span>新聊天</span></button>
+        <div className="sidebar-scroll">
+          <section className="sidebar-section" aria-label="项目">
+            <div className="section-heading-row">
+              <button className="section-heading" type="button" aria-expanded={projectsOpen} onClick={() => setProjectsOpen((current) => !current)}><IconFolders size={18} stroke={1.5} aria-hidden="true" /><span>项目</span><span className={projectsOpen ? "chevron" : "chevron collapsed"}><IconChevronDown size={14} stroke={1.5} aria-hidden="true" /></span></button>
+              <button className="section-action section-action-button" type="button" aria-label="创建项目" title="创建项目" onClick={openProjectDialog}><IconPlus size={18} stroke={1.5} aria-hidden="true" /></button>
+            </div>
+            {projectsOpen && <><DataStatus state={projects} retry={() => { void loadProjects() }} />
+              {projects.status === "ready" && (projects.value.length === 0
+                ? <p className="empty-list">暂无项目</p>
+                : <ul className="project-list">{projects.value.map((project) => <li key={project.projectId}>
+                    <div className={workspaceRoute.group === "project" && workspaceRoute.projectId === project.projectId ? "project-row project-row-active" : "project-row"}>
+                      <button className="project-name" type="button" title={project.name} aria-expanded={expandedProjects.has(project.projectId)} aria-current={workspaceRoute.group === "project" && workspaceRoute.projectId === project.projectId ? "page" : undefined} onClick={() => toggleProject(project.projectId)}><IconFolder size={17} stroke={1.5} aria-hidden="true" /><span>{project.name}</span></button>
+                      <button className="project-action-button" type="button" aria-label={`在 ${project.name} 中新建聊天`} title={`在 ${project.name} 中新建聊天`} onClick={() => focusNewChatComposer(project.projectId)}><IconPencilPlus size={16} stroke={1.5} aria-hidden="true" /></button>
+                    </div>
+                    {expandedProjects.has(project.projectId) && <SessionList sessions={project.sessions} />}
+                  </li>)}</ul>)}
+            </>}
+          </section>
+
+          <section className="sidebar-section chats-section" aria-label="聊天">
+            <div className="section-heading-row">
+              <button className="section-heading" type="button" aria-expanded={chatsOpen} onClick={() => setChatsOpen((current) => !current)}>
+                <IconMessages size={18} stroke={1.5} aria-hidden="true" />
+                <span>聊天</span>
+                <span className={chatsOpen ? "chevron" : "chevron collapsed"}><IconChevronDown size={14} stroke={1.5} aria-hidden="true" /></span>
+              </button>
+              <button className="section-action section-action-button" type="button" aria-label="新建聊天" title="新建聊天" onClick={() => focusNewChatComposer()}>
+                <IconPencilPlus size={18} stroke={1.5} aria-hidden="true" />
+              </button>
+            </div>
+            {chatsOpen && <><DataStatus state={defaultSessions} retry={() => { void loadDefaultSessions() }} />
+              {defaultSessions.status === "ready" && (defaultSessions.value.length === 0
+                ? <p className="empty-list">暂无聊天</p>
+                : <SessionList sessions={defaultSessions.value} />)}
+            </>}
+          </section>
+        </div>
+        <div className="sidebar-settings" aria-disabled="true"><IconSettings size={18} stroke={1.5} aria-hidden="true" /><span>设置</span></div>
+      </aside>}
+
+      <main className="main-panel">
+        <div className="breadcrumb">
+          <span>NiCode</span><span className="breadcrumb-divider">/</span>
+          {workspaceRoute.group === "project" && <><strong>{activeProject?.name ?? "项目"}</strong><span className="breadcrumb-divider">/</span></>}
+          <strong>新聊天</strong>
+        </div>
+        <div className="more-actions" aria-hidden="true">···</div>
+        <div className="welcome">
+          <h1>我们从哪开始？</h1>
+          <div className="composer">
+            <textarea ref={composerRef} aria-label="任务描述" placeholder="描述你希望 NiCode 完成的任务…" />
+            <div className="composer-toolbar">
+              <div className="composer-controls">
+                <span className="attachment-control" aria-disabled="true"><IconPlus size={15} stroke={1.5} aria-hidden="true" /><span>附加文件</span></span>
+                <div className="selector-anchor">
+                  <button className="selector-trigger" type="button" aria-label="权限" aria-haspopup="menu" aria-expanded={openMenu === "permission"} onClick={() => setOpenMenu((current) => current === "permission" ? null : "permission")}>权限：{permissionLabels[permission]} <span className="small-chevron">⌄</span></button>
+                  {openMenu === "permission" && <div className="selector-menu permission-menu" role="menu" aria-label="权限选项">{permissionOptions.map((option) => <button type="button" role="menuitemradio" aria-checked={permission === option || (permission === "default" && option === "workspace-read-only")} key={option} onClick={() => { setPermission(option); setOpenMenu(null) }}>{permissionLabels[option]}{(permission === option || (permission === "default" && option === "workspace-read-only")) && <span aria-hidden="true">✓</span>}</button>)}</div>}
+                </div>
+              </div>
+              <div className="composer-controls composer-controls-right">
+                {providers.status === "loading" && <span className="model-status" role="status">模型加载中…</span>}
+                {providers.status === "error" && <span className="model-status" role="alert">模型加载失败 <button className="retry-button" type="button" onClick={() => { void loadProviders() }}>重试</button></span>}
+                {providers.status === "ready" && (modelOptions.length === 0
+                  ? <span className="model-status">未配置模型</span>
+                  : <div className="selector-anchor model-anchor"><button className="selector-trigger model-trigger" type="button" aria-label="模型" aria-haspopup="menu" aria-expanded={openMenu === "model"} onClick={() => setOpenMenu((current) => current === "model" ? null : "model")}>{selectedModel === undefined ? "未配置模型" : `${selectedModel.providerName} / ${selectedModel.modelId}`} <span className="small-chevron">⌄</span></button>
+                    {openMenu === "model" && <div className="selector-menu model-menu" role="menu" aria-label="模型选项">{modelOptions.map((model) => <button type="button" role="menuitemradio" aria-checked={model.selectionKey === selectedModel?.selectionKey} key={model.selectionKey} title={`${model.providerName} / ${model.modelId}`} onClick={() => { setSelectedModelKey(model.selectionKey); setOpenMenu(null) }}><span>{model.providerName} / {model.modelId}</span>{model.selectionKey === selectedModel?.selectionKey && <span aria-hidden="true">✓</span>}</button>)}</div>}</div>)}
+                <button className="send-button" type="button" disabled aria-label="发送消息"><IconSend size={16} stroke={1.8} aria-hidden="true" /></button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </main>
+    </div>
+    {openMenu !== null && <div className="menu-backdrop" role="presentation" onClick={() => setOpenMenu(null)} />}
+    {projectDialogOpen && <div className="project-dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) closeProjectDialog() }}>
+      <section className="project-dialog" role="dialog" aria-modal="true" aria-labelledby="project-dialog-title" aria-busy={creatingProject || selectingProjectDirectory}>
+        <header className="project-dialog-header">
+          <h2 id="project-dialog-title">创建项目</h2>
+          <button className="project-dialog-close" type="button" aria-label="关闭" disabled={creatingProject} onClick={closeProjectDialog}><IconX size={20} stroke={1.5} aria-hidden="true" /></button>
+        </header>
+        <form className="project-dialog-form" onSubmit={(event) => { event.preventDefault(); void submitProjectCreation() }}>
+          <div className="project-dialog-field">
+            <label htmlFor="project-name">项目名称</label>
+            <div className="project-name-input">
+              <IconFolder size={24} stroke={1.5} aria-hidden="true" />
+              <input
+                id="project-name"
+                type="text"
+                autoFocus
+                placeholder="请输入项目名称"
+                value={projectName}
+                disabled={creatingProject}
+                onChange={(event) => setProjectName(event.target.value)}
+              />
+            </div>
+          </div>
+          <div className="project-dialog-field">
+            <label id="project-directory-label">源文件夹</label>
+            {projectDirectories.length === 0
+              ? <button
+                  className="project-directory-empty"
+                  type="button"
+                  disabled={selectingProjectDirectory || creatingProject}
+                  onClick={() => { void selectProjectDirectory() }}
+                >
+                  <IconFolderPlus size={24} stroke={1.5} aria-hidden="true" />
+                  <span>添加 NiCode 可读取和编辑的文件夹</span>
+                </button>
+              : <div className="project-directory-list" role="group" aria-labelledby="project-directory-label" aria-busy={selectingProjectDirectory || creatingProject}>
+                  {projectDirectories.map((directory) => <div className="project-directory-row" key={directory.path} title={directory.path}>
+                    <IconFolder size={20} stroke={1.5} aria-hidden="true" />
+                    <span className="project-directory-name">{directory.name}</span>
+                    <button
+                      className="project-directory-remove"
+                      type="button"
+                      aria-label={`移除文件夹 ${directory.name}`}
+                      title="移除文件夹"
+                      disabled={selectingProjectDirectory || creatingProject}
+                      onClick={() => removeProjectDirectory(directory.path)}
+                    >
+                      <IconX size={17} stroke={1.5} aria-hidden="true" />
+                    </button>
+                  </div>)}
+                  <button
+                    className="project-directory-add"
+                    type="button"
+                    aria-label="添加文件夹"
+                    disabled={selectingProjectDirectory || creatingProject}
+                    onClick={() => { void selectProjectDirectory() }}
+                  >
+                    <IconFolderPlus size={20} stroke={1.5} aria-hidden="true" />
+                    <span>{selectingProjectDirectory ? "正在打开目录选择器…" : "添加文件夹"}</span>
+                  </button>
+                </div>}
+          </div>
+          {projectDialogError !== null && <p className="project-dialog-error" role="alert">{projectDialogError}</p>}
+          <footer className="project-dialog-footer">
+            <button className="create-project-button" type="submit" disabled={projectName.trim() === "" || creatingProject || selectingProjectDirectory}>
+              {creatingProject ? "正在创建…" : "创建项目"}
+            </button>
+          </footer>
+        </form>
+      </section>
+    </div>}
+  </div>
+}
+
+const root = document.getElementById("root")
+if (root === null) throw new Error("缺少工作区页面根节点")
+createRoot(root).render(<Workspace />)

@@ -1,8 +1,8 @@
 /** 启动页面的 Project、default 对话与 Provider 只读 IPC。 */
 
 import type { ConfigFilePaths } from "./config-files.ts"
-import type { IpcMainHandlePort } from "./session-ipc.ts"
-import { listProviders } from "./provider-store.ts"
+import { listProviders, readDefaultModel } from "./provider-store.ts"
+import { resolveContextWindow } from "../../runtime/model/src/types.ts"
 import { listProjectWorkspaces, readDefaultWorkspace } from "./workspace-store.ts"
 import { STARTUP_DATA_IPC_CHANNELS } from "../preload/session-api.ts"
 import type {
@@ -18,7 +18,7 @@ import type {
  * @throws Error 当 channel 重复注册时由 IPC 实现抛出；查询错误由 handler 传给调用方。
  */
 export function registerStartupDataIpcHandlers(
-  ipcMain: IpcMainHandlePort,
+  ipcMain: Electron.IpcMain,
   paths: Pick<ConfigFilePaths, "workspaceDatabasePath" | "providerDatabasePath">,
 ): void {
   ipcMain.handle(STARTUP_DATA_IPC_CHANNELS.listProjects, (): ProjectSummary[] =>
@@ -41,11 +41,25 @@ export function registerStartupDataIpcHandlers(
       updatedAt: session.updatedAt,
     })))
 
-  ipcMain.handle(STARTUP_DATA_IPC_CHANNELS.listProviders, (): ProviderSummary[] =>
-    listProviders(paths.providerDatabasePath).map((provider) => ({
-      providerId: provider.id,
-      name: provider.name,
-      protocol: provider.protocol,
-      models: provider.models.map((model) => ({ modelId: model.id, name: model.id })),
-    })))
+  ipcMain.handle(STARTUP_DATA_IPC_CHANNELS.listProviders, (): ProviderSummary[] => {
+    const providers = listProviders(paths.providerDatabasePath)
+    const defaultModel = readDefaultModel(paths.providerDatabasePath)
+    return providers.map((provider) => {
+      let defaultIncluded = false
+      return {
+        providerId: provider.id,
+        name: provider.name,
+        protocol: provider.protocol,
+        models: provider.models.map((model) => {
+          const isDefault = !defaultIncluded && model.id === defaultModel?.modelId && provider.id === defaultModel.providerId
+          if (isDefault) defaultIncluded = true
+          return {
+            modelId: model.id,
+            contextWindow: resolveContextWindow(model),
+            isDefault,
+          }
+        }),
+      }
+    })
+  })
 }

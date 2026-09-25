@@ -57,9 +57,10 @@ type _ProtocolValues = Expect<Equals<Protocol, "anthropic_messages" | "chat_comp
 // 模型引用与配置的必备字段（第 6 节）。
 type _ModelRefShape = Expect<Equals<keyof ModelRef, "providerId" | "protocol" | "modelId">>
 type _ModelConfigRequired = Expect<Equals<ModelConfig["id"] | ModelConfig["providerId"], string>>
-type _ModelConfigOptionalIsUndefined = Expect<
-  Equals<ModelConfig["contextWindow"], number | undefined>
->
+type _ModelConfigContextWindowRequired = Expect<Equals<ModelConfig["contextWindow"], number>>
+// @ts-expect-error 运行时模型配置必须提供已经解析的上下文窗口。
+const _missingContextWindow: ModelConfig = { id: "model", providerId: "provider", protocol: "responses" }
+void _missingContextWindow
 
 // 内容块三种形态（第 8.4 节）。
 type _BlockTypes = Expect<Equals<AssistantContentBlock["type"], "thinking" | "text" | "tool_call">>
@@ -157,7 +158,7 @@ type _ToolDefinitionHasSchema = Expect<Equals<UnifiedToolDefinition["inputSchema
 // 2. 运行期断言
 // ---------------------------------------------------------------------------
 
-// 有效上下文窗口：contextWindow ?? 256000（第 6 节）。
+// 从允许缺省上下文窗口的记录中解析有效窗口；运行时 ModelConfig 本身要求该值。
 assert.equal(PROTOCOLS.length, 3)
 assert.equal(DEFAULT_CONTEXT_WINDOW, 256000)
 assert.equal(resolveContextWindow({}), 256000)

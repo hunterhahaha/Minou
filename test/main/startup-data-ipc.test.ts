@@ -8,7 +8,7 @@ import { join, resolve, sep } from "node:path"
 import { registerStartupDataIpcHandlers } from "../../src/main/startup-data-ipc.ts"
 import type { IpcMainHandlePort } from "../../src/main/session-ipc.ts"
 import {
-  initializeProviderDatabase, saveModel, saveProvider, setProviderApiKey,
+  initializeProviderDatabase, saveModel, saveProvider, setDefaultModel, setProviderApiKey,
 } from "../../src/main/provider-store.ts"
 import {
   initializeWorkspaceDatabase, saveDefaultWorkspace, saveProjectWorkspace,
@@ -96,9 +96,20 @@ async function main(): Promise<void> {
     const providers = ipc.invoke(STARTUP_DATA_IPC_CHANNELS.listProviders)
     assert.deepEqual(providers, [{
       providerId: "provider-1", name: "Provider", protocol: "responses",
-      models: [{ modelId: "model-b", name: "model-b" }, { modelId: "model-a", name: "model-a" }],
+      models: [
+        { modelId: "model-b", contextWindow: 256000, isDefault: true },
+        { modelId: "model-a", contextWindow: 256000, isDefault: false },
+      ],
     }])
     assert.equal(JSON.stringify(providers).includes("private-api-key"), false)
+    setDefaultModel(providerDatabasePath, { providerId: "provider-1", modelId: "model-a" })
+    assert.deepEqual(ipc.invoke(STARTUP_DATA_IPC_CHANNELS.listProviders), [{
+      providerId: "provider-1", name: "Provider", protocol: "responses",
+      models: [
+        { modelId: "model-b", contextWindow: 256000, isDefault: false },
+        { modelId: "model-a", contextWindow: 256000, isDefault: true },
+      ],
+    }])
     assert.throws(() => registerStartupDataIpcHandlers(ipc, { workspaceDatabasePath, providerDatabasePath }), /重复注册/)
 
     const missing = new FakeIpcMain()

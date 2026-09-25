@@ -13,6 +13,7 @@ import { join } from "node:path"
 import { SessionRuntime } from "../../runtime/agent/src/session-runtime.ts"
 import type { SessionRuntimeGlobal } from "./session-runtime-global.ts"
 import type { ConfigFilePaths } from "./config-files.ts"
+import { registerModelIpcHandlers } from "./provider-ipc.ts"
 import { registerStartupDataIpcHandlers } from "./startup-data-ipc.ts"
 import { registerProjectIpcHandlers } from "./project-ipc.ts"
 import type { DirectoryDialogPort } from "./project-ipc.ts"
@@ -20,7 +21,6 @@ import { registerSessionIpcHandlers } from "./session-ipc.ts"
 import type {
   CreateSessionRuntime,
   HandleSessionCompletionFailure,
-  IpcMainHandlePort,
   SessionEventForwardingPort,
 } from "./session-ipc.ts"
 
@@ -69,7 +69,7 @@ export interface ElectronStartupOptions {
   /** Electron 应用生命周期端口。 */
   app: ElectronAppPort
   /** Electron 主进程 IPC handler 注册端口。 */
-  ipcMain: IpcMainHandlePort
+  ipcMain: Electron.IpcMain
   /** 系统目录选择窗口。 */
   dialog: DirectoryDialogPort
   /** 主窗口创建与存活状态端口。 */
@@ -126,6 +126,7 @@ export async function startElectronApp(options: ElectronStartupOptions): Promise
     options.sessionEventForwarding,
   )
   registerStartupDataIpcHandlers(options.ipcMain, options.configPaths)
+  registerModelIpcHandlers(options.ipcMain, options.configPaths)
   registerProjectIpcHandlers(options.ipcMain, options.dialog, options.configPaths)
 
   await options.app.whenReady()
@@ -144,7 +145,6 @@ export { registerSessionIpcHandlers }
 export type {
   CreateSessionRuntime,
   HandleSessionCompletionFailure,
-  IpcMainHandlePort,
   SessionCompletionFailure,
   SessionEventForwardingPort,
 } from "./session-ipc.ts"

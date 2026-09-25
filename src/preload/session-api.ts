@@ -42,6 +42,17 @@ export const PROJECT_IPC_CHANNELS = {
   removeProjectDirectory: "nicode:project:remove-directory",
 } as const
 
+/** 供应商创建和修改的固定 IPC channel。 */
+export const PROVIDER_IPC_CHANNELS = {
+  createProvider: "nicode:provider:create",
+  deleteProvider: "nicode:provider:delete",
+  updateApiKey: "nicode:provider:update-api-key",
+  createModel: "nicode:provider:create-model",
+  updateModel: "nicode:provider:update-model",
+  deleteModel: "nicode:provider:delete-model",
+  setDefaultModel: "nicode:provider:set-default-model",
+} as const
+
 /** 系统目录选择窗口返回的目录。 */
 export interface DirectorySelection {
   path: string
@@ -75,12 +86,56 @@ export interface ProjectSummary {
   sessions: SessionSummary[]
 }
 
-/** Provider 下模型的页面摘要；name 与 modelId 相同。 */
+/** Provider 下模型的页面摘要；组合身份由所属 Provider 与 modelId 构成。 */
 export interface ModelSummary {
-  /** 模型全局唯一身份。 */
+  /** Provider 内的模型 ID。 */
   modelId: string
-  /** 当前与 modelId 相同的显示名称。 */
-  name: string
+  /** 模型的有效上下文窗口。 */
+  contextWindow: number
+  /** 是否是当前有效默认模型。 */
+  isDefault: boolean
+}
+
+/** 创建 Provider 或 Model 时提交的模型配置；`modelId` 可与其它记录重复。 */
+export interface ProviderModelInput {
+  /** Provider 接口识别的模型 ID。 */
+  modelId: string
+  /** 声明的上下文窗口。 */
+  contextWindow: number
+  /** 请求允许的最大输出 Token。 */
+  maxOutputTokens?: number
+  /** 是否支持 reasoning。 */
+  supportsReasoning?: boolean
+  /** 是否支持工具调用。 */
+  supportsTools?: boolean
+  /** 是否支持并行工具调用。 */
+  supportsParallelTools?: boolean
+  /** 是否支持服务端响应 ID。 */
+  supportsResponseId?: boolean
+}
+
+/** 按 Provider 与模型 ID 定位的引用；同一引用可以对应多条记录。 */
+export interface ProviderModelReference {
+  /** 模型所属 Provider。 */
+  providerId: string
+  /** Provider 接口识别的模型 ID。 */
+  modelId: string
+}
+
+/** 更新模型能力的补丁；传 null 清除对应可选值。 */
+export interface ProviderModelUpdate {
+  /** 新上下文窗口；传 null 后运行时使用默认值。 */
+  contextWindow?: number | null
+  /** 新最大输出 Token；传 null 移除该限制。 */
+  maxOutputTokens?: number | null
+  /** 新 reasoning 能力；传 null 表示未声明。 */
+  supportsReasoning?: boolean | null
+  /** 新工具调用能力；传 null 表示未声明。 */
+  supportsTools?: boolean | null
+  /** 新并行工具调用能力；传 null 表示未声明。 */
+  supportsParallelTools?: boolean | null
+  /** 新响应 ID 能力；传 null 表示未声明。 */
+  supportsResponseId?: boolean | null
 }
 
 /** 不含凭据与协议连接参数的 Provider 页面摘要。 */
@@ -150,6 +205,55 @@ export interface NiCodePreloadApi {
    * @throws Error 当数据库读取失败或主进程返回无效数据时由页面处理。
    */
   listProviders(): Promise<ProviderSummary[]>
+  /**
+   * 创建 Provider、模型记录与 API Key。
+   * @param name Provider 显示名称。
+   * @param apiKey Provider API Key。
+   * @param protocol Provider 使用的唯一协议。
+   * @param url Provider 服务地址。
+   * @param models 按顺序保存的模型配置；重复 modelId 会作为重复记录保留。
+   * @returns 新建 Provider 的无凭据摘要。
+   */
+  createProvider(
+    name: string,
+    apiKey: string,
+    protocol: Protocol,
+    url: string,
+    models: ProviderModelInput[],
+  ): Promise<ProviderSummary>
+  /**
+   * 删除 Provider、其所有模型记录和 API Key。
+   * @param providerId 要删除的 Provider ID。
+   */
+  deleteProvider(providerId: string): Promise<void>
+  /**
+   * 替换或移除 Provider API Key。
+   * @param providerId API Key 所属 Provider ID。
+   * @param apiKey 新 API Key；null 表示移除。
+   */
+  updateApiKey(providerId: string, apiKey: string | null): Promise<void>
+  /**
+   * 在 Provider 模型列表末尾新增一条记录。
+   * @param providerId 模型所属 Provider ID。
+   * @param model 新模型配置。
+   */
+  createModel(providerId: string, model: ProviderModelInput): Promise<void>
+  /**
+   * 更新同一引用下最先保存的模型记录。
+   * @param reference 要更新的 Provider 与模型引用。
+   * @param update 要替换或清除的能力字段。
+   */
+  updateModel(reference: ProviderModelReference, update: ProviderModelUpdate): Promise<void>
+  /**
+   * 删除同一 Provider 与 modelId 下的全部记录。
+   * @param reference 要删除的 Provider 与模型引用。
+   */
+  deleteModel(reference: ProviderModelReference): Promise<void>
+  /**
+   * 设置默认模型，或传 null 回到列表顺序的第一个模型。
+   * @param reference 默认模型的 Provider 与模型引用；null 表示清除显式默认值。
+   */
+  setDefaultModel(reference: ProviderModelReference | null): Promise<void>
   /**
    * 在指定 Project 分组中创建并启动 Session。
    *
@@ -238,6 +342,42 @@ export function createSessionApi(ipcRenderer: IpcRendererInvokePort): NiCodePrel
 
     async listProviders(): Promise<ProviderSummary[]> {
       return requireProviderSummaries(await ipcRenderer.invoke(STARTUP_DATA_IPC_CHANNELS.listProviders))
+    },
+
+    async createProvider(
+      name: string,
+      apiKey: string,
+      protocol: Protocol,
+      url: string,
+      models: ProviderModelInput[],
+    ): Promise<ProviderSummary> {
+      return requireProviderSummary(await ipcRenderer.invoke(
+        PROVIDER_IPC_CHANNELS.createProvider, name, apiKey, protocol, url, models,
+      ))
+    },
+
+    async deleteProvider(providerId: string): Promise<void> {
+      await ipcRenderer.invoke(PROVIDER_IPC_CHANNELS.deleteProvider, providerId)
+    },
+
+    async updateApiKey(providerId: string, apiKey: string | null): Promise<void> {
+      await ipcRenderer.invoke(PROVIDER_IPC_CHANNELS.updateApiKey, providerId, apiKey)
+    },
+
+    async createModel(providerId: string, model: ProviderModelInput): Promise<void> {
+      await ipcRenderer.invoke(PROVIDER_IPC_CHANNELS.createModel, providerId, model)
+    },
+
+    async updateModel(reference: ProviderModelReference, update: ProviderModelUpdate): Promise<void> {
+      await ipcRenderer.invoke(PROVIDER_IPC_CHANNELS.updateModel, reference, update)
+    },
+
+    async deleteModel(reference: ProviderModelReference): Promise<void> {
+      await ipcRenderer.invoke(PROVIDER_IPC_CHANNELS.deleteModel, reference)
+    },
+
+    async setDefaultModel(reference: ProviderModelReference | null): Promise<void> {
+      await ipcRenderer.invoke(PROVIDER_IPC_CHANNELS.setDefaultModel, reference)
     },
 
     async startNewSession(
@@ -417,9 +557,23 @@ function requireProviderSummaries(value: unknown): ProviderSummary[] {
     isRecord(item) && typeof item.providerId === "string" && typeof item.name === "string" &&
     (PROTOCOLS as readonly unknown[]).includes(item.protocol) &&
     Array.isArray(item.models) && item.models.every((model: unknown) =>
-      isRecord(model) && typeof model.modelId === "string" && typeof model.name === "string")
+      isRecord(model) && typeof model.modelId === "string" && model.modelId.trim() !== "" &&
+      typeof model.contextWindow === "number" && Number.isSafeInteger(model.contextWindow) && model.contextWindow > 0 &&
+      typeof model.isDefault === "boolean")
   )) throw new TypeError("主进程返回了无效的 Provider 列表")
   return value as ProviderSummary[]
+}
+
+/**
+ * 检查主进程创建 Provider 后返回的摘要。
+ * @param value 未经检查的 IPC 返回值。
+ * @returns 单个 Provider 摘要。
+ * @throws TypeError 当主进程返回值不符合 Provider 摘要结构时抛出。
+ */
+function requireProviderSummary(value: unknown): ProviderSummary {
+  const provider = requireProviderSummaries([value])[0]
+  if (provider === undefined) throw new TypeError("主进程未返回新建的 Provider")
+  return provider
 }
 
 /**

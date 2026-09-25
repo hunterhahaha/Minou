@@ -44,6 +44,7 @@ async function main(): Promise<void> {
   const windows = createElectronWindowManager(BrowserWindow, {
     preloadPath: join(__dirname, "../preload/index.js"),
     rendererHtmlPath: join(__dirname, "../renderer/index.html"),
+    rendererUrl: process.env.NICODE_RENDERER_URL,
     onWindowLoadFailure: (error) => {
       console.error("NiCode 主窗口页面装载失败。", error)
     },

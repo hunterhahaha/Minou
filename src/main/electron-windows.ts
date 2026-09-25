@@ -19,9 +19,11 @@ export interface BrowserWindowConstructorPort {
 export interface ElectronWindowOptions {
   /** 编译后的 preload 入口绝对路径。 */
   preloadPath: string
-  /** 构建复制后的静态 Renderer HTML 绝对路径。 */
+  /** Vite 构建后的 Renderer HTML 绝对路径。 */
   rendererHtmlPath: string
-  /** `loadFile` 后台失败时的进程级错误出口。 */
+  /** 开发时 Vite Renderer 地址；未提供时从构建后的 HTML 加载。 */
+  rendererUrl?: string
+  /** Renderer 页面后台装载失败时的进程级错误出口。 */
   onWindowLoadFailure(error: unknown): void
 }
 
@@ -56,7 +58,14 @@ export function createElectronWindowManager(
         minWidth: 800,
         minHeight: 600,
         show: false,
-        backgroundColor: "#111318",
+        backgroundColor: "#fbfcfe",
+        titleBarStyle: "hidden",
+        titleBarOverlay: {
+          color: "#f6f8fb",
+          symbolColor: "#626c78",
+          height: 40,
+        },
+        autoHideMenuBar: true,
         webPreferences: {
           preload: options.preloadPath,
           contextIsolation: true,
@@ -65,9 +74,26 @@ export function createElectronWindowManager(
         },
       })
       retainedWindows.add(window)
-      window.once("ready-to-show", () => window.show())
+      let windowHasBeenShown = false
+      /**
+       * Electron 首帧事件或页面装载结束后只显示一次主窗口。
+       * @returns 窗口显示完成时无返回值。
+       */
+      const showWindow = (): void => {
+        if (windowHasBeenShown) return
+        windowHasBeenShown = true
+        window.show()
+      }
+
+      window.once("ready-to-show", showWindow)
       window.once("closed", () => retainedWindows.delete(window))
-      void window.loadFile(options.rendererHtmlPath).catch(options.onWindowLoadFailure)
+      const pageLoad = options.rendererUrl === undefined
+        ? window.loadFile(options.rendererHtmlPath)
+        : window.loadURL(options.rendererUrl)
+      void pageLoad.then(showWindow).catch((error: unknown) => {
+        options.onWindowLoadFailure(error)
+        showWindow()
+      })
     },
     hasOpenWindows(): boolean {
       return BrowserWindowClass.getAllWindows().length > 0

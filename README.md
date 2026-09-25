@@ -62,9 +62,13 @@ Skills。每个 `skills/` 直接子目录中的 `SKILL.md` 以 YAML frontmatter 
 包括 disabled Project 项屏蔽同名 Global Skill。YAML `description` 进入固定 Skill Context；Token 粗估
 暂按 `Math.ceil(text.length / 4)`。default 分组仅使用 Global Skill。MCP Runtime 尚未实现，因此 baseline 的 MCP 列表仍明确为空。
 
-真实 BrowserWindow 使用编译后的 preload 与无框架静态 `src/renderer/index.html`；构建脚本把 HTML
-复制到 `dist`。Renderer 保持 `contextIsolation=true`、`nodeIntegration=false`。由于 preload 目前是
+真实 BrowserWindow 使用编译后的 preload 与 Vite 构建的 React `src/renderer/index.html`；
+页面启动时通过 `window.nicode` 并行读取 Project、default 对话及 Provider 摘要，显示 default 新聊天首屏。
+首屏按 Figma 工作区原型支持侧栏收起与展开、项目和聊天分组折叠、项目索引折叠，以及权限和模型弹层选择。
+窗口使用 40px 标题栏覆盖层，保留系统窗口控制按钮。
+模型摘要包含当前有效默认模型标记。Renderer 保持 `contextIsolation=true`、`nodeIntegration=false`。由于 preload 目前是
 未经打包的多文件 CommonJS 输出，窗口暂时显式使用 `sandbox=false`。
+权限与模型选择目前只影响当前页面展示；首屏尚不发送消息，也不读取历史对话内容。
 
 **阶段 1（统一模型格式）**已完成类型定义：`runtime/model/src/types.ts` 与 `runtime/error/src/types.ts`。
 
@@ -256,10 +260,11 @@ src/                                 Electron 外壳
 │  ├─ index.ts                       contextBridge 安装入口
 │  ├─ session-api.ts                 window.nicode Session API 与 IPC 契约
 │  └─ global.d.ts                    Renderer 的 window.nicode 类型
-└─ renderer/index.html               当前无框架的最小静态桌面页面
+└─ renderer/                         React 新聊天首屏、样式与 HTML 入口
 
-scripts/
-└─ copy-static-assets.mjs            把静态 Renderer HTML 复制到 dist
+vite.config.mts                       Renderer 静态资源构建到 dist/src/renderer
+tsconfig.renderer.json                Renderer TSX 类型检查
+scripts/dev-electron.mjs              启动 Vite HMR 与 Electron 开发窗口
 
 test/
 ├─ main/                              配置初始化与 Session IPC 测试
@@ -357,11 +362,12 @@ src/main/config-files.ts     →   test/main/config-files.test.ts
 ## 工程配置
 
 - 全栈 TypeScript，`tsconfig.json` 覆盖 `src/` 与 `runtime/*/src/`，产出到 `dist/`。
-- `tsconfig.test.json` 继承前者，额外纳入 `runtime/**/*.ts` 与根目录 `test/**/*.ts` 并关闭产出，供 `npm run typecheck` 使用。
+- `tsconfig.test.json` 继承前者，额外纳入 `runtime/**/*.ts` 与根目录 `test/**/*.ts` 并关闭产出；
+  `tsconfig.renderer.json` 单独检查 React TSX。两者都由 `npm run typecheck` 执行。
 - **相对导入一律带 `.ts` 后缀**（源码与测试都是），由 `allowImportingTsExtensions` 允许、
   `rewriteRelativeImportExtensions` 在产出时改写成 `.js`。这样同一个源文件既能被 Node 直接运行，
   又能被 `tsc` 正常产出，不需要打包器。
-- 主进程与 Runtime 暂用 CommonJS 模块输出（`module: CommonJS`）。
+- 主进程与 Runtime 暂用 CommonJS 模块输出（`module: CommonJS`）；Renderer 由 Vite 构建为本地 HTML、JS 与 CSS。
 - 因为 `module` 是 CommonJS，**测试里不要写顶层 `await`**，改用 `async function main()`.
 
 ### 依赖
@@ -378,8 +384,10 @@ src/main/config-files.ts     →   test/main/config-files.test.ts
 | `typescript`（dev） | ^5.9.3 | 类型检查与产出 |
 | `@types/node`（dev） | ^24.13.5 | Node 全局类型 |
 
-`npm start` 先构建 TypeScript 和静态页面，再通过 package 的 `main` 启动 Electron。主进程生命周期
-与窗口管理仍保留最小同形端口，离线测试无需启动真实 GUI。
+`npm start` 构建 TypeScript 和静态页面，再通过 package 的 `main` 启动 Electron。
+前端开发使用 `npm run dev`：命令先编译 Electron 主进程与 preload，再启动 Vite 开发服务器和 Electron；
+开发窗口通过 `loadURL` 载入 Vite 页面，React 与 CSS 修改由 Vite HMR 即时更新。主进程或 preload 修改后需重新运行该命令。
+主进程生命周期与窗口管理仍保留最小同形端口，离线测试无需启动真实 GUI。
 文件工具只从 `@vscode/ripgrep` 的平台包解析 `rg`。当前工程尚无安装包构建器；以后打包时须将
 目标平台可执行文件保留在可直接执行的位置，不能仅放入不可直接执行的 `asar` 内容。
 
@@ -391,8 +399,8 @@ src/main/config-files.ts     →   test/main/config-files.test.ts
 以下都通过才算改好：
 
 ```bash
-npm run typecheck                                        # tsc，覆盖 src/ 与 runtime/ 全部 .ts
-npm run build                                            # 产出到 dist/
+npm run typecheck                                        # 主进程、Runtime、测试与 Renderer TSX
+npm run build                                            # tsc 与 Vite 产出到 dist/
 node --experimental-strip-types runtime/model/test/types.test.ts
 node --experimental-strip-types runtime/model/test/usage.test.ts
 node --experimental-strip-types runtime/model/test/shared.test.ts
@@ -493,8 +501,7 @@ ToolRegistry / ToolExecutor 测试使用假工具验证成对登记与冲突回�
 
 以下均需项目负责人决定，确认前不自行选择（详见 `.git/技术文档/开发TODOList.md` 文末「缺口与待确认事项」）：
 
-1. 渲染进程的前端框架、构建与打包工具（因此渲染进程暂不单独配置 `tsconfig`）。
-2. 渲染进程与主进程之间的 IPC 协议（第 30 节未定义）。
-3. 测试框架（现有测试不依赖框架）。
-4. 同一 Provider 配置多种协议时的模型绑定规则；重试次数与退避目前是
+1. 会话事件推送与历史内容读取的 Renderer IPC 协议及展示结构。
+2. 测试框架（现有测试不依赖框架）。
+3. 同一 Provider 配置多种协议时的模型绑定规则；重试次数与退避目前是
    `runtime/network/src/retry.ts` 里的常量，是否加入配置尚未确定。

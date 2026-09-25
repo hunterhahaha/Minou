@@ -6,7 +6,6 @@ import { basename, dirname, isAbsolute, join, normalize, parse, resolve } from "
 
 import { requireProjectId } from "../../runtime/session/src/project-id.ts"
 import type { ConfigFilePaths } from "./config-files.ts"
-import type { IpcMainHandlePort } from "./session-ipc.ts"
 import { insertProjectWorkspace, readProjectWorkspace, saveProjectWorkspace } from "./workspace-store.ts"
 import { PROJECT_IPC_CHANNELS } from "../preload/session-api.ts"
 import type { DirectorySelection, ProjectDirectoryResult, ProjectSummary } from "../preload/session-api.ts"
@@ -93,7 +92,7 @@ async function directoryResult(operation: () => Promise<void>): Promise<ProjectD
  * @throws Error 当 channel 已注册时由 IPC 实现抛出；请求错误由各 handler 处理。
  */
 export function registerProjectIpcHandlers(
-  ipcMain: IpcMainHandlePort,
+  ipcMain: Electron.IpcMain,
   dialog: DirectoryDialogPort,
   paths: Pick<ConfigFilePaths, "rootDir" | "workspaceDatabasePath">,
 ): void {

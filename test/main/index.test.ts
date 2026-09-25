@@ -25,6 +25,7 @@ import {
   SESSION_IPC_CHANNELS,
   STARTUP_DATA_IPC_CHANNELS,
   PROJECT_IPC_CHANNELS,
+  PROVIDER_IPC_CHANNELS,
 } from "../../src/preload/session-api.ts"
 import type { StartedSessionResponse } from "../../src/preload/session-api.ts"
 
@@ -241,6 +242,13 @@ async function testRegistersIpcAndWindowLifecycle(): Promise<void> {
       STARTUP_DATA_IPC_CHANNELS.listProjects,
       STARTUP_DATA_IPC_CHANNELS.listDefaultSessions,
       STARTUP_DATA_IPC_CHANNELS.listProviders,
+      PROVIDER_IPC_CHANNELS.createProvider,
+      PROVIDER_IPC_CHANNELS.deleteProvider,
+      PROVIDER_IPC_CHANNELS.updateApiKey,
+      PROVIDER_IPC_CHANNELS.createModel,
+      PROVIDER_IPC_CHANNELS.updateModel,
+      PROVIDER_IPC_CHANNELS.deleteModel,
+      PROVIDER_IPC_CHANNELS.setDefaultModel,
       PROJECT_IPC_CHANNELS.selectDirectory,
       PROJECT_IPC_CHANNELS.createProject,
       PROJECT_IPC_CHANNELS.addProjectDirectory,

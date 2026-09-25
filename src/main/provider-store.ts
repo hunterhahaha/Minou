@@ -5,7 +5,7 @@ import { isAbsolute } from "node:path"
 import { DatabaseSync } from "node:sqlite"
 
 import type { ProviderCredential } from "../../runtime/credential/src/index.ts"
-import { PROTOCOLS } from "../../runtime/model/src/types.ts"
+import { PROTOCOLS, resolveContextWindow } from "../../runtime/model/src/types.ts"
 import type { ModelConfig, ModelRef, Protocol } from "../../runtime/model/src/types.ts"
 
 /** 一个 Provider 唯一协议的连接配置，不包含 API Key。 */
@@ -22,8 +22,35 @@ export interface ProviderRecord {
   defaultHeaders?: Record<string, string>
 }
 
-/** 数据库存储的模型字段；协议由所属 Provider 决定。 */
-export interface ProviderModelRecord extends Omit<ModelConfig, "protocol"> {}
+/** 数据库存储的模型字段；协议由所属 Provider 决定，上下文窗口可由 Runtime 默认值补齐。 */
+export interface ProviderModelRecord extends Omit<ModelConfig, "protocol" | "contextWindow"> {
+  /** 可选的模型声明窗口；缺失时只在构造完整 ModelConfig 时补入 Runtime 默认值。 */
+  contextWindow?: number
+}
+
+/** Provider 与 ModelRef 共用的模型引用；数据库中可以有多条相同引用的模型记录。 */
+export interface ProviderModelReference {
+  /** 模型所属的 Provider 身份。 */
+  providerId: string
+  /** Provider 内的模型 ID。 */
+  modelId: string
+}
+
+/** 更新一条模型记录的可选能力字段；null 表示清除该字段。 */
+export interface ProviderModelUpdate {
+  /** 新的声明上下文窗口；null 表示使用 Runtime 默认窗口。 */
+  contextWindow?: number | null
+  /** 新的最大输出 Token 数；null 表示移除限制。 */
+  maxOutputTokens?: number | null
+  /** 是否支持 reasoning；null 表示未声明。 */
+  supportsReasoning?: boolean | null
+  /** 是否支持工具调用；null 表示未声明。 */
+  supportsTools?: boolean | null
+  /** 是否支持并行工具调用；null 表示未声明。 */
+  supportsParallelTools?: boolean | null
+  /** 是否支持服务端响应 ID；null 表示未声明。 */
+  supportsResponseId?: boolean | null
+}
 
 /** 不含凭据的 Provider 与模型列表项。 */
 export interface ProviderCatalogEntry extends ProviderRecord {
@@ -69,7 +96,8 @@ const CREATE_PROVIDERS = `CREATE TABLE providers (
   default_headers_json TEXT
 ) STRICT`
 const CREATE_MODELS = `CREATE TABLE models (
-  id TEXT PRIMARY KEY NOT NULL CHECK (length(trim(id)) > 0),
+  model_record_id INTEGER PRIMARY KEY,
+  id TEXT NOT NULL CHECK (length(trim(id)) > 0),
   provider_id TEXT NOT NULL REFERENCES providers(id) ON DELETE CASCADE,
   position INTEGER NOT NULL CHECK (position >= 0),
   context_window INTEGER CHECK (context_window > 0),
@@ -86,7 +114,9 @@ const CREATE_CREDENTIALS = `CREATE TABLE provider_credentials (
 ) STRICT`
 const CREATE_SETTINGS = `CREATE TABLE provider_settings (
   id INTEGER PRIMARY KEY CHECK (id = 1),
-  default_model_id TEXT REFERENCES models(id) ON DELETE SET NULL
+  default_provider_id TEXT,
+  default_model_id TEXT,
+  CHECK ((default_provider_id IS NULL) = (default_model_id IS NULL))
 ) STRICT`
 
 /**
@@ -182,7 +212,7 @@ export function initializeProviderDatabase(databasePath: string): void {
         db.exec(CREATE_MODELS)
         db.exec(CREATE_CREDENTIALS)
         db.exec(CREATE_SETTINGS)
-        db.prepare("INSERT INTO provider_settings (id, default_model_id) VALUES (1, NULL)").run()
+        db.prepare("INSERT INTO provider_settings (id, default_provider_id, default_model_id) VALUES (1, NULL, NULL)").run()
         db.exec("PRAGMA user_version = 1")
       })
     } finally {
@@ -312,20 +342,29 @@ export function listProviders(databasePath: string): ProviderCatalogEntry[] {
 }
 
 /**
- * 读取有效默认模型 ID；未显式设置时选有序列表的第一个模型。
+ * 读取有效默认模型身份；未显式设置时选有序列表的第一个模型。
  * @param databasePath Provider 数据库绝对路径。
- * @returns 模型 ID，空库时为 undefined。
+ * @returns Provider 与模型的组合身份；空库时为 undefined。
  * @throws Error 当数据库无法读取时抛出。
  */
-export function readDefaultModelId(databasePath: string): string | undefined {
+export function readDefaultModel(databasePath: string): ProviderModelReference | undefined {
   return withDatabase(databasePath, true, (db) => {
-    const settings = db.prepare("SELECT default_model_id FROM provider_settings WHERE id = 1")
-      .get() as { default_model_id: string | null } | undefined
+    const settings = db.prepare("SELECT default_provider_id, default_model_id FROM provider_settings WHERE id = 1")
+      .get() as { default_provider_id: string | null; default_model_id: string | null } | undefined
     if (settings === undefined) throw new Error("缺少默认模型设置记录。")
-    if (settings.default_model_id !== null) return settings.default_model_id
-    const first = db.prepare(`SELECT m.id FROM models m JOIN providers p ON p.id = m.provider_id
-      ORDER BY p.position, m.position, m.id LIMIT 1`).get() as { id: string } | undefined
-    return first?.id
+    if (settings.default_provider_id !== null || settings.default_model_id !== null) {
+      if (settings.default_provider_id === null || settings.default_model_id === null) {
+        throw new Error("默认模型 Provider ID 与模型 ID 必须同时存在。")
+      }
+      if (db.prepare("SELECT 1 FROM models WHERE provider_id = ? AND id = ? LIMIT 1")
+        .get(settings.default_provider_id, settings.default_model_id) === undefined) {
+        throw new Error(`默认模型 ${settings.default_provider_id}/${settings.default_model_id} 不存在。`)
+      }
+      return { providerId: settings.default_provider_id, modelId: settings.default_model_id }
+    }
+    const first = db.prepare(`SELECT m.provider_id, m.id FROM models m JOIN providers p ON p.id = m.provider_id
+      ORDER BY p.position, m.position, m.model_record_id LIMIT 1`).get() as { provider_id: string; id: string } | undefined
+    return first === undefined ? undefined : { providerId: first.provider_id, modelId: first.id }
   })
 }
 
@@ -362,15 +401,17 @@ export function saveProvider(databasePath: string, provider: ProviderRecord): vo
 export function deleteProvider(databasePath: string, providerId: string): void {
   nonEmpty(providerId, "Provider id")
   withDatabase(databasePath, false, (db) => transaction(db, () => {
+    db.prepare(`UPDATE provider_settings SET default_provider_id = NULL, default_model_id = NULL
+      WHERE id = 1 AND default_provider_id = ?`).run(providerId)
     db.prepare("DELETE FROM providers WHERE id = ?").run(providerId)
   }))
 }
 
 /**
- * 新增或更新 Provider 下的模型，更新时保留其顺序与所属 Provider。
+ * 在 Provider 模型列表末尾新增一条记录；重复的 Provider 与模型 ID 组合会保留为独立条目。
  * @param databasePath Provider 数据库绝对路径。
  * @param model 模型能力与所属 Provider。
- * @throws Error 当 Provider 不存在、模型 ID 已属别的 Provider 或能力字段无效时抛出。
+ * @throws Error 当 Provider 不存在或模型能力字段无效时抛出。
  */
 export function saveModel(databasePath: string, model: ProviderModelRecord): void {
   const id = nonEmpty(model.id, "Model id")
@@ -388,20 +429,73 @@ export function saveModel(databasePath: string, model: ProviderModelRecord): voi
   withDatabase(databasePath, false, (db) => transaction(db, () => {
     const provider = db.prepare("SELECT id FROM providers WHERE id = ?").get(providerId)
     if (provider === undefined) throw new Error(`Provider ${providerId} 不存在。`)
-    const owner = db.prepare("SELECT provider_id FROM models WHERE id = ?")
-      .get(id) as { provider_id: string } | undefined
-    if (owner !== undefined && owner.provider_id !== providerId) throw new Error(`Model ${id} 已属其他 Provider。`)
     const position = db.prepare("SELECT COALESCE(MAX(position) + 1, 0) AS next FROM models WHERE provider_id = ?")
       .get(providerId) as { next: number }
     db.prepare(`INSERT INTO models (id, provider_id, position, context_window, max_output_tokens,
       supports_reasoning, supports_tools, supports_parallel_tools, supports_response_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET
-      context_window = excluded.context_window, max_output_tokens = excluded.max_output_tokens,
-      supports_reasoning = excluded.supports_reasoning, supports_tools = excluded.supports_tools,
-      supports_parallel_tools = excluded.supports_parallel_tools, supports_response_id = excluded.supports_response_id`)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run(id, providerId, position.next, model.contextWindow ?? null, model.maxOutputTokens ?? null,
         booleanColumn(model.supportsReasoning), booleanColumn(model.supportsTools),
         booleanColumn(model.supportsParallelTools), booleanColumn(model.supportsResponseId))
+  }))
+}
+
+/**
+ * 更新 Provider 下该引用最先保存的模型记录；重复引用的后续记录保持原样。
+ * @param databasePath Provider 数据库绝对路径。
+ * @param reference 要更新的 Provider 与模型引用。
+ * @param update 要替换或清除的能力字段。
+ * @throws Error 当模型不存在、字段无效或数据库无法写入时抛出。
+ */
+export function updateModel(
+  databasePath: string,
+  reference: ProviderModelReference,
+  update: ProviderModelUpdate,
+): void {
+  const providerId = nonEmpty(reference.providerId, "Model providerId")
+  const modelId = nonEmpty(reference.modelId, "Model id")
+  for (const field of ["contextWindow", "maxOutputTokens"] as const) {
+    const value = update[field]
+    if (value !== undefined && value !== null && (!Number.isSafeInteger(value) || value <= 0)) {
+      throw new Error(`Model ${field} 必须是正整数。`)
+    }
+  }
+  for (const field of ["supportsReasoning", "supportsTools", "supportsParallelTools", "supportsResponseId"] as const) {
+    const value = update[field]
+    if (value !== undefined && value !== null && typeof value !== "boolean") {
+      throw new Error(`Model ${field} 必须是布尔值。`)
+    }
+  }
+  withDatabase(databasePath, false, (db) => transaction(db, () => {
+    const row = db.prepare(`SELECT model_record_id FROM models
+      WHERE provider_id = ? AND id = ? ORDER BY position, model_record_id LIMIT 1`)
+      .get(providerId, modelId) as { model_record_id: number } | undefined
+    if (row === undefined) throw new Error(`Provider ${providerId} 不包含模型 ${modelId}。`)
+
+    const assignments: string[] = []
+    const values: (number | null)[] = []
+    if (update.contextWindow !== undefined) {
+      assignments.push("context_window = ?")
+      values.push(update.contextWindow)
+    }
+    if (update.maxOutputTokens !== undefined) {
+      assignments.push("max_output_tokens = ?")
+      values.push(update.maxOutputTokens)
+    }
+    for (const [field, column] of [
+      ["supportsReasoning", "supports_reasoning"], ["supportsTools", "supports_tools"],
+      ["supportsParallelTools", "supports_parallel_tools"], ["supportsResponseId", "supports_response_id"],
+    ] as const) {
+      const value = update[field]
+      if (value !== undefined) {
+        assignments.push(`${column} = ?`)
+        values.push(booleanColumn(value))
+      }
+    }
+    if (assignments.length === 0) return
+    const result = db.prepare(`UPDATE models SET ${assignments.join(", ")} WHERE model_record_id = ?`)
+      .run(...values, row.model_record_id)
+    if (result.changes !== 1) throw new Error(`Provider ${providerId} 的模型 ${modelId} 更新失败。`)
   }))
 }
 
@@ -410,20 +504,24 @@ export function saveModel(databasePath: string, model: ProviderModelRecord): voi
  * @param value 模型能力值。
  * @returns 1、0 或 null。
  */
-function booleanColumn(value: boolean | undefined): number | null {
-  return value === undefined ? null : value ? 1 : 0
+function booleanColumn(value: boolean | null | undefined): number | null {
+  return value == null ? null : value ? 1 : 0
 }
 
 /**
- * 删除模型；若其为显式默认模型，引用自动清空。
+ * 删除 Provider 下所有使用该模型引用的记录；若其为显式默认模型，引用同时清空。
  * @param databasePath Provider 数据库绝对路径。
- * @param modelId 要删除的全局唯一模型 ID。
+ * @param providerId 模型所属 Provider 的 ID。
+ * @param modelId Provider 内要删除的模型 ID。
  * @throws Error 当数据库无法写入时抛出。
  */
-export function deleteModel(databasePath: string, modelId: string): void {
+export function deleteModel(databasePath: string, providerId: string, modelId: string): void {
+  nonEmpty(providerId, "Model providerId")
   nonEmpty(modelId, "Model id")
   withDatabase(databasePath, false, (db) => transaction(db, () => {
-    db.prepare("DELETE FROM models WHERE id = ?").run(modelId)
+    db.prepare("DELETE FROM models WHERE provider_id = ? AND id = ?").run(providerId, modelId)
+    db.prepare(`UPDATE provider_settings SET default_provider_id = NULL, default_model_id = NULL
+      WHERE id = 1 AND default_provider_id = ? AND default_model_id = ?`).run(providerId, modelId)
   }))
 }
 
@@ -453,22 +551,28 @@ export function setProviderApiKey(databasePath: string, providerId: string, apiK
 /**
  * 设置显式默认模型；null 表示恢复按顺序选择第一个模型。
  * @param databasePath Provider 数据库绝对路径。
- * @param modelId 已配置模型的 ID，或 null。
+ * @param identity 已配置模型的 Provider 与模型组合身份，或 null。
  * @throws Error 当模型不存在或数据库无法写入时抛出。
  */
-export function setDefaultModelId(databasePath: string, modelId: string | null): void {
-  if (modelId !== null) nonEmpty(modelId, "默认模型 ID")
+export function setDefaultModel(databasePath: string, reference: ProviderModelReference | null): void {
+  if (reference !== null) {
+    nonEmpty(reference.providerId, "默认模型 Provider ID")
+    nonEmpty(reference.modelId, "默认模型 ID")
+  }
   withDatabase(databasePath, false, (db) => transaction(db, () => {
-    if (modelId !== null && db.prepare("SELECT id FROM models WHERE id = ?").get(modelId) === undefined) {
-      throw new Error(`默认模型 ${modelId} 不存在。`)
+    if (reference !== null && db.prepare("SELECT id FROM models WHERE provider_id = ? AND id = ? LIMIT 1")
+      .get(reference.providerId, reference.modelId) === undefined) {
+      throw new Error(`Provider ${reference.providerId} 中的默认模型 ${reference.modelId} 不存在。`)
     }
-    const result = db.prepare("UPDATE provider_settings SET default_model_id = ? WHERE id = 1").run(modelId)
+    const result = db.prepare(`UPDATE provider_settings
+      SET default_provider_id = ?, default_model_id = ? WHERE id = 1`)
+      .run(reference?.providerId ?? null, reference?.modelId ?? null)
     if (result.changes !== 1) throw new Error("缺少默认模型设置记录。")
   }))
 }
 
 /**
- * 在同一次只读事务中读取所选模型、协议参数和 API Key。
+ * 在同一次只读事务中读取所选模型、协议参数和 API Key；引用匹配多条模型记录时取 Provider 顺序中的第一条。
  * @param databasePath Provider 数据库绝对路径。
  * @param reference 当前 Turn 的模型引用。
  * @returns 当前数据库快照中的模型装配输入。
@@ -487,10 +591,15 @@ export function readTurnProviderSnapshot(databasePath: string, reference: ModelR
       }
       const modelRow = db.prepare(`SELECT id, provider_id, context_window, max_output_tokens,
         supports_reasoning, supports_tools, supports_parallel_tools, supports_response_id
-        FROM models WHERE id = ? AND provider_id = ?`)
+        FROM models WHERE id = ? AND provider_id = ? ORDER BY position, model_record_id LIMIT 1`)
         .get(reference.modelId, reference.providerId) as ModelRow | undefined
       if (modelRow === undefined) throw new Error(`Provider ${provider.id} 不包含模型 ${reference.modelId}。`)
-      const model = { ...modelFromRow(modelRow), protocol: provider.protocol }
+      const modelRecord = modelFromRow(modelRow)
+      const model: ModelConfig = {
+        ...modelRecord,
+        protocol: provider.protocol,
+        contextWindow: resolveContextWindow(modelRecord),
+      }
       const credentialRow = db.prepare("SELECT api_key FROM provider_credentials WHERE provider_id = ?")
         .get(provider.id) as { api_key: string } | undefined
       const credential = credentialRow === undefined ? undefined : {

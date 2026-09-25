@@ -11,11 +11,11 @@ import {
   deleteProvider,
   initializeProviderDatabase,
   listProviders,
-  readDefaultModelId,
+  readDefaultModel,
   readTurnProviderSnapshot,
   saveModel,
   saveProvider,
-  setDefaultModelId,
+  setDefaultModel,
   setProviderApiKey,
 } from "../../src/main/provider-store.ts"
 
@@ -34,7 +34,7 @@ async function testCatalogAndDefaults(): Promise<void> {
   await withDatabase((path) => {
     initializeProviderDatabase(path)
     assert.deepEqual(listProviders(path), [])
-    assert.equal(readDefaultModelId(path), undefined)
+    assert.equal(readDefaultModel(path), undefined)
     saveProvider(path, { id: "first", name: "First", protocol: "responses" })
     saveProvider(path, {
       id: "second", name: "Second", protocol: "chat_completions",
@@ -59,18 +59,18 @@ async function testCatalogAndDefaults(): Promise<void> {
       },
     ])
     assert.equal(JSON.stringify(listProviders(path)).includes("hidden-secret"), false)
-    assert.equal(readDefaultModelId(path), "model-b")
-    setDefaultModelId(path, "model-c")
-    assert.equal(readDefaultModelId(path), "model-c")
+    assert.deepEqual(readDefaultModel(path), { providerId: "first", modelId: "model-b" })
+    setDefaultModel(path, { providerId: "second", modelId: "model-c" })
+    assert.deepEqual(readDefaultModel(path), { providerId: "second", modelId: "model-c" })
     initializeProviderDatabase(path)
-    assert.equal(readDefaultModelId(path), "model-c")
+    assert.deepEqual(readDefaultModel(path), { providerId: "second", modelId: "model-c" })
     saveProvider(path, { id: "first", name: "Renamed", protocol: "responses" })
     assert.equal(listProviders(path)[0].name, "Renamed")
-    assert.equal(readDefaultModelId(path), "model-c")
-    deleteModel(path, "model-c")
-    assert.equal(readDefaultModelId(path), "model-b")
+    assert.deepEqual(readDefaultModel(path), { providerId: "second", modelId: "model-c" })
+    deleteModel(path, "second", "model-c")
+    assert.deepEqual(readDefaultModel(path), { providerId: "first", modelId: "model-b" })
     deleteProvider(path, "first")
-    assert.equal(readDefaultModelId(path), undefined)
+    assert.equal(readDefaultModel(path), undefined)
     assert.deepEqual(listProviders(path).map((entry) => entry.id), ["second"])
     const db = new DatabaseSync(path)
     try {
@@ -79,7 +79,7 @@ async function testCatalogAndDefaults(): Promise<void> {
     } finally {
       db.close()
     }
-    setDefaultModelId(path, null)
+    setDefaultModel(path, null)
   })
 }
 
@@ -93,16 +93,19 @@ async function testReadAndRollback(): Promise<void> {
     const reference = { providerId: "configured", protocol: "anthropic_messages" as const, modelId: "model-a" }
     assert.deepEqual(readTurnProviderSnapshot(path, reference), {
       provider: { id: "configured", name: "Configured", protocol: "anthropic_messages" },
-      model: { id: "model-a", providerId: "configured", protocol: "anthropic_messages", maxOutputTokens: 4096 },
+      model: {
+        id: "model-a", providerId: "configured", protocol: "anthropic_messages",
+        contextWindow: 256000, maxOutputTokens: 4096,
+      },
       credential: { providerId: "configured", apiKey: "first-secret" },
     })
     setProviderApiKey(path, "configured", "second-secret")
     assert.equal(readTurnProviderSnapshot(path, reference).credential?.apiKey, "second-secret")
     assert.throws(() => saveModel(path, { id: "model-a", providerId: "missing" }), /Provider missing 不存在/)
     saveProvider(path, { id: "other", name: "Other", protocol: "responses" })
-    assert.throws(() => saveModel(path, { id: "model-a", providerId: "other" }), /已属其他 Provider/)
+    assert.doesNotThrow(() => saveModel(path, { id: "model-a", providerId: "configured" }))
     assert.throws(() => saveModel(path, { id: "invalid", providerId: "configured", contextWindow: 0 }), /contextWindow/)
-    assert.throws(() => setDefaultModelId(path, "missing"), /默认模型 missing 不存在/)
+    assert.throws(() => setDefaultModel(path, { providerId: "other", modelId: "missing" }), /默认模型 missing 不存在/)
     assert.throws(() => setProviderApiKey(path, "missing", "secret-that-must-not-leak"), (error: unknown) => {
       assert.ok(error instanceof Error)
       assert.equal(error.message.includes("secret-that-must-not-leak"), false)
