@@ -5,7 +5,7 @@ import { isAbsolute } from "node:path"
 import { DatabaseSync } from "node:sqlite"
 
 import type { ProviderCredential } from "../../runtime/credential/src/index.ts"
-import { PROTOCOLS, resolveContextWindow } from "../../runtime/model/src/types.ts"
+import { PROTOCOLS } from "../../runtime/model/src/types.ts"
 import type { ModelConfig, ModelRef, Protocol } from "../../runtime/model/src/types.ts"
 
 /** 一个 Provider 唯一协议的连接配置，不包含 API Key。 */
@@ -22,11 +22,8 @@ export interface ProviderRecord {
   defaultHeaders?: Record<string, string>
 }
 
-/** 数据库存储的模型字段；协议由所属 Provider 决定，上下文窗口可由 Runtime 默认值补齐。 */
-export interface ProviderModelRecord extends Omit<ModelConfig, "protocol" | "contextWindow"> {
-  /** 可选的模型声明窗口；缺失时只在构造完整 ModelConfig 时补入 Runtime 默认值。 */
-  contextWindow?: number
-}
+/** Provider 数据库中的模型记录；协议由所属 Provider 决定。 */
+export interface ProviderModelRecord extends Omit<ModelConfig, "protocol"> {}
 
 /** Provider 与 ModelRef 共用的模型引用；modelId 是全局唯一的模型身份。 */
 export interface ProviderModelReference {
@@ -36,14 +33,14 @@ export interface ProviderModelReference {
   modelId: string
 }
 
-/** 更新模型名称与可选能力字段；名称为 null 时保持原值，能力字段为 null 时清除或使用默认值。 */
+/** 更新模型补丁；数值限制只接受正整数，名称为 null 时保持原值，布尔能力为 null 时清除。 */
 export interface ProviderModelUpdate {
   /** Provider API 请求中使用的非空模型名称；null 表示本次不更新名称。 */
   name?: string | null
-  /** 新的声明上下文窗口；null 表示使用 Runtime 默认窗口。 */
-  contextWindow?: number | null
-  /** 新的最大输出 Token 数；null 表示移除限制。 */
-  maxOutputTokens?: number | null
+  /** 新的声明上下文窗口。 */
+  contextWindow?: number
+  /** 新的最大输出 Token 数。 */
+  maxOutputTokens?: number
   /** 是否支持 reasoning；null 表示未声明。 */
   supportsReasoning?: boolean | null
   /** 是否支持工具调用；null 表示未声明。 */
@@ -82,8 +79,8 @@ interface ModelRow {
   id: string
   name: string
   provider_id: string
-  context_window: number | null
-  max_output_tokens: number | null
+  context_window: number
+  max_output_tokens: number
   supports_reasoning: number | null
   supports_tools: number | null
   supports_parallel_tools: number | null
@@ -103,8 +100,8 @@ const CREATE_MODELS = `CREATE TABLE models (
   name TEXT NOT NULL CHECK (length(trim(name)) > 0),
   provider_id TEXT NOT NULL REFERENCES providers(id) ON DELETE CASCADE,
   position INTEGER NOT NULL CHECK (position >= 0),
-  context_window INTEGER CHECK (context_window > 0),
-  max_output_tokens INTEGER CHECK (max_output_tokens > 0),
+  context_window INTEGER NOT NULL CHECK (context_window > 0),
+  max_output_tokens INTEGER NOT NULL CHECK (max_output_tokens > 0),
   supports_reasoning INTEGER CHECK (supports_reasoning IN (0, 1)),
   supports_tools INTEGER CHECK (supports_tools IN (0, 1)),
   supports_parallel_tools INTEGER CHECK (supports_parallel_tools IN (0, 1)),
@@ -168,13 +165,19 @@ function withDatabase<T>(databasePath: string, readOnly: boolean, operation: (db
 }
 
 /**
- * 要求数据库采用已实现的结构版本。
+ * 要求数据库采用已实现的版本，且模型 Token 限制列受 NOT NULL 约束。
  * @param db 已打开的数据库。
- * @throws Error 当版本不是 1 时抛出。
+ * @throws Error 当版本不受支持或模型限制列允许 null 时抛出。
  */
 function requireVersion(db: DatabaseSync): void {
   const version = db.prepare("PRAGMA user_version").get() as { user_version: number }
   if (version.user_version !== 1) throw new Error(`不支持 Provider 数据库版本 ${version.user_version}。`)
+  const columns = db.prepare("PRAGMA table_info(models)").all() as Array<{ name: string; notnull: number }>
+  for (const name of ["context_window", "max_output_tokens"] as const) {
+    if (!columns.some((column) => column.name === name && column.notnull === 1)) {
+      throw new Error(`Provider 数据库字段 models.${name} 必须定义为 NOT NULL。`)
+    }
+  }
 }
 
 /**
@@ -197,13 +200,16 @@ function transaction<T>(db: DatabaseSync, operation: () => T): T {
 }
 
 /**
- * 缺失时创建空 Provider 数据库；已有普通文件只确认存在，不读取或检查其内容。
+ * 缺失时创建空 Provider 数据库；已有数据库只校验版本与模型限制列约束，不执行迁移。
  * @param databasePath `.nicode/providers.sqlite` 的绝对路径。
- * @throws Error 当路径无效、目标不是普通文件或缺失数据库无法创建时抛出。
+ * @throws Error 当路径无效、目标不是普通文件、已有结构不兼容或数据库无法创建时抛出。
  */
 export function initializeProviderDatabase(databasePath: string): void {
   const exists = fileExists(databasePath)
-  if (exists) return
+  if (exists) {
+    withDatabase(databasePath, true, () => undefined)
+    return
+  }
 
   let db: DatabaseSync
   try {
@@ -282,7 +288,7 @@ function providerFromRow(row: ProviderRow): ProviderRecord {
 }
 
 /**
- * 将 SQLite 的可空能力列恢复成模型的可选字段。
+ * 将 SQLite 模型行校验并恢复成持久化模型记录。
  * @param row 模型数据库行。
  * @returns 不含协议的模型字段。
  * @throws Error 当持久化字段无效时抛出。
@@ -291,15 +297,16 @@ function modelFromRow(row: ModelRow): ProviderModelRecord {
   nonEmpty(row.id, "Model id")
   nonEmpty(row.name, "Model Name")
   nonEmpty(row.provider_id, "Model providerId")
-  const model: ProviderModelRecord = { modelId: row.id, name: row.name, providerId: row.provider_id }
-  for (const [column, field] of [
-    ["context_window", "contextWindow"], ["max_output_tokens", "maxOutputTokens"],
-  ] as const) {
-    const value = row[column]
-    if (value !== null) {
-      if (!Number.isSafeInteger(value) || value <= 0) throw new Error(`Model ${field} 必须是正整数。`)
-      model[field] = value
-    }
+  const model: ProviderModelRecord = {
+    modelId: row.id,
+    name: row.name,
+    providerId: row.provider_id,
+    contextWindow: row.context_window,
+    maxOutputTokens: row.max_output_tokens,
+  }
+  for (const field of ["contextWindow", "maxOutputTokens"] as const) {
+    const value = model[field]
+    if (!Number.isSafeInteger(value) || value <= 0) throw new Error(`Model ${field} 必须是正整数。`)
   }
   for (const [column, field] of [
     ["supports_reasoning", "supportsReasoning"], ["supports_tools", "supportsTools"],
@@ -423,7 +430,7 @@ export function saveModel(databasePath: string, model: ProviderModelRecord): voi
   const providerId = nonEmpty(model.providerId, "Model providerId")
   for (const field of ["contextWindow", "maxOutputTokens"] as const) {
     const value = model[field]
-    if (value !== undefined && (!Number.isSafeInteger(value) || value <= 0)) {
+    if (!Number.isSafeInteger(value) || value <= 0) {
       throw new Error(`Model ${field} 必须是正整数。`)
     }
   }
@@ -439,7 +446,7 @@ export function saveModel(databasePath: string, model: ProviderModelRecord): voi
     db.prepare(`INSERT INTO models (id, name, provider_id, position, context_window, max_output_tokens,
       supports_reasoning, supports_tools, supports_parallel_tools, supports_response_id)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(id, name, providerId, position.next, model.contextWindow ?? null, model.maxOutputTokens ?? null,
+      .run(id, name, providerId, position.next, model.contextWindow, model.maxOutputTokens,
         booleanColumn(model.supportsReasoning), booleanColumn(model.supportsTools),
         booleanColumn(model.supportsParallelTools), booleanColumn(model.supportsResponseId))
   }))
@@ -449,7 +456,7 @@ export function saveModel(databasePath: string, model: ProviderModelRecord): voi
  * 更新由 Provider 与全局唯一 modelId 指定的模型记录。
  * @param databasePath Provider 数据库绝对路径。
  * @param reference 要更新的 Provider 与模型引用。
- * @param update 要替换的名称或能力字段；能力字段可传 null 清除或使用默认值。
+ * @param update 要替换的名称、数值限制或能力字段；名称为 null 时保持原值，布尔能力为 null 时清除。
  * @throws Error 当模型不存在、字段无效或数据库无法写入时抛出。
  */
 export function updateModel(
@@ -465,7 +472,7 @@ export function updateModel(
   }
   for (const field of ["contextWindow", "maxOutputTokens"] as const) {
     const value = update[field]
-    if (value !== undefined && value !== null && (!Number.isSafeInteger(value) || value <= 0)) {
+    if (value !== undefined && (!Number.isSafeInteger(value) || value <= 0)) {
       throw new Error(`Model ${field} 必须是正整数。`)
     }
   }
@@ -611,7 +618,7 @@ export function readTurnProviderSnapshot(databasePath: string, reference: ModelR
       const model: ModelConfig = {
         ...modelRecord,
         protocol: provider.protocol,
-        contextWindow: resolveContextWindow(modelRecord),
+        contextWindow: modelRecord.contextWindow,
       }
       const credentialRow = db.prepare("SELECT api_key FROM provider_credentials WHERE provider_id = ?")
         .get(provider.id) as { api_key: string } | undefined

@@ -35,6 +35,7 @@ const MODEL: ModelConfig = {
   providerId: "openai",
   protocol: "chat_completions",
   contextWindow: 256000,
+  maxOutputTokens: 32000,
 }
 
 /** 离线转换入口：协议 chunk 数组 → 统一事件流。 */

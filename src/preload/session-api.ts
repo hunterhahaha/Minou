@@ -98,14 +98,14 @@ export interface ModelSummary {
   isDefault: boolean
 }
 
-/** 创建 Provider 或 Model 时提交的模型配置；持久化模型身份由主进程生成。 */
+/** 创建 Provider 或 Model 时提交的模型配置；主进程为缺失的 Token 限制补入默认值并生成模型身份。 */
 export interface ProviderModelInput {
   /** Provider API 请求中使用的模型名称。 */
   name: string
-  /** 声明的上下文窗口。 */
-  contextWindow: number
-  /** 请求允许的最大输出 Token。 */
-  maxOutputTokens?: number
+  /** 声明的上下文窗口；省略或传 null 时创建模型使用 256000。 */
+  contextWindow?: number | null
+  /** 请求允许的最大输出 Token；省略或传 null 时创建模型使用 32000。 */
+  maxOutputTokens?: number | null
   /** 是否支持 reasoning。 */
   supportsReasoning?: boolean
   /** 是否支持工具调用。 */
@@ -124,14 +124,14 @@ export interface ProviderModelReference {
   modelId: string
 }
 
-/** 更新模型名称或能力的补丁；名称传 null 表示不修改，能力字段传 null 清除对应可选值。 */
+/** 更新模型名称、必填 Token 限制或能力；名称传 null 表示不修改，能力字段传 null 清除对应可选值。 */
 export interface ProviderModelUpdate {
   /** Provider API 请求中使用的非空模型名称；null 表示本次不更新名称。 */
   name?: string | null
-  /** 新上下文窗口；传 null 后运行时使用默认值。 */
-  contextWindow?: number | null
-  /** 新最大输出 Token；传 null 移除该限制。 */
-  maxOutputTokens?: number | null
+  /** 新上下文窗口。 */
+  contextWindow?: number
+  /** 新最大输出 Token 数。 */
+  maxOutputTokens?: number
   /** 新 reasoning 能力；传 null 表示未声明。 */
   supportsReasoning?: boolean | null
   /** 新工具调用能力；传 null 表示未声明。 */

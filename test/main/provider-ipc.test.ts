@@ -60,7 +60,7 @@ async function testModelCreationReturnsGeneratedIdentity(): Promise<void> {
     const provider = ipc.invoke(
       PROVIDER_IPC_CHANNELS.createProvider,
       "Provider", "api-key", "responses", "https://example.com/v1",
-      [{ name: "  model-api-name  ", contextWindow: 128000 }],
+      [{ name: "  model-api-name  ", contextWindow: null, maxOutputTokens: null }],
     ) as ProviderSummary
     const original = provider.models[0]
     assert.ok(original)
@@ -68,6 +68,7 @@ async function testModelCreationReturnsGeneratedIdentity(): Promise<void> {
     assert.match(provider.providerId, uuidV4)
     assert.match(original.modelId, uuidV4)
     assert.equal(original.name, "model-api-name")
+    assert.equal(original.contextWindow, 256000)
     assert.equal(original.isDefault, true)
 
     const appended = ipc.invoke(
@@ -87,6 +88,27 @@ async function testModelCreationReturnsGeneratedIdentity(): Promise<void> {
       { modelId: original.modelId, name: "model-api-name" },
       { modelId: appended.modelId, name: "second-model" },
     ])
+    assert.deepEqual(listProviders(providerDatabasePath)[0]?.models.map(({ contextWindow, maxOutputTokens }) => ({
+      contextWindow,
+      maxOutputTokens,
+    })), [
+      { contextWindow: 256000, maxOutputTokens: 32000 },
+      { contextWindow: 64000, maxOutputTokens: 32000 },
+    ])
+
+    const defaulted = ipc.invoke(
+      PROVIDER_IPC_CHANNELS.createModel,
+      provider.providerId,
+      { name: "  defaulted-model  " },
+    ) as ModelAppend
+    assert.equal(defaulted.contextWindow, 256000)
+    assert.deepEqual(listProviders(providerDatabasePath)[0]?.models[2], {
+      modelId: defaulted.modelId,
+      name: "defaulted-model",
+      providerId: provider.providerId,
+      contextWindow: 256000,
+      maxOutputTokens: 32000,
+    })
 
     ipc.invoke(
       PROVIDER_IPC_CHANNELS.updateModel,
@@ -95,12 +117,17 @@ async function testModelCreationReturnsGeneratedIdentity(): Promise<void> {
     )
     assert.deepEqual(listProviders(providerDatabasePath)[0]?.models[0], {
       modelId: original.modelId, name: "renamed-model", providerId: provider.providerId,
-      contextWindow: 128000, maxOutputTokens: 8192,
+      contextWindow: 256000, maxOutputTokens: 8192,
     })
     assert.throws(() => ipc.invoke(
       PROVIDER_IPC_CHANNELS.updateModel,
       { providerId: provider.providerId, modelId: original.modelId },
       { name: "  " },
+    ), /模型更新内容错误/)
+    assert.throws(() => ipc.invoke(
+      PROVIDER_IPC_CHANNELS.updateModel,
+      { providerId: provider.providerId, modelId: original.modelId },
+      { maxOutputTokens: null },
     ), /模型更新内容错误/)
     ipc.invoke(
       PROVIDER_IPC_CHANNELS.updateModel,
@@ -114,6 +141,16 @@ async function testModelCreationReturnsGeneratedIdentity(): Promise<void> {
       PROVIDER_IPC_CHANNELS.createModel,
       provider.providerId,
       { name: " ", contextWindow: 32000 },
+    ), /模型配置错误/)
+    assert.throws(() => ipc.invoke(
+      PROVIDER_IPC_CHANNELS.createModel,
+      provider.providerId,
+      { name: "invalid-context-window", contextWindow: 0 },
+    ), /模型配置错误/)
+    assert.throws(() => ipc.invoke(
+      PROVIDER_IPC_CHANNELS.createModel,
+      provider.providerId,
+      { name: "invalid-output-limit", maxOutputTokens: 0 },
     ), /模型配置错误/)
   })
 }

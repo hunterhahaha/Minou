@@ -13,7 +13,7 @@
     "skipLibCheck": true,
     "noEmitOnError": true,
     "sourceMap": true,
-
+    "jsx": "react-jsx",
     // 源码里的相对导入带 .ts 后缀：这样 Node 能直接运行（含测试），
     // 同时由 rewriteRelativeImportExtensions 在产出时改写成 .js。
     // 两个选项需成对出现，详见 README「工程配置」。

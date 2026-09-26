@@ -36,6 +36,7 @@ const MODEL: ModelConfig = {
   providerId: "test-provider",
   protocol: "anthropic_messages",
   contextWindow: 256000,
+  maxOutputTokens: 32000,
 }
 
 function requestWith(

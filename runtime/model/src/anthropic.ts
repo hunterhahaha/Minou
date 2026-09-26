@@ -13,8 +13,7 @@
  * 实施阶段：.git/技术文档/开发TODOList.md 阶段 3
  *
  * 本文件的三条实现决定（均为文档未规定处，已在阶段报告中单列）：
- *   1. `max_tokens` 取 `ModelConfig.maxOutputTokens`，缺失时用
- *      `DEFAULT_MAX_OUTPUT_TOKENS`（Anthropic 必填，取值依据见 `./adapter.ts`）。
+ *   1. `max_tokens` 直接使用必需的 `ModelConfig.maxOutputTokens`。
  *   2. 回放 assistant 历史时跳过 `thinking` 块：统一内容块只有 `text`，
  *      而 Anthropic 的 thinking 块回放必须带 `signature`，凑不出合法块。
  *   3. 协议里没有统一表达能力的块（`redacted_thinking`、`server_tool_use`、
@@ -58,14 +57,6 @@ type ToolUnion = Anthropic.Messages.ToolUnion
 type RawMessageStreamEvent = Anthropic.Messages.RawMessageStreamEvent
 type MessageCreateParamsStreaming = Anthropic.Messages.MessageCreateParamsStreaming
 type ToolInputSchema = Anthropic.Messages.Tool.InputSchema
-
-/**
- * Anthropic Messages 的默认 `max_tokens`。
- *
- * `ModelConfig.maxOutputTokens` 是可选的，而该协议的 `max_tokens` 是必填的，
- * 因此必须有一个兜底值。4096 取自协议上下文示例（`.git/技术文档/三个协议调用时传入的上下文示例.md`）。
- */
-export const DEFAULT_ANTHROPIC_MAX_TOKENS = 4096
 
 // ---------------------------------------------------------------------------
 // 请求方向：统一上下文 → Anthropic Messages
@@ -579,8 +570,6 @@ export function createAnthropicAdapter(
     defaultHeaders: options.defaultHeaders,
     maxRetries: 0,
   })
-  const maxOutputTokens = config.maxOutputTokens ?? DEFAULT_ANTHROPIC_MAX_TOKENS
-
   /**
    * 执行一次绑定模型的 Anthropic 流式请求，并统一处理重试与错误归一化。
    *
@@ -595,7 +584,7 @@ export function createAnthropicAdapter(
   ): AsyncGenerator<ModelStreamEvent> {
     // 校验与请求构建在迭代时抛出：AgentLoop 只需在一处处理 Adapter 的错误。
     assertRequestMatchesModel(request, config)
-    const params = buildAnthropicRequest(request, maxOutputTokens)
+    const params = buildAnthropicRequest(request, config.maxOutputTokens)
 
     yield* runModelStream((attemptSignal) => {
       return mapAnthropicStream(requestAnthropicStream(client, params, attemptSignal))

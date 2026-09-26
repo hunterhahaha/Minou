@@ -41,22 +41,37 @@ async function testCatalogAndDefaults(): Promise<void> {
       id: "second", name: "Second", protocol: "chat_completions",
       baseURL: "https://example.com/v1", defaultHeaders: { "X-Mode": "test" },
     })
-    saveModel(path, { modelId: "model-b", name: "Model B", providerId: "first", supportsTools: false })
-    saveModel(path, { modelId: "model-a", name: "Model A", providerId: "first", contextWindow: 128000 })
-    saveModel(path, { modelId: "model-c", name: "Model C", providerId: "second" })
+    saveModel(path, {
+      modelId: "model-b", name: "Model B", providerId: "first", contextWindow: 256000,
+      maxOutputTokens: 32000, supportsTools: false,
+    })
+    saveModel(path, {
+      modelId: "model-a", name: "Model A", providerId: "first", contextWindow: 128000, maxOutputTokens: 32000,
+    })
+    saveModel(path, {
+      modelId: "model-c", name: "Model C", providerId: "second", contextWindow: 256000, maxOutputTokens: 32000,
+    })
     setProviderApiKey(path, "first", "hidden-secret")
     assert.deepEqual(listProviders(path), [
       {
         id: "first", name: "First", protocol: "responses",
         models: [
-          { modelId: "model-b", name: "Model B", providerId: "first", supportsTools: false },
-          { modelId: "model-a", name: "Model A", providerId: "first", contextWindow: 128000 },
+          {
+            modelId: "model-b", name: "Model B", providerId: "first", contextWindow: 256000,
+            maxOutputTokens: 32000, supportsTools: false,
+          },
+          {
+            modelId: "model-a", name: "Model A", providerId: "first", contextWindow: 128000,
+            maxOutputTokens: 32000,
+          },
         ],
       },
       {
         id: "second", name: "Second", protocol: "chat_completions",
         baseURL: "https://example.com/v1", defaultHeaders: { "X-Mode": "test" },
-        models: [{ modelId: "model-c", name: "Model C", providerId: "second" }],
+        models: [{
+          modelId: "model-c", name: "Model C", providerId: "second", contextWindow: 256000, maxOutputTokens: 32000,
+        }],
       },
     ])
     assert.equal(JSON.stringify(listProviders(path)).includes("hidden-secret"), false)
@@ -77,9 +92,26 @@ async function testCatalogAndDefaults(): Promise<void> {
     try {
       assert.equal((db.prepare("SELECT COUNT(*) AS count FROM models").get() as { count: number }).count, 0)
       assert.equal((db.prepare("SELECT COUNT(*) AS count FROM provider_credentials").get() as { count: number }).count, 0)
+      const columns = db.prepare("PRAGMA table_info(models)").all() as Array<{ name: string; notnull: number }>
+      assert.equal(columns.find(({ name }) => name === "context_window")?.notnull, 1)
+      assert.equal(columns.find(({ name }) => name === "max_output_tokens")?.notnull, 1)
+      const insertModel = db.prepare(`INSERT INTO models
+        (id, name, provider_id, position, context_window, max_output_tokens)
+        VALUES (?, ?, ?, 99, ?, ?)`)
+      assert.throws(() => insertModel.run("null-context", "Null context", "second", null, 32000), /NOT NULL constraint failed/)
+      assert.throws(() => insertModel.run("null-output", "Null output", "second", 256000, null), /NOT NULL constraint failed/)
     } finally {
       db.close()
     }
+    const nullableSchemaPath = `${path}.nullable-schema`
+    const nullableSchemaDb = new DatabaseSync(nullableSchemaPath)
+    try {
+      nullableSchemaDb.exec(`CREATE TABLE models (context_window INTEGER, max_output_tokens INTEGER);
+        PRAGMA user_version = 1`)
+    } finally {
+      nullableSchemaDb.close()
+    }
+    assert.throws(() => initializeProviderDatabase(nullableSchemaPath), /models\.context_window 必须定义为 NOT NULL/)
     setDefaultModel(path, null)
   })
 }
@@ -89,7 +121,10 @@ async function testReadAndRollback(): Promise<void> {
   await withDatabase((path) => {
     initializeProviderDatabase(path)
     saveProvider(path, { id: "configured", name: "Configured", protocol: "anthropic_messages" })
-    saveModel(path, { modelId: "model-a", name: "claude-test", providerId: "configured", maxOutputTokens: 4096 })
+    saveModel(path, {
+      modelId: "model-a", name: "claude-test", providerId: "configured", contextWindow: 256000,
+      maxOutputTokens: 4096,
+    })
     setProviderApiKey(path, "configured", "first-secret")
     const reference = { providerId: "configured", protocol: "anthropic_messages" as const, modelId: "model-a", name: "claude-test" }
     assert.deepEqual(readTurnProviderSnapshot(path, reference), {
@@ -102,9 +137,13 @@ async function testReadAndRollback(): Promise<void> {
     })
     setProviderApiKey(path, "configured", "second-secret")
     assert.equal(readTurnProviderSnapshot(path, reference).credential?.apiKey, "second-secret")
-    assert.throws(() => saveModel(path, { modelId: "model-missing", name: "Model", providerId: "missing" }), /Provider missing 不存在/)
+    assert.throws(() => saveModel(path, {
+      modelId: "model-missing", name: "Model", providerId: "missing", contextWindow: 256000, maxOutputTokens: 32000,
+    }), /Provider missing 不存在/)
     saveProvider(path, { id: "other", name: "Other", protocol: "responses" })
-    assert.throws(() => saveModel(path, { modelId: "model-a", name: "Duplicate", providerId: "other" }), /UNIQUE constraint failed/)
+    assert.throws(() => saveModel(path, {
+      modelId: "model-a", name: "Duplicate", providerId: "other", contextWindow: 256000, maxOutputTokens: 32000,
+    }), /UNIQUE constraint failed/)
     updateModel(path, { providerId: "configured", modelId: "model-a" }, {
       name: "updated-claude-test", maxOutputTokens: 2048, supportsTools: true,
     })
@@ -115,7 +154,12 @@ async function testReadAndRollback(): Promise<void> {
     assert.throws(() => updateModel(path, { providerId: "configured", modelId: "model-a" }, { name: "  " }), /name must not be empty/)
     updateModel(path, { providerId: "configured", modelId: "model-a" }, { name: null })
     assert.equal(listProviders(path)[0].models[0].name, "updated-claude-test")
-    assert.throws(() => saveModel(path, { modelId: "invalid", name: "Invalid", providerId: "configured", contextWindow: 0 }), /contextWindow/)
+    assert.throws(() => saveModel(path, {
+      modelId: "invalid-context", name: "Invalid", providerId: "configured", contextWindow: 0, maxOutputTokens: 32000,
+    }), /contextWindow/)
+    assert.throws(() => saveModel(path, {
+      modelId: "invalid-output", name: "Invalid", providerId: "configured", contextWindow: 256000, maxOutputTokens: 0,
+    }), /maxOutputTokens/)
     assert.throws(() => setDefaultModel(path, { providerId: "other", modelId: "missing" }), /默认模型 missing 不存在/)
     assert.throws(() => setProviderApiKey(path, "missing", "secret-that-must-not-leak"), (error: unknown) => {
       assert.ok(error instanceof Error)
@@ -134,12 +178,12 @@ async function testReadAndRollback(): Promise<void> {
   })
 }
 
-/** 验证普通列表拒绝缺失数据库，启动初始化只要求已有文件存在。 */
+/** 验证普通列表拒绝缺失数据库，启动初始化校验已有数据库的版本与结构。 */
 async function testDatabaseErrors(): Promise<void> {
   await withDatabase(async (path) => {
     assert.throws(() => listProviders(path), (error: unknown) => error instanceof Error && error.message.includes(path))
     await writeFile(path, "not sqlite")
-    assert.doesNotThrow(() => initializeProviderDatabase(path))
+    assert.throws(() => initializeProviderDatabase(path), /not a database/)
   })
   await withDatabase((path) => {
     initializeProviderDatabase(path)
@@ -149,7 +193,7 @@ async function testDatabaseErrors(): Promise<void> {
     } finally {
       db.close()
     }
-    assert.doesNotThrow(() => initializeProviderDatabase(path))
+    assert.throws(() => initializeProviderDatabase(path), /不支持 Provider 数据库版本 9/)
   })
 }
 

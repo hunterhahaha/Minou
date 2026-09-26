@@ -26,6 +26,18 @@ import type { Protocol } from "../../runtime/model/src/types.ts"
 
 type Models = ProviderModelInput[]
 
+/** 新建模型未提供上下文窗口时使用的 Token 数。 */
+const DEFAULT_MODEL_CONTEXT_WINDOW = 256_000
+
+/** 新建模型未提供最大输出 Token 数时使用的 Token 数。 */
+const DEFAULT_MODEL_MAX_OUTPUT_TOKENS = 32_000
+
+/** 已补齐创建默认值、可写入 Provider 数据库的模型配置。 */
+type PersistableModelInput = Omit<ProviderModelInput, "contextWindow" | "maxOutputTokens"> & {
+  contextWindow: number
+  maxOutputTokens: number
+}
+
 /**
  * 验证模型协议是否属于 Runtime 支持的协议。
  * @param value Renderer 传入的未知协议值。
@@ -36,15 +48,28 @@ function isProtocol(value: unknown): value is Protocol {
 }
 
 /**
- * 检查模型创建输入及数据库约束要求的字段范围。
+ * 检查模型创建输入及可选数值字段的范围。
  * @param value Renderer 传入的未知模型对象。
- * @returns value 可保存为一条模型记录时为 true。
+ * @returns value 符合创建输入约束、可在写库前补入默认值时为 true。
  */
 function isModelInput(value: unknown): value is ProviderModelInput {
   if (!isRecord(value) || typeof value.name !== "string" || value.name.trim() === "") return false
-  if (!isPositiveInteger(value.contextWindow) || !isOptionalPositiveInteger(value.maxOutputTokens)) return false
+  if (!isOptionalPositiveInteger(value.contextWindow) || !isOptionalPositiveInteger(value.maxOutputTokens)) return false
   return isOptionalBoolean(value.supportsReasoning) && isOptionalBoolean(value.supportsTools) &&
     isOptionalBoolean(value.supportsParallelTools) && isOptionalBoolean(value.supportsResponseId)
+}
+
+/**
+ * 在模型写入数据库前为缺失的限制字段补入创建默认值。
+ * @param model 已通过 IPC 校验的模型创建配置。
+ * @returns 同时包含有效上下文窗口和最大输出 Token 数的模型配置。
+ */
+function completeModelInput(model: ProviderModelInput): PersistableModelInput {
+  return {
+    ...model,
+    contextWindow: model.contextWindow ?? DEFAULT_MODEL_CONTEXT_WINDOW,
+    maxOutputTokens: model.maxOutputTokens ?? DEFAULT_MODEL_MAX_OUTPUT_TOKENS,
+  }
 }
 
 /**
@@ -57,7 +82,7 @@ function isModels(value: unknown): value is Models {
 }
 
 /**
- * 检查模型补丁；至少提交一个已知字段，名称可用 null 表示不更新，能力字段可用 null 清除。
+ * 检查模型补丁；名称可用 null 表示不更新，数值限制必须为正整数，布尔能力可用 null 清除。
  * @param value Renderer 传入的未知补丁。
  * @returns 补丁字段合法且至少有一个可更新字段时为 true。
  */
@@ -83,7 +108,7 @@ function isModelUpdate(value: unknown): value is ProviderModelUpdate {
     }
   }
   for (const field of ["contextWindow", "maxOutputTokens"] as const) {
-    if (field in value && !isNullablePositiveInteger(value[field])) return false
+    if (field in value && !isPositiveInteger(value[field])) return false
   }
   for (const field of ["supportsReasoning", "supportsTools", "supportsParallelTools", "supportsResponseId"] as const) {
     if (field in value && !isNullableBoolean(value[field])) return false
@@ -122,7 +147,11 @@ export function registerModelIpcHandlers(
       const baseURL = requireNonEmptyString(url, "URL")
       if (!isModels(models)) throw new TypeError("模型列表错误")
 
-      const normalizedModels = models.map((model) => ({ ...model, name: model.name.trim(), modelId: randomUUID() }))
+      const normalizedModels = models.map((model) => ({
+        ...completeModelInput(model),
+        name: model.name.trim(),
+        modelId: randomUUID(),
+      }))
       const providerId = randomUUID()
       let providerSaved = false
       try {
@@ -173,11 +202,12 @@ export function registerModelIpcHandlers(
   ipcMain.handle(PROVIDER_IPC_CHANNELS.createModel, (_event, providerId: unknown, model: unknown): ModelAppend => {
     const normalizedProviderId = requireNonEmptyString(providerId, "Provider ID")
     if (!isModelInput(model)) throw new TypeError("模型配置错误")
-    const { name: inputName, ...fields } = model
+    const completedModel = completeModelInput(model)
+    const { name: inputName, ...fields } = completedModel
     const modelId = randomUUID()
     const name = inputName.trim()
     saveModel(databasePath, { modelId, name, providerId: normalizedProviderId, ...fields })
-    return { providerId: normalizedProviderId, modelId, name, contextWindow: model.contextWindow }
+    return { providerId: normalizedProviderId, modelId, name, contextWindow: completedModel.contextWindow }
   })
 
   ipcMain.handle(
@@ -227,21 +257,12 @@ function isPositiveInteger(value: unknown): value is number {
 }
 
 /**
- * 检查可选正安全整数。
+ * 检查可省略或置空的正安全整数。
  * @param value 待检查的未知值。
- * @returns value 缺失或为正安全整数时为 true。
+ * @returns value 缺失、为 null 或为正安全整数时为 true。
  */
-function isOptionalPositiveInteger(value: unknown): value is number | undefined {
-  return value === undefined || isPositiveInteger(value)
-}
-
-/**
- * 检查允许清除的正安全整数。
- * @param value 待检查的未知值。
- * @returns value 为 null 或正安全整数时为 true。
- */
-function isNullablePositiveInteger(value: unknown): value is number | null {
-  return value === null || isPositiveInteger(value)
+function isOptionalPositiveInteger(value: unknown): value is number | null | undefined {
+  return value === undefined || value === null || isPositiveInteger(value)
 }
 
 /**

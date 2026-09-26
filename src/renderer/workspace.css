@@ -1,5 +1,5 @@
 :root {
-  font-family: Inter, "Segoe UI", "Microsoft YaHei UI", system-ui, sans-serif;
+  font-family: "MiSans", "HarmonyOS Sans SC", Inter, "Segoe UI", sans-serif;
   color: #303743;
   background: #fbfcfe;
   font-synthesis: none;
@@ -13,7 +13,12 @@ button:focus-visible, textarea:focus-visible { outline: 2px solid #5684c8; outli
 .titlebar {
   display: flex; align-items: center; flex: 0 0 40px; gap: 0;
   padding: 0 138px 0 12px; border-bottom: 1px solid #e0e6ed;
-  background: #f6f8fb; app-region: drag; user-select: none;
+  background: linear-gradient(
+          -90deg,
+          #FFF8F5 0%,
+          #FAFAFB 50%,
+          #F5F9FF 100%
+  ); app-region: drag; user-select: none;
 }
 .brand-mark {
   display: grid; place-items: center; width: 22px; height: 22px; flex: none;
@@ -30,12 +35,18 @@ button:focus-visible, textarea:focus-visible { outline: 2px solid #5684c8; outli
 .workspace-shell { display: flex; flex: 1; min-height: 0; min-width: 0; overflow: hidden; }
 .sidebar {
   display: flex; flex: 0 0 clamp(180px, 16vw, 232px); flex-direction: column;
-  min-height: 0; padding: 16px 0 12px; border-right: 1px solid #e0e6ee; background: #f6f8fb;
+  min-height: 0; padding: 16px 0 12px; border-right: 1px solid #e0e6ee;
+  background: linear-gradient(
+          0deg,
+          #FFF8F5 0%,
+          #FAFAFB 50%,
+          #F5F9FF 100%
+  );
 }
 .new-chat {
   display: flex; align-items: center; gap: 8px; width: calc(100% - 24px); height: 40px; flex: none;
   margin: 0 12px 12px; padding: 0; border: 0; border-radius: 6px;
-  color: inherit; background: transparent; font-size: 13px; font-weight: 700; text-align: left; cursor: pointer;
+  color: #111827; background: transparent; font-size: 13px; font-weight: 700; text-align: left; cursor: pointer;
 }
 .new-chat:hover, .sidebar-settings:hover { background: #e5ebf0; }
 .new-chat svg { flex: none; }
@@ -92,7 +103,7 @@ button:focus-visible, textarea:focus-visible { outline: 2px solid #5684c8; outli
   margin: auto 12px 0; padding: 0 10px; border-radius: 6px;
   color: #717b89; font-size: 12px;
 }
-.main-panel { position: relative; flex: 1; min-width: 0; background: #fbfcfe; }
+.main-panel { position: relative; flex: 1; min-width: 0; background: #FFFFFF; }
 .breadcrumb {
   position: absolute; top: 20px; left: 24px; display: flex; gap: 12px;
   align-items: center; font-size: 13px; font-weight: 700;

@@ -2,7 +2,6 @@
 
 import type { ConfigFilePaths } from "./config-files.ts"
 import { listProviders, readDefaultModel } from "./provider-store.ts"
-import { resolveContextWindow } from "../../runtime/model/src/types.ts"
 import { listProjectWorkspaces, readDefaultWorkspace } from "./workspace-store.ts"
 import { STARTUP_DATA_IPC_CHANNELS } from "../preload/session-api.ts"
 import type {
@@ -56,7 +55,7 @@ export function registerStartupDataIpcHandlers(
           return {
             modelId: model.modelId,
             name: model.name,
-            contextWindow: resolveContextWindow(model),
+            contextWindow: model.contextWindow,
             isDefault,
           }
         }),

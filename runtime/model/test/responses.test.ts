@@ -36,6 +36,7 @@ const MODEL: ModelConfig = {
   providerId: "openai",
   protocol: "responses",
   contextWindow: 256000,
+  maxOutputTokens: 32000,
 }
 
 /** 离线转换入口：协议事件数组 → 统一事件流。 */

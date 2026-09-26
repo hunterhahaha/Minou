@@ -14,6 +14,7 @@ import {
   resolveTurnModelAdapterSpecification,
 } from "../../src/main/model-adapters.ts"
 import { deleteProvider, saveModel, saveProvider, setProviderApiKey, updateModel } from "../../src/main/provider-store.ts"
+import type { ProviderModelUpdate } from "../../src/main/provider-store.ts"
 
 const MODEL: ModelRef = {
   providerId: "configured",
@@ -57,6 +58,10 @@ async function testResolvesCurrentDatabaseConfiguration(): Promise<void> {
       defaultHeaders: { "X-Test": "value" },
     })
 
+    assert.throws(() => updateModel(database, { providerId: "configured", modelId: "model-a" }, {
+      maxOutputTokens: null,
+    } as unknown as ProviderModelUpdate), /maxOutputTokens/)
+
     saveProvider(database, {
       id: "configured", name: "Updated Provider", protocol: "chat_completions",
       baseURL: "https://updated.example.com/v2", defaultHeaders: { "X-Updated": "yes" },
@@ -64,7 +69,6 @@ async function testResolvesCurrentDatabaseConfiguration(): Promise<void> {
     updateModel(database, { providerId: "configured", modelId: "model-a" }, {
       name: "gpt-updated",
       contextWindow: 64000,
-      maxOutputTokens: null,
       supportsReasoning: null,
       supportsTools: false,
       supportsParallelTools: null,
@@ -74,7 +78,7 @@ async function testResolvesCurrentDatabaseConfiguration(): Promise<void> {
     const second = await resolveTurnModelAdapterSpecification(paths, MODEL)
     assert.deepEqual(second.modelConfig, {
       modelId: "model-a", name: "gpt-updated", providerId: "configured", protocol: "chat_completions",
-      contextWindow: 64000, supportsTools: false,
+      contextWindow: 64000, maxOutputTokens: 4096, supportsTools: false,
     })
     assert.deepEqual(second.clientOptions, {
       apiKey: "second-secret", baseURL: "https://updated.example.com/v2",
@@ -93,7 +97,10 @@ async function testRejectsInvalidBindingsWithoutSecrets(): Promise<void> {
   await withPaths(async (paths) => {
     const database = paths.providerDatabasePath
     saveProvider(database, { id: "configured", name: "Configured", protocol: "chat_completions" })
-    saveModel(database, { providerId: "configured", modelId: "model-a", name: "gpt-test" })
+    saveModel(database, {
+      providerId: "configured", modelId: "model-a", name: "gpt-test", contextWindow: 256000,
+      maxOutputTokens: 32000,
+    })
     setProviderApiKey(database, "configured", "must-not-leak")
     for (const model of [
       { ...MODEL, providerId: "missing-provider" },

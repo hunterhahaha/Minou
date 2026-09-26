@@ -22,7 +22,6 @@ import { createModelAdapter } from "../src/adapter.ts"
 import {
   buildAnthropicRequest,
   createAnthropicAdapter,
-  DEFAULT_ANTHROPIC_MAX_TOKENS,
   mapAnthropicStream as mapAnthropicStreamOf,
 } from "../src/anthropic.ts"
 import { CANCELLED, MODEL_REQUEST_FAILED } from "../../error/src/normalizer.ts"
@@ -38,6 +37,7 @@ const MODEL: ModelConfig = {
   providerId: "anthropic",
   protocol: "anthropic_messages",
   contextWindow: 256000,
+  maxOutputTokens: 8192,
 }
 
 /** 离线转换入口：协议事件数组 → 统一事件流（真实 SDK 的流本身就是异步可迭代的）。 */
@@ -149,10 +149,10 @@ async function main(): Promise<void> {
   // -------------------------------------------------------------------------
 
   {
-    const params = buildAnthropicRequest(agentRequest(), DEFAULT_ANTHROPIC_MAX_TOKENS)
+    const params = buildAnthropicRequest(agentRequest(), MODEL.maxOutputTokens)
 
     assert.equal(params.model, "claude-test")
-    assert.equal(params.max_tokens, DEFAULT_ANTHROPIC_MAX_TOKENS)
+    assert.equal(params.max_tokens, MODEL.maxOutputTokens)
     assert.equal(params.stream, true)
     // messages[0] 对应协议的 system 位置。
     assert.equal(params.system, "You are a coding agent.")
@@ -599,7 +599,7 @@ async function main(): Promise<void> {
     assert.equal(sent?.path, "/v1/messages")
     assert.equal(sent?.body.system, "You are a coding agent.")
     assert.equal(sent?.body.stream, true)
-    assert.equal(sent?.body.max_tokens, DEFAULT_ANTHROPIC_MAX_TOKENS)
+    assert.equal(sent?.body.max_tokens, MODEL.maxOutputTokens)
     assert.equal(sent?.headers["x-api-key"] as string | undefined, "test-key")
     const sentMessages = sent?.body.messages as Array<Record<string, unknown>>
     assert.equal(sentMessages.length, 5)

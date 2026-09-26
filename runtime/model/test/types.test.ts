@@ -3,7 +3,7 @@
  *
  * 本文件由两部分组成：
  *   1. 纯类型断言（编译期，由 tsconfig.test.json + tsc 检查）；
- *   2. 少量运行期断言（node:assert，验证 resolveContextWindow 与 Usage 派生量的实际行为）。
+ *   2. 少量运行期断言（node:assert，验证协议集合与 Usage 派生量的实际行为）。
  *
  * 两种方式都不依赖测试框架，因此不需要新增依赖。
  * 运行：node --experimental-strip-types runtime/model/test/types.test.ts
@@ -18,10 +18,8 @@ import assert from "node:assert/strict"
 import {
   accumulateUsage,
   cacheHitRate,
-  DEFAULT_CONTEXT_WINDOW,
   promptTokens,
   PROTOCOLS,
-  resolveContextWindow,
   resolveTotalTokens,
 } from "../src/types.ts"
 import type {
@@ -58,11 +56,17 @@ type _ProtocolValues = Expect<Equals<Protocol, "anthropic_messages" | "chat_comp
 type _ModelRefShape = Expect<Equals<keyof ModelRef, "providerId" | "protocol" | "modelId" | "name">>
 type _ModelConfigRequired = Expect<Equals<ModelConfig["modelId"] | ModelConfig["name"] | ModelConfig["providerId"], string>>
 type _ModelConfigContextWindowRequired = Expect<Equals<ModelConfig["contextWindow"], number>>
+type _ModelConfigMaxOutputTokensRequired = Expect<Equals<ModelConfig["maxOutputTokens"], number>>
 // @ts-expect-error 运行时模型配置必须提供已经解析的上下文窗口。
 const _missingContextWindow: ModelConfig = {
-  modelId: "model-id", name: "model", providerId: "provider", protocol: "responses",
+  modelId: "model-id", name: "model", providerId: "provider", protocol: "responses", maxOutputTokens: 32000,
 }
 void _missingContextWindow
+// @ts-expect-error 运行时模型配置必须提供最大输出 Token 数。
+const _missingMaxOutputTokens: ModelConfig = {
+  modelId: "model-id", name: "model", providerId: "provider", protocol: "responses", contextWindow: 256000,
+}
+void _missingMaxOutputTokens
 
 // 内容块三种形态（第 8.4 节）。
 type _BlockTypes = Expect<Equals<AssistantContentBlock["type"], "thinking" | "text" | "tool_call">>
@@ -160,13 +164,7 @@ type _ToolDefinitionHasSchema = Expect<Equals<UnifiedToolDefinition["inputSchema
 // 2. 运行期断言
 // ---------------------------------------------------------------------------
 
-// 从允许缺省上下文窗口的记录中解析有效窗口；运行时 ModelConfig 本身要求该值。
 assert.equal(PROTOCOLS.length, 3)
-assert.equal(DEFAULT_CONTEXT_WINDOW, 256000)
-assert.equal(resolveContextWindow({}), 256000)
-assert.equal(resolveContextWindow({ contextWindow: 200000 }), 200000)
-// 显式 0 不应回落到默认值（?? 而非 ||）。
-assert.equal(resolveContextWindow({ contextWindow: 0 }), 0)
 
 // Usage 派生量（Usage 统一设计第 6 节）。以下期望值按该文档逐条手算：
 //   Prompt = input + cacheRead + cacheWrite = 200 + 800 + 100 = 1100

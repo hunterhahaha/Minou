@@ -77,8 +77,12 @@ async function main(): Promise<void> {
     })
     saveDefaultWorkspace(workspaceDatabasePath, { version: 1, sessions: [secondSession, firstSession] })
     saveProvider(providerDatabasePath, { id: "provider-1", name: "Provider", protocol: "responses" })
-    saveModel(providerDatabasePath, { modelId: "model-b", name: "Model B", providerId: "provider-1" })
-    saveModel(providerDatabasePath, { modelId: "model-a", name: "Model A", providerId: "provider-1" })
+    saveModel(providerDatabasePath, {
+      modelId: "model-b", name: "Model B", providerId: "provider-1", contextWindow: 256000, maxOutputTokens: 32000,
+    })
+    saveModel(providerDatabasePath, {
+      modelId: "model-a", name: "Model A", providerId: "provider-1", contextWindow: 256000, maxOutputTokens: 32000,
+    })
     setProviderApiKey(providerDatabasePath, "provider-1", "private-api-key")
 
     assert.deepEqual(ipc.invoke(STARTUP_DATA_IPC_CHANNELS.listProjects), [{
