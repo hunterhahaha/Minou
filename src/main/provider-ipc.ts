@@ -82,7 +82,7 @@ function isModels(value: unknown): value is Models {
 }
 
 /**
- * 检查模型补丁；名称可用 null 表示不更新，数值限制必须为正整数，布尔能力可用 null 清除。
+ * 检查模型补丁；省略名称时保持原值，数值限制必须为正整数，布尔能力可用 null 清除。
  * @param value Renderer 传入的未知补丁。
  * @returns 补丁字段合法且至少有一个可更新字段时为 true。
  */
@@ -95,17 +95,9 @@ function isModelUpdate(value: unknown): value is ProviderModelUpdate {
   if (Object.keys(value).length === 0 || !Object.keys(value).every((key) => fields.includes(key as typeof fields[number]))) {
     return false
   }
-  for (const field of ["name"] as const) {
-    if (field in value) {
-      const name = value[field]
-      if (name === null) continue
-      if (typeof name !== "string") {
-        return false
-      }
-      if (name.trim() === "") {
-        return false
-      }
-    }
+  if ("name" in value) {
+    const name = value.name
+    if (typeof name !== "string" || name.trim() === "") return false
   }
   for (const field of ["contextWindow", "maxOutputTokens"] as const) {
     if (field in value && !isPositiveInteger(value[field])) return false
@@ -207,7 +199,13 @@ export function registerModelIpcHandlers(
     const modelId = randomUUID()
     const name = inputName.trim()
     saveModel(databasePath, { modelId, name, providerId: normalizedProviderId, ...fields })
-    return { providerId: normalizedProviderId, modelId, name, contextWindow: completedModel.contextWindow }
+    return {
+      providerId: normalizedProviderId,
+      modelId,
+      name,
+      contextWindow: completedModel.contextWindow,
+      maxOutputTokens: completedModel.maxOutputTokens,
+    }
   })
 
   ipcMain.handle(
@@ -215,7 +213,7 @@ export function registerModelIpcHandlers(
     (_event, reference: unknown, update: unknown): void => {
       if (!isProviderModelReference(reference)) throw new TypeError("模型引用错误")
       if (!isModelUpdate(update)) throw new TypeError("模型更新内容错误")
-      const normalizedUpdate = update.name === undefined || update.name === null
+      const normalizedUpdate = update.name === undefined
         ? update
         : { ...update, name: update.name.trim() }
       updateProviderModel(databasePath, normalizeReference(reference), normalizedUpdate)
@@ -238,13 +236,22 @@ export function registerModelIpcHandlers(
 }
 
 /**
- * 生成与创建请求一致的模型摘要。
- * @param model 已校验的创建模型输入。
+ * 生成 Provider 模型摘要。
+ * @param model Provider Store 返回的已保存模型记录。
  * @param isDefault 是否为当前有效默认引用的第一条记录。
- * @returns 包含模型身份、名称、有效上下文窗口及默认状态的页面摘要。
+ * @returns 包含模型身份、名称、上下文窗口、最大输出 Token 数及默认状态的页面摘要。
  */
-function modelSummary(model: {modelId: string, name: string, contextWindow: number}, isDefault: boolean): ModelSummary {
-  return { modelId: model.modelId, name: model.name, contextWindow: model.contextWindow, isDefault }
+function modelSummary(
+  model: { modelId: string, name: string, contextWindow: number, maxOutputTokens: number },
+  isDefault: boolean,
+): ModelSummary {
+  return {
+    modelId: model.modelId,
+    name: model.name,
+    contextWindow: model.contextWindow,
+    maxOutputTokens: model.maxOutputTokens,
+    isDefault,
+  }
 }
 
 /**

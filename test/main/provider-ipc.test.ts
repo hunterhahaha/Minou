@@ -69,6 +69,7 @@ async function testModelCreationReturnsGeneratedIdentity(): Promise<void> {
     assert.match(original.modelId, uuidV4)
     assert.equal(original.name, "model-api-name")
     assert.equal(original.contextWindow, 256000)
+    assert.equal(original.maxOutputTokens, 32000)
     assert.equal(original.isDefault, true)
 
     const appended = ipc.invoke(
@@ -82,6 +83,7 @@ async function testModelCreationReturnsGeneratedIdentity(): Promise<void> {
       modelId: appended.modelId,
       name: "second-model",
       contextWindow: 64000,
+      maxOutputTokens: 32000,
     })
     assert.notEqual(appended.modelId, original.modelId)
     assert.deepEqual(listProviders(providerDatabasePath)[0]?.models.map(({ modelId, name }) => ({ modelId, name })), [
@@ -102,6 +104,7 @@ async function testModelCreationReturnsGeneratedIdentity(): Promise<void> {
       { name: "  defaulted-model  " },
     ) as ModelAppend
     assert.equal(defaulted.contextWindow, 256000)
+    assert.equal(defaulted.maxOutputTokens, 32000)
     assert.deepEqual(listProviders(providerDatabasePath)[0]?.models[2], {
       modelId: defaulted.modelId,
       name: "defaulted-model",
@@ -132,7 +135,7 @@ async function testModelCreationReturnsGeneratedIdentity(): Promise<void> {
     ipc.invoke(
       PROVIDER_IPC_CHANNELS.updateModel,
       { providerId: provider.providerId, modelId: original.modelId },
-      { name: null, supportsTools: false },
+      { supportsTools: false },
     )
     assert.equal(listProviders(providerDatabasePath)[0]?.models[0]?.name, "renamed-model")
     assert.equal(listProviders(providerDatabasePath)[0]?.models[0]?.supportsTools, false)

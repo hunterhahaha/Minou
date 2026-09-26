@@ -26,7 +26,9 @@ const CONTENT = [{ type: "text" as const, text: "你好" }]
 const PROJECT_ID = "00000000-0000-4000-8000-000000000017"
 const PROVIDER_MODEL = { name: "claude-test", contextWindow: 256000, maxOutputTokens: 4096, supportsTools: true }
 const PROVIDER_REFERENCE = { providerId: "provider-1", modelId: "model-1" }
-const MODEL_APPEND = { providerId: "provider-1", modelId: "model-2", name: "new-model", contextWindow: 128000 }
+const MODEL_APPEND = {
+  providerId: "provider-1", modelId: "model-2", name: "new-model", contextWindow: 128000, maxOutputTokens: 4096,
+}
 
 async function testCallsFixedChannels(): Promise<void> {
   const calls: Array<{ channel: string; args: unknown[] }> = []
@@ -43,13 +45,17 @@ async function testCallsFixedChannels(): Promise<void> {
       if (channel === STARTUP_DATA_IPC_CHANNELS.listProviders) {
         return [{
           providerId: "provider-1", name: "Provider", protocol: "responses",
-          models: [{ modelId: "model-1", name: "claude-test", contextWindow: 256000, isDefault: true }],
+          models: [{
+            modelId: "model-1", name: "claude-test", contextWindow: 256000, maxOutputTokens: 4096, isDefault: true,
+          }],
         }]
       }
       if (channel === PROVIDER_IPC_CHANNELS.createProvider) {
         return {
           providerId: "created-provider", name: "Created", protocol: "responses",
-          models: [{ modelId: "model-1", name: "claude-test", contextWindow: 256000, isDefault: false }],
+          models: [{
+            modelId: "model-1", name: "claude-test", contextWindow: 256000, maxOutputTokens: 4096, isDefault: false,
+          }],
         }
       }
       if (channel === PROVIDER_IPC_CHANNELS.createModel) return MODEL_APPEND
@@ -93,18 +99,20 @@ async function testCallsFixedChannels(): Promise<void> {
   ])
   assert.deepEqual(await api.listProviders(), [{
     providerId: "provider-1", name: "Provider", protocol: "responses", models: [{
-      modelId: "model-1", name: "claude-test", contextWindow: 256000, isDefault: true,
+      modelId: "model-1", name: "claude-test", contextWindow: 256000, maxOutputTokens: 4096, isDefault: true,
     }],
   }])
   assert.deepEqual(await api.createProvider("Created", "api-key", "responses", "https://example.com", [PROVIDER_MODEL]), {
     providerId: "created-provider", name: "Created", protocol: "responses",
-    models: [{ modelId: "model-1", name: "claude-test", contextWindow: 256000, isDefault: false }],
+    models: [{
+      modelId: "model-1", name: "claude-test", contextWindow: 256000, maxOutputTokens: 4096, isDefault: false,
+    }],
   })
   await api.deleteProvider("provider-1")
   await api.updateApiKey("provider-1", null)
   assert.deepEqual(await api.createModel("provider-1", PROVIDER_MODEL), MODEL_APPEND)
   await api.updateModel(PROVIDER_REFERENCE, { name: "renamed-model" })
-  await api.updateModel(PROVIDER_REFERENCE, { name: null, contextWindow: 128000, supportsTools: null })
+  await api.updateModel(PROVIDER_REFERENCE, { contextWindow: 128000, supportsTools: null })
   await api.deleteModel(PROVIDER_REFERENCE)
   await api.setDefaultModel(PROVIDER_REFERENCE)
   await api.setDefaultModel(null)
@@ -140,7 +148,7 @@ async function testCallsFixedChannels(): Promise<void> {
     { channel: PROVIDER_IPC_CHANNELS.updateApiKey, args: ["provider-1", null] },
     { channel: PROVIDER_IPC_CHANNELS.createModel, args: ["provider-1", PROVIDER_MODEL] },
     { channel: PROVIDER_IPC_CHANNELS.updateModel, args: [PROVIDER_REFERENCE, { name: "renamed-model" }] },
-    { channel: PROVIDER_IPC_CHANNELS.updateModel, args: [PROVIDER_REFERENCE, { name: null, contextWindow: 128000, supportsTools: null }] },
+    { channel: PROVIDER_IPC_CHANNELS.updateModel, args: [PROVIDER_REFERENCE, { contextWindow: 128000, supportsTools: null }] },
     { channel: PROVIDER_IPC_CHANNELS.deleteModel, args: [PROVIDER_REFERENCE] },
     { channel: PROVIDER_IPC_CHANNELS.setDefaultModel, args: [PROVIDER_REFERENCE] },
     { channel: PROVIDER_IPC_CHANNELS.setDefaultModel, args: [null] },

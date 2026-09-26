@@ -56,6 +56,7 @@ export function registerStartupDataIpcHandlers(
             modelId: model.modelId,
             name: model.name,
             contextWindow: model.contextWindow,
+            maxOutputTokens: model.maxOutputTokens,
             isDefault,
           }
         }),
