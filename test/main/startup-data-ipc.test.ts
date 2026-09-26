@@ -101,8 +101,8 @@ async function main(): Promise<void> {
     assert.deepEqual(providers, [{
       providerId: "provider-1", name: "Provider", protocol: "responses",
       models: [
-        { modelId: "model-b", name: "Model B", contextWindow: 256000, isDefault: true },
-        { modelId: "model-a", name: "Model A", contextWindow: 256000, isDefault: false },
+        { modelId: "model-b", name: "Model B", contextWindow: 256000, maxOutputTokens: 32000, isDefault: true },
+        { modelId: "model-a", name: "Model A", contextWindow: 256000, maxOutputTokens: 32000, isDefault: false },
       ],
     }])
     assert.equal(JSON.stringify(providers).includes("private-api-key"), false)
@@ -110,8 +110,8 @@ async function main(): Promise<void> {
     assert.deepEqual(ipc.invoke(STARTUP_DATA_IPC_CHANNELS.listProviders), [{
       providerId: "provider-1", name: "Provider", protocol: "responses",
       models: [
-        { modelId: "model-b", name: "Model B", contextWindow: 256000, isDefault: false },
-        { modelId: "model-a", name: "Model A", contextWindow: 256000, isDefault: true },
+        { modelId: "model-b", name: "Model B", contextWindow: 256000, maxOutputTokens: 32000, isDefault: false },
+        { modelId: "model-a", name: "Model A", contextWindow: 256000, maxOutputTokens: 32000, isDefault: true },
       ],
     }])
     assert.throws(() => registerStartupDataIpcHandlers(ipc, { workspaceDatabasePath, providerDatabasePath }), /重复注册/)

@@ -94,6 +94,8 @@ export interface ModelSummary {
   name: string
   /** 模型的有效上下文窗口。 */
   contextWindow: number
+  /** 单次请求允许的最大输出 Token 数。 */
+  maxOutputTokens: number
   /** 是否是当前有效默认模型。 */
   isDefault: boolean
 }
@@ -124,10 +126,10 @@ export interface ProviderModelReference {
   modelId: string
 }
 
-/** 更新模型名称、必填 Token 限制或能力；名称传 null 表示不修改，能力字段传 null 清除对应可选值。 */
+/** 更新模型名称、必填 Token 限制或能力；省略名称时不修改名称，能力字段传 null 清除对应可选值。 */
 export interface ProviderModelUpdate {
-  /** Provider API 请求中使用的非空模型名称；null 表示本次不更新名称。 */
-  name?: string | null
+  /** Provider API 请求中使用的非空模型名称；省略时本次不更新名称。 */
+  name?: string
   /** 新上下文窗口。 */
   contextWindow?: number
   /** 新最大输出 Token 数。 */
@@ -164,6 +166,8 @@ export interface ModelAppend {
   name: string
   /** 已保存模型的上下文窗口。 */
   contextWindow: number
+  /** 已保存模型的最大输出 Token 数。 */
+  maxOutputTokens: number
 }
 
 /** 首批 Turn 事件成功提交后即可返回前端的可序列化结果。 */
@@ -576,6 +580,7 @@ function requireProviderSummaries(value: unknown): ProviderSummary[] {
     Array.isArray(item.models) && item.models.every((model: unknown) =>
       isRecord(model) && typeof model.modelId === "string" && model.modelId.trim() !== "" && typeof model.name === "string" && model.name.trim() !== "" &&
       typeof model.contextWindow === "number" && Number.isSafeInteger(model.contextWindow) && model.contextWindow > 0 &&
+      typeof model.maxOutputTokens === "number" && Number.isSafeInteger(model.maxOutputTokens) && model.maxOutputTokens > 0 &&
       typeof model.isDefault === "boolean")
   )) throw new TypeError("主进程返回了无效的 Provider 列表")
   return value as ProviderSummary[]
@@ -603,7 +608,8 @@ function requireModelAppend(value: unknown): ModelAppend {
   if (!isRecord(value) || typeof value.providerId !== "string" || value.providerId.trim() === "" ||
       typeof value.modelId !== "string" || value.modelId.trim() === "" ||
       typeof value.name !== "string" || value.name.trim() === "" ||
-      typeof value.contextWindow !== "number" || !Number.isSafeInteger(value.contextWindow) || value.contextWindow <= 0) {
+      typeof value.contextWindow !== "number" || !Number.isSafeInteger(value.contextWindow) || value.contextWindow <= 0 ||
+      typeof value.maxOutputTokens !== "number" || !Number.isSafeInteger(value.maxOutputTokens) || value.maxOutputTokens <= 0) {
     throw new TypeError("主进程返回了无效的新建模型")
   }
   return {
@@ -611,6 +617,7 @@ function requireModelAppend(value: unknown): ModelAppend {
     modelId: value.modelId,
     name: value.name,
     contextWindow: value.contextWindow,
+    maxOutputTokens: value.maxOutputTokens,
   }
 }
 

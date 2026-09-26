@@ -152,7 +152,7 @@ async function testReadAndRollback(): Promise<void> {
     assert.equal(listProviders(path)[0].models[0].supportsTools, true)
     assert.equal(readTurnProviderSnapshot(path, reference).model.name, "updated-claude-test")
     assert.throws(() => updateModel(path, { providerId: "configured", modelId: "model-a" }, { name: "  " }), /name must not be empty/)
-    updateModel(path, { providerId: "configured", modelId: "model-a" }, { name: null })
+    updateModel(path, { providerId: "configured", modelId: "model-a" }, { maxOutputTokens: 2048 })
     assert.equal(listProviders(path)[0].models[0].name, "updated-claude-test")
     assert.throws(() => saveModel(path, {
       modelId: "invalid-context", name: "Invalid", providerId: "configured", contextWindow: 0, maxOutputTokens: 32000,

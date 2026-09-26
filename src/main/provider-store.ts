@@ -33,10 +33,10 @@ export interface ProviderModelReference {
   modelId: string
 }
 
-/** 更新模型补丁；数值限制只接受正整数，名称为 null 时保持原值，布尔能力为 null 时清除。 */
+/** 更新模型补丁；数值限制只接受正整数，省略名称时保持原值，布尔能力为 null 时清除。 */
 export interface ProviderModelUpdate {
-  /** Provider API 请求中使用的非空模型名称；null 表示本次不更新名称。 */
-  name?: string | null
+  /** Provider API 请求中使用的非空模型名称；省略时本次不更新名称。 */
+  name?: string
   /** 新的声明上下文窗口。 */
   contextWindow?: number
   /** 新的最大输出 Token 数。 */
@@ -456,7 +456,7 @@ export function saveModel(databasePath: string, model: ProviderModelRecord): voi
  * 更新由 Provider 与全局唯一 modelId 指定的模型记录。
  * @param databasePath Provider 数据库绝对路径。
  * @param reference 要更新的 Provider 与模型引用。
- * @param update 要替换的名称、数值限制或能力字段；名称为 null 时保持原值，布尔能力为 null 时清除。
+ * @param update 要替换的名称、数值限制或能力字段；省略名称时保持原值，布尔能力为 null 时清除。
  * @throws Error 当模型不存在、字段无效或数据库无法写入时抛出。
  */
 export function updateModel(
@@ -466,7 +466,7 @@ export function updateModel(
 ): void {
   const providerId = nonEmpty(reference.providerId, "Model providerId")
   const modelId = nonEmpty(reference.modelId, "Model id")
-  if (update.name !== undefined && update.name !== null &&
+  if (update.name !== undefined &&
       (typeof update.name !== "string" || update.name.trim() === "")) {
     throw new TypeError("name must not be empty or whitespace-only")
   }
@@ -490,7 +490,7 @@ export function updateModel(
 
     const assignments: string[] = []
     const values: (number | string | null)[] = []
-    if (update.name !== undefined && update.name !== null) {
+    if (update.name !== undefined) {
       assignments.push("name = ?")
       values.push(update.name)
     }
