@@ -8,7 +8,7 @@ import type { SessionRuntimeGlobal } from "../../../src/main/session-runtime-glo
 import { join } from "node:path"
 import { tmpdir } from "node:os"
 
-const MODEL: ModelRef = { providerId: "p", protocol: "responses", modelId: "m" }
+const MODEL: ModelRef = { providerId: "p", protocol: "responses", modelId: "m", name: "Model" }
 const MESSAGE = [{ type: "text" as const, text: "test" }]
 const FILE = "C:\\project\\change.txt"
 type Scenario = "normal" | "stopped" | "error" | "approval" | "approval_stop"

@@ -17,6 +17,7 @@ import {
   saveProvider,
   setDefaultModel,
   setProviderApiKey,
+  updateModel,
 } from "../../src/main/provider-store.ts"
 
 /** 在隔离目录运行数据库断言。 */
@@ -40,22 +41,22 @@ async function testCatalogAndDefaults(): Promise<void> {
       id: "second", name: "Second", protocol: "chat_completions",
       baseURL: "https://example.com/v1", defaultHeaders: { "X-Mode": "test" },
     })
-    saveModel(path, { id: "model-b", providerId: "first", supportsTools: false })
-    saveModel(path, { id: "model-a", providerId: "first", contextWindow: 128000 })
-    saveModel(path, { id: "model-c", providerId: "second" })
+    saveModel(path, { modelId: "model-b", name: "Model B", providerId: "first", supportsTools: false })
+    saveModel(path, { modelId: "model-a", name: "Model A", providerId: "first", contextWindow: 128000 })
+    saveModel(path, { modelId: "model-c", name: "Model C", providerId: "second" })
     setProviderApiKey(path, "first", "hidden-secret")
     assert.deepEqual(listProviders(path), [
       {
         id: "first", name: "First", protocol: "responses",
         models: [
-          { id: "model-b", providerId: "first", supportsTools: false },
-          { id: "model-a", providerId: "first", contextWindow: 128000 },
+          { modelId: "model-b", name: "Model B", providerId: "first", supportsTools: false },
+          { modelId: "model-a", name: "Model A", providerId: "first", contextWindow: 128000 },
         ],
       },
       {
         id: "second", name: "Second", protocol: "chat_completions",
         baseURL: "https://example.com/v1", defaultHeaders: { "X-Mode": "test" },
-        models: [{ id: "model-c", providerId: "second" }],
+        models: [{ modelId: "model-c", name: "Model C", providerId: "second" }],
       },
     ])
     assert.equal(JSON.stringify(listProviders(path)).includes("hidden-secret"), false)
@@ -88,23 +89,33 @@ async function testReadAndRollback(): Promise<void> {
   await withDatabase((path) => {
     initializeProviderDatabase(path)
     saveProvider(path, { id: "configured", name: "Configured", protocol: "anthropic_messages" })
-    saveModel(path, { id: "model-a", providerId: "configured", maxOutputTokens: 4096 })
+    saveModel(path, { modelId: "model-a", name: "claude-test", providerId: "configured", maxOutputTokens: 4096 })
     setProviderApiKey(path, "configured", "first-secret")
-    const reference = { providerId: "configured", protocol: "anthropic_messages" as const, modelId: "model-a" }
+    const reference = { providerId: "configured", protocol: "anthropic_messages" as const, modelId: "model-a", name: "claude-test" }
     assert.deepEqual(readTurnProviderSnapshot(path, reference), {
       provider: { id: "configured", name: "Configured", protocol: "anthropic_messages" },
       model: {
-        id: "model-a", providerId: "configured", protocol: "anthropic_messages",
+        modelId: "model-a", name: "claude-test", providerId: "configured", protocol: "anthropic_messages",
         contextWindow: 256000, maxOutputTokens: 4096,
       },
       credential: { providerId: "configured", apiKey: "first-secret" },
     })
     setProviderApiKey(path, "configured", "second-secret")
     assert.equal(readTurnProviderSnapshot(path, reference).credential?.apiKey, "second-secret")
-    assert.throws(() => saveModel(path, { id: "model-a", providerId: "missing" }), /Provider missing 不存在/)
+    assert.throws(() => saveModel(path, { modelId: "model-missing", name: "Model", providerId: "missing" }), /Provider missing 不存在/)
     saveProvider(path, { id: "other", name: "Other", protocol: "responses" })
-    assert.doesNotThrow(() => saveModel(path, { id: "model-a", providerId: "configured" }))
-    assert.throws(() => saveModel(path, { id: "invalid", providerId: "configured", contextWindow: 0 }), /contextWindow/)
+    assert.throws(() => saveModel(path, { modelId: "model-a", name: "Duplicate", providerId: "other" }), /UNIQUE constraint failed/)
+    updateModel(path, { providerId: "configured", modelId: "model-a" }, {
+      name: "updated-claude-test", maxOutputTokens: 2048, supportsTools: true,
+    })
+    assert.equal(listProviders(path)[0].models[0].name, "updated-claude-test")
+    assert.equal(listProviders(path)[0].models[0].maxOutputTokens, 2048)
+    assert.equal(listProviders(path)[0].models[0].supportsTools, true)
+    assert.equal(readTurnProviderSnapshot(path, reference).model.name, "updated-claude-test")
+    assert.throws(() => updateModel(path, { providerId: "configured", modelId: "model-a" }, { name: "  " }), /name must not be empty/)
+    updateModel(path, { providerId: "configured", modelId: "model-a" }, { name: null })
+    assert.equal(listProviders(path)[0].models[0].name, "updated-claude-test")
+    assert.throws(() => saveModel(path, { modelId: "invalid", name: "Invalid", providerId: "configured", contextWindow: 0 }), /contextWindow/)
     assert.throws(() => setDefaultModel(path, { providerId: "other", modelId: "missing" }), /默认模型 missing 不存在/)
     assert.throws(() => setProviderApiKey(path, "missing", "secret-that-must-not-leak"), (error: unknown) => {
       assert.ok(error instanceof Error)

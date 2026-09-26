@@ -33,7 +33,8 @@ import { collect, collectError, sseEvent, startFakeProvider, streamOf } from "./
 type RawMessageStreamEvent = Anthropic.Messages.RawMessageStreamEvent
 
 const MODEL: ModelConfig = {
-  id: "claude-test",
+  modelId: "model-record-1",
+  name: "claude-test",
   providerId: "anthropic",
   protocol: "anthropic_messages",
   contextWindow: 256000,
@@ -52,7 +53,7 @@ function event(value: Record<string, unknown>): RawMessageStreamEvent {
 /** 一条含工具调用与工具结果的统一上下文（对照协议示例文档第 1 节）。 */
 function agentRequest(): UnifiedModelRequest {
   return {
-    model: { providerId: "anthropic", protocol: "anthropic_messages", modelId: "claude-test" },
+    model: { providerId: "anthropic", protocol: "anthropic_messages", modelId: "model-record-1", name: "claude-test" },
     tools: [
       {
         name: "read_file",
@@ -764,6 +765,7 @@ async function main(): Promise<void> {
         providerId: "anthropic",
         protocol: "anthropic_messages",
         modelId: "别的模型",
+        name: "别的模型",
       }
       const error = await collectError(adapter.stream(mismatched, new AbortController().signal))
       assert.equal((error as { code?: string }).code, "INVALID_MODEL_REQUEST")

@@ -87,5 +87,5 @@ export async function createTurnModelAdapter(
 
 /** @param model 用于不含凭据的错误定位的完整模型引用。 */
 function formatModelRef(model: ModelRef): string {
-  return `ModelRef(${model.providerId}/${model.protocol}/${model.modelId})`
+  return `ModelRef(${model.providerId}/${model.protocol}/${model.modelId}/${model.name})`
 }

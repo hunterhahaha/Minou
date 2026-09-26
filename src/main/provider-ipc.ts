@@ -15,6 +15,7 @@ import {
 } from "./provider-store.ts"
 import { PROVIDER_IPC_CHANNELS } from "../preload/session-api.ts"
 import type {
+  ModelAppend,
   ModelSummary,
   ProviderModelInput,
   ProviderModelReference,
@@ -40,7 +41,7 @@ function isProtocol(value: unknown): value is Protocol {
  * @returns value 可保存为一条模型记录时为 true。
  */
 function isModelInput(value: unknown): value is ProviderModelInput {
-  if (!isRecord(value) || typeof value.modelId !== "string" || value.modelId.trim() === "") return false
+  if (!isRecord(value) || typeof value.name !== "string" || value.name.trim() === "") return false
   if (!isPositiveInteger(value.contextWindow) || !isOptionalPositiveInteger(value.maxOutputTokens)) return false
   return isOptionalBoolean(value.supportsReasoning) && isOptionalBoolean(value.supportsTools) &&
     isOptionalBoolean(value.supportsParallelTools) && isOptionalBoolean(value.supportsResponseId)
@@ -56,18 +57,30 @@ function isModels(value: unknown): value is Models {
 }
 
 /**
- * 检查模型能力补丁；至少更新一个已知字段，null 表示清除该值。
+ * 检查模型补丁；至少提交一个已知字段，名称可用 null 表示不更新，能力字段可用 null 清除。
  * @param value Renderer 传入的未知补丁。
  * @returns 补丁字段合法且至少有一个可更新字段时为 true。
  */
 function isModelUpdate(value: unknown): value is ProviderModelUpdate {
   if (!isRecord(value)) return false
   const fields = [
-    "contextWindow", "maxOutputTokens", "supportsReasoning", "supportsTools",
+    "name", "contextWindow", "maxOutputTokens", "supportsReasoning", "supportsTools",
     "supportsParallelTools", "supportsResponseId",
   ] as const
   if (Object.keys(value).length === 0 || !Object.keys(value).every((key) => fields.includes(key as typeof fields[number]))) {
     return false
+  }
+  for (const field of ["name"] as const) {
+    if (field in value) {
+      const name = value[field]
+      if (name === null) continue
+      if (typeof name !== "string") {
+        return false
+      }
+      if (name.trim() === "") {
+        return false
+      }
+    }
   }
   for (const field of ["contextWindow", "maxOutputTokens"] as const) {
     if (field in value && !isNullablePositiveInteger(value[field])) return false
@@ -109,15 +122,15 @@ export function registerModelIpcHandlers(
       const baseURL = requireNonEmptyString(url, "URL")
       if (!isModels(models)) throw new TypeError("模型列表错误")
 
-      const normalizedModels = models.map((model) => ({ ...model, modelId: model.modelId.trim() }))
+      const normalizedModels = models.map((model) => ({ ...model, name: model.name.trim(), modelId: randomUUID() }))
       const providerId = randomUUID()
       let providerSaved = false
       try {
         saveProvider(databasePath, { id: providerId, name: providerName, protocol, baseURL })
         providerSaved = true
         for (const model of normalizedModels) {
-          const { modelId, ...fields } = model
-          saveModel(databasePath, { id: modelId, providerId, ...fields })
+          const { modelId, name, ...fields } = model
+          saveModel(databasePath, { modelId, name, providerId, ...fields })
         }
         setProviderApiKey(databasePath, providerId, apiKey)
       } catch (error) {
@@ -157,11 +170,14 @@ export function registerModelIpcHandlers(
     setProviderApiKey(databasePath, normalizedProviderId, apiKey)
   })
 
-  ipcMain.handle(PROVIDER_IPC_CHANNELS.createModel, (_event, providerId: unknown, model: unknown): void => {
+  ipcMain.handle(PROVIDER_IPC_CHANNELS.createModel, (_event, providerId: unknown, model: unknown): ModelAppend => {
     const normalizedProviderId = requireNonEmptyString(providerId, "Provider ID")
     if (!isModelInput(model)) throw new TypeError("模型配置错误")
-    const { modelId, ...fields } = model
-    saveModel(databasePath, { id: modelId.trim(), providerId: normalizedProviderId, ...fields })
+    const { name: inputName, ...fields } = model
+    const modelId = randomUUID()
+    const name = inputName.trim()
+    saveModel(databasePath, { modelId, name, providerId: normalizedProviderId, ...fields })
+    return { providerId: normalizedProviderId, modelId, name, contextWindow: model.contextWindow }
   })
 
   ipcMain.handle(
@@ -169,7 +185,10 @@ export function registerModelIpcHandlers(
     (_event, reference: unknown, update: unknown): void => {
       if (!isProviderModelReference(reference)) throw new TypeError("模型引用错误")
       if (!isModelUpdate(update)) throw new TypeError("模型更新内容错误")
-      updateProviderModel(databasePath, normalizeReference(reference), update)
+      const normalizedUpdate = update.name === undefined || update.name === null
+        ? update
+        : { ...update, name: update.name.trim() }
+      updateProviderModel(databasePath, normalizeReference(reference), normalizedUpdate)
     },
   )
 
@@ -192,10 +211,10 @@ export function registerModelIpcHandlers(
  * 生成与创建请求一致的模型摘要。
  * @param model 已校验的创建模型输入。
  * @param isDefault 是否为当前有效默认引用的第一条记录。
- * @returns 不包含模型 name 的页面摘要。
+ * @returns 包含模型身份、名称、有效上下文窗口及默认状态的页面摘要。
  */
-function modelSummary(model: ProviderModelInput, isDefault: boolean): ModelSummary {
-  return { modelId: model.modelId, contextWindow: model.contextWindow, isDefault }
+function modelSummary(model: {modelId: string, name: string, contextWindow: number}, isDefault: boolean): ModelSummary {
+  return { modelId: model.modelId, name: model.name, contextWindow: model.contextWindow, isDefault }
 }
 
 /**

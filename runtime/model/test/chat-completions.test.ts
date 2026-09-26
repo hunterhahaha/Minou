@@ -30,7 +30,8 @@ import { collect, collectError, sseData, startFakeProvider, streamOf } from "./h
 type ChatCompletionChunk = OpenAI.ChatCompletionChunk
 
 const MODEL: ModelConfig = {
-  id: "gpt-test",
+  modelId: "model-record-2",
+  name: "gpt-test",
   providerId: "openai",
   protocol: "chat_completions",
   contextWindow: 256000,
@@ -75,7 +76,7 @@ function usageChunk(usage: Record<string, unknown>): ChatCompletionChunk {
 /** 一条含工具调用与工具结果的统一上下文（对照协议示例文档第 2 节）。 */
 function agentRequest(): UnifiedModelRequest {
   return {
-    model: { providerId: "openai", protocol: "chat_completions", modelId: "gpt-test" },
+    model: { providerId: "openai", protocol: "chat_completions", modelId: "model-record-2", name: "gpt-test" },
     tools: [
       {
         name: "read_file",

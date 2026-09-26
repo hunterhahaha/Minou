@@ -422,6 +422,7 @@ node --experimental-strip-types runtime/session/test/file-changes.test.ts
 node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types runtime/credential/test/credential-store.test.ts
 node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/main/config-files.test.ts
 node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/main/provider-store.test.ts
+node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/main/provider-ipc.test.ts
 node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/main/workspace-store.test.ts
 node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/main/project-ipc.test.ts
 node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/main/model-adapters.test.ts
@@ -437,7 +438,9 @@ node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types t
 `test/main/config-files.test.ts` 使用临时用户目录验证：V2 配置与空数据库首次创建、
 重复调用保留数据、忽略旧 credentials/workspace JSON、旧 V1 配置报错，以及非法用户目录。
 `test/main/provider-store.test.ts` 验证 Provider、模型、密钥、默认模型的读写顺序、
-重复初始化、关联删除、事务回滚和损坏数据库错误。
+重复初始化、模型名称更新、关联删除、事务回滚和损坏数据库错误。
+`test/main/provider-ipc.test.ts` 验证 Provider 与模型创建时生成全局唯一模型身份、模型名称规范化、
+新增模型的 IPC 返回值、名称更新与无效模型输入。
 `test/main/workspace-store.test.ts` 验证 Project/default 配置顺序、重复初始化、更新和事务回滚。
 Project 配置新增 `updatedAt`，已有数据库在启动时为旧 Project 记录补入升级时间；
 对话索引沿用现有 `updatedAt` 字段。写入方提供时间，工作区数据库写入时转换为 UTC；当前 Session 流程尚未更新对话索引。
@@ -445,7 +448,7 @@ Project 配置新增 `updatedAt`，已有数据库在启动时为旧 Project 记
 `runtime/credential/test/credential-store.test.ts` 验证空 Store、按 Provider 查找、输入复制、
 空字段与重复 Provider 拒绝，以及错误信息不泄露 API Key。
 
-`test/main/model-adapters.test.ts` 验证每 Turn 重读后的模型能力、URL、Headers 与 API Key 热更新，
+`test/main/model-adapters.test.ts` 验证每 Turn 重读后的模型名称与能力、URL、Headers 与 API Key 热更新，
 相同 ModelRef 不复用 Adapter，以及 Provider、Model、协议、凭据缺失时的错误均带
 数据库路径且不泄露 API Key。
 

@@ -24,11 +24,13 @@ const MODEL: ModelRef = {
   providerId: "provider-1",
   protocol: "anthropic_messages",
   modelId: "model-1",
+  name: "claude-test",
 }
 const OTHER_MODEL: ModelRef = {
   providerId: "provider-2",
   protocol: "responses",
   modelId: "model-2",
+  name: "gpt-test",
 }
 const CONTENT = [{ type: "text" as const, text: "你好" }]
 const PROJECT_ID = "00000000-0000-4000-8000-000000000017"

@@ -31,7 +31,8 @@ import { collect, collectError, sseData, startFakeProvider, streamOf } from "./h
 type ResponseStreamEvent = OpenAI.Responses.ResponseStreamEvent
 
 const MODEL: ModelConfig = {
-  id: "gpt-responses-test",
+  modelId: "model-record-3",
+  name: "gpt-responses-test",
   providerId: "openai",
   protocol: "responses",
   contextWindow: 256000,
@@ -85,7 +86,7 @@ function terminalEvent(
 /** 一条含工具调用与工具结果的统一上下文（对照协议示例文档第 3 节）。 */
 function agentRequest(): UnifiedModelRequest {
   return {
-    model: { providerId: "openai", protocol: "responses", modelId: "gpt-responses-test" },
+    model: { providerId: "openai", protocol: "responses", modelId: "model-record-3", name: "gpt-responses-test" },
     tools: [
       {
         name: "read_file",

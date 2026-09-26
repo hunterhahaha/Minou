@@ -20,11 +20,13 @@ const MODEL: ModelRef = {
   providerId: "provider-1",
   protocol: "anthropic_messages",
   modelId: "model-1",
+  name: "claude-test",
 }
 const CONTENT = [{ type: "text" as const, text: "你好" }]
 const PROJECT_ID = "00000000-0000-4000-8000-000000000017"
-const PROVIDER_MODEL = { modelId: "model-1", contextWindow: 256000, maxOutputTokens: 4096, supportsTools: true }
+const PROVIDER_MODEL = { name: "claude-test", contextWindow: 256000, maxOutputTokens: 4096, supportsTools: true }
 const PROVIDER_REFERENCE = { providerId: "provider-1", modelId: "model-1" }
+const MODEL_APPEND = { providerId: "provider-1", modelId: "model-2", name: "new-model", contextWindow: 128000 }
 
 async function testCallsFixedChannels(): Promise<void> {
   const calls: Array<{ channel: string; args: unknown[] }> = []
@@ -41,15 +43,16 @@ async function testCallsFixedChannels(): Promise<void> {
       if (channel === STARTUP_DATA_IPC_CHANNELS.listProviders) {
         return [{
           providerId: "provider-1", name: "Provider", protocol: "responses",
-          models: [{ modelId: "model-1", contextWindow: 256000, isDefault: true }],
+          models: [{ modelId: "model-1", name: "claude-test", contextWindow: 256000, isDefault: true }],
         }]
       }
       if (channel === PROVIDER_IPC_CHANNELS.createProvider) {
         return {
           providerId: "created-provider", name: "Created", protocol: "responses",
-          models: [{ modelId: "model-1", contextWindow: 256000, isDefault: false }],
+          models: [{ modelId: "model-1", name: "claude-test", contextWindow: 256000, isDefault: false }],
         }
       }
+      if (channel === PROVIDER_IPC_CHANNELS.createModel) return MODEL_APPEND
       if (channel === PROJECT_IPC_CHANNELS.selectDirectory) return { path: "C:\\Work", name: "Work" }
       if (channel === PROJECT_IPC_CHANNELS.createProject) {
         return { projectId: PROJECT_ID, name: "Project", updatedAt: "2026-09-04T00:00:00Z",
@@ -90,17 +93,18 @@ async function testCallsFixedChannels(): Promise<void> {
   ])
   assert.deepEqual(await api.listProviders(), [{
     providerId: "provider-1", name: "Provider", protocol: "responses", models: [{
-      modelId: "model-1", contextWindow: 256000, isDefault: true,
+      modelId: "model-1", name: "claude-test", contextWindow: 256000, isDefault: true,
     }],
   }])
   assert.deepEqual(await api.createProvider("Created", "api-key", "responses", "https://example.com", [PROVIDER_MODEL]), {
     providerId: "created-provider", name: "Created", protocol: "responses",
-    models: [{ modelId: "model-1", contextWindow: 256000, isDefault: false }],
+    models: [{ modelId: "model-1", name: "claude-test", contextWindow: 256000, isDefault: false }],
   })
   await api.deleteProvider("provider-1")
   await api.updateApiKey("provider-1", null)
-  await api.createModel("provider-1", PROVIDER_MODEL)
-  await api.updateModel(PROVIDER_REFERENCE, { contextWindow: 128000, supportsTools: null })
+  assert.deepEqual(await api.createModel("provider-1", PROVIDER_MODEL), MODEL_APPEND)
+  await api.updateModel(PROVIDER_REFERENCE, { name: "renamed-model" })
+  await api.updateModel(PROVIDER_REFERENCE, { name: null, contextWindow: 128000, supportsTools: null })
   await api.deleteModel(PROVIDER_REFERENCE)
   await api.setDefaultModel(PROVIDER_REFERENCE)
   await api.setDefaultModel(null)
@@ -135,7 +139,8 @@ async function testCallsFixedChannels(): Promise<void> {
     { channel: PROVIDER_IPC_CHANNELS.deleteProvider, args: ["provider-1"] },
     { channel: PROVIDER_IPC_CHANNELS.updateApiKey, args: ["provider-1", null] },
     { channel: PROVIDER_IPC_CHANNELS.createModel, args: ["provider-1", PROVIDER_MODEL] },
-    { channel: PROVIDER_IPC_CHANNELS.updateModel, args: [PROVIDER_REFERENCE, { contextWindow: 128000, supportsTools: null }] },
+    { channel: PROVIDER_IPC_CHANNELS.updateModel, args: [PROVIDER_REFERENCE, { name: "renamed-model" }] },
+    { channel: PROVIDER_IPC_CHANNELS.updateModel, args: [PROVIDER_REFERENCE, { name: null, contextWindow: 128000, supportsTools: null }] },
     { channel: PROVIDER_IPC_CHANNELS.deleteModel, args: [PROVIDER_REFERENCE] },
     { channel: PROVIDER_IPC_CHANNELS.setDefaultModel, args: [PROVIDER_REFERENCE] },
     { channel: PROVIDER_IPC_CHANNELS.setDefaultModel, args: [null] },
@@ -193,8 +198,13 @@ async function testRejectsInvalidMainResponse(): Promise<void> {
   await assert.rejects(invalidProjects.listProjects(), /无效的项目列表/)
   const invalidSessions = createSessionApi({ invoke: async () => [{ sessionId: "x", name: "X" }] })
   await assert.rejects(invalidSessions.listDefaultSessions(), /无效的对话列表/)
-  const invalidProviders = createSessionApi({ invoke: async () => [{ providerId: "p", name: "P", models: [{ modelId: "m" }] }] })
+  const invalidProviders = createSessionApi({ invoke: async () => [{
+    providerId: "p", name: "P", protocol: "responses",
+    models: [{ modelId: "m", contextWindow: 256000, isDefault: false }],
+  }] })
   await assert.rejects(invalidProviders.listProviders(), /无效的 Provider 列表/)
+  const invalidModelAppend = createSessionApi({ invoke: async () => ({ providerId: "p", modelId: "m" }) })
+  await assert.rejects(invalidModelAppend.createModel("p", PROVIDER_MODEL), /无效的新建模型/)
   const missingProtocol = createSessionApi({ invoke: async () => [{ providerId: "p", name: "P", models: [] }] })
   await assert.rejects(missingProtocol.listProviders(), /无效的 Provider 列表/)
   const invalidProtocol = createSessionApi({ invoke: async () => [{ providerId: "p", name: "P", protocol: "invalid", models: [] }] })

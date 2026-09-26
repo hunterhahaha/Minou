@@ -31,7 +31,8 @@ import type {
 import { collect, collectError } from "./helpers.ts"
 
 const MODEL: ModelConfig = {
-  id: "test-model",
+  modelId: "model-record-1",
+  name: "test-model",
   providerId: "test-provider",
   protocol: "anthropic_messages",
   contextWindow: 256000,
@@ -43,7 +44,7 @@ function requestWith(
   return {
     context: { messages },
     tools: [],
-    model: { providerId: "test-provider", protocol: "anthropic_messages", modelId: "test-model" },
+    model: { providerId: "test-provider", protocol: "anthropic_messages", modelId: "model-record-1", name: "test-model" },
   }
 }
 
@@ -125,11 +126,19 @@ async function main(): Promise<void> {
   // 请求模型与 Adapter 绑定的模型不一致 → 不合法。
   {
     const mismatch = requestWith([{ role: "system", content: "s" }])
-    mismatch.model = { providerId: "other", protocol: "responses", modelId: "other-model" }
+    mismatch.model = { providerId: "other", protocol: "responses", modelId: "other-model", name: "other-model" }
     const error = caught(() => assertRequestMatchesModel(mismatch, MODEL))
     assert.ok(isAppError(error))
     assert.equal(error.code, INVALID_MODEL_REQUEST)
     assert.ok(error.details !== undefined, "不一致时要保留期望与实际两份模型引用")
+  }
+
+  // 模型身份相同但模型名称不同也不能绑定到同一 Adapter。
+  {
+    const mismatch = requestWith([{ role: "system", content: "s" }])
+    mismatch.model.name = "renamed-model"
+    const error = caught(() => assertRequestMatchesModel(mismatch, MODEL))
+    assert.ok(isAppError(error) && error.code === INVALID_MODEL_REQUEST)
   }
 
   // 一致时不抛错。

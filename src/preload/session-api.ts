@@ -86,20 +86,22 @@ export interface ProjectSummary {
   sessions: SessionSummary[]
 }
 
-/** Provider 下模型的页面摘要；组合身份由所属 Provider 与 modelId 构成。 */
+/** Provider 下模型的页面摘要；模型身份由全局唯一的 modelId 标识。 */
 export interface ModelSummary {
-  /** Provider 内的模型 ID。 */
+  /** 全局唯一的模型身份。 */
   modelId: string
+  /** Provider API 请求中使用的模型名称。 */
+  name: string
   /** 模型的有效上下文窗口。 */
   contextWindow: number
   /** 是否是当前有效默认模型。 */
   isDefault: boolean
 }
 
-/** 创建 Provider 或 Model 时提交的模型配置；`modelId` 可与其它记录重复。 */
+/** 创建 Provider 或 Model 时提交的模型配置；持久化模型身份由主进程生成。 */
 export interface ProviderModelInput {
-  /** Provider 接口识别的模型 ID。 */
-  modelId: string
+  /** Provider API 请求中使用的模型名称。 */
+  name: string
   /** 声明的上下文窗口。 */
   contextWindow: number
   /** 请求允许的最大输出 Token。 */
@@ -114,16 +116,18 @@ export interface ProviderModelInput {
   supportsResponseId?: boolean
 }
 
-/** 按 Provider 与模型 ID 定位的引用；同一引用可以对应多条记录。 */
+/** 按 Provider 与全局唯一 modelId 定位的模型引用。 */
 export interface ProviderModelReference {
   /** 模型所属 Provider。 */
   providerId: string
-  /** Provider 接口识别的模型 ID。 */
+  /** 主进程生成的全局唯一模型身份。 */
   modelId: string
 }
 
-/** 更新模型能力的补丁；传 null 清除对应可选值。 */
+/** 更新模型名称或能力的补丁；名称传 null 表示不修改，能力字段传 null 清除对应可选值。 */
 export interface ProviderModelUpdate {
+  /** Provider API 请求中使用的非空模型名称；null 表示本次不更新名称。 */
+  name?: string | null
   /** 新上下文窗口；传 null 后运行时使用默认值。 */
   contextWindow?: number | null
   /** 新最大输出 Token；传 null 移除该限制。 */
@@ -148,6 +152,18 @@ export interface ProviderSummary {
   protocol: Protocol
   /** 按保存顺序排列的模型摘要。 */
   models: ModelSummary[]
+}
+
+/** 在已有 Provider 上创建模型后返回的新增模型摘要。 */
+export interface ModelAppend {
+  /** 模型所属 Provider 的身份。 */
+  providerId: string
+  /** 主进程生成的全局唯一模型身份。 */
+  modelId: string
+  /** Provider API 请求中使用的模型名称。 */
+  name: string
+  /** 已保存模型的上下文窗口。 */
+  contextWindow: number
 }
 
 /** 首批 Turn 事件成功提交后即可返回前端的可序列化结果。 */
@@ -211,7 +227,7 @@ export interface NiCodePreloadApi {
    * @param apiKey Provider API Key。
    * @param protocol Provider 使用的唯一协议。
    * @param url Provider 服务地址。
-   * @param models 按顺序保存的模型配置；重复 modelId 会作为重复记录保留。
+   * @param models 按顺序保存的模型名称与能力配置。
    * @returns 新建 Provider 的无凭据摘要。
    */
   createProvider(
@@ -236,16 +252,17 @@ export interface NiCodePreloadApi {
    * 在 Provider 模型列表末尾新增一条记录。
    * @param providerId 模型所属 Provider ID。
    * @param model 新模型配置。
+   * @returns 主进程生成身份后的模型摘要。
    */
-  createModel(providerId: string, model: ProviderModelInput): Promise<void>
+  createModel(providerId: string, model: ProviderModelInput): Promise<ModelAppend>
   /**
-   * 更新同一引用下最先保存的模型记录。
+   * 更新指定模型身份的名称或能力字段。
    * @param reference 要更新的 Provider 与模型引用。
-   * @param update 要替换或清除的能力字段。
+   * @param update 要替换的名称或能力字段；能力字段可传 null 清除或使用默认值。
    */
   updateModel(reference: ProviderModelReference, update: ProviderModelUpdate): Promise<void>
   /**
-   * 删除同一 Provider 与 modelId 下的全部记录。
+   * 删除指定 Provider 下由 modelId 标识的模型。
    * @param reference 要删除的 Provider 与模型引用。
    */
   deleteModel(reference: ProviderModelReference): Promise<void>
@@ -364,8 +381,8 @@ export function createSessionApi(ipcRenderer: IpcRendererInvokePort): NiCodePrel
       await ipcRenderer.invoke(PROVIDER_IPC_CHANNELS.updateApiKey, providerId, apiKey)
     },
 
-    async createModel(providerId: string, model: ProviderModelInput): Promise<void> {
-      await ipcRenderer.invoke(PROVIDER_IPC_CHANNELS.createModel, providerId, model)
+    async createModel(providerId: string, model: ProviderModelInput): Promise<ModelAppend> {
+      return requireModelAppend(await ipcRenderer.invoke(PROVIDER_IPC_CHANNELS.createModel, providerId, model))
     },
 
     async updateModel(reference: ProviderModelReference, update: ProviderModelUpdate): Promise<void> {
@@ -557,7 +574,7 @@ function requireProviderSummaries(value: unknown): ProviderSummary[] {
     isRecord(item) && typeof item.providerId === "string" && typeof item.name === "string" &&
     (PROTOCOLS as readonly unknown[]).includes(item.protocol) &&
     Array.isArray(item.models) && item.models.every((model: unknown) =>
-      isRecord(model) && typeof model.modelId === "string" && model.modelId.trim() !== "" &&
+      isRecord(model) && typeof model.modelId === "string" && model.modelId.trim() !== "" && typeof model.name === "string" && model.name.trim() !== "" &&
       typeof model.contextWindow === "number" && Number.isSafeInteger(model.contextWindow) && model.contextWindow > 0 &&
       typeof model.isDefault === "boolean")
   )) throw new TypeError("主进程返回了无效的 Provider 列表")
@@ -574,6 +591,27 @@ function requireProviderSummary(value: unknown): ProviderSummary {
   const provider = requireProviderSummaries([value])[0]
   if (provider === undefined) throw new TypeError("主进程未返回新建的 Provider")
   return provider
+}
+
+/**
+ * 检查主进程新增模型后返回的摘要。
+ * @param value 未经检查的 IPC 返回值。
+ * @returns 结构有效的新增模型摘要。
+ * @throws TypeError 当主进程返回值缺少必需字段或数值无效时抛出。
+ */
+function requireModelAppend(value: unknown): ModelAppend {
+  if (!isRecord(value) || typeof value.providerId !== "string" || value.providerId.trim() === "" ||
+      typeof value.modelId !== "string" || value.modelId.trim() === "" ||
+      typeof value.name !== "string" || value.name.trim() === "" ||
+      typeof value.contextWindow !== "number" || !Number.isSafeInteger(value.contextWindow) || value.contextWindow <= 0) {
+    throw new TypeError("主进程返回了无效的新建模型")
+  }
+  return {
+    providerId: value.providerId,
+    modelId: value.modelId,
+    name: value.name,
+    contextWindow: value.contextWindow,
+  }
 }
 
 /**

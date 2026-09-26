@@ -1061,6 +1061,7 @@ function isModelRef(value: unknown): value is ModelRef {
   return isRecord(value)
     && isNonEmptyString(value.providerId)
     && isNonEmptyString(value.modelId)
+    && isNonEmptyString(value.name)
     && (PROTOCOLS as readonly unknown[]).includes(value.protocol)
 }
 

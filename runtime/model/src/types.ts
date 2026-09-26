@@ -32,14 +32,18 @@ export interface ModelRef {
   providerId: string
   /** Provider 下负责请求转换的协议。 */
   protocol: Protocol
-  /** Provider / protocol 下的模型标识。 */
+  /** 全局唯一的模型身份。 */
   modelId: string
+  /** Provider API 请求中使用的模型名称。 */
+  name: string
 }
 
-/** 模型配置（第 6 节，已定义）。Provider → Protocol → Models；`id` 对应 `ModelRef.modelId`。 */
+/** 模型配置。 */
 export interface ModelConfig {
-  /** Provider 内的模型标识。 */
-  id: string
+  /** 全局唯一的模型身份。 */
+  modelId: string
+  /** Provider API 请求中使用的模型名称。 */
+  name: string
   /** 该模型所属 Provider 的标识。 */
   providerId: string
   /** 该模型使用的协议。 */

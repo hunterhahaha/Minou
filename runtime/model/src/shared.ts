@@ -57,14 +57,14 @@ export function invalidRequest(message: string, details?: Record<string, unknown
  * @throws `AppError` 当 Provider、协议或模型 ID 任一不匹配时抛出。
  */
 export function assertRequestMatchesModel(request: UnifiedModelRequest, config: ModelConfig): void {
-  const { providerId, protocol, modelId } = request.model
-  if (providerId === config.providerId && protocol === config.protocol && modelId === config.id) {
+  const { providerId, protocol, modelId, name } = request.model
+  if (providerId === config.providerId && protocol === config.protocol && modelId === config.modelId && name === config.name) {
     return
   }
 
   throw invalidRequest("请求的模型引用与当前 Protocol Adapter 绑定的模型不一致", {
-    request: { providerId, protocol, modelId },
-    adapter: { providerId: config.providerId, protocol: config.protocol, modelId: config.id },
+    request: { providerId, protocol, modelId, name },
+    adapter: { providerId: config.providerId, protocol: config.protocol, modelId: config.modelId, name: config.name },
   })
 }
 

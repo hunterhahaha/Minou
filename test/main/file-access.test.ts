@@ -36,14 +36,14 @@ async function main(): Promise<void> {
         (project_id, session_id, name, version, current_model_json, sandbox_mode_json,
          usage_json, skills_json, additional_meta_json)
         VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?)`).run(
-        PROJECT_ID, SESSION_ID, "Session", JSON.stringify({ providerId: "p", protocol: "responses", modelId: "m" }),
+        PROJECT_ID, SESSION_ID, "Session", JSON.stringify({ providerId: "p", protocol: "responses", modelId: "m", name: "Model" }),
         JSON.stringify("sandbox-full-access"), JSON.stringify({}), JSON.stringify({}), JSON.stringify({}),
       )
       db.prepare(`INSERT INTO session_meta
         (project_id, session_id, name, version, current_model_json, sandbox_mode_json,
          usage_json, skills_json, additional_meta_json)
         VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?)`).run(
-        "default", SESSION_ID, "Default Session", JSON.stringify({ providerId: "p", protocol: "responses", modelId: "m" }),
+        "default", SESSION_ID, "Default Session", JSON.stringify({ providerId: "p", protocol: "responses", modelId: "m", name: "Model" }),
         JSON.stringify("full-access"), JSON.stringify({}), JSON.stringify({}), JSON.stringify({}),
       )
     } finally { db.close() }

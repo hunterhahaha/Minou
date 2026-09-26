@@ -284,10 +284,11 @@ function requireSessionId(value: unknown): string {
 
 function isModelRef(value: unknown): value is ModelRef {
   return isRecord(value) &&
-    Object.keys(value).length === 3 &&
-    Object.keys(value).every((key) => key === "providerId" || key === "protocol" || key === "modelId") &&
+    Object.keys(value).length === 4 &&
+    Object.keys(value).every((key) => key === "providerId" || key === "protocol" || key === "modelId" || key === "name") &&
     isNonEmptyString(value.providerId) &&
     isNonEmptyString(value.modelId) &&
+    isNonEmptyString(value.name) &&
     (
       value.protocol === "anthropic_messages" ||
       value.protocol === "chat_completions" ||

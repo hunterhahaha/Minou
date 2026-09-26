@@ -11,7 +11,7 @@ import type { SessionEvent, TurnStartEventInput, UserMessageEventInput } from ".
 const CREATED_AT = "2026-09-19T00:00:00.000Z"
 const FIRST_PROJECT_ID = "00000000-0000-4000-8000-000000000001"
 const SECOND_PROJECT_ID = "00000000-0000-4000-8000-000000000002"
-const MODEL = { providerId: "provider-1", protocol: "responses" as const, modelId: "model-1" }
+const MODEL = { providerId: "provider-1", protocol: "responses" as const, modelId: "model-1", name: "Model 1" }
 
 /** 为每个测试 Session 建立目录并指向同一个测试数据库。 */
 async function fixture(root: string, sessionId: string, group = FIRST_PROJECT_ID, overrides = {}): Promise<FileSessionEventLogOptions> {

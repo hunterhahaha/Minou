@@ -18,8 +18,8 @@ import type { CurrentSessionBaseline, SessionMeta } from "../src/session-state.t
 
 const PROJECT_ID = "00000000-0000-4000-8000-000000000001"
 const SECOND_PROJECT_ID = "00000000-0000-4000-8000-000000000002"
-const MODEL: ModelRef = { providerId: "provider", protocol: "responses", modelId: "first" }
-const OTHER_MODEL: ModelRef = { ...MODEL, modelId: "second" }
+const MODEL: ModelRef = { providerId: "provider", protocol: "responses", modelId: "first", name: "First Model" }
+const OTHER_MODEL: ModelRef = { ...MODEL, modelId: "second", name: "Second Model" }
 
 /** 为一个 Session 提供当前 AGENTS.md、Skill 和 MCP 基线。 */
 function baseline(root: string): CurrentSessionBaseline {

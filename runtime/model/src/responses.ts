@@ -153,7 +153,7 @@ export function buildResponsesRequest(
   const { system, rest } = splitSystemMessage(request)
 
   const params: ResponseCreateParamsStreaming = {
-    model: request.model.modelId,
+    model: request.model.name,
     instructions: system,
     input: toResponsesInput(rest),
     stream: true,

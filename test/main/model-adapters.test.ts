@@ -13,12 +13,13 @@ import {
   createTurnModelAdapter,
   resolveTurnModelAdapterSpecification,
 } from "../../src/main/model-adapters.ts"
-import { deleteProvider, saveModel, saveProvider, setProviderApiKey } from "../../src/main/provider-store.ts"
+import { deleteProvider, saveModel, saveProvider, setProviderApiKey, updateModel } from "../../src/main/provider-store.ts"
 
 const MODEL: ModelRef = {
   providerId: "configured",
   protocol: "chat_completions",
   modelId: "model-a",
+  name: "gpt-test",
 }
 
 /** 在隔离配置目录运行 Turn Adapter 断言。 */
@@ -40,14 +41,14 @@ async function testResolvesCurrentDatabaseConfiguration(): Promise<void> {
       baseURL: "https://api.example.com/v1", defaultHeaders: { "X-Test": "value" },
     })
     saveModel(database, {
-      providerId: "configured", id: "model-a", contextWindow: 128000,
+      providerId: "configured", modelId: "model-a", name: "gpt-test", contextWindow: 128000,
       maxOutputTokens: 4096, supportsReasoning: true, supportsTools: true,
       supportsParallelTools: true, supportsResponseId: true,
     })
     setProviderApiKey(database, "configured", "first-secret")
     const first = await resolveTurnModelAdapterSpecification(paths, MODEL)
     assert.deepEqual(first.modelConfig, {
-      id: "model-a", providerId: "configured", protocol: "chat_completions",
+      modelId: "model-a", name: "gpt-test", providerId: "configured", protocol: "chat_completions",
       contextWindow: 128000, maxOutputTokens: 4096, supportsReasoning: true,
       supportsTools: true, supportsParallelTools: true, supportsResponseId: true,
     })
@@ -60,11 +61,19 @@ async function testResolvesCurrentDatabaseConfiguration(): Promise<void> {
       id: "configured", name: "Updated Provider", protocol: "chat_completions",
       baseURL: "https://updated.example.com/v2", defaultHeaders: { "X-Updated": "yes" },
     })
-    saveModel(database, { providerId: "configured", id: "model-a", contextWindow: 64000, supportsTools: false })
+    updateModel(database, { providerId: "configured", modelId: "model-a" }, {
+      name: "gpt-updated",
+      contextWindow: 64000,
+      maxOutputTokens: null,
+      supportsReasoning: null,
+      supportsTools: false,
+      supportsParallelTools: null,
+      supportsResponseId: null,
+    })
     setProviderApiKey(database, "configured", "second-secret")
     const second = await resolveTurnModelAdapterSpecification(paths, MODEL)
     assert.deepEqual(second.modelConfig, {
-      id: "model-a", providerId: "configured", protocol: "chat_completions",
+      modelId: "model-a", name: "gpt-updated", providerId: "configured", protocol: "chat_completions",
       contextWindow: 64000, supportsTools: false,
     })
     assert.deepEqual(second.clientOptions, {
@@ -84,7 +93,7 @@ async function testRejectsInvalidBindingsWithoutSecrets(): Promise<void> {
   await withPaths(async (paths) => {
     const database = paths.providerDatabasePath
     saveProvider(database, { id: "configured", name: "Configured", protocol: "chat_completions" })
-    saveModel(database, { providerId: "configured", id: "model-a" })
+    saveModel(database, { providerId: "configured", modelId: "model-a", name: "gpt-test" })
     setProviderApiKey(database, "configured", "must-not-leak")
     for (const model of [
       { ...MODEL, providerId: "missing-provider" },

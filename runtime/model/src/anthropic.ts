@@ -203,7 +203,7 @@ export function buildAnthropicRequest(
   const { system, rest } = splitSystemMessage(request)
 
   const params: MessageCreateParamsStreaming = {
-    model: request.model.modelId,
+    model: request.model.name,
     max_tokens: maxOutputTokens,
     system,
     messages: toAnthropicMessages(rest),

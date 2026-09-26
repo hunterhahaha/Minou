@@ -51,10 +51,11 @@ export function registerStartupDataIpcHandlers(
         name: provider.name,
         protocol: provider.protocol,
         models: provider.models.map((model) => {
-          const isDefault = !defaultIncluded && model.id === defaultModel?.modelId && provider.id === defaultModel.providerId
+          const isDefault = !defaultIncluded && model.modelId === defaultModel?.modelId && provider.id === defaultModel.providerId
           if (isDefault) defaultIncluded = true
           return {
-            modelId: model.id,
+            modelId: model.modelId,
+            name: model.name,
             contextWindow: resolveContextWindow(model),
             isDefault,
           }

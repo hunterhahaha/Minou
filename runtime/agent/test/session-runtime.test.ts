@@ -18,8 +18,8 @@ import {
 import type { SessionRepairPorts } from "../src/session-runtime.ts"
 import type { SessionRuntimeGlobal } from "../../../src/main/session-runtime-global.ts"
 
-const MODEL: ModelRef = { providerId: "provider-1", protocol: "anthropic_messages", modelId: "model-1" }
-const OTHER_MODEL: ModelRef = { providerId: "provider-2", protocol: "responses", modelId: "model-2" }
+const MODEL: ModelRef = { providerId: "provider-1", protocol: "anthropic_messages", modelId: "model-1", name: "claude-test" }
+const OTHER_MODEL: ModelRef = { providerId: "provider-2", protocol: "responses", modelId: "model-2", name: "gpt-test" }
 const MESSAGE = [{ type: "text" as const, text: "你好" }]
 
 function fixture(

@@ -185,7 +185,7 @@ export function buildChatCompletionsRequest(
   const { system, rest } = splitSystemMessage(request)
 
   const params: ChatCompletionCreateParamsStreaming = {
-    model: request.model.modelId,
+    model: request.model.name,
     messages: [{ role: "system", content: system }, ...toChatCompletionsMessages(rest)],
     stream: true,
     stream_options: { include_usage: true },

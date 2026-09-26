@@ -77,8 +77,8 @@ async function main(): Promise<void> {
     })
     saveDefaultWorkspace(workspaceDatabasePath, { version: 1, sessions: [secondSession, firstSession] })
     saveProvider(providerDatabasePath, { id: "provider-1", name: "Provider", protocol: "responses" })
-    saveModel(providerDatabasePath, { id: "model-b", providerId: "provider-1" })
-    saveModel(providerDatabasePath, { id: "model-a", providerId: "provider-1" })
+    saveModel(providerDatabasePath, { modelId: "model-b", name: "Model B", providerId: "provider-1" })
+    saveModel(providerDatabasePath, { modelId: "model-a", name: "Model A", providerId: "provider-1" })
     setProviderApiKey(providerDatabasePath, "provider-1", "private-api-key")
 
     assert.deepEqual(ipc.invoke(STARTUP_DATA_IPC_CHANNELS.listProjects), [{
@@ -97,8 +97,8 @@ async function main(): Promise<void> {
     assert.deepEqual(providers, [{
       providerId: "provider-1", name: "Provider", protocol: "responses",
       models: [
-        { modelId: "model-b", contextWindow: 256000, isDefault: true },
-        { modelId: "model-a", contextWindow: 256000, isDefault: false },
+        { modelId: "model-b", name: "Model B", contextWindow: 256000, isDefault: true },
+        { modelId: "model-a", name: "Model A", contextWindow: 256000, isDefault: false },
       ],
     }])
     assert.equal(JSON.stringify(providers).includes("private-api-key"), false)
@@ -106,8 +106,8 @@ async function main(): Promise<void> {
     assert.deepEqual(ipc.invoke(STARTUP_DATA_IPC_CHANNELS.listProviders), [{
       providerId: "provider-1", name: "Provider", protocol: "responses",
       models: [
-        { modelId: "model-b", contextWindow: 256000, isDefault: false },
-        { modelId: "model-a", contextWindow: 256000, isDefault: true },
+        { modelId: "model-b", name: "Model B", contextWindow: 256000, isDefault: false },
+        { modelId: "model-a", name: "Model A", contextWindow: 256000, isDefault: true },
       ],
     }])
     assert.throws(() => registerStartupDataIpcHandlers(ipc, { workspaceDatabasePath, providerDatabasePath }), /重复注册/)

@@ -33,6 +33,7 @@ const MODEL: ModelRef = {
   providerId: "provider-1",
   protocol: "anthropic_messages",
   modelId: "model-1",
+  name: "claude-test",
 }
 const MESSAGE = [{ type: "text" as const, text: "你好" }]
 const PROJECT_ID = "00000000-0000-4000-8000-000000000017"
