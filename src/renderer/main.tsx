@@ -1,6 +1,7 @@
-/** Electron 工作区首屏：读取启动摘要并显示 default 分组的新聊天页。 */
+/** Electron 工作区：读取启动摘要，并由 hash 路由管理工作区与 Session 身份。 */
 import { useEffect, useRef, useState } from "react"
 import { createRoot } from "react-dom/client"
+import { HashRouter, Navigate, Outlet, Route, Routes, useMatch, useNavigate, useParams } from "react-router"
 import {
   IconChevronDown,
   IconFolder,
@@ -16,15 +17,17 @@ import {
   IconSettings,
   IconX,
 } from "@tabler/icons-react"
-import type { DirectorySelection, ProjectSummary, ProviderSummary, SessionSummary } from "../preload/session-api.ts"
+import type { DirectorySelection, ProjectSummary, ProviderSummary, SessionSummary, ProviderModelInput, ProviderModelUpdate, ProviderModelReference } from "../preload/session-api.ts"
 import "./workspace.css"
 
 /** 一项启动数据的加载、成功或失败状态。 */
 type LoadState<T> = { status: "loading" } | { status: "ready"; value: T } | { status: "error" }
-/** 当前新聊天页面的工作区范围；项目范围用 Project ID 标识。 */
+/** 当前页面及其工作区范围；Session 页面同时携带 Project 和 Session 身份。 */
 type WorkspaceRoute =
   | { page: "new-chat"; group: "default" }
   | { page: "new-chat"; group: "project"; projectId: string }
+  | { page: "session"; group: "default"; sessionId: string }
+  | { page: "session"; group: "project"; projectId: string; sessionId: string }
 /** 本页可切换的权限展示状态；对话创建前仅保存在渲染进程。 */
 type Permission = "default" | "workspace-read-only" | "workspace-read-write" | "full-access"
 const permissionLabels: Record<Permission, string> = {
@@ -34,43 +37,44 @@ const permissionLabels: Record<Permission, string> = {
 const permissionOptions: Permission[] = ["workspace-read-only", "workspace-read-write", "full-access"]
 
 /**
- * 从 Electron 窗口的 hash 地址读取当前新聊天分组。
- * @param hash 浏览器当前的 hash 地址。
- * @returns 有效的 default 或 Project 新聊天路由；其它地址回退到 default。
- */
-function parseWorkspaceRoute(hash: string): WorkspaceRoute {
-  const segments = hash.replace(/^#\/?/, "").split("/").filter(Boolean)
-  if (segments[0] === "projects" && segments.length === 3 && segments[2] === "new-chat") {
-    try {
-      const projectId = decodeURIComponent(segments[1])
-      if (projectId !== "") return { page: "new-chat", group: "project", projectId }
-    } catch {
-      return { page: "new-chat", group: "default" }
-    }
-  }
-  return { page: "new-chat", group: "default" }
-}
-
-/**
- * 将当前新聊天分组转成可在 file:// 与开发服务器下使用的 hash 地址。
- * @param route 要显示的新聊天分组。
- * @returns 对应的 hash 路由地址。
- */
-function serializeWorkspaceRoute(route: WorkspaceRoute): string {
-  return route.group === "default"
-    ? "#/default/new-chat"
-    : `#/projects/${encodeURIComponent(route.projectId)}/new-chat`
-}
-
-/**
- * 按持久化索引顺序显示一个分组的对话名称。
+ * 按持久化索引顺序显示一个分组的对话入口，并把所在分组与 Session 身份交给路由。
  * @param props 已取得的对话摘要列表。
- * @returns 只读的对话名称列表。
+ * @returns 可打开各 Session 路由的对话列表。
  */
-function SessionList({ sessions }: { sessions: SessionSummary[] }) {
+function SessionList({
+  projectId,
+  sessions,
+  activeSessionId,
+  onOpenSession,
+}: {
+  projectId: string
+  sessions: SessionSummary[]
+  activeSessionId?: string
+  onOpenSession: (projectId: string, sessionId: string) => void
+}) {
   return <ul className="session-list">{sessions.map((session) =>
-    <li className="session-name" key={session.sessionId} title={session.name}>{session.name}</li>,
+    <li key={session.sessionId}>
+      <button
+        className="session-name"
+        type="button"
+        title={session.name}
+        aria-current={session.sessionId === activeSessionId ? "page" : undefined}
+        onClick={() => onOpenSession(projectId, session.sessionId)}
+      >
+        {session.name}
+      </button>
+    </li>,
   )}</ul>
+}
+
+/**
+ * 从匹配到的 Session 路由读取 Project 与 Session 身份，供后续对话页面使用。
+ * @returns 保存路由身份的空页面容器；不读取或渲染 Session 内容。
+ */
+function SessionRoute() {
+  const { projectId, sessionId } = useParams<"projectId" | "sessionId">()
+  if (projectId === undefined || sessionId === undefined) return null
+  return <div data-project-id={projectId} data-session-id={sessionId} />
 }
 
 /**
@@ -85,14 +89,28 @@ function DataStatus({ state, retry }: { state: LoadState<unknown>; retry: () => 
 }
 
 /**
- * 分别读取三份启动数据，并按 Figma 工作区原型显示与切换首屏状态。
+ * 分别读取三份启动数据，维护工作区侧栏，并按匹配路由显示新聊天或 Session 容器。
  * @returns 带独立加载状态的工作区首屏。
  */
 function Workspace() {
+  const navigate = useNavigate()
+  const projectNewChatMatch = useMatch("/projects/:projectId/new-chat")
+  const sessionMatch = useMatch("/sessions/:projectId/:sessionId")
+  const workspaceRoute: WorkspaceRoute = sessionMatch === null
+    ? projectNewChatMatch === null
+      ? { page: "new-chat", group: "default" }
+      : { page: "new-chat", group: "project", projectId: projectNewChatMatch.params.projectId }
+    : sessionMatch.params.projectId === "default"
+      ? { page: "session", group: "default", sessionId: sessionMatch.params.sessionId }
+      : {
+          page: "session",
+          group: "project",
+          projectId: sessionMatch.params.projectId,
+          sessionId: sessionMatch.params.sessionId,
+        }
   const [projects, setProjects] = useState<LoadState<ProjectSummary[]>>({ status: "loading" })
   const [defaultSessions, setDefaultSessions] = useState<LoadState<SessionSummary[]>>({ status: "loading" })
   const [providers, setProviders] = useState<LoadState<ProviderSummary[]>>({ status: "loading" })
-  const [workspaceRoute, setWorkspaceRoute] = useState<WorkspaceRoute>(() => parseWorkspaceRoute(window.location.hash))
   const [selectedModelKey, setSelectedModelKey] = useState<string | undefined>()
   const [permission, setPermission] = useState<Permission>("default")
   const [openMenu, setOpenMenu] = useState<"permission" | "model" | null>(null)
@@ -108,6 +126,8 @@ function Workspace() {
   const [projectDialogError, setProjectDialogError] = useState<string | null>(null)
   const [selectingProjectDirectory, setSelectingProjectDirectory] = useState(false)
   const [creatingProject, setCreatingProject] = useState(false)
+  const [focusComposerAfterNavigation, setFocusComposerAfterNavigation] = useState(false)
+  const [settingsDialogOpen, setSettingsDialogOpen] = useState(false)
 
   /** @returns 项目查询结束后的 Promise；失败会转成当前区域的错误状态。 */
   async function loadProjects(): Promise<void> {
@@ -164,18 +184,26 @@ function Workspace() {
   }
 
   /**
-   * 切换新聊天的分组并同步到 Electron 窗口 URL。
+   * 切换到 default 或指定 Project 的新聊天路由。
    * @param projectId 指定时表示项目分组；省略时表示 default 分组。
-   * @returns 更新当前路由时无返回值。
+   * @returns 导航完成时无返回值。
    */
   function navigateToNewChat(projectId?: string): void {
-    const route: WorkspaceRoute = projectId === undefined
-      ? { page: "new-chat", group: "default" }
-      : { page: "new-chat", group: "project", projectId }
-    setWorkspaceRoute(route)
     setOpenMenu(null)
-    const hash = serializeWorkspaceRoute(route)
-    if (window.location.hash !== hash) window.location.hash = hash
+    navigate(projectId === undefined
+      ? "/default/new-chat"
+      : `/projects/${encodeURIComponent(projectId)}/new-chat`)
+  }
+
+  /**
+   * 导航到以 Project ID 与 Session ID 联合标识的对话路由。
+   * @param projectId Session 所属 Project ID；default 对话使用 "default"。
+   * @param sessionId 要打开的持久化 Session ID。
+   * @returns 导航完成时无返回值。
+   */
+  function navigateToSession(projectId: string, sessionId: string): void {
+    setOpenMenu(null)
+    navigate(`/sessions/${encodeURIComponent(projectId)}/${encodeURIComponent(sessionId)}`)
   }
 
   /**
@@ -184,8 +212,8 @@ function Workspace() {
    * @returns 输入框获得焦点时无返回值；已有草稿保持不变。
    */
   function focusNewChatComposer(projectId?: string): void {
+    setFocusComposerAfterNavigation(true)
     navigateToNewChat(projectId)
-    composerRef.current?.focus()
   }
 
   /**
@@ -284,17 +312,10 @@ function Workspace() {
   }, [])
 
   useEffect(() => {
-    /** 读取地址栏 hash，支持初始直达和浏览器前进/后退。 */
-    function syncWorkspaceRoute(): void {
-      const route = parseWorkspaceRoute(window.location.hash)
-      setWorkspaceRoute(route)
-      const hash = serializeWorkspaceRoute(route)
-      if (window.location.hash !== hash) window.location.hash = hash
-    }
-    window.addEventListener("hashchange", syncWorkspaceRoute)
-    syncWorkspaceRoute()
-    return () => window.removeEventListener("hashchange", syncWorkspaceRoute)
-  }, [])
+    if (!focusComposerAfterNavigation || workspaceRoute.page !== "new-chat") return
+    composerRef.current?.focus()
+    setFocusComposerAfterNavigation(false)
+  }, [focusComposerAfterNavigation, workspaceRoute.page])
 
   useEffect(() => {
     if (openMenu === null) return
@@ -348,7 +369,7 @@ function Workspace() {
 
     <div className="workspace-shell">
       {sidebarOpen && <aside className="sidebar" aria-label="工作区侧栏">
-        <button className="new-chat" type="button" aria-current={workspaceRoute.group === "default" ? "page" : undefined} onClick={() => focusNewChatComposer()}><IconMessageCirclePlus size={18} stroke={1.5} aria-hidden="true" /><span>新聊天</span></button>
+        <button className="new-chat" type="button" aria-current={workspaceRoute.page === "new-chat" && workspaceRoute.group === "default" ? "page" : undefined} onClick={() => focusNewChatComposer()}><IconMessageCirclePlus size={18} stroke={1.5} aria-hidden="true" /><span>新聊天</span></button>
         <div className="sidebar-scroll">
           <section className="sidebar-section" aria-label="项目">
             <div className="section-heading-row">
@@ -363,7 +384,12 @@ function Workspace() {
                       <button className="project-name" type="button" title={project.name} aria-expanded={expandedProjects.has(project.projectId)} aria-current={workspaceRoute.group === "project" && workspaceRoute.projectId === project.projectId ? "page" : undefined} onClick={() => toggleProject(project.projectId)}><IconFolder size={17} stroke={1.5} aria-hidden="true" /><span>{project.name}</span></button>
                       <button className="project-action-button" type="button" aria-label={`在 ${project.name} 中新建聊天`} title={`在 ${project.name} 中新建聊天`} onClick={() => focusNewChatComposer(project.projectId)}><IconPencilPlus size={16} stroke={1.5} aria-hidden="true" /></button>
                     </div>
-                    {expandedProjects.has(project.projectId) && <SessionList sessions={project.sessions} />}
+                    {expandedProjects.has(project.projectId) && <SessionList
+                      projectId={project.projectId}
+                      sessions={project.sessions}
+                      activeSessionId={workspaceRoute.page === "session" && workspaceRoute.group === "project" && workspaceRoute.projectId === project.projectId ? workspaceRoute.sessionId : undefined}
+                      onOpenSession={navigateToSession}
+                    />}
                   </li>)}</ul>)}
             </>}
           </section>
@@ -382,21 +408,26 @@ function Workspace() {
             {chatsOpen && <><DataStatus state={defaultSessions} retry={() => { void loadDefaultSessions() }} />
               {defaultSessions.status === "ready" && (defaultSessions.value.length === 0
                 ? <p className="empty-list">暂无聊天</p>
-                : <SessionList sessions={defaultSessions.value} />)}
+                : <SessionList
+                    projectId="default"
+                    sessions={defaultSessions.value}
+                    activeSessionId={workspaceRoute.page === "session" && workspaceRoute.group === "default" ? workspaceRoute.sessionId : undefined}
+                    onOpenSession={navigateToSession}
+                  />)}
             </>}
           </section>
         </div>
-        <div className="sidebar-settings" aria-disabled="true"><IconSettings size={18} stroke={1.5} aria-hidden="true" /><span>设置</span></div>
+        <button className="sidebar-settings" aria-disabled="true"><IconSettings size={18} stroke={1.5} aria-hidden="true" /><span>设置</span></button>
       </aside>}
 
       <main className="main-panel">
         <div className="breadcrumb">
           <span>NiCode</span><span className="breadcrumb-divider">/</span>
           {workspaceRoute.group === "project" && <><strong>{activeProject?.name ?? "项目"}</strong><span className="breadcrumb-divider">/</span></>}
-          <strong>新聊天</strong>
+          <strong>{workspaceRoute.page === "new-chat" ? "新聊天" : "对话"}</strong>
         </div>
         <div className="more-actions" aria-hidden="true">···</div>
-        <div className="welcome">
+        {workspaceRoute.page === "session" ? <Outlet /> : <div className="welcome">
           <h1>我们从哪开始？</h1>
           <div className="composer">
             <textarea ref={composerRef} aria-label="任务描述" placeholder="描述你希望 NiCode 完成的任务…" />
@@ -419,7 +450,7 @@ function Workspace() {
               </div>
             </div>
           </div>
-        </div>
+        </div>}
       </main>
     </div>
     {openMenu !== null && <div className="menu-backdrop" role="presentation" onClick={() => setOpenMenu(null)} />}
@@ -493,9 +524,29 @@ function Workspace() {
         </form>
       </section>
     </div>}
+    {settingsDialogOpen && <div>
+
+    </div>}
   </div>
+}
+
+/**
+ * 安装 Electron 使用的 hash 路由，保留新聊天页并增加 Project / Session 参数页。
+ * @returns 包含工作区布局及其页面路由的 Router。
+ */
+function App() {
+  return <HashRouter>
+    <Routes>
+      <Route path="/" element={<Workspace />}>
+        <Route path="default/new-chat" element={null} />
+        <Route path="projects/:projectId/new-chat" element={null} />
+        <Route path="sessions/:projectId/:sessionId" element={<SessionRoute />} />
+        <Route path="*" element={<Navigate to="/default/new-chat" replace />} />
+      </Route>
+    </Routes>
+  </HashRouter>
 }
 
 const root = document.getElementById("root")
 if (root === null) throw new Error("缺少工作区页面根节点")
-createRoot(root).render(<Workspace />)
+createRoot(root).render(<App />)
