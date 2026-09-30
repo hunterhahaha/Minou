@@ -17,7 +17,8 @@ import {
   IconSettings,
   IconX,
 } from "@tabler/icons-react"
-import type { DirectorySelection, ProjectSummary, ProviderSummary, SessionSummary, ProviderModelInput, ProviderModelUpdate, ProviderModelReference } from "../preload/session-api.ts"
+import type { DirectorySelection, ProjectSummary, ProviderSummary, SessionSummary } from "../preload/session-api.ts"
+import { SettingsDialog } from "./settings-dialog.tsx"
 import "./workspace.css"
 
 /** 一项启动数据的加载、成功或失败状态。 */
@@ -99,14 +100,14 @@ function Workspace() {
   const workspaceRoute: WorkspaceRoute = sessionMatch === null
     ? projectNewChatMatch === null
       ? { page: "new-chat", group: "default" }
-      : { page: "new-chat", group: "project", projectId: projectNewChatMatch.params.projectId }
+      : { page: "new-chat", group: "project", projectId: projectNewChatMatch.params.projectId! }
     : sessionMatch.params.projectId === "default"
-      ? { page: "session", group: "default", sessionId: sessionMatch.params.sessionId }
+      ? { page: "session", group: "default", sessionId: sessionMatch.params.sessionId! }
       : {
           page: "session",
           group: "project",
-          projectId: sessionMatch.params.projectId,
-          sessionId: sessionMatch.params.sessionId,
+          projectId: sessionMatch.params.projectId!,
+          sessionId: sessionMatch.params.sessionId!,
         }
   const [projects, setProjects] = useState<LoadState<ProjectSummary[]>>({ status: "loading" })
   const [defaultSessions, setDefaultSessions] = useState<LoadState<SessionSummary[]>>({ status: "loading" })
@@ -307,6 +308,23 @@ function Workspace() {
     }
   }
 
+  /**
+   * 打开设置弹窗
+   * @returns 无返回值
+   */
+  function openSettingsDialog(): void {
+    setOpenMenu(null)
+    setSettingsDialogOpen(true)
+  }
+
+  /**
+   * 关闭设置弹窗
+   * @returns 无返回值
+   */
+  function closeSettingsDialog(): void {
+    setSettingsDialogOpen(false)
+  }
+
   useEffect(() => {
     void Promise.allSettled([loadProjects(), loadDefaultSessions(), loadProviders()])
   }, [])
@@ -417,7 +435,7 @@ function Workspace() {
             </>}
           </section>
         </div>
-        <button className="sidebar-settings" aria-disabled="true"><IconSettings size={18} stroke={1.5} aria-hidden="true" /><span>设置</span></button>
+        <button className="sidebar-settings" type="button" onClick={openSettingsDialog}><IconSettings size={18} stroke={1.5} aria-hidden="true" /><span>设置</span></button>
       </aside>}
 
       <main className="main-panel">
@@ -524,9 +542,10 @@ function Workspace() {
         </form>
       </section>
     </div>}
-    {settingsDialogOpen && <div>
-
-    </div>}
+    {settingsDialogOpen && <SettingsDialog
+      onClose={closeSettingsDialog}
+      onProvidersChange={(value) => setProviders({ status: "ready", value })}
+    />}
   </div>
 }
 

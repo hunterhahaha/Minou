@@ -49,6 +49,7 @@ export function registerStartupDataIpcHandlers(
         providerId: provider.id,
         name: provider.name,
         protocol: provider.protocol,
+        ...(provider.baseURL === undefined ? {} : { baseURL: provider.baseURL }),
         models: provider.models.map((model) => {
           const isDefault = !defaultIncluded && model.modelId === defaultModel?.modelId && provider.id === defaultModel.providerId
           if (isDefault) defaultIncluded = true
