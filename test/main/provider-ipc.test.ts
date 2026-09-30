@@ -64,6 +64,7 @@ async function testModelCreationReturnsGeneratedIdentity(): Promise<void> {
     ) as ProviderSummary
     const original = provider.models[0]
     assert.ok(original)
+    assert.equal(provider.baseURL, "https://example.com/v1")
     const uuidV4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
     assert.match(provider.providerId, uuidV4)
     assert.match(original.modelId, uuidV4)
@@ -71,6 +72,14 @@ async function testModelCreationReturnsGeneratedIdentity(): Promise<void> {
     assert.equal(original.contextWindow, 256000)
     assert.equal(original.maxOutputTokens, 32000)
     assert.equal(original.isDefault, true)
+
+    ipc.invoke(PROVIDER_IPC_CHANNELS.updateProvider, provider.providerId, "  Renamed Provider  ", "")
+    const updatedProvider = listProviders(providerDatabasePath)[0]
+    assert.ok(updatedProvider)
+    assert.equal(updatedProvider.name, "Renamed Provider")
+    assert.equal(updatedProvider.protocol, "responses")
+    assert.equal(updatedProvider.baseURL, undefined)
+    assert.deepEqual(updatedProvider.models.map(({ modelId }) => modelId), [original.modelId])
 
     const appended = ipc.invoke(
       PROVIDER_IPC_CHANNELS.createModel,
@@ -155,15 +164,58 @@ async function testModelCreationReturnsGeneratedIdentity(): Promise<void> {
       provider.providerId,
       { name: "invalid-output-limit", maxOutputTokens: 0 },
     ), /模型配置错误/)
+    assert.throws(() => ipc.invoke(
+      PROVIDER_IPC_CHANNELS.updateProvider,
+      "missing-provider",
+      "Name",
+      "https://example.com/v1",
+    ), /Provider 不存在/)
   })
 }
 
 /**
- * Runs the Provider IPC regression assertion and reports failures through process exit status.
- * @returns Completion after the single test scenario.
+ * 验证 Provider 创建与更新只接受 HTTP(S) 绝对地址，拒绝时不写入数据库。
+ * @returns URL 校验、地址清空和持久化保持原值的断言完成。
+ */
+async function testProviderURLValidation(): Promise<void> {
+  await withDatabase((providerDatabasePath) => {
+    const ipc = new FakeIpcMain()
+    registerModelIpcHandlers(ipc as unknown as Electron.IpcMain, { providerDatabasePath })
+    const invalidURLs = ["not-a-url", "/v1", "https:example.com", "http://", "ftp://example.com/v1"]
+    for (const url of invalidURLs) {
+      assert.throws(() => ipc.invoke(
+        PROVIDER_IPC_CHANNELS.createProvider,
+        "Invalid Provider", "test-key", "responses", url, [],
+      ), /URL/)
+      assert.deepEqual(listProviders(providerDatabasePath), [])
+    }
+
+    const provider = ipc.invoke(
+      PROVIDER_IPC_CHANNELS.createProvider,
+      "Provider", "test-key", "responses", "  https://example.com/v1  ", [{ name: "model" }],
+    ) as ProviderSummary
+    assert.equal(provider.baseURL, "https://example.com/v1")
+    const baseline = listProviders(providerDatabasePath)
+    for (const url of invalidURLs) {
+      assert.throws(() => ipc.invoke(
+        PROVIDER_IPC_CHANNELS.updateProvider, provider.providerId, "Must not be saved", url,
+      ), /URL/)
+      assert.deepEqual(listProviders(providerDatabasePath), baseline)
+    }
+    ipc.invoke(PROVIDER_IPC_CHANNELS.updateProvider, provider.providerId, "Local Provider", "  http://127.0.0.1:8080/v1  ")
+    assert.equal(listProviders(providerDatabasePath)[0]?.baseURL, "http://127.0.0.1:8080/v1")
+    ipc.invoke(PROVIDER_IPC_CHANNELS.updateProvider, provider.providerId, "Local Provider", "  ")
+    assert.equal(listProviders(providerDatabasePath)[0]?.baseURL, undefined)
+  })
+}
+
+/**
+ * Runs the Provider IPC regression assertions and reports failures through process exit status.
+ * @returns Completion after the model and URL scenarios.
  */
 async function main(): Promise<void> {
   await testModelCreationReturnsGeneratedIdentity()
+  await testProviderURLValidation()
   console.log("provider-ipc.test.ts: Provider IPC 断言通过")
 }
 

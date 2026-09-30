@@ -45,6 +45,7 @@ export const PROJECT_IPC_CHANNELS = {
 /** 供应商创建和修改的固定 IPC channel。 */
 export const PROVIDER_IPC_CHANNELS = {
   createProvider: "nicode:provider:create",
+  updateProvider: "nicode:provider:update",
   deleteProvider: "nicode:provider:delete",
   updateApiKey: "nicode:provider:update-api-key",
   createModel: "nicode:provider:create-model",
@@ -144,7 +145,7 @@ export interface ProviderModelUpdate {
   supportsResponseId?: boolean | null
 }
 
-/** 不含凭据与协议连接参数的 Provider 页面摘要。 */
+/** 不含凭据、包含协议连接地址的 Provider 页面摘要。 */
 export interface ProviderSummary {
   /** Provider 稳定身份。 */
   providerId: string
@@ -152,6 +153,8 @@ export interface ProviderSummary {
   name: string
   /** 当前 Provider 唯一的协议。 */
   protocol: Protocol
+  /** 可选的 Provider 服务地址。 */
+  baseURL?: string
   /** 按保存顺序排列的模型摘要。 */
   models: ModelSummary[]
 }
@@ -241,6 +244,13 @@ export interface NiCodePreloadApi {
     url: string,
     models: ProviderModelInput[],
   ): Promise<ProviderSummary>
+  /**
+   * 更新 Provider 显示名称与服务地址；空 URL 表示清除地址。
+   * @param providerId 要更新的 Provider ID。
+   * @param name 新的非空显示名称。
+   * @param url 新服务地址；空字符串会清除已有地址。
+   */
+  updateProvider(providerId: string, name: string, url: string): Promise<void>
   /**
    * 删除 Provider、其所有模型记录和 API Key。
    * @param providerId 要删除的 Provider ID。
@@ -375,6 +385,10 @@ export function createSessionApi(ipcRenderer: IpcRendererInvokePort): NiCodePrel
       return requireProviderSummary(await ipcRenderer.invoke(
         PROVIDER_IPC_CHANNELS.createProvider, name, apiKey, protocol, url, models,
       ))
+    },
+
+    async updateProvider(providerId: string, name: string, url: string): Promise<void> {
+      await ipcRenderer.invoke(PROVIDER_IPC_CHANNELS.updateProvider, providerId, name, url)
     },
 
     async deleteProvider(providerId: string): Promise<void> {
@@ -577,6 +591,7 @@ function requireProviderSummaries(value: unknown): ProviderSummary[] {
   if (!Array.isArray(value) || !value.every((item) =>
     isRecord(item) && typeof item.providerId === "string" && typeof item.name === "string" &&
     (PROTOCOLS as readonly unknown[]).includes(item.protocol) &&
+    (item.baseURL === undefined || typeof item.baseURL === "string") &&
     Array.isArray(item.models) && item.models.every((model: unknown) =>
       isRecord(model) && typeof model.modelId === "string" && model.modelId.trim() !== "" && typeof model.name === "string" && model.name.trim() !== "" &&
       typeof model.contextWindow === "number" && Number.isSafeInteger(model.contextWindow) && model.contextWindow > 0 &&

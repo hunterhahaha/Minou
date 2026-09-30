@@ -6,6 +6,7 @@ import type { ConfigFilePaths } from "./config-files.ts"
 import {
   deleteModel,
   deleteProvider,
+  listProviders,
   readDefaultModel,
   saveModel,
   saveProvider,
@@ -118,7 +119,7 @@ function isProviderModelReference(value: unknown): value is ProviderModelReferen
 }
 
 /**
- * 注册 Provider 管理的七个 IPC handler，校验 Renderer 输入后调用 Provider Store。
+ * 注册 Provider 管理的八个 IPC handler，校验 Renderer 输入后调用 Provider Store。
  * 创建 Provider 由多笔 Store 写入组成；中途失败时删除已创建的 Provider 及其关联数据。
  * @param ipcMain Electron 主进程 IPC 注册端口。
  * @param paths 启动阶段已初始化的 Provider 数据库路径。
@@ -136,7 +137,7 @@ export function registerModelIpcHandlers(
       const providerName = requireNonEmptyString(name, "供应商名称")
       if (!isNonEmptyString(apiKey)) throw new TypeError("API key 必须是非空字符串")
       if (!isProtocol(protocol)) throw new TypeError("协议错误")
-      const baseURL = requireNonEmptyString(url, "URL")
+      const baseURL = requireProviderURL(url)
       if (!isModels(models)) throw new TypeError("模型列表错误")
 
       const normalizedModels = models.map((model) => ({
@@ -171,6 +172,7 @@ export function registerModelIpcHandlers(
         providerId,
         name: providerName,
         protocol,
+        baseURL,
         models: normalizedModels.map((model) => {
           const isDefault = !defaultIncluded && model.modelId === defaultModel?.modelId &&
             providerId === defaultModel.providerId
@@ -178,6 +180,29 @@ export function registerModelIpcHandlers(
           return modelSummary(model, isDefault)
         }),
       }
+    },
+  )
+
+  /**
+   * 更新已有 Provider 的名称与可选 URL，并保留其协议、默认请求头、模型和凭据。
+   */
+  ipcMain.handle(
+    PROVIDER_IPC_CHANNELS.updateProvider,
+    (_event, providerId: unknown, name: unknown, url: unknown): void => {
+      const normalizedProviderId = requireNonEmptyString(providerId, "Provider ID")
+      const providerName = requireNonEmptyString(name, "供应商名称")
+      if (typeof url !== "string") throw new TypeError("URL 必须是字符串")
+      const normalizedURL = url.trim() === "" ? "" : requireProviderURL(url)
+
+      const existing = listProviders(databasePath).find((provider) => provider.id === normalizedProviderId)
+      if (existing === undefined) throw new Error("Provider 不存在：" + normalizedProviderId)
+      saveProvider(databasePath, {
+        id: normalizedProviderId,
+        name: providerName,
+        protocol: existing.protocol,
+        ...(normalizedURL === "" ? {} : { baseURL: normalizedURL }),
+        ...(existing.defaultHeaders === undefined ? {} : { defaultHeaders: existing.defaultHeaders }),
+      })
     },
   )
 
@@ -309,6 +334,26 @@ function isNonEmptyString(value: unknown): value is string {
 function requireNonEmptyString(value: unknown, field: string): string {
   if (!isNonEmptyString(value)) throw new TypeError(`${field}必须是非空字符串`)
   return value.trim()
+}
+
+/**
+ * 校验 Provider 服务地址后返回去除首尾空格的输入，不重写路径或查询参数。
+ * @param value Renderer 提交的必填服务地址。
+ * @returns 可解析且包含主机的 HTTP 或 HTTPS 绝对地址。
+ * @throws TypeError 当地址为空、格式无效或使用其他协议时抛出；IPC 将错误返回 Renderer。
+ */
+function requireProviderURL(value: unknown): string {
+  const normalized = requireNonEmptyString(value, "URL")
+  try {
+    const parsed = new URL(normalized)
+    if (/^https?:\/\//i.test(normalized) &&
+      (parsed.protocol === "http:" || parsed.protocol === "https:") && parsed.hostname !== "") {
+      return normalized
+    }
+  } catch {
+    /** 地址解析失败统一交给下面的 IPC 输入错误。 */
+  }
+  throw new TypeError("URL 必须是有效的 HTTP 或 HTTPS 绝对地址")
 }
 
 /**

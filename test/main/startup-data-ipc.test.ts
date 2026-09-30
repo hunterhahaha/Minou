@@ -76,7 +76,9 @@ async function main(): Promise<void> {
       directories: ["G:\\code\\NiCode", "D:\\other"], sessions: [firstSession, secondSession],
     })
     saveDefaultWorkspace(workspaceDatabasePath, { version: 1, sessions: [secondSession, firstSession] })
-    saveProvider(providerDatabasePath, { id: "provider-1", name: "Provider", protocol: "responses" })
+    saveProvider(providerDatabasePath, {
+      id: "provider-1", name: "Provider", protocol: "responses", baseURL: "https://example.com/v1",
+    })
     saveModel(providerDatabasePath, {
       modelId: "model-b", name: "Model B", providerId: "provider-1", contextWindow: 256000, maxOutputTokens: 32000,
     })
@@ -99,7 +101,7 @@ async function main(): Promise<void> {
     ])
     const providers = ipc.invoke(STARTUP_DATA_IPC_CHANNELS.listProviders)
     assert.deepEqual(providers, [{
-      providerId: "provider-1", name: "Provider", protocol: "responses",
+      providerId: "provider-1", name: "Provider", protocol: "responses", baseURL: "https://example.com/v1",
       models: [
         { modelId: "model-b", name: "Model B", contextWindow: 256000, maxOutputTokens: 32000, isDefault: true },
         { modelId: "model-a", name: "Model A", contextWindow: 256000, maxOutputTokens: 32000, isDefault: false },
@@ -108,7 +110,7 @@ async function main(): Promise<void> {
     assert.equal(JSON.stringify(providers).includes("private-api-key"), false)
     setDefaultModel(providerDatabasePath, { providerId: "provider-1", modelId: "model-a" })
     assert.deepEqual(ipc.invoke(STARTUP_DATA_IPC_CHANNELS.listProviders), [{
-      providerId: "provider-1", name: "Provider", protocol: "responses",
+      providerId: "provider-1", name: "Provider", protocol: "responses", baseURL: "https://example.com/v1",
       models: [
         { modelId: "model-b", name: "Model B", contextWindow: 256000, maxOutputTokens: 32000, isDefault: false },
         { modelId: "model-a", name: "Model A", contextWindow: 256000, maxOutputTokens: 32000, isDefault: true },
