@@ -2,7 +2,8 @@
 
 import type { ConfigFilePaths } from "./config-files.ts"
 import { listProviders, readDefaultModel } from "./provider-store.ts"
-import { listProjectWorkspaces, readDefaultWorkspace } from "./workspace-store.ts"
+import { listProjectWorkspaces, readDefaultWorkspace, reconcileWorkspaceSessions } from "./workspace-store.ts"
+import type { IpcMainHandlePort } from "./session-ipc.ts"
 import { STARTUP_DATA_IPC_CHANNELS } from "../preload/session-api.ts"
 import type {
   ProjectSummary,
@@ -17,11 +18,15 @@ import type {
  * @throws Error 当 channel 重复注册时由 IPC 实现抛出；查询错误由 handler 传给调用方。
  */
 export function registerStartupDataIpcHandlers(
-  ipcMain: Electron.IpcMain,
-  paths: Pick<ConfigFilePaths, "workspaceDatabasePath" | "providerDatabasePath">,
+  ipcMain: IpcMainHandlePort,
+  paths: Pick<ConfigFilePaths, "workspaceDatabasePath" | "providerDatabasePath"> & Partial<Pick<ConfigFilePaths, "rootDir" | "metaDatabasePath">>,
 ): void {
-  ipcMain.handle(STARTUP_DATA_IPC_CHANNELS.listProjects, (): ProjectSummary[] =>
-    listProjectWorkspaces(paths.workspaceDatabasePath).map((project) => ({
+  ipcMain.handle(STARTUP_DATA_IPC_CHANNELS.listProjects, (): ProjectSummary[] => {
+    const projects = listProjectWorkspaces(paths.workspaceDatabasePath)
+    if (paths.rootDir && paths.metaDatabasePath) for (const project of projects) {
+      reconcileWorkspaceSessions({ ...paths, rootDir: paths.rootDir, metaDatabasePath: paths.metaDatabasePath }, project.id)
+    }
+    return listProjectWorkspaces(paths.workspaceDatabasePath).map((project) => ({
       projectId: project.id,
       name: project.name,
       updatedAt: project.updatedAt,
@@ -31,14 +36,19 @@ export function registerStartupDataIpcHandlers(
         name: session.name,
         updatedAt: session.updatedAt,
       })),
-    })))
+    }))
+  })
 
-  ipcMain.handle(STARTUP_DATA_IPC_CHANNELS.listDefaultSessions, (): SessionSummary[] =>
-    readDefaultWorkspace(paths.workspaceDatabasePath).sessions.map((session) => ({
+  ipcMain.handle(STARTUP_DATA_IPC_CHANNELS.listDefaultSessions, (): SessionSummary[] => {
+    if (paths.rootDir && paths.metaDatabasePath) {
+      reconcileWorkspaceSessions({ ...paths, rootDir: paths.rootDir, metaDatabasePath: paths.metaDatabasePath }, "default")
+    }
+    return readDefaultWorkspace(paths.workspaceDatabasePath).sessions.map((session) => ({
       sessionId: session.id,
       name: session.name,
       updatedAt: session.updatedAt,
-    })))
+    }))
+  })
 
   ipcMain.handle(STARTUP_DATA_IPC_CHANNELS.listProviders, (): ProviderSummary[] => {
     const providers = listProviders(paths.providerDatabasePath)

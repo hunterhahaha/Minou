@@ -628,13 +628,19 @@ async function testUserStopDuringModelStream(): Promise<void> {
     appendEvent,
   })
 
-  // 已开始的 Step 以 stopped 关闭（第 14 节）；取消不是错误，不写 assistant/message
+  /** 先收尾已提交文本和消息，再以 stopped 关闭 Step；取消不伪造 Usage。 */
   assert.deepEqual(eventTypes(events), [
     "step/start",
     "assistant/block_start",
     "assistant/block_delta",
+    "assistant/block_end",
+    "assistant/message",
     "step/end",
   ])
+  assert.deepEqual(only(events, "assistant/block_end").block, { type: "text", text: "很久" })
+  assert.deepEqual(only(events, "assistant/message").message.content, [{ type: "text", text: "很久" }])
+  assert.equal(only(events, "assistant/message").usage, undefined)
+  assert.equal(only(events, "assistant/message").finishReason, undefined)
   assert.equal(only(events, "step/end").reason, "stopped")
   assert.equal(result.stopped, true)
   assert.equal(result.steps, 1)
@@ -643,6 +649,118 @@ async function testUserStopDuringModelStream(): Promise<void> {
 
   // 未完成的消息不进入 content
   assert.equal(content.length, 2)
+}
+
+/**
+ * 验证取消只收尾文本/思考，保留已结束块且按 index 组装消息；未结束工具参数不补猜。
+ * @returns 抛出取消错误和取消后正常结束流的两种路径均验证完成后解析。
+ * @throws AssertionError 当消息顺序、块身份、取消状态或工具调用边界不符合契约时抛出。
+ */
+async function testStopClosesOnlyTextBlocks(): Promise<void> {
+  for (const throwOnAbort of [true, false]) {
+    const { events, appendEvent } = collector()
+    const controller = new AbortController()
+    const { calls, executeTool } = toolSpy([])
+    const result = await runAgentLoop({
+      turn: 1, model: MODEL, content: [], tools: [], executeTool, signal: controller.signal, appendEvent,
+      adapter: adapterFrom(async function* () {
+        yield blockStart(2, "text")
+        yield textDelta(2, "回答")
+        yield blockStart(0, "thinking")
+        yield { type: "block_delta", index: 0, delta: { type: "thinking", text: "思考" } }
+        yield { type: "block_delta", index: 0, delta: { type: "thinking", text: "中" } }
+        yield blockStart(1, "text")
+        yield blockEnd(1, { type: "text", text: "已结束" })
+        yield blockStart(3, "tool_call")
+        yield toolCallDelta(3, "partial", "read", '{"path":')
+        controller.abort()
+        if (throwOnAbort) throw createAbortError()
+      }),
+    })
+    const ends = events.filter((event) => event.type === "assistant/block_end")
+    assert.deepEqual(ends.map((event) => event.index).sort(), [0, 1, 2])
+    assert.ok(ends.every((event) => event.blockId === `b-1-1-${event.index}`))
+    assert.deepEqual(only(events, "assistant/message").message.content, [
+      { type: "thinking", text: "思考中" }, { type: "text", text: "已结束" }, { type: "text", text: "回答" },
+    ])
+    assert.deepEqual(eventTypes(events).slice(-2), ["assistant/message", "step/end"])
+    assert.equal(only(events, "step/end").reason, "stopped")
+    assert.equal(result.stopped, true)
+    assert.equal(calls.length, 0)
+  }
+}
+
+/**
+ * 验证模型流取消前已经提交的工具调用得到 CANCELLED 结果，再关闭 Step。
+ * @returns 工具结果关联与关闭顺序均验证完成后解析。
+ * @throws AssertionError 当工具入口收到未取消信号或结果没有关联已提交 BlockEnd 时抛出。
+ */
+async function testStopAfterCompletedToolBlock(): Promise<void> {
+  const { events, appendEvent } = collector()
+  const cancelled: AppError = { source: "tool", code: "CANCELLED", message: "已取消" }
+  let cancelledCalls = 0
+  const result = await runAgentLoop({
+    turn: 1, model: MODEL, content: [], tools: [], signal: new AbortController().signal, appendEvent,
+    executeTool: async (_name, _args, context) => {
+      assert.equal(context.signal.aborted, true)
+      cancelledCalls++
+      return errorResult(cancelled, "未执行")
+    },
+    adapter: adapterFrom(async function* () {
+      yield blockStart(0, "tool_call")
+      yield blockEnd(0, { type: "tool_call", toolCallId: "call-1", name: "read", arguments: { path: "a.ts" } })
+      throw createAbortError()
+    }),
+  })
+  assert.equal(cancelledCalls, 1)
+  assert.equal(result.stopped, true)
+  assert.deepEqual(eventTypes(events).slice(-3), ["assistant/message", "tool/result", "step/end"])
+  const toolResult = events.find((event) => event.type === "tool/result")
+  assert.ok(toolResult?.type === "tool/result")
+  assert.equal(toolResult.toolCallEventId, "event-3")
+  assert.ok(toolResult.result.status === "error")
+  assert.equal(toolResult.result.error.code, "CANCELLED")
+}
+
+/**
+ * 验证尚无可提交内容时不创建空取消消息，且事件写入失败不会被当作模型流取消重新补写。
+ * @returns 无输出、空文本块及取消时存储失败的边界验证完成后解析。
+ * @throws AssertionError 当写入失败被重试或未提交 Delta 被纳入收尾时抛出。
+ */
+async function testStopBeforeContentAndDuringPersistenceFailure(): Promise<void> {
+  for (const startBlock of [false, true]) {
+    const { events, appendEvent } = collector()
+    const result = await runAgentLoop({
+      turn: 1, model: MODEL, content: [], tools: [], signal: new AbortController().signal, appendEvent,
+      executeTool: async () => { throw new Error("unexpected tool") },
+      adapter: adapterFrom(async function* () {
+        if (startBlock) yield blockStart(0, "thinking")
+        throw createAbortError()
+      }),
+    })
+    assert.equal(result.stopped, true)
+    assert.equal(events.filter((event) => event.type === "assistant/message").length, startBlock ? 1 : 0)
+    if (startBlock) assert.deepEqual(only(events, "assistant/block_end").block, { type: "thinking", text: "" })
+  }
+  const { events, appendEvent } = collector()
+  const controller = new AbortController()
+  const writeError = new Error("delta write failed")
+  await runAgentLoop({
+    turn: 1, model: MODEL, content: [], tools: [], signal: controller.signal,
+    executeTool: async () => { throw new Error("unexpected tool") },
+    appendEvent: async (event) => {
+      if (event.type === "assistant/block_delta") {
+        controller.abort()
+        throw writeError
+      }
+      return appendEvent(event)
+    },
+    adapter: adapterFrom(async function* () {
+      yield blockStart(0, "text")
+      yield textDelta(0, "尚未提交")
+    }),
+  })
+  assert.deepEqual(eventTypes(events), ["step/start", "assistant/block_start", "step/end"])
 }
 
 async function testUserStopDuringToolRound(): Promise<void> {
@@ -761,6 +879,9 @@ async function main(): Promise<void> {
   await testToolRoundDelegatesToScheduler()
   await testUnfinishedToolCall()
   await testUserStopDuringModelStream()
+  await testStopClosesOnlyTextBlocks()
+  await testStopAfterCompletedToolBlock()
+  await testStopBeforeContentAndDuringPersistenceFailure()
   await testUserStopDuringToolRound()
   await testModelError()
   console.log("loop.test.ts: AgentLoop 断言通过")

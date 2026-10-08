@@ -75,7 +75,7 @@ async function testCallsFixedChannels(): Promise<void> {
       if (channel === SESSION_IPC_CHANNELS.stopSession) {
         return { sessionId: "existing-session" }
       }
-      return { sessionId: "existing-session", content: CONTENT }
+      return { sessionId: "existing-session", messageId: "queued-1", content: CONTENT }
     },
   }
   const api = createSessionApi(ipcRenderer)
@@ -126,7 +126,7 @@ async function testCallsFixedChannels(): Promise<void> {
   )
   assert.deepEqual(
     await api.enqueueSessionMessage(PROJECT_ID, "existing-session", { content: CONTENT }),
-    { sessionId: "existing-session", content: CONTENT },
+    { sessionId: "existing-session", messageId: "queued-1", content: CONTENT },
   )
   assert.deepEqual(
     await api.stopSession(PROJECT_ID, "existing-session"),
@@ -189,7 +189,7 @@ async function testExposesOnlyNiCodeApi(): Promise<void> {
   assert.equal(exposedApi, api)
   assert.deepEqual(
     Object.keys(exposedApi as NiCodePreloadApi).sort(),
-    ["addProjectDirectory", "continueSession", "createModel", "createProject", "createProvider", "deleteModel", "deleteProvider", "enqueueSessionMessage", "listDefaultSessions", "listProjects", "listProviders", "removeProjectDirectory", "selectDirectory", "setDefaultModel", "startNewSession", "stopSession", "updateApiKey", "updateModel"],
+    ["getSessionData", "onSessionUpdate", "updateSessionSettings", "decideSessionApproval", "addProjectDirectory", "continueSession", "createModel", "createProject", "createProvider", "deleteModel", "deleteProvider", "enqueueSessionMessage", "listDefaultSessions", "listProjects", "listProviders", "removeProjectDirectory", "selectDirectory", "setDefaultModel", "startNewSession", "stopSession", "updateApiKey", "updateModel", "updateProvider"].sort(),
   )
 }
 

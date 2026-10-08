@@ -82,7 +82,7 @@ function completedSessionEvents(sessionId: string): SessionEvent[] {
 }
 
 function runtimeHarness(options: { blockFirstLoop?: boolean; failInitialization?: boolean } = {}): {
-  createRuntime: (projectId: string, sessionId: string) => SessionRuntime
+  createRuntime: (projectId: string, sessionId: string, onStateChanged?: () => void) => SessionRuntime
   records: Map<string, RuntimeRecord>
   loopStarted: Promise<void>
   releaseFirstLoop(): void
@@ -101,10 +101,11 @@ function runtimeHarness(options: { blockFirstLoop?: boolean; failInitialization?
   let resolveStoppedTurn!: () => void
   const stoppedTurnEnded = new Promise<void>((resolve) => { resolveStoppedTurn = resolve })
 
-  const createRuntime = (projectId: string, sessionId: string): SessionRuntime => {
+  const createRuntime = (projectId: string, sessionId: string, onStateChanged?: () => void): SessionRuntime => {
     const events = sessionId === "existing-session" ? completedSessionEvents(sessionId) : []
     const batches: RuntimeRecord["batches"] = []
     let diskModel = structuredClone(MODEL)
+    let sandboxMode = "sandbox-full-access"
     const repairPorts = {
       readEvents: async () => events,
       initializeSession: async () => {
@@ -180,6 +181,7 @@ function runtimeHarness(options: { blockFirstLoop?: boolean; failInitialization?
       databasePath: join(tmpdir(), "unused-events.sqlite"),
       metaDatabasePath: join(tmpdir(), "unused-meta.sqlite"),
       systemPrompt: "test",
+      onStateChanged,
       global: {
         resolveProjectContext: () => ({
           workspaceInfo: "test",
@@ -200,6 +202,11 @@ function runtimeHarness(options: { blockFirstLoop?: boolean; failInitialization?
       sessionState: {
         initializeSession: () => repairPorts.initializeSession(),
         repairDerivedState: () => repairPorts.repairDerivedState(),
+        readSettings: async () => ({ name: "新对话", currentModel: structuredClone(diskModel), sandboxMode }),
+        writeSettings: async (patch: { model?: ModelRef; sandboxMode?: string }) => {
+          if (patch.model) diskModel = structuredClone(patch.model)
+          if (patch.sandboxMode) sandboxMode = patch.sandboxMode
+        },
       },
       createSessionDirectory: fake.createSessionDirectory,
       prepareExistingTurn: fake.prepareExistingTurn,
@@ -227,8 +234,7 @@ async function testStartsNewSessionAndProcessesQueuedMessages(): Promise<void> {
   const failures: SessionCompletionFailure[] = []
   const forwarded: SessionEvent[] = []
   const forwarding: SessionEventForwardingPort = {
-    filterSessionEventForRenderer: (event) => event.type === "user/message" ? event : undefined,
-    sendSessionEventToRenderer: (event) => { forwarded.push(event as SessionEvent) },
+    sendSessionUpdateToRenderer: (update) => { if (update.kind === "event" && update.event.type === "user/message") forwarded.push(update.event) },
   }
   registerSessionIpcHandlers(ipcMain, harness.createRuntime, (failure) => {
     failures.push(failure)
@@ -243,15 +249,15 @@ async function testStartsNewSessionAndProcessesQueuedMessages(): Promise<void> {
   await harness.loopStarted
 
   const queuedContent = [{ type: "text" as const, text: "排队消息" }]
-  assert.deepEqual(
-    await ipcMain.invoke(
+  const queued = await ipcMain.invoke<{ sessionId: string; messageId: string; content: typeof queuedContent }>(
       SESSION_IPC_CHANNELS.enqueueSessionMessage,
       PROJECT_ID,
       response.sessionId,
       { content: queuedContent },
-    ),
-    { sessionId: response.sessionId, content: queuedContent },
   )
+  assert.equal(queued.sessionId, response.sessionId)
+  assert.ok(queued.messageId)
+  assert.deepEqual(queued.content, queuedContent)
   await assert.rejects(
     ipcMain.invoke(
       SESSION_IPC_CHANNELS.continueSession,
@@ -269,6 +275,7 @@ async function testStartsNewSessionAndProcessesQueuedMessages(): Promise<void> {
   assert.ok(record)
   assert.equal(record.projectId, PROJECT_ID)
   assert.deepEqual(record.batches.map((batch) => batch[0].turn), [1, 2])
+  assert.equal(record.batches[1]?.[1].message.id, queued.messageId)
   assert.deepEqual(forwarded.map((event) => event.type), ["user/message", "user/message"])
   assert.deepEqual(failures, [])
   await assert.rejects(
@@ -338,7 +345,7 @@ async function testStopsActiveSessionAndDropsQueuedTurns(): Promise<void> {
       response.sessionId,
       { content: CONTENT },
     ),
-    /正在停止/,
+    /正在停止|当前未运行/,
   )
 
   await harness.stoppedTurnEnded
@@ -381,7 +388,7 @@ async function testRejectsInvalidRendererInput(): Promise<void> {
 
   await assert.rejects(
     ipcMain.invoke(SESSION_IPC_CHANNELS.startNewSession, PROJECT_ID, { content: CONTENT }),
-    /startNewSession 输入无效/,
+    /Session 输入无效/,
   )
   await assert.rejects(
     ipcMain.invoke(SESSION_IPC_CHANNELS.continueSession, PROJECT_ID, "", { content: CONTENT }),
@@ -394,7 +401,7 @@ async function testRejectsInvalidRendererInput(): Promise<void> {
       "existing-session",
       { content: CONTENT },
     ),
-    /continueSession 输入无效/,
+    /Session 输入无效/,
   )
   await assert.rejects(
     ipcMain.invoke(
@@ -403,7 +410,7 @@ async function testRejectsInvalidRendererInput(): Promise<void> {
       "existing-session",
       { content: CONTENT, model: { ...MODEL, protocol: "invalid" } },
     ),
-    /continueSession 输入无效/,
+    /Session 输入无效/,
   )
   await assert.rejects(
     ipcMain.invoke(
@@ -495,7 +502,30 @@ async function main(): Promise<void> {
   await testRejectsInvalidRendererInput()
   await testObservesBackgroundFailureAndCleansRuntime()
   await testDefaultProjectIdentity()
+  await testAcceptedQueueSurvivesSnapshotFailure()
   console.log("session-ipc.test.ts: 主进程 Session IPC 断言通过")
+}
+
+/**
+ * 验证入队已经接受后，控制快照故障不会使调用方误以为消息未入队。
+ * @returns Queue 确认、后台错误与 Stop 验证完成。
+ */
+async function testAcceptedQueueSurvivesSnapshotFailure(): Promise<void> {
+  const harness = runtimeHarness({ blockFirstLoop: true }), ipc = new FakeIpcMain()
+  const failures: SessionCompletionFailure[] = []
+  registerSessionIpcHandlers(ipc, harness.createRuntime, (failure) => { failures.push(failure) })
+  const started = await ipc.invoke<StartedSessionResponse>(SESSION_IPC_CHANNELS.startNewSession, PROJECT_ID, { content: CONTENT, model: MODEL })
+  await harness.loopStarted
+  const runtime = harness.records.get(started.sessionId)!.runtime
+  const snapshot = runtime.readSnapshot.bind(runtime)
+  runtime.readSnapshot = async () => { throw new Error("snapshot failed") }
+  const response = await ipc.invoke<{ messageId: string }>(SESSION_IPC_CHANNELS.enqueueSessionMessage, PROJECT_ID, started.sessionId, { content: CONTENT })
+  assert.ok(response.messageId)
+  assert.ok(failures.some((failure) => String(failure.error).includes("snapshot failed")))
+  runtime.readSnapshot = snapshot
+  assert.equal((await snapshot()).pendingMessages[0].messageId, response.messageId)
+  await ipc.invoke(SESSION_IPC_CHANNELS.stopSession, PROJECT_ID, started.sessionId)
+  await harness.stoppedTurnEnded
 }
 
 main().catch((error: unknown) => {

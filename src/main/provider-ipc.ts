@@ -126,7 +126,7 @@ function isProviderModelReference(value: unknown): value is ProviderModelReferen
  * @throws Error 当 channel 重复注册、请求无效或 Provider 数据库操作失败时抛出。
  */
 export function registerModelIpcHandlers(
-  ipcMain: Electron.IpcMain,
+  ipcMain: import("./session-ipc.ts").IpcMainHandlePort,
   paths: Pick<ConfigFilePaths, "providerDatabasePath">,
 ): void {
   const databasePath = paths.providerDatabasePath

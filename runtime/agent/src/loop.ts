@@ -48,7 +48,7 @@
 
 import { randomUUID } from "node:crypto"
 
-import { isAbortError } from "../../error/src/abort.ts"
+import { createAbortError, isAbortError } from "../../error/src/abort.ts"
 import type {
   AssistantContentBlock,
   ModelAdapter,
@@ -166,7 +166,7 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
 
     let outcome: ModelStepOutcome
     try {
-      outcome = await runModelStep({ turn, step, model, adapter, content, tools, signal, appendEvent })
+      outcome = await runModelStep({ turn, step, model, adapter, content, tools, executeTool, signal, appendEvent })
 
       // 第 13.3 节「有 Tool Call」：工具小轮完成后才写 step/end，
       // 且因为工具结果必须交还模型，本 Step 一定会进入下一轮。
@@ -220,6 +220,8 @@ interface ModelStepParams {
   content: ModelMessage[]
   /** 当前请求向模型暴露的工具定义。 */
   tools: UnifiedToolDefinition[]
+  /** 已结束的工具调用在模型流取消时通过此入口形成取消结果。 */
+  executeTool: ExecuteToolCall
   /** 当前 AgentLoop 的取消信号。 */
   signal: AbortSignal
   /** 将模型流事件写入 Session Event Log 的事件出口。 */
@@ -241,13 +243,15 @@ interface ModelStepOutcome {
 /**
  * 执行一次正常模型请求：消费 Adapter 的统一事件流，逐个写 Block 事件，
  * 最后写本 Step 的 `assistant/message`（第 8.4、8.5、11.4 节）。
+ * 模型流取消时先按已提交 Delta 收尾文本/思考块、消息及已结束工具调用，再传播取消错误，
+ * 使调用方能在这些事件之后关闭 Step。未结束的工具调用不补猜参数。
  *
  * @param params 当前 Step 的模型请求参数和事件出口。
  * @returns 模型完成状态、Usage、结束原因以及已完成的工具调用。
  * @throws Adapter 流或事件持久化失败时向调用方传播原始错误。
  */
 async function runModelStep(params: ModelStepParams): Promise<ModelStepOutcome> {
-  const { turn, step, model, adapter, content, tools, signal, appendEvent } = params
+  const { turn, step, model, adapter, content, tools, executeTool, signal, appendEvent } = params
 
   const request: UnifiedModelRequest = { context: { messages: content }, tools, model }
   /**
@@ -255,6 +259,10 @@ async function runModelStep(params: ModelStepParams): Promise<ModelStepOutcome> 
    * 连同 `block_end` 事件的 eventId 一起记录：工具小轮要用它关联 `tool/result`（第 8.6 节）。
    */
   const endedBlocks = new Map<number, { block: AssistantContentBlock; eventId: string }>()
+  /** 只累计已成功提交的文本 Delta；收到 BlockEnd 后移出，避免停止时重复收尾。 */
+  const openTextBlocks = new Map<number, Extract<AssistantContentBlock, { type: "text" | "thinking" }>>()
+  /** 事件处理失败不属于模型流取消，不能以收尾重试掩盖持久化失败。 */
+  let handlingEvent = false
 
   // Adapter 契约保证所有 block_end 之后恰好产生一个 stream_end（见 model/src/types.ts），
   // 因此正常路径下 completion 一定会被覆盖；缺失时按第 8.5 节取 unknown。
@@ -262,48 +270,101 @@ async function runModelStep(params: ModelStepParams): Promise<ModelStepOutcome> 
   let usage: Usage | undefined
   let finishReason: string | undefined
 
-  for await (const event of adapter.stream(request, signal)) {
-    switch (event.type) {
-      case "block_start":
-        await appendEvent({
-          type: "assistant/block_start",
-          turn,
-          step,
-          blockId: blockIdFor(turn, step, event.index),
-          index: event.index,
-          blockType: event.blockType,
-        })
-        break
+  try {
+    for await (const event of adapter.stream(request, signal)) {
+      handlingEvent = true
+      switch (event.type) {
+        case "block_start":
+          await appendEvent({
+            type: "assistant/block_start",
+            turn,
+            step,
+            blockId: blockIdFor(turn, step, event.index),
+            index: event.index,
+            blockType: event.blockType,
+          })
+          if (event.blockType === "text" || event.blockType === "thinking") {
+            openTextBlocks.set(event.index, { type: event.blockType, text: "" })
+          }
+          break
 
-      case "block_delta":
-        await appendEvent({
-          type: "assistant/block_delta",
-          turn,
-          step,
-          blockId: blockIdFor(turn, step, event.index),
-          delta: event.delta,
-        })
-        break
+        case "block_delta":
+          await appendEvent({
+            type: "assistant/block_delta",
+            turn,
+            step,
+            blockId: blockIdFor(turn, step, event.index),
+            delta: event.delta,
+          })
+          if (event.delta.type !== "tool_call") {
+            const block = openTextBlocks.get(event.index)
+            if (block?.type === event.delta.type) block.text += event.delta.text
+          }
+          break
 
-      case "block_end": {
-        const persisted = await appendEvent({
-          type: "assistant/block_end",
-          turn,
-          step,
-          blockId: blockIdFor(turn, step, event.index),
-          index: event.index,
-          block: event.block,
-        })
-        endedBlocks.set(event.index, { block: event.block, eventId: persisted.eventId })
-        break
+        case "block_end": {
+          const persisted = await appendEvent({
+            type: "assistant/block_end",
+            turn,
+            step,
+            blockId: blockIdFor(turn, step, event.index),
+            index: event.index,
+            block: event.block,
+          })
+          endedBlocks.set(event.index, { block: event.block, eventId: persisted.eventId })
+          openTextBlocks.delete(event.index)
+          break
+        }
+
+        case "stream_end":
+          completion = event.completion
+          usage = event.usage
+          finishReason = event.finishReason
+          break
       }
-
-      case "stream_end":
-        completion = event.completion
-        usage = event.usage
-        finishReason = event.finishReason
-        break
+      handlingEvent = false
     }
+    if (signal.aborted) throw createAbortError()
+  } catch (error) {
+    if (handlingEvent || !(signal.aborted || isAbortError(error))) throw error
+
+    for (const [index, block] of openTextBlocks) {
+      const persisted = await appendEvent({
+        type: "assistant/block_end",
+        turn,
+        step,
+        blockId: blockIdFor(turn, step, index),
+        index,
+        block,
+      })
+      endedBlocks.set(index, { block, eventId: persisted.eventId })
+    }
+    const ordered = [...endedBlocks.entries()].sort(([left], [right]) => left - right)
+    if (ordered.length > 0) {
+      await appendEvent({
+        type: "assistant/message",
+        turn,
+        step,
+        message: { id: randomUUID(), role: "assistant", content: ordered.map(([, ended]) => ended.block) },
+        model,
+        ...(usage === undefined ? {} : { usage }),
+        ...(finishReason === undefined ? {} : { finishReason }),
+      })
+    }
+    const toolCalls: AgentLoopToolCall[] = []
+    for (const [index, ended] of ordered) {
+      if (ended.block.type !== "tool_call") continue
+      toolCalls.push({
+        turn, step, blockId: blockIdFor(turn, step, index), toolCallEventId: ended.eventId, block: ended.block,
+      })
+    }
+    if (toolCalls.length > 0) {
+      await runToolRound({
+        turn, step, toolCalls, executeTool, content,
+        signal: signal.aborted ? signal : AbortSignal.abort(), appendEvent,
+      })
+    }
+    throw error
   }
 
   // 第 8.5 节：只收录已有 block_end 的块，并按 index 排序。

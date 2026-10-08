@@ -33,6 +33,14 @@ export const SANDBOX_MODES = [
 /** 对话级持久化沙盒模式。 */
 export type SandboxMode = (typeof SANDBOX_MODES)[number]
 
+/** 对话设置的部分更新；不包含 Usage、Skills 或其他派生状态。 */
+export interface SessionSettingsPatch {
+  /** 后续 Turn 开始时读取的模型。 */
+  model?: ModelRef
+  /** 后续文件工具检查权限时读取的沙箱模式。 */
+  sandboxMode?: SandboxMode
+}
+
 /** 新 Session 创建时使用的默认沙盒模式。 */
 export const DEFAULT_SESSION_SANDBOX_MODE: SandboxMode = "sandbox-full-access"
 
@@ -157,6 +165,14 @@ export interface FileSessionState {
    * @throws Error 当 Session Meta 缺失、损坏或不可读取时抛出。
    */
   readCurrentModel(): Promise<ModelRef>
+  /** @returns 从 Meta 重读并复制的对话名称及设置；Meta 不可读时抛出。 */
+  readSettings(): Promise<Pick<SessionMeta, "name" | "currentModel" | "sandboxMode">>
+  /**
+   * 在共享状态队列中原子修改指定设置，保留其余 Meta 字段。
+   * @param patch 至少指定模型或沙箱模式的更新。
+   * @throws Error 当更新或已有 Meta 无效，或数据库写入失败时抛出。
+   */
+  writeSettings(patch: SessionSettingsPatch): Promise<void>
   /**
    * 从已校验 Event Log 全量重建 Usage，并修复已提交的 AGENTS.md / Skill 增量。
    * 该方法不修改 Event Log，也不应用未提交的 Summary。
@@ -399,6 +415,28 @@ export function createFileSessionState(options: FileSessionStateOptions): FileSe
     initializeSession,
     writeCurrentModel: writeBoundCurrentModel,
     readCurrentModel,
+    /** @returns 在当前 Session 串行状态边界内重读名称、模型与权限的脱离引用副本。 @throws Error Meta 缺失或损坏。 */
+    readSettings: () => runSerialized(queue, async () => {
+      const meta = readRequiredMeta(paths)
+      return structuredClone({ name: meta.name, currentModel: meta.currentModel, sandboxMode: meta.sandboxMode })
+    }),
+    /** @param patch 已确定的模型与权限部分更新；串行重读 Meta 后只改指定字段。 @throws Error patch 无效或 Meta 写入失败。 */
+    writeSettings: async (patch) => {
+      if ((patch.model === undefined && patch.sandboxMode === undefined) ||
+          (patch.model !== undefined && !isModelRef(patch.model)) ||
+          (patch.sandboxMode !== undefined && !isSandboxMode(patch.sandboxMode))) {
+        throw new Error("Session 设置更新无效。")
+      }
+      const update = structuredClone(patch)
+      await runSerialized(queue, async () => {
+        const meta = readRequiredMeta(paths)
+        saveSessionMeta(paths.metaDatabasePath, {
+          ...meta,
+          currentModel: update.model ?? meta.currentModel,
+          sandboxMode: update.sandboxMode ?? meta.sandboxMode,
+        })
+      })
+    },
     repairDerivedState,
     readContextComparisonState,
   }
