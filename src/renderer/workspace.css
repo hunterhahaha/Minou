@@ -6,6 +6,53 @@
 }
 * { box-sizing: border-box; }
 html, body, #root { width: 100%; height: 100%; margin: 0; }
+.chat-page { display: flex; flex-direction: column; height: 100%; min-height: 0; padding-top: 54px; }
+.chat-scroll { flex: 1; min-height: 0; overflow-y: auto; scrollbar-width: thin; }
+.chat-messages, .chat-footer { width: min(800px, 100%); margin: 0 auto; padding: 16px 28px; }
+.chat-footer { flex: none; padding-top: 8px; }
+.chat-footer .composer { width: 100%; }
+.chat-entry { margin: 0 0 18px; line-height: 1.65; font-size: 14px; overflow-wrap: anywhere; }
+.user-bubble { margin-left: auto; max-width: 85%; width: fit-content; padding: 12px 18px; background: #eaf0f7; border-radius: 16px 16px 4px 16px; white-space: pre-wrap; }
+.assistant-text { white-space: pre-wrap; }
+.chat-detail { margin: 10px 0; padding: 8px 12px; border: 1px solid #e1e6ec; border-radius: 8px; color: #657080; font-size: 12px; }
+.chat-detail summary { cursor: pointer; }
+.chat-detail pre, .approval-card pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 320px; overflow: auto; }
+.markdown-content { white-space: normal; }
+.markdown-content p { margin: 0 0 .75em; }
+.markdown-content h1, .markdown-content h2, .markdown-content h3,
+.markdown-content h4, .markdown-content h5, .markdown-content h6 { margin: 1em 0 .5em; line-height: 1.35; }
+.markdown-content h1 { font-size: 1.5em; }
+.markdown-content h2 { font-size: 1.3em; }
+.markdown-content h3 { font-size: 1.15em; }
+.markdown-content h4, .markdown-content h5, .markdown-content h6 { font-size: 1em; }
+.markdown-content ul, .markdown-content ol { margin: .6em 0; padding-left: 1.5em; }
+.markdown-content li + li { margin-top: .25em; }
+.markdown-content blockquote { margin: .75em 0; padding-left: 1em; border-left: 3px solid #d6dee9; color: #657080; }
+.markdown-content code { font-family: Consolas, "Cascadia Code", monospace; font-size: .9em; }
+.markdown-content :not(pre) > code { padding: .15em .35em; border-radius: 4px; background: #eef2f7; }
+.markdown-content pre, .chat-detail .markdown-content pre { margin: .75em 0; padding: 12px; border-radius: 6px; background: #f3f5f8; white-space: pre; overflow-wrap: normal; overflow: auto; }
+.markdown-content pre code { padding: 0; background: transparent; }
+.markdown-content table { display: block; max-width: 100%; margin: .75em 0; overflow-x: auto; border-collapse: collapse; }
+.markdown-content th, .markdown-content td { padding: .4em .75em; border: 1px solid #dce2ea; }
+.markdown-content th { background: #f3f5f8; text-align: left; }
+.markdown-content .task-list-item { list-style: none; }
+.markdown-content .task-list-item input { margin: 0 .5em 0 0; }
+.markdown-content a { color: #416da8; text-decoration: underline; }
+.markdown-content img { max-width: 100%; height: auto; }
+.markdown-content hr { margin: 1em 0; border: 0; border-top: 1px solid #dce2ea; }
+.markdown-content > :first-child { margin-top: 0; }
+.markdown-content > :last-child { margin-bottom: 0; }
+.chat-error { color: #b34242; font-size: 13px; }
+.turn-status { color: #85909d; font-size: 11px; margin: 4px 0; }
+.approval-card { background: #fff9ec; border: 1px solid #eedcb6; border-radius: 10px; padding: 14px; }
+.approval-actions { display: flex; gap: 10px; }
+.approval-actions button, .stop-button, .queue-list button { border: 1px solid #ccd5e0; border-radius: 6px; background: white; color: #46586f; cursor: pointer; padding: 5px 10px; font-size: 12px; }
+.chat-selectors { display: flex; gap: 8px; min-width: 0; }
+.chat-selectors select { max-width: 220px; min-width: 0; border: 0; background: transparent; color: #657080; font: inherit; font-size: 12px; }
+.queue-list { max-height: 160px; overflow: auto; margin-bottom: 8px; font-size: 12px; color: #6c7787; }
+.queue-list > div { display: flex; align-items: center; gap: 10px; padding: 6px 10px; background: #f0f3f7; border-radius: 6px; margin-bottom: 4px; }
+.queue-list p { margin: 0; flex: 1; white-space: pre-wrap; overflow-wrap: anywhere; }
+button:disabled { cursor: default; opacity: .5; }
 button, textarea { font: inherit; }
 input { font: inherit; }
 button:focus-visible, textarea:focus-visible { outline: 2px solid #5684c8; outline-offset: 2px; }

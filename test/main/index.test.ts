@@ -21,6 +21,7 @@ import type { ModelAdapter, ModelRef } from "../../runtime/model/src/types.ts"
 import type { SessionEvent } from "../../runtime/session/src/events.ts"
 import type { CurrentSessionBaseline } from "../../runtime/session/src/session-state.ts"
 import { initializeSessionMetaDatabase } from "../../runtime/session/src/meta-store.ts"
+import { initializeWorkspaceDatabase, saveProjectWorkspace } from "../../src/main/workspace-store.ts"
 import {
   SESSION_IPC_CHANNELS,
   STARTUP_DATA_IPC_CHANNELS,
@@ -145,6 +146,11 @@ async function withTempProfile(test: (profile: string) => Promise<void>): Promis
   try {
     await mkdir(join(profile, ".nicode"))
     initializeSessionMetaDatabase(join(profile, ".nicode", "meta.sqlite"))
+    const workspacePath = join(profile, ".nicode", "workspace.sqlite")
+    initializeWorkspaceDatabase(workspacePath)
+    for (const id of [PROJECT_ID, "00000000-0000-4000-8000-000000000018"]) {
+      saveProjectWorkspace(workspacePath, { version: 1, id, name: "测试项目", updatedAt: new Date().toISOString(), directories: [], sessions: [] })
+    }
     await test(profile)
   } finally {
     assert.ok(resolve(profile).startsWith(`${resolve(tmpdir())}${sep}`))
@@ -240,6 +246,9 @@ async function testRegistersIpcAndWindowLifecycle(): Promise<void> {
       SESSION_IPC_CHANNELS.continueSession,
       SESSION_IPC_CHANNELS.enqueueSessionMessage,
       SESSION_IPC_CHANNELS.stopSession,
+      SESSION_IPC_CHANNELS.getSessionData,
+      SESSION_IPC_CHANNELS.updateSessionSettings,
+      SESSION_IPC_CHANNELS.decideSessionApproval,
       STARTUP_DATA_IPC_CHANNELS.listProjects,
       STARTUP_DATA_IPC_CHANNELS.listDefaultSessions,
       STARTUP_DATA_IPC_CHANNELS.listProviders,
@@ -322,9 +331,9 @@ async function testCreatesProjectSessionRuntime(): Promise<void> {
       },
       onSessionCompletionFailure: (failure) => { failures.push(failure) },
       sessionEventForwarding: {
-        filterSessionEventForRenderer: (event) => event,
-        sendSessionEventToRenderer: (event) => {
-          const sessionEvent = event as SessionEvent
+        sendSessionUpdateToRenderer: (update) => {
+          if (update.kind !== "event") return
+          const sessionEvent = update.event
           forwarded.push(sessionEvent)
           if (sessionEvent.type === "turn/end") resolveTurnEnd()
         },
@@ -418,9 +427,9 @@ async function testResolvesContextForEachProject(): Promise<void> {
         } as unknown as SessionRuntimeGlobal,
       },
       sessionEventForwarding: {
-        filterSessionEventForRenderer: (event) => event,
-        sendSessionEventToRenderer: (event) => {
-          const sessionEvent = event as SessionEvent
+        sendSessionUpdateToRenderer: (update) => {
+          if (update.kind !== "event") return
+          const sessionEvent = update.event
           if (sessionEvent.type === "turn/end") {
             completedTurns += 1
             if (completedTurns === projectIds.length) resolveTurns()

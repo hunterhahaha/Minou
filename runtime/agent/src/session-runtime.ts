@@ -12,7 +12,8 @@ import { mkdir } from "node:fs/promises"
 import { isAbsolute, resolve } from "node:path"
 import { isDeepStrictEqual } from "node:util"
 
-import { CANCELLED } from "../../error/src/normalizer.ts"
+import { CANCELLED, normalizeError } from "../../error/src/normalizer.ts"
+import type { AppError } from "../../error/src/types.ts"
 import type {
   ModelMessage,
   ModelRef,
@@ -45,6 +46,8 @@ import type {
   CurrentSessionBaseline,
   FileSessionState,
   SessionSkillContextEntry,
+  SandboxMode,
+  SessionSettingsPatch,
 } from "../../session/src/session-state.ts"
 import type { ToolExecutionContext, ToolResult } from "../../tools/src/types.ts"
 import { runAgentLoop } from "./loop.ts"
@@ -71,6 +74,8 @@ export interface SessionRuntimeOptions {
   now?: () => Date
   /** 测试或宿主控制事件 ID 的入口。 */
   createEventId?: () => string
+  /** Queue、停止和关闭变化时通知宿主；回调不得抛出或等待模型执行。 */
+  onStateChanged?: () => void
 }
 
 /**
@@ -319,6 +324,8 @@ function validateRuntimeSessionId(sessionId: string): void {
 export interface EnqueuedSessionMessageResponse {
   /** 接收消息的活动 Session。 */
   sessionId: string
+  /** 随后写入 user/message.message.id 的稳定消息身份。 */
+  messageId: string
   /** 已复制并加入后端内存队列的消息内容。 */
   content: ModelTextBlock[]
 }
@@ -353,6 +360,38 @@ export interface ContinueSessionInput {
 export interface EnqueueSessionMessageInput {
   /** 真正开始下一 Turn 时才与当时磁盘模型组合的用户文本。 */
   content: ModelTextBlock[]
+}
+
+/** 新对话的消息及首轮工具执行前保存的权限选择。 */
+export interface StartNewSessionInput extends UserMessageInput {
+  /** 省略时沿用 SessionState 的默认模式。 */
+  sandboxMode?: SandboxMode
+}
+
+/** 后端尚未提交到 Event Log 的 Queue 消息。 */
+export interface PendingSessionMessage extends EnqueueSessionMessageInput {
+  /** 提交时复用为用户消息 ID。 */
+  messageId: string
+  /** 队列等待或首批事件准备中的状态。 */
+  status: "queued" | "starting"
+}
+
+/** 宿主查询使用的快照；事件事实与内存活动状态分开保存。 */
+export interface SessionRuntimeSnapshot {
+  /** 查询时已经提交的事件。 */
+  events: SessionEvent[]
+  /** 当前 Meta 中的名称和设置。 */
+  settings: { name: string; currentModel: ModelRef; sandboxMode: SandboxMode }
+  /** 活动实例的状态；临时历史实例为 idle。 */
+  phase: "idle" | "running" | "stopping"
+  /** 活动或最近提交的 Turn。 */
+  currentTurn?: number
+  /** 应用内存状态前需要取得的事件序号。 */
+  throughSeq: number
+  /** 尚未提交的 Queue 消息。 */
+  pendingMessages: PendingSessionMessage[]
+  /** 关闭时丢弃的消息，仅在本实例内存中保留。 */
+  discardedMessages: PendingSessionMessage[]
 }
 
 /** `repairSession` 读取和修复 Event Log 所需的最小持久化端口。 */
@@ -406,7 +445,12 @@ export class SessionRuntime implements SessionRepairPorts {
   private turnBaseline: Promise<CurrentSessionBaseline> | undefined
   private readonly abortController = new AbortController()
   private readonly eventStream = new SessionEventStream()
-  private readonly pendingMessages: EnqueueSessionMessageInput[] = []
+  private readonly pendingMessages: PendingSessionMessage[] = []
+  private startingMessage: PendingSessionMessage | undefined
+  private discardedMessages: PendingSessionMessage[] = []
+  private initialization: Promise<void> | undefined
+  private lastCommittedSeq = 0
+  private readonly onStateChanged: (() => void) | undefined
   private readonly fileTrackers = new Map<number, TurnFileChangeTracker>()
   private readonly pendingApprovals = new Map<string, (decision: ApprovalDecision) => void>()
   private approvalTail: Promise<void> = Promise.resolve()
@@ -438,6 +482,7 @@ export class SessionRuntime implements SessionRepairPorts {
     this.projectGroupId = options.projectGroupId
     this.systemPrompt = options.systemPrompt
     this.global = options.global
+    this.onStateChanged = options.onStateChanged
     this.projectContext = this.global.resolveProjectContext(options.projectGroupId)
     this.events = this.eventStream
     this.eventLog = createFileSessionEventLog({
@@ -488,8 +533,11 @@ export class SessionRuntime implements SessionRepairPorts {
   ): Promise<readonly [TurnStartEvent, UserMessageEvent]> {
     this.assertOpen()
     const written = await this.eventLog.appendTurnStartAndUserMessage(events)
+    this.activeTurn = written[0].turn
     this.publishPersistedEvent(written[0], "turn/start")
     this.publishPersistedEvent(written[1], "user/message")
+    this.startingMessage = undefined
+    this.onStateChanged?.()
     return written
   }
 
@@ -588,6 +636,40 @@ export class SessionRuntime implements SessionRepairPorts {
   }
 
   /**
+   * 查询已提交事件与当前设置；活动查询不执行异常恢复，关闭后的实例仍可读取最终快照。
+   * @returns 事件数组、当前设置与 Queue 状态的脱离引用快照。
+   * @throws Error 当初始化、日志或 Meta 不可读时抛出。
+   */
+  async readSnapshot(): Promise<SessionRuntimeSnapshot> {
+    await this.initialization?.catch(() => {})
+    const settings = await this.sessionState.readSettings()
+    const events = validateEventLog(this.sessionId, await this.eventLog.readEvents())
+    return {
+      events: structuredClone(events), settings,
+      phase: this.closed || (!this.processing && this.activeTurn === undefined)
+        ? "idle" : this.abortController.signal.aborted ? "stopping" : "running",
+      currentTurn: this.closed ? undefined : this.activeTurn,
+      throughSeq: Math.max(this.lastCommittedSeq, events.at(-1)?.seq ?? 0),
+      pendingMessages: structuredClone([
+        ...(this.startingMessage === undefined ? [] : [this.startingMessage]), ...this.pendingMessages,
+      ]),
+      discardedMessages: structuredClone(this.discardedMessages),
+    }
+  }
+
+  /**
+   * 等待首次设置初始化后修改 Meta；模型选择不影响当前 Turn 的 Adapter。
+   * @param patch 模型或沙箱模式的部分更新。
+   * @throws Error 当初始化或设置写入失败时抛出。
+   */
+  async updateSettings(patch: SessionSettingsPatch): Promise<void> {
+    this.assertOpen()
+    await this.initialization
+    await this.sessionState.writeSettings(patch)
+    this.onStateChanged?.()
+  }
+
+  /**
    * 组装本 Turn 的模型、工具、事件与取消边界。
    * @param model 本 Turn 固定的模型选择。
    * @returns 本 Turn 的 AgentLoop 运行资源。
@@ -629,7 +711,7 @@ export class SessionRuntime implements SessionRepairPorts {
   }
 
   /**
-   * 供未来 Renderer IPC 入口提交等待中的人工审批决定。
+   * 为 Renderer IPC 提交等待中的人工审批决定。
    * @param approvalId 审批请求事件的身份。
    * @param decision 用户明确作出的允许或拒绝决定。
    * @returns 找到当前等待请求时为 true。
@@ -729,9 +811,12 @@ export class SessionRuntime implements SessionRepairPorts {
     if (this.abortController.signal.aborted) {
       throw new Error(`Session 正在停止，不能追加消息：${this.sessionId}`)
     }
-    const queued = { content: cloneMessageContent(input.content) }
+    const queued: PendingSessionMessage = {
+      messageId: randomUUID(), content: cloneMessageContent(input.content), status: "queued",
+    }
     this.pendingMessages.push(queued)
-    return { sessionId: this.sessionId, content: cloneMessageContent(queued.content) }
+    this.onStateChanged?.()
+    return { sessionId: this.sessionId, messageId: queued.messageId, content: cloneMessageContent(queued.content) }
   }
 
   /**
@@ -785,8 +870,9 @@ export class SessionRuntime implements SessionRepairPorts {
    * aborted 状态。重复停止或实例已关闭时不产生额外效果。
    */
   stop(): void {
-    if (this.closed) return
+    if (this.closed || this.abortController.signal.aborted) return
     this.abortController.abort()
+    this.onStateChanged?.()
   }
 
   /**
@@ -796,8 +882,13 @@ export class SessionRuntime implements SessionRepairPorts {
   close(): void {
     if (this.closed) return
     this.closed = true
+    this.discardedMessages = structuredClone([
+      ...(this.startingMessage === undefined ? [] : [this.startingMessage]), ...this.pendingMessages,
+    ])
+    this.startingMessage = undefined
     this.pendingMessages.length = 0
     this.eventStream.close()
+    this.onStateChanged?.()
   }
 
   private async consumeMessageQueue(
@@ -811,6 +902,8 @@ export class SessionRuntime implements SessionRepairPorts {
         if (current === undefined) {
           const input = this.pendingMessages.shift()
           if (input === undefined) return
+          this.startingMessage = { ...input, status: "starting" }
+          this.onStateChanged?.()
           current = await this.continueQueuedSession(input)
           resolveStarted?.(current)
           resolveStarted = undefined
@@ -903,13 +996,18 @@ export class SessionRuntime implements SessionRepairPorts {
    * @returns 已提交的 Turn 身份、事件流与后台运行任务。
    * @throws Error 目录创建或首批事件提交失败。
    */
-  async startNewSession(input: UserMessageInput): Promise<StartedSessionTurn> {
+  async startNewSession(input: StartNewSessionInput): Promise<StartedSessionTurn> {
     const turn = 1
     await this.createSessionDirectory()
     await this.appendTurnStartAndUserMessage(turnEvents(turn, input.model, input.content))
     const completion = this.runCommittedTurn(turn, async () => {
-      await this.initializeSession()
-      await this.writeCurrentModel(input.model)
+      this.initialization = (async () => {
+        await this.initializeSession()
+        await this.writeCurrentModel(input.model)
+        if (input.sandboxMode !== undefined) await this.sessionState.writeSettings({ sandboxMode: input.sandboxMode })
+      })()
+      await this.initialization
+      this.onStateChanged?.()
       const model = await this.readCurrentModel()
       const loopOptions = await this.createLoopOptions(model)
       return this.startLoop(turn, model, loopOptions)
@@ -945,13 +1043,13 @@ export class SessionRuntime implements SessionRepairPorts {
    * @returns 已提交并启动的下一 Turn。
    * @throws Error 恢复、准备、Adapter 创建或首批提交失败。
    */
-  private async continueQueuedSession(input: EnqueueSessionMessageInput): Promise<StartedSessionTurn> {
+  private async continueQueuedSession(input: PendingSessionMessage): Promise<StartedSessionTurn> {
     const state = await this.repairSession()
     await this.prepareExistingTurn()
     const model = await this.readCurrentModel()
     const loopOptions = await this.createLoopOptions(model)
     const turn = state.lastTurn + 1
-    await this.appendTurnStartAndUserMessage(turnEvents(turn, model, input.content))
+    await this.appendTurnStartAndUserMessage(turnEvents(turn, model, input.content, input.messageId))
     return {
       sessionId: this.sessionId,
       turn,
@@ -975,6 +1073,11 @@ export class SessionRuntime implements SessionRepairPorts {
     try {
       result = await run()
     } catch (error) {
+      const appError: AppError = isAppErrorValue(error)
+        ? { source: error.source, code: error.code, message: error.message, ...(error.details === undefined ? {} : { details: error.details }) }
+        : normalizeError(error, "runtime", "TURN_FAILED")
+      try { await this.appendEvent({ type: "app/error", turn, error: appError }) }
+      catch { /* 存储不可用时由宿主报告原错误。 */ }
       try { await this.appendTurnFileChanges(turn) } catch { /* 保留运行错误。 */ }
       try { await this.appendEvent({ type: "turn/end", turn, reason: "error" }) }
       catch { /* 下次恢复时补写。 */ }
@@ -1027,6 +1130,7 @@ export class SessionRuntime implements SessionRepairPorts {
       throw new Error(`持久化事件类型不匹配：期望 ${expectedType}，实际 ${event.type}`)
     }
     this.eventStream.publish(event)
+    this.lastCommittedSeq = event.seq
   }
 
   /** @throws Error 当前实例已关闭时抛出。 */
@@ -1180,17 +1284,27 @@ export async function repairSession(
  * @param turn 新 Turn 编号。
  * @param model 新 Turn 固定使用的模型引用。
  * @param content 用户消息的文本块内容。
+ * @param messageId Queue 入队身份；普通发送省略时生成新身份。
  * @returns 顺序固定的两条事件输入。
  */
 function turnEvents(
   turn: number,
   model: ModelRef,
   content: ModelTextBlock[],
+  messageId: string = randomUUID(),
 ): readonly [TurnStartEventInput, UserMessageEventInput] {
   return [
     { type: "turn/start", turn, model },
-    { type: "user/message", turn, message: { id: randomUUID(), role: "user", content } },
+    { type: "user/message", turn, message: { id: messageId, role: "user", content } },
   ]
+}
+
+/** @param value 未知异常。 @returns 是否已经具有统一 AppError 的必需字段。 */
+function isAppErrorValue(value: unknown): value is AppError {
+  return typeof value === "object" && value !== null && "source" in value &&
+    typeof value.source === "string" && ["runtime", "model", "tool", "mcp", "storage", "system"].includes(value.source) &&
+    "code" in value && typeof value.code === "string" &&
+    "message" in value && typeof value.message === "string"
 }
 
 

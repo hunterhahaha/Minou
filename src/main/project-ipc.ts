@@ -92,7 +92,7 @@ async function directoryResult(operation: () => Promise<void>): Promise<ProjectD
  * @throws Error 当 channel 已注册时由 IPC 实现抛出；请求错误由各 handler 处理。
  */
 export function registerProjectIpcHandlers(
-  ipcMain: Electron.IpcMain,
+  ipcMain: import("./session-ipc.ts").IpcMainHandlePort,
   dialog: DirectoryDialogPort,
   paths: Pick<ConfigFilePaths, "rootDir" | "workspaceDatabasePath">,
 ): void {

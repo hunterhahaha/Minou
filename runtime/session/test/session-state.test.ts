@@ -204,11 +204,30 @@ async function main(): Promise<void> {
     await testIsolation(root)
     await testDerivedRepair(root)
     await testErrorsAndRecovery(root)
+    await testSettings(root)
   } finally {
     assert.ok(resolve(root).startsWith(`${resolve(tmpdir())}${sep}`))
     await rm(root, { recursive: true, force: true })
   }
   console.log("session-state.test.ts: SQLite Session Meta 断言通过")
+}
+
+/** @param root 临时用户目录。 @returns 设置串行写入、名称保留与重新读取验证。 */
+async function testSettings(root: string): Promise<void> {
+  const item = await session(root, PROJECT_ID, "settings")
+  await item.state.initializeSession()
+  updateSessionMetaName(item.metaDatabasePath, PROJECT_ID, "settings", "保留名称")
+  const before = readSessionMeta(item.metaDatabasePath, PROJECT_ID, "settings") as SessionMeta
+  await Promise.all([item.state.writeSettings({ sandboxMode: "sandbox-read-only" }), item.state.writeSettings({ model: OTHER_MODEL })])
+  const current = await item.state.readSettings()
+  assert.deepEqual(current, { name: "保留名称", currentModel: OTHER_MODEL, sandboxMode: "sandbox-read-only" })
+  const after = readSessionMeta(item.metaDatabasePath, PROJECT_ID, "settings") as SessionMeta
+  assert.deepEqual(after.usage, before.usage)
+  assert.deepEqual(after.skills, before.skills)
+  current.currentModel.name = "外部副本"
+  assert.equal((await item.state.readSettings()).currentModel.name, OTHER_MODEL.name)
+  await assert.rejects(item.state.writeSettings({}), /设置更新无效/)
+  await assert.rejects(item.state.writeSettings({ sandboxMode: "invalid" as never }), /设置更新无效/)
 }
 
 main().catch((error: unknown) => {

@@ -11,6 +11,8 @@ import {
 import type {
   BrowserWindowConstructorPort,
 } from "../../src/main/electron-windows.ts"
+import type { SessionUpdate } from "../../src/preload/session-api.ts"
+import { SESSION_IPC_CHANNELS } from "../../src/preload/session-api.ts"
 
 type Listener = () => void
 
@@ -23,6 +25,18 @@ class FakeBrowserWindow {
   loadedPath: string | undefined
   loadedUrl: string | undefined
   showCalls = 0
+  destroyed = false
+  sendFailure?: Error
+  sent: Array<{ channel: string; update: SessionUpdate }> = []
+  webContents = {
+    isDestroyed: () => this.destroyed,
+    send: (channel: string, update: SessionUpdate) => {
+      if (this.sendFailure) throw this.sendFailure
+      this.sent.push({ channel, update })
+    },
+  }
+  /** @returns 当前窗口是否已销毁。 */
+  isDestroyed(): boolean { return this.destroyed }
 
   constructor(options: BrowserWindowConstructorOptions) {
     this.options = options
@@ -150,7 +164,32 @@ async function main(): Promise<void> {
   await testCreatesAndLoadsWindow()
   await testLoadsRendererFromDevServer()
   await testRejectsRelativePathsAndForwardsLoadFailure()
+  await testBroadcast()
   console.log("electron-windows.test.ts: BrowserWindow 适配断言通过")
+}
+
+/** @returns 多窗口广播、销毁窗口跳过以及单窗失败隔离验证。 */
+async function testBroadcast(): Promise<void> {
+  FakeBrowserWindow.instances = []
+  FakeBrowserWindow.loadFailure = undefined
+  const windows = createElectronWindowManager(FakeBrowserWindow as unknown as BrowserWindowConstructorPort, {
+    preloadPath: join(process.cwd(), "preload.js"), rendererHtmlPath: join(process.cwd(), "index.html"), onWindowLoadFailure: () => {},
+  })
+  windows.createMainWindow(); windows.createMainWindow()
+  const [first, second] = FakeBrowserWindow.instances
+  const update: SessionUpdate = { kind: "error", projectId: "default", sessionId: "s", stage: "index", error: { source: "runtime", code: "INDEX", message: "失败" } }
+  windows.sendSessionUpdate!(update)
+  assert.deepEqual(first.sent, [{ channel: SESSION_IPC_CHANNELS.update, update }])
+  assert.deepEqual(second.sent, first.sent)
+  first.sendFailure = new Error("窗口发送失败")
+  assert.throws(() => windows.sendSessionUpdate!(update), AggregateError)
+  assert.equal(second.sent.length, 2, "一个窗口失败后仍发送给其他窗口")
+  first.destroyed = true
+  windows.sendSessionUpdate!(update)
+  assert.equal(second.sent.length, 3)
+  second.emit("closed")
+  windows.sendSessionUpdate!(update)
+  assert.equal(second.sent.length, 3)
 }
 
 main().catch((error: unknown) => {

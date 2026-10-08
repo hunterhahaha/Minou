@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 import { mkdtemp, readFile, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { createAbortError } from "../../error/src/abort.ts"
 
 import type { ModelAdapter, ModelRef, ModelStreamEvent } from "../../model/src/types.ts"
 import type { CurrentSessionBaseline } from "../../session/src/session-state.ts"
@@ -354,8 +355,11 @@ async function testQueuedMessagesRunInOrder(): Promise<void> {
   const second = [{ type: "text" as const, text: "第二条" }]
   const third = [{ type: "text" as const, text: "第三条" }]
   state.queueReadModels(MODEL, OTHER_MODEL, MODEL)
-  assert.deepEqual(state.ports.enqueueSessionMessage({ content: second }), {
+  const queued = state.ports.enqueueSessionMessage({ content: second })
+  assert.ok(queued.messageId)
+  assert.deepEqual(queued, {
     sessionId: "session-queue",
+    messageId: queued.messageId,
     content: second,
   })
   state.ports.enqueueSessionMessage({ content: third })
@@ -363,6 +367,7 @@ async function testQueuedMessagesRunInOrder(): Promise<void> {
   await processing.completion
 
   assert.deepEqual(state.batches.map((batch) => batch[0].turn), [1, 2, 3])
+  assert.equal(state.batches[1]?.[1].message.id, queued.messageId)
   assert.deepEqual(
     state.batches.map((batch) => batch[1].message.content),
     [MESSAGE, second, third],
@@ -393,7 +398,7 @@ async function testFailureBoundaries(): Promise<void> {
   await assert.rejects(started.completion, /initialize failed/)
   assert.deepEqual(
     failedInitialization.loopEvents.map((event) => event.type),
-    ["turn/end"],
+    ["app/error", "turn/end"],
   )
 
   const failedNewAdapter = fixture("session-new-adapter-failure")
@@ -406,7 +411,7 @@ async function testFailureBoundaries(): Promise<void> {
   await assert.rejects(failedNewTurn.completion, /new adapter failed/)
   assert.deepEqual(
     failedNewAdapter.loopEvents.map((event) => event.type),
-    ["turn/end"],
+    ["app/error", "turn/end"],
   )
 
   const failedAdapter = fixture(
@@ -870,6 +875,77 @@ async function testRuntimeScopedCancellation(): Promise<void> {
   second.ports.close()
 }
 
+/**
+ * 使用真实临时 SQLite 日志验证思考流停止后的收尾、幂等恢复及新实例继续发送。
+ * @returns 新 Turn 正常完成、原思考内容进入回放且恢复未追加迟到事件后解析。
+ * @throws Error 当临时存储或运行失败时抛出；AssertionError 表示收尾顺序或继续行为不符合契约。
+ */
+async function testStoppedThinkingCanContinue(): Promise<void> {
+  const root = await mkdtemp(join(tmpdir(), "nicode-stop-continue-"))
+  const metaDatabasePath = join(root, "meta.sqlite")
+  initializeSessionMetaDatabase(metaDatabasePath)
+  let active: SessionRuntime | undefined
+  let requests = 0
+  const global = {
+    resolveProjectContext: () => ({
+      workspaceInfo: "workspace",
+      resolveCurrentBaseline: async (): Promise<CurrentSessionBaseline> => ({
+        agentsmd: { path: join(root, "AGENTS.md"), hash: "empty", content: "" },
+        skills: { content: "", entries: [], descriptions: {} }, mcp: [],
+      }),
+    }),
+    estimateSkillTokens: () => 0,
+    createTurnModelAdapter: async () => ({
+      stream: async function* (request: Parameters<ModelAdapter["stream"]>[0]): AsyncGenerator<ModelStreamEvent> {
+        requests++
+        if (requests === 1) {
+          yield { type: "block_start", index: 0, blockType: "thinking" }
+          yield { type: "block_delta", index: 0, delta: { type: "thinking", text: "停止前的思考" } }
+          active!.stop()
+          throw createAbortError()
+        }
+        assert.ok(request.context.messages.some((message) => message.role === "assistant" &&
+          Array.isArray(message.content) && message.content.some((block) => block.type === "thinking" && block.text === "停止前的思考")))
+        yield { type: "block_start", index: 0, blockType: "text" }
+        yield { type: "block_end", index: 0, block: { type: "text", text: "已继续" } }
+        yield { type: "stream_end", completion: "finished" }
+      },
+    }),
+    listToolDefinitions: () => [],
+    executeTool: async () => { throw new Error("unexpected tool") },
+  } as unknown as SessionRuntimeGlobal
+  const options = {
+    sessionId: "session-stop-continue", projectGroupId: "default" as const,
+    sessionDirectory: join(root, "session-stop-continue"), databasePath: join(root, "events.sqlite"),
+    metaDatabasePath, systemPrompt: "system", global,
+  }
+  try {
+    active = new SessionRuntime(options)
+    const first = await active.startNewSession({ model: MODEL, content: MESSAGE })
+    assert.equal((await first.completion).stopped, true)
+    const stoppedEvents = await active.readEvents() as SessionEvent[]
+    assert.deepEqual(stoppedEvents.map((event) => event.type), [
+      "turn/start", "user/message", "step/start", "assistant/block_start", "assistant/block_delta",
+      "assistant/block_end", "assistant/message", "step/end", "turn/end",
+    ])
+    active.close()
+    active = new SessionRuntime(options)
+    assert.deepEqual(await active.repairSession(), { lastTurn: 1 })
+    assert.deepEqual(await active.repairSession(), { lastTurn: 1 })
+    assert.deepEqual(await active.readEvents(), stoppedEvents, "停止后的恢复不得再补写块或消息")
+    const second = await active.continueSession({ model: MODEL, content: [{ type: "text", text: "继续" }] })
+    assert.equal(second.turn, 2)
+    assert.equal((await second.completion).stopped, false)
+    assert.equal(requests, 2)
+    const completedEvents = await active.readEvents()
+    await active.repairSession()
+    assert.deepEqual(await active.readEvents(), completedEvents)
+  } finally {
+    active?.close()
+    await rm(root, { recursive: true, force: true })
+  }
+}
+
 async function main(): Promise<void> {
   await testNewSession()
   await testContinueSession()
@@ -883,6 +959,7 @@ async function main(): Promise<void> {
   await testCorruptedLogIsRejectedBeforeWrites()
   await testConcreteRuntimeBindings()
   await testRuntimeScopedCancellation()
+  await testStoppedThinkingCanContinue()
   console.log("session-runtime.test.ts: SessionRuntime 入口与恢复断言通过")
 }
 

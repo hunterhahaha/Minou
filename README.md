@@ -84,7 +84,7 @@ Adapter 与 Usage 转换，含流式调用、双向转换、取消与错误归�
 负责工具小轮的串并行调度，配套 `runtime/session/src/events.ts` 提供事件结构与事件出口契约、
 `runtime/tools/src/types.ts` 提供统一 `ToolResult` 结构。ToolRegistry、RenderRegistry 与统一
 ToolExecutor 调用入口以及 glob、grep、read、write、edit、present 六个文件工具与 render 已实现；
-ToolExposureManager、Renderer 审批接线、压缩、Usage 记账、Insert 与最终 Surface 仍未实现，见下文。
+ToolExposureManager、压缩、Usage 记账、Insert 与最终 Surface 仍未实现，见下文。
 
 **SessionRuntime 的活动实例**按 Session 创建，直接持有目录、Event Log / SessionState、
 Turn 首批事件提交、AGENTS.md / Skill 增量、上下文回放、FIFO 用户消息队列和持久化事件流。
@@ -97,17 +97,46 @@ Turn 首批事件提交、AGENTS.md / Skill 增量、上下文回放、FIFO 用�
 新 Adapter。Adapter、CredentialStore、数据库读取结果和 SDK Client 都不跨 Turn 缓存。每个 Turn 在
 `turn/end` 前写入有净变化时的 `turn/file_changes`；Insert 与最终 Surface 仍未实现。
 
-**Renderer 的四个 Session 命令**已通过 preload 暴露为
+**Renderer 与 SessionRuntime 接线**已完成。Session 命令通过 preload 暴露为
 `window.nicode.startNewSession(projectId, input)`、
 `window.nicode.continueSession(projectId, sessionId, input)` 与
 `window.nicode.enqueueSessionMessage(projectId, sessionId, input)`、
 `window.nicode.stopSession(projectId, sessionId)`。主进程按 Project ID 与 Session ID 的组合管理活动实例；
 `projectId` 是对应 `sessions/<project-id>` 分组目录的 UUID 字符串，default 分组使用 `"default"`；前两个入口在
-首批事件提交后返回 `{ sessionId, turn }`，追加入口返回 `{ sessionId, content }`，
-其中 start 与 continue 输入都包含 `{ content, model }`，enqueue 只包含 `{ content }`。Stop 入口幂等返回
+首批事件提交后返回 `{ sessionId, turn }`，追加入口返回 `{ sessionId, messageId, content }`；
+Queue 提交用户事件时复用该 messageId。start 输入接受可选 sandboxMode，continue 输入包含
+`{ content, model }`，enqueue 只包含 `{ content }`。Stop 入口幂等返回
 `{ sessionId }`。每个活动 `SessionRuntime` 中的所有 Turn / Loop 共享同一取消信号；
-取消后不再消费后续内存 Queue。主进程后台消费
-Session 事件流，并预留了 Renderer 事件筛选与发送边界；具体筛选名单和 Renderer wire shape 尚未确定。
+取消后不再消费后续内存 Queue，并在最终控制状态中保留未发送项供重试。
+
+`getSessionData(projectId, sessionId)` 返回摘要、完整原始事件、latestSeq 与控制快照；
+活动实例只读快照，非活动实例先执行现有恢复再读取并关闭临时实例。
+`onSessionUpdate(listener)` 订阅 event / state / error 三类更新并返回取消监听函数；
+preload 隔离 Electron 事件对象。主进程将已成功提交的原始事件发给存活窗口，单窗发送失败
+只交给宿主错误出口，不改变 Runtime 结果。控制状态包含 revision、throughSeq、设置、活动状态、
+待处理 Queue 与被丢弃的消息；同一对话的查询、继续和设置短操作串行执行。
+
+工作区持有 `WorkspaceSessionState`，其 `sessionEventsByKey` 使用
+`JSON.stringify([projectId, sessionId])` 索引 `SessionEvent[]`。
+**聊天路由命中字典键时直接渲染，不调用历史查询 IPC。** 缺键才复用或创建首载请求；
+未加载历史的后半段增量暂存，新对话从 seq=1 的推送可直接建缓存。历史与增量按 eventId 去重、
+seq 排序，迟到结果合并到自己的对话；状态只在 throughSeq 已取得后按较新 revision 应用。
+加载失败可明确重试，缓存的事件缺口会补查；草稿跨路由保留。
+
+`updateSessionSettings` 保存 Session Meta 的模型与权限 patch，不影响当前 Turn 的固定模型，
+随后 Turn 启动时重读；工具按既有机制重读权限。
+`decideSessionApproval` 接收 approved / denied，结束或重复审批返回 accepted=false；
+Stop 通过既有机制持久化 cancelled。页面提供气泡、流式正文、可展开 Thinking / 工具 / 文件变化、
+审批按钮、Queue 与停止操作。assistant/message 替换同一 Turn / Step 的流式展示。
+原始事件仍是展示来源。前端收到 `turn/end` 后按 Turn 重组展示，历史加载使用相同规则：
+用户消息保持独立展示，其余内容收入默认折叠的“执行过程”区域，并保留内部 Thinking / 工具等小折叠区域。
+仅 `completed` 将该 Turn 最后一条权威 `assistant/message` 的全部 text 块放入外部 final answer div，
+过程 details 与 final answer div 共用一个父 div；无正文时不向前寻找替代回答，也不创建空正文区。
+`stopped` / `error` 将全部助手内容收入过程区域，结束状态文字保留在过程内部。
+没有 `turn/end` 时保持现有逐事件展示；该投影不改写缓存或事件。完整后端 SurfaceBuilder 尚未实现，Queue 不跨重启保存。
+Assistant 的 text 与 thinking 块统一通过 `MarkdownContent({ text })` 渲染，最终回答复用相同组件。
+组件使用 `react-markdown` 与 `remark-gfm`，支持标准 Markdown、表格、任务列表和删除线；
+正文随流式文本更新重新解析，原始事件内容保持不变，HTML 沿用库默认的转义展示。
 
 Project 管理通过 `window.nicode.selectDirectory()`、`createProject(name, directories?)`、
 `addProjectDirectory(projectId, directory)` 与 `removeProjectDirectory(projectId, directory)` 暴露。
@@ -209,7 +238,7 @@ ToolRegistry 拒绝未知内置名称、无实际名称的 `mcp_` 项和重复�
   与说明，不包含堆栈。
 - Electron 入口登记六个文件工具与专属 render，并把定义交给每 Turn 模型调用；工具执行时重读
   Session Meta 和 Project Workspace 数据库，按沙箱模式检查规范路径。审批请求写入 Event Log 并等待
-  决定或 Stop；提交决定的后端接口已保留，Renderer 推送与决定接收尚未接线。
+  决定或 Stop；Renderer 已通过请求事件显示批准/拒绝按钮，并显示已持久化的审批结果。
 
 ### ToolScheduler（阶段 6.4，第 17 节）
 
@@ -255,7 +284,7 @@ src/                                 Electron 外壳
 │  ├─ config-schema.ts               全局配置的 V2 字段检查
 │  ├─ provider-store.ts              Provider、模型、协议、API Key 与默认模型 SQLite 读写
 │  ├─ workspace-store.ts              Project/default 工作区配置的 SQLite 读写
-│  └─ session-ipc.ts                 SessionRuntime 的四个 IPC handler
+│  └─ session-ipc.ts                 SessionRuntime 命令、历史与更新推送
 ├─ preload/
 │  ├─ index.ts                       contextBridge 安装入口
 │  ├─ session-api.ts                 window.nicode Session API 与 IPC 契约
@@ -433,6 +462,9 @@ node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types t
 node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/main/index.test.ts
 node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/main/session-ipc.test.ts
 node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/preload/session-api.test.ts
+node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/preload/session-updates.test.ts
+node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/main/session-connection.test.ts
+node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/renderer/session-state.test.ts
 ```
 
 `test/main/config-files.test.ts` 使用临时用户目录验证：V2 配置与空数据库首次创建、
@@ -443,7 +475,8 @@ node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types t
 新增模型的 IPC 返回值、名称更新与无效模型输入。
 `test/main/workspace-store.test.ts` 验证 Project/default 配置顺序、重复初始化、更新和事务回滚。
 Project 配置新增 `updatedAt`，已有数据库在启动时为旧 Project 记录补入升级时间；
-对话索引沿用现有 `updatedAt` 字段。写入方提供时间，工作区数据库写入时转换为 UTC；当前 Session 流程尚未更新对话索引。
+对话索引沿用现有 `updatedAt` 字段。首批事件、用户消息与 Turn 结束后从已提交日志核对索引，
+摘要列表返回前也核对中断；名称优先使用有效 Meta，并保留现有名称。索引失败不撤销已提交对话。
 
 `runtime/credential/test/credential-store.test.ts` 验证空 Store、按 Provider 查找、输入复制、
 空字段与重复 Provider 拒绝，以及错误信息不泄露 API Key。
@@ -466,9 +499,35 @@ workspace 目录缺失、AGENTS.md、Skill registry 引用及 Project 覆盖。
 `test/main/electron-windows.test.ts` 验证 BrowserWindow 参数、preload / Renderer 绝对路径、页面装载
 错误出口，以及窗口创建和存活状态。
 
-`test/main/index.test.ts` 使用假 Electron app、ipcMain 与窗口端口验证：四个 Session channel 注册、
+`test/main/index.test.ts` 使用假 Electron app、ipcMain 与窗口端口验证：Session channel 注册、
 不同 Project 的 SessionRuntime 路径与上下文独立装配、后台错误和事件转发、Project Context 失败时
 不创建 Session、ready / activate / window-all-closed 生命周期，以及重复注册错误。
+
+`test/main/session-connection.test.ts` 使用真实临时 SQLite 与 SessionRuntime 验证活动查询不恢复、
+运行中设置生效时机、相同文本 Queue 的独立 ID/FIFO、Stop 未发送项、三种审批结果与重复决定、
+索引中断修复、重启后读取，以及索引/窗口发送失败不撤销已提交数据。
+`test/renderer/session-state.test.ts` 用 Node 断言验证缓存命中不查询、首载复用与增量合并、
+历史增量暂存、旧状态不覆盖新版本、缺口补齐、失败重试、独立草稿以及权威正文替换流式块；
+同时覆盖 Turn 完成态分组、多段最终正文、停止 / 失败、无最终正文、多轮隔离及历史 / 增量一致性。
+`test/preload/session-updates.test.ts` 验证新增传输契约、联合身份、监听隔离与取消监听。
+
+构建后可运行真实 Electron 的隐藏窗口测试（只使用临时数据和本机假模型）：
+
+```powershell
+npm run build
+$testProcess = Start-Process -FilePath (Join-Path (Get-Location) 'node_modules/electron/dist/electron.exe') -ArgumentList 'test/renderer/electron-session.test.cjs' -WindowStyle Hidden -Wait -PassThru -RedirectStandardOutput 'dist/electron-session.stdout.log' -RedirectStandardError 'dist/electron-session.stderr.log'
+Get-Content dist/electron-session.stdout.log
+Get-Content dist/electron-session.stderr.log
+$testProcess.ExitCode
+```
+
+该测试验证实际 React 页面新建、Queue、流式正文、Turn 完成后的父容器与正文位置、
+内外层折叠交互、后续事件保持展开、不同对话的折叠状态隔离、跨路由缓存和草稿保留；
+另外通过已有事件推送通道验证停止、失败及无最终正文的页面结构。
+Markdown 断言覆盖思考内容、空块、流式语法补齐、标题 / 列表 / 代码 / 表格 / 任务列表、
+HTML 转义、URL 默认处理和长代码块滚动，并生成 `dist/electron-markdown-preview.png`。
+新建后反复返回缓存路由的历史 IPC 调用计数保持为 0，并将页面截图保存到
+`dist/electron-session-preview.png`。窗口推送测试同时验证多窗口广播与单窗失败隔离。
 
 三个 Adapter 的测试分两层：**离线转换**（构造协议侧载荷 → 比对统一事件，不碰网络）与
 **端到端**（`test/helpers.ts` 起一个本机 SSE 假服务器，真实走一遍官方 SDK）。
@@ -504,7 +563,6 @@ ToolRegistry / ToolExecutor 测试使用假工具验证成对登记与冲突回�
 
 以下均需项目负责人决定，确认前不自行选择（详见 `.git/技术文档/开发TODOList.md` 文末「缺口与待确认事项」）：
 
-1. 会话事件推送与历史内容读取的 Renderer IPC 协议及展示结构。
-2. 测试框架（现有测试不依赖框架）。
-3. 同一 Provider 配置多种协议时的模型绑定规则；重试次数与退避目前是
+1. 测试框架（现有测试不依赖框架）。
+2. 同一 Provider 配置多种协议时的模型绑定规则；重试次数与退避目前是
    `runtime/network/src/retry.ts` 里的常量，是否加入配置尚未确定。

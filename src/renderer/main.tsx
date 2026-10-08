@@ -1,7 +1,7 @@
 /** Electron 工作区：读取启动摘要，并由 hash 路由管理工作区与 Session 身份。 */
 import { useEffect, useRef, useState } from "react"
 import { createRoot } from "react-dom/client"
-import { HashRouter, Navigate, Outlet, Route, Routes, useMatch, useNavigate, useParams } from "react-router"
+import { HashRouter, Navigate, Outlet, Route, Routes, useMatch, useNavigate, useParams, useOutletContext } from "react-router"
 import {
   IconChevronDown,
   IconFolder,
@@ -19,6 +19,8 @@ import {
 } from "@tabler/icons-react"
 import type { DirectorySelection, ProjectSummary, ProviderSummary, SessionSummary } from "../preload/session-api.ts"
 import { SettingsDialog } from "./settings-dialog.tsx"
+import { WorkspaceSessionState, sessionKey, errorMessage } from "./session-state.ts"
+import { SessionPage } from "./session-page.tsx"
 import "./workspace.css"
 
 /** 一项启动数据的加载、成功或失败状态。 */
@@ -70,12 +72,18 @@ function SessionList({
 
 /**
  * 从匹配到的 Session 路由读取 Project 与 Session 身份，供后续对话页面使用。
- * @returns 保存路由身份的空页面容器；不读取或渲染 Session 内容。
+ * @returns 优先读取工作区字典，仅缺键时发起历史加载的聊天页面。
  */
 function SessionRoute() {
   const { projectId, sessionId } = useParams<"projectId" | "sessionId">()
+  const { state, providers } = useOutletContext<{ state: WorkspaceSessionState; providers: ProviderSummary[] }>()
+  useEffect(() => {
+    if (projectId === undefined || sessionId === undefined) return
+    if (state.has(sessionKey(projectId, sessionId))) return
+    void state.load(projectId, sessionId).catch(() => {})
+  }, [state, projectId, sessionId])
   if (projectId === undefined || sessionId === undefined) return null
-  return <div data-project-id={projectId} data-session-id={sessionId} />
+  return <SessionPage projectId={projectId} sessionId={sessionId} state={state} providers={providers} />
 }
 
 /**
@@ -112,6 +120,11 @@ function Workspace() {
   const [projects, setProjects] = useState<LoadState<ProjectSummary[]>>({ status: "loading" })
   const [defaultSessions, setDefaultSessions] = useState<LoadState<SessionSummary[]>>({ status: "loading" })
   const [providers, setProviders] = useState<LoadState<ProviderSummary[]>>({ status: "loading" })
+  const [, setSessionVersion] = useState(0)
+  const [sessionsState] = useState(() => new WorkspaceSessionState(window.nicode, () => setSessionVersion((version) => version + 1)))
+  const groupId = workspaceRoute.group === "project" ? workspaceRoute.projectId : "default"
+  const newDraftKey = sessionKey(groupId, "$new-chat")
+  const newChatView = sessionsState.view(newDraftKey)
   const [selectedModelKey, setSelectedModelKey] = useState<string | undefined>()
   const [permission, setPermission] = useState<Permission>("default")
   const [openMenu, setOpenMenu] = useState<"permission" | "model" | null>(null)
@@ -129,6 +142,19 @@ function Workspace() {
   const [creatingProject, setCreatingProject] = useState(false)
   const [focusComposerAfterNavigation, setFocusComposerAfterNavigation] = useState(false)
   const [settingsDialogOpen, setSettingsDialogOpen] = useState(false)
+
+  /** @param projectId 要刷新的摘要分组；不重查聊天历史。 @returns 摘要更新完成。 */
+  async function refreshSessionSummaries(projectId: string): Promise<void> {
+    try {
+      if (projectId === "default") setDefaultSessions({ status: "ready", value: await window.nicode.listDefaultSessions() })
+      else setProjects({ status: "ready", value: await window.nicode.listProjects() })
+    } catch (error) { console.error("更新对话列表失败", error) }
+  }
+  useEffect(() => window.nicode.onSessionUpdate((update) => {
+    try { sessionsState.receive(update) }
+    catch (error) { sessionsState.setView(sessionKey(update.projectId, update.sessionId), { operationError: errorMessage(error) }) }
+    if (update.kind === "event" && update.event.type === "turn/end") void refreshSessionSummaries(update.projectId)
+  }), [sessionsState])
 
   /** @returns 项目查询结束后的 Promise；失败会转成当前区域的错误状态。 */
   async function loadProjects(): Promise<void> {
@@ -377,6 +403,24 @@ function Workspace() {
     ? projects.value.find((project) => project.projectId === workspaceRoute.projectId)
     : undefined
 
+  /** @returns 新对话首批事件提交后清理当前分组草稿并导航；失败保留草稿。 */
+  async function sendNewChat(): Promise<void> {
+    const text = sessionsState.draftsByKey[newDraftKey] ?? ""
+    if (!text.trim() || !selectedModel || sessionsState.view(newDraftKey).busy) return
+    sessionsState.setView(newDraftKey, { busy: true, operationError: undefined })
+    try {
+      const { providerId, protocol, modelId, name } = selectedModel
+      const response = await window.nicode.startNewSession(groupId, {
+        content: [{ type: "text", text }], model: { providerId, protocol, modelId, name },
+        sandboxMode: permission === "workspace-read-only" ? "sandbox-read-only" : permission === "full-access" ? "full-access" : "sandbox-full-access",
+      })
+      if (sessionsState.draftsByKey[newDraftKey] === text) sessionsState.setDraft(newDraftKey, "")
+      void refreshSessionSummaries(groupId)
+      navigateToSession(groupId, response.sessionId)
+    } catch (error) { sessionsState.setView(newDraftKey, { operationError: errorMessage(error) }) }
+    finally { sessionsState.setView(newDraftKey, { busy: false }) }
+  }
+
   return <div className="app-shell">
     <header className="titlebar">
       <div className="brand-mark" aria-hidden="true">N</div>
@@ -445,16 +489,16 @@ function Workspace() {
           <strong>{workspaceRoute.page === "new-chat" ? "新聊天" : "对话"}</strong>
         </div>
         <div className="more-actions" aria-hidden="true">···</div>
-        {workspaceRoute.page === "session" ? <Outlet /> : <div className="welcome">
-          <h1>我们从哪开始？</h1>
+        {workspaceRoute.page === "session" ? <Outlet context={{ state: sessionsState, providers: providers.status === "ready" ? providers.value : [] }} /> : <div className="welcome">
+          <h1>我们从哪开始？</h1>{newChatView.operationError && <p className="chat-error" role="alert">{newChatView.operationError}</p>}
           <div className="composer">
-            <textarea ref={composerRef} aria-label="任务描述" placeholder="描述你希望 NiCode 完成的任务…" />
+            <textarea ref={composerRef} aria-label="任务描述" placeholder="描述你希望 NiCode 完成的任务…" value={sessionsState.draftsByKey[newDraftKey] ?? ""} onChange={(event) => sessionsState.setDraft(newDraftKey, event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void sendNewChat() } }} />
             <div className="composer-toolbar">
               <div className="composer-controls">
                 <span className="attachment-control" aria-disabled="true"><IconPlus size={15} stroke={1.5} aria-hidden="true" /><span>附加文件</span></span>
                 <div className="selector-anchor">
-                  <button className="selector-trigger" type="button" aria-label="权限" aria-haspopup="menu" aria-expanded={openMenu === "permission"} onClick={() => setOpenMenu((current) => current === "permission" ? null : "permission")}>权限：{permissionLabels[permission]} <span className="small-chevron">⌄</span></button>
-                  {openMenu === "permission" && <div className="selector-menu permission-menu" role="menu" aria-label="权限选项">{permissionOptions.map((option) => <button type="button" role="menuitemradio" aria-checked={permission === option || (permission === "default" && option === "workspace-read-only")} key={option} onClick={() => { setPermission(option); setOpenMenu(null) }}>{permissionLabels[option]}{(permission === option || (permission === "default" && option === "workspace-read-only")) && <span aria-hidden="true">✓</span>}</button>)}</div>}
+                  <button className="selector-trigger" type="button" aria-label="权限" aria-haspopup="menu" aria-expanded={openMenu === "permission"} onClick={() => setOpenMenu((current) => current === "permission" ? null : "permission")}>权限：{permission === "default" ? "工作区读写" : permissionLabels[permission]} <span className="small-chevron">⌄</span></button>
+                  {openMenu === "permission" && <div className="selector-menu permission-menu" role="menu" aria-label="权限选项">{permissionOptions.map((option) => <button type="button" role="menuitemradio" aria-checked={permission === option || (permission === "default" && option === "workspace-read-write")} key={option} onClick={() => { setPermission(option); setOpenMenu(null) }}>{permissionLabels[option]}{(permission === option || (permission === "default" && option === "workspace-read-write")) && <span aria-hidden="true">✓</span>}</button>)}</div>}
                 </div>
               </div>
               <div className="composer-controls composer-controls-right">
@@ -464,7 +508,7 @@ function Workspace() {
                   ? <span className="model-status">未配置模型</span>
                   : <div className="selector-anchor model-anchor"><button className="selector-trigger model-trigger" type="button" aria-label="模型" aria-haspopup="menu" aria-expanded={openMenu === "model"} onClick={() => setOpenMenu((current) => current === "model" ? null : "model")}>{selectedModel === undefined ? "未配置模型" : `${selectedModel.providerName} / ${selectedModel.name}`} <span className="small-chevron">⌄</span></button>
                     {openMenu === "model" && <div className="selector-menu model-menu" role="menu" aria-label="模型选项">{modelOptions.map((model) => <button type="button" role="menuitemradio" aria-checked={model.selectionKey === selectedModel?.selectionKey} key={model.selectionKey} title={`${model.providerName} / ${model.name}`} onClick={() => { setSelectedModelKey(model.selectionKey); setOpenMenu(null) }}><span>{model.providerName} / {model.name}</span>{model.selectionKey === selectedModel?.selectionKey && <span aria-hidden="true">✓</span>}</button>)}</div>}</div>)}
-                <button className="send-button" type="button" disabled aria-label="发送消息"><IconSend size={16} stroke={1.8} aria-hidden="true" /></button>
+                <button className="send-button" type="button" disabled={!selectedModel || newChatView.busy || !(sessionsState.draftsByKey[newDraftKey] ?? "").trim()} onClick={() => void sendNewChat()} aria-label="发送消息"><IconSend size={16} stroke={1.8} aria-hidden="true" /></button>
               </div>
             </div>
           </div>

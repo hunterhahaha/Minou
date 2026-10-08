@@ -5,6 +5,15 @@ dist/
 .DS_Store
 Thumbs.db
 
+# Local editor settings and code index
+.idea/
+.vscode/
+.gitnexus/
+
+# Local database inspection files
+/identifier.sqlite
+/identifier.sqlite-*
+
 # Local environment variables
 .env
 .env.*

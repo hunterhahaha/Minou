@@ -8,6 +8,8 @@ import type {
 } from "electron"
 
 import type { MainWindowLifecyclePort } from "./index.ts"
+import { SESSION_IPC_CHANNELS } from "../preload/session-api.ts"
+import type { SessionUpdate } from "../preload/session-api.ts"
 
 /** `BrowserWindow` 类在本模块使用的构造与静态能力。 */
 export interface BrowserWindowConstructorPort {
@@ -51,6 +53,16 @@ export function createElectronWindowManager(
 
   const retainedWindows = new Set<BrowserWindow>()
   return {
+    /** @param update 对话更新；单窗失败不会阻止其余窗口接收。 @throws AggregateError 有窗口发送失败。 */
+    sendSessionUpdate(update: SessionUpdate): void {
+      const failures: unknown[] = []
+      for (const window of retainedWindows) {
+        if (window.isDestroyed() || window.webContents.isDestroyed()) continue
+        try { window.webContents.send(SESSION_IPC_CHANNELS.update, update) }
+        catch (error) { failures.push(error) }
+      }
+      if (failures.length) throw new AggregateError(failures, "Session 窗口更新发送失败")
+    },
     createMainWindow(): void {
       const window = new BrowserWindowClass({
         width: 1200,

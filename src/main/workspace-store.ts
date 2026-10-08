@@ -1,8 +1,10 @@
 /** Project 与 default 工作区配置在独立 SQLite 数据库中的持久化。 */
 
-import { isAbsolute } from "node:path"
+import { isAbsolute, join } from "node:path"
+import { existsSync } from "node:fs"
 import { DatabaseSync } from "node:sqlite"
 import { requireProjectId } from "../../runtime/session/src/project-id.ts"
+import { INITIAL_SESSION_NAME, readSessionMeta } from "../../runtime/session/src/meta-store.ts"
 
 /** 工作区配置中的对话索引条目。 */
 export interface WorkspaceSession {
@@ -356,4 +358,74 @@ export function insertProjectWorkspace(databasePath: string, workspace: ProjectW
  */
 export function saveDefaultWorkspace(databasePath: string, workspace: DefaultWorkspace): void {
   saveGroup(databasePath, "default", null, null, workspace.version, [], workspace.sessions)
+}
+
+/**
+ * 原子更新一条对话索引，保留分组配置、目录及其他对话的顺序。
+ * @param databasePath 工作区数据库。
+ * @param projectId 所属 Project 或 default。
+ * @param session 已提交事件确定的身份和时间，以及已保存的名称。
+ * @throws Error 当分组不存在或数据库写入失败时抛出。
+ */
+export function upsertWorkspaceSession(databasePath: string, projectId: string, session: WorkspaceSession): void {
+  requireProjectId(projectId)
+  withDatabase(databasePath, false, (db) => transaction(db, () => {
+    if (!db.prepare("SELECT group_id FROM workspace_groups WHERE group_id = ?").get(projectId)) {
+      throw new Error(`工作区分组不存在：${projectId}`)
+    }
+    const existing = db.prepare("SELECT position, name, created_at, updated_at FROM workspace_sessions WHERE group_id = ? AND session_id = ?")
+      .get(projectId, session.id) as { position: number; name: string; created_at: string; updated_at: string } | undefined
+    const createdAt = toUtcTimestamp(session.createdAt, "Session.createdAt")
+    const updatedAt = toUtcTimestamp(session.updatedAt, "Session.updatedAt")
+    if (existing && existing.name === session.name && existing.created_at === createdAt && existing.updated_at === updatedAt) return
+    if (existing) {
+      db.prepare("UPDATE workspace_sessions SET name = ?, created_at = ?, updated_at = ? WHERE group_id = ? AND session_id = ?")
+        .run(session.name, createdAt, updatedAt, projectId, session.id)
+    } else {
+      const row = db.prepare("SELECT COALESCE(MAX(position), -1) + 1 AS position FROM workspace_sessions WHERE group_id = ?")
+        .get(projectId) as { position: number }
+      db.prepare("INSERT INTO workspace_sessions (group_id, position, session_id, name, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)")
+        .run(projectId, row.position, session.id, session.name, createdAt, updatedAt)
+    }
+    if (projectId !== "default") db.prepare("UPDATE workspace_groups SET updated_at = ? WHERE group_id = ?")
+      .run(new Date().toISOString(), projectId)
+  }))
+}
+
+/**
+ * 从共享日志和 Meta 核对一个分组的对话索引，补齐提交与索引写入之间的中断。
+ * @param paths 三个现有数据库的路径。
+ * @param projectId 所属分组；不会创建缺失的 Project。
+ * @throws Error 当日志或工作区不可读取或索引写入失败时抛出。
+ */
+export function reconcileWorkspaceSessions(
+  paths: { workspaceDatabasePath: string; metaDatabasePath: string; rootDir: string },
+  projectId: string,
+): void {
+  requireProjectId(projectId)
+  const eventPath = join(paths.rootDir, "events.sqlite")
+  if (!existsSync(eventPath)) return
+  const db = new DatabaseSync(eventPath, { readOnly: true })
+  let rows: Array<{ session_id: string; created_at: string; updated_at: string }>
+  try {
+    rows = db.prepare(`SELECT first.session_id, first.created_at, last.created_at AS updated_at
+      FROM session_events first JOIN session_events last
+        ON last.project_group_id = first.project_group_id AND last.session_id = first.session_id
+      WHERE first.project_group_id = ? AND first.seq = 1
+        AND last.seq = (SELECT MAX(seq) FROM session_events e
+          WHERE e.project_group_id = first.project_group_id AND e.session_id = first.session_id)
+      ORDER BY first.created_at, first.session_id`)
+      .all(projectId) as typeof rows
+  } finally { db.close() }
+  const sessions = projectId === "default"
+    ? readDefaultWorkspace(paths.workspaceDatabasePath).sessions
+    : readProjectWorkspace(paths.workspaceDatabasePath, projectId).sessions
+  for (const row of rows) {
+    const meta = readSessionMeta(paths.metaDatabasePath, projectId, row.session_id)
+    const name = typeof meta === "object" && meta !== null && "name" in meta && typeof meta.name === "string" && meta.name.trim().length > 0
+      ? meta.name : sessions.find((session) => session.id === row.session_id)?.name ?? INITIAL_SESSION_NAME
+    upsertWorkspaceSession(paths.workspaceDatabasePath, projectId, {
+      id: row.session_id, name, createdAt: row.created_at, updatedAt: row.updated_at,
+    })
+  }
 }

@@ -22,7 +22,9 @@ import type {
   CreateSessionRuntime,
   HandleSessionCompletionFailure,
   SessionEventForwardingPort,
+  IpcMainHandlePort,
 } from "./session-ipc.ts"
+import type { SessionUpdate } from "../preload/session-api.ts"
 
 /** Electron 主进程启动装配使用的应用生命周期事件。 */
 export type ElectronAppLifecycleEvent = "activate" | "window-all-closed"
@@ -48,6 +50,8 @@ export interface ElectronAppPort {
 
 /** BrowserWindow 具体实现之外，启动流程需要的窗口生命周期能力。 */
 export interface MainWindowLifecyclePort {
+  /** @param update 向全部存活的 NiCode 窗口发送的更新。 */
+  sendSessionUpdate?(update: SessionUpdate): void
   /** 创建并开始装载一个主窗口。 */
   createMainWindow(): void
   /**
@@ -69,7 +73,7 @@ export interface ElectronStartupOptions {
   /** Electron 应用生命周期端口。 */
   app: ElectronAppPort
   /** Electron 主进程 IPC handler 注册端口。 */
-  ipcMain: Electron.IpcMain
+  ipcMain: IpcMainHandlePort
   /** 系统目录选择窗口。 */
   dialog: DirectoryDialogPort
   /** 主窗口创建与存活状态端口。 */
@@ -107,7 +111,7 @@ export async function startElectronApp(options: ElectronStartupOptions): Promise
    * @param sessionId 要绑定的 Session 身份。
    * @returns 使用 `sessions/<project-id>/<session-id>` 目录的 Runtime。
    */
-  const createRuntime: CreateSessionRuntime = (projectId, sessionId) => {
+  const createRuntime: CreateSessionRuntime = (projectId, sessionId, onStateChanged) => {
     return new SessionRuntime({
       sessionId,
       sessionDirectory: join(sessionsDirectory, String(projectId), sessionId),
@@ -116,6 +120,7 @@ export async function startElectronApp(options: ElectronStartupOptions): Promise
       metaDatabasePath: options.configPaths.metaDatabasePath,
       systemPrompt: options.sessionRuntime.systemPrompt,
       global: options.sessionRuntime.global,
+      onStateChanged,
     })
   }
 
@@ -123,7 +128,10 @@ export async function startElectronApp(options: ElectronStartupOptions): Promise
     options.ipcMain,
     createRuntime,
     options.onSessionCompletionFailure,
-    options.sessionEventForwarding,
+    options.sessionEventForwarding ?? {
+      sendSessionUpdateToRenderer: (update) => options.windows.sendSessionUpdate?.(update),
+    },
+    options.configPaths,
   )
   registerStartupDataIpcHandlers(options.ipcMain, options.configPaths)
   registerModelIpcHandlers(options.ipcMain, options.configPaths)
@@ -143,6 +151,7 @@ export { initializeConfigFiles } from "./config-files.ts"
 export type { ConfigFilePaths } from "./config-files.ts"
 export { registerSessionIpcHandlers }
 export type {
+  IpcMainHandlePort,
   CreateSessionRuntime,
   HandleSessionCompletionFailure,
   SessionCompletionFailure,
