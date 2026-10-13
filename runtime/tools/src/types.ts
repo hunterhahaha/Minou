@@ -29,6 +29,8 @@ export interface ToolCallMeta {
  * 这些字段由 Runtime 产生，不来自模型参数；Session 专属资源由调用方通过闭包提供。
  */
 export interface ToolCallContext {
+  /** SessionRuntime 注入的 Project/default 身份；记忆工具要求此字段，模型不可指定。 */
+  projectId?: string
   /** 当前工具调用所属的 Turn 编号。 */
   turn: number
   /** 当前工具调用所属的 Step 编号。 */

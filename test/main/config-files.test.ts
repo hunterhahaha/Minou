@@ -95,7 +95,10 @@ async function main(): Promise<void> {
     assert.equal(await readFile(credentialsPath, "utf8"), "invalid legacy credentials")
     assert.equal(await readFile(oldWorkspacePath, "utf8"), "legacy workspace content")
     assert.equal(listProviders(paths.providerDatabasePath)[0].id, "example")
-    assert.deepEqual(readDefaultWorkspace(paths.workspaceDatabasePath), defaultWorkspace)
+    assert.deepEqual(readDefaultWorkspace(paths.workspaceDatabasePath), {
+      ...defaultWorkspace,
+      sessions: [{ ...defaultWorkspace.sessions[0], updatedAt: "2026-09-18T02:00:00.000Z" }],
+    })
   })
 
   await assertInvalidConfig("", "不是有效的 JSON")

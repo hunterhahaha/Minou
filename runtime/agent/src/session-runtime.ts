@@ -685,6 +685,7 @@ export class SessionRuntime implements SessionRepairPorts {
       tools: this.global.listToolDefinitions(),
       executeTool: (name, args, context) => this.global.executeTool(name, args, {
         ...context,
+        projectId: this.projectGroupId,
         fileRuntime: {
           projectId: this.projectGroupId,
           sessionId: this.sessionId,
