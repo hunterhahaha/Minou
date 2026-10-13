@@ -10,8 +10,10 @@ import { join } from "node:path"
 import { app, BrowserWindow, dialog, ipcMain } from "electron"
 
 import { initNetworkDispatcher } from "../../runtime/network/src/dispatcher.ts"
+import { MemoryManager } from "../../runtime/memory/src/index.ts"
 import {
   registerFileTools,
+  registerMemoryTools,
   bundledRipgrepPath,
   RenderRegistry,
   ToolRegistry,
@@ -40,6 +42,8 @@ async function main(): Promise<void> {
     rgPath: bundledRipgrepPath(join(__dirname, "../../..")),
     loadAccess: (projectId, sessionId) => loadFileAccessState(paths, projectId, sessionId),
   })
+  const memoryManager = new MemoryManager(paths.rootDir)
+  registerMemoryTools(toolRegistry, renderRegistry, memoryManager)
   const sessionRuntimeGlobal = new SessionRuntimeGlobal(paths, toolRegistry, renderRegistry)
   const windows = createElectronWindowManager(BrowserWindow, {
     preloadPath: join(__dirname, "../preload/index.js"),

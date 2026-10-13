@@ -86,10 +86,20 @@ Adapter 与 Usage 转换，含流式调用、双向转换、取消与错误归�
 ToolExecutor 调用入口以及 glob、grep、read、write、edit、present 六个文件工具与 render 已实现；
 ToolExposureManager、压缩、Usage 记账、Insert 与最终 Surface 仍未实现，见下文。
 
+**Project Memory 三件套**已实现：`memory_list` 只返回分类索引，`memory_read` 按二级分类读取，
+各分类按创建时间从新到旧排序，`limitPerSection` 独立限制每个分类，省略时返回全部。
+`memory_write` 整批追加，自动创建缺少的标题并记录毫秒精度的 UTC ISO 创建时间。
+记忆保存于 `.nicode/sessions/<project-id>/memory.md`，default 使用自己的文件；缺失时读取为空，
+首次有效写入才创建。同一 Project 的所有 Session 共用启动时创建的 MemoryManager 写入队列，
+通过同目录临时文件替换一次提交。格式损坏时报工具错误并保留原文件，不自动修复。
+多行正文和闭合的代码围栏可以保存，围栏外的一级/二级标题或记录时间标记会被拒绝。
+三件工具的成功数据经专属 render 转为文本；记忆正文不会默认进入 System Message，
+也不产生文件变更记录或沙盒文件审批。保存哪些知识由模型侧提示词指导，Runtime 不做语义分类。
+
 **SessionRuntime 的活动实例**按 Session 创建，直接持有目录、Event Log / SessionState、
 Turn 首批事件提交、AGENTS.md / Skill 增量、上下文回放、FIFO 用户消息队列和持久化事件流。
 启动时创建的同一个 SessionRuntimeGlobal 为所有实例提供 Project Context、每 Turn Adapter、
-工具定义和统一工具执行能力。Electron 入口向模型提供六个文件工具的定义。
+工具定义和统一工具执行能力。Electron 入口向模型提供六个文件工具及三件记忆工具的定义。
 新 Session 保持 Event Log 先于派生状态的提交顺序；所有 Session Meta 保存在
 `.nicode/meta.sqlite`，由 Project ID 与 Session ID 联合定位。模型、沙盒模式、Usage、Skills 和额外 Meta
 各占独立 JSON 列，名称独立存列，初始为“新对话”。显式 Continue 先把请求模型写入 Meta，Queue 则不保存或覆盖模型。
@@ -240,6 +250,9 @@ ToolRegistry 拒绝未知内置名称、无实际名称的 `mcp_` 项和重复�
   Session Meta 和 Project Workspace 数据库，按沙箱模式检查规范路径。审批请求写入 Event Log 并等待
   决定或 Stop；Renderer 已通过请求事件显示批准/拒绝按钮，并显示已持久化的审批结果。
 
+- Electron 入口同时登记三件记忆工具与专属 render；它们通过 Runtime 注入的 projectId
+  访问当前分组的 memory.md，不接受模型指定的身份或路径，也不使用文件工具审批。
+
 ### ToolScheduler（阶段 6.4，第 17 节）
 
 调度模型是**按模型给出的顺序切轮，逐轮执行**：
@@ -334,7 +347,7 @@ runtime/                             Runtime 模块，各自含 src/ 与 test/
 ├─ project/                          Project / ProjectManager / ProjectRules
 ├─ credential/                       只读 CredentialStore 与测试
 ├─ skill/                            Skill Runtime 本体：SkillManager / SkillContextManager
-├─ memory/                           Memory Runtime 本体：MemoryManager
+├─ memory/                           MemoryManager：Markdown 分类、按需读取与整批追加；含存储测试
 ├─ error/
 │  ├─ src/
 │  │  ├─ index.ts                    模块入口
@@ -442,9 +455,12 @@ node --experimental-strip-types runtime/tools/test/tool-registry.test.ts
 node --experimental-strip-types runtime/tools/test/tool-executor.test.ts
 node --experimental-strip-types runtime/tools/test/tool-scheduler.test.ts
 node --experimental-strip-types runtime/tools/test/file-tools.test.ts
+node --experimental-strip-types runtime/memory/test/memory.test.ts
+node --experimental-strip-types runtime/tools/test/memory-tools.test.ts
 node --experimental-strip-types runtime/agent/test/loop.test.ts
 node --experimental-strip-types runtime/agent/test/session-runtime.test.ts
 node --experimental-strip-types runtime/agent/test/file-turn.test.ts
+node --experimental-strip-types runtime/agent/test/memory-turn.test.ts
 node --experimental-strip-types runtime/session/test/event-log.test.ts
 node --experimental-strip-types runtime/session/test/session-state.test.ts
 node --experimental-strip-types runtime/session/test/file-changes.test.ts
@@ -469,6 +485,13 @@ node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types t
 
 `test/main/config-files.test.ts` 使用临时用户目录验证：V2 配置与空数据库首次创建、
 重复调用保留数据、忽略旧 credentials/workspace JSON、旧 V1 配置报错，以及非法用户目录。
+
+`runtime/memory/test/memory.test.ts` 验证分类、正文及代码块读回、跨时区时间排序、独立 limit、
+Project 隔离、同分组并发追加、取消、损坏文件及提交失败后的恢复。
+`runtime/tools/test/memory-tools.test.ts` 验证模型 Schema、指定提示词原文、参数错误和成功/错误 render；
+`runtime/agent/test/memory-turn.test.ts` 使用离线模型和真实存储验证 default/Project 的新对话、Queue、
+Continue、工具事件关联和模型结果回填，并检查记忆未默认注入 System Message。
+
 `test/main/provider-store.test.ts` 验证 Provider、模型、密钥、默认模型的读写顺序、
 重复初始化、模型名称更新、关联删除、事务回滚和损坏数据库错误。
 `test/main/provider-ipc.test.ts` 验证 Provider 与模型创建时生成全局唯一模型身份、模型名称规范化、
