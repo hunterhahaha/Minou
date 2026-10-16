@@ -112,6 +112,8 @@ function fixture(
     },
   }
   const global = {
+    interruptTerminals: () => [],
+    disposeProcessTools: async () => {},
     resolveProjectContext: () => ({
       workspaceInfo: "test",
       resolveCurrentBaseline: async () => { throw new Error("unexpected baseline") },

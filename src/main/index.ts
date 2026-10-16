@@ -27,7 +27,7 @@ import type {
 import type { SessionUpdate } from "../preload/session-api.ts"
 
 /** Electron 主进程启动装配使用的应用生命周期事件。 */
-export type ElectronAppLifecycleEvent = "activate" | "window-all-closed"
+export type ElectronAppLifecycleEvent = "activate" | "window-all-closed" | "before-quit"
 
 /** Electron `app` 在当前启动流程中需要提供的最小能力。 */
 export interface ElectronAppPort {
@@ -41,9 +41,9 @@ export interface ElectronAppPort {
    * 注册应用生命周期监听器。
    *
    * @param event 要监听的 Electron 应用事件。
-   * @param listener 事件发生时同步执行的监听器。
+   * @param listener 生命周期监听器，退出事件可先阻止退出以等待进程清理。
    */
-  on(event: ElectronAppLifecycleEvent, listener: () => void): void
+  on(event: ElectronAppLifecycleEvent, listener: (event?: { preventDefault(): void }) => void): void
   /** 退出当前应用进程。 */
   quit(): void
 }
@@ -138,6 +138,20 @@ export async function startElectronApp(options: ElectronStartupOptions): Promise
   registerProjectIpcHandlers(options.ipcMain, options.dialog, options.configPaths)
 
   await options.app.whenReady()
+  let processesDisposed = false
+  let disposingProcesses = false
+  options.app.on("before-quit", (event) => {
+    if (processesDisposed) return
+    event?.preventDefault()
+    if (disposingProcesses) return
+    disposingProcesses = true
+    void options.sessionRuntime.global.disposeProcessTools().catch((error: unknown) => {
+      options.onSessionCompletionFailure({ sessionId: "application", turn: 0, error })
+    }).finally(() => {
+      processesDisposed = true
+      options.app.quit()
+    })
+  })
   options.app.on("activate", () => {
     if (!options.windows.hasOpenWindows()) options.windows.createMainWindow()
   })
