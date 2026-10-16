@@ -9,7 +9,7 @@
 
 import { randomUUID } from "node:crypto"
 import { mkdir } from "node:fs/promises"
-import { isAbsolute, resolve } from "node:path"
+import { isAbsolute, join, resolve } from "node:path"
 import { isDeepStrictEqual } from "node:util"
 
 import { CANCELLED, normalizeError } from "../../error/src/normalizer.ts"
@@ -690,7 +690,13 @@ export class SessionRuntime implements SessionRepairPorts {
           projectId: this.projectGroupId,
           sessionId: this.sessionId,
           tracker: this.trackerFor(context.turn),
-          requestApproval: (toolName, path, execution) => this.requestFileApproval(toolName, path, execution),
+          requestApproval: (toolName, path, execution) => this.requestToolApproval(toolName, `文件路径需要授权：${path}`, execution),
+        },
+        processRuntime: {
+          projectId: this.projectGroupId,
+          sessionId: this.sessionId,
+          outputDirectory: join(this.sessionDirectory, "tool_output"),
+          requestApproval: (toolName, reason, execution) => this.requestToolApproval(toolName, reason, execution),
         },
       }),
       signal: this.abortController.signal,
@@ -752,13 +758,13 @@ export class SessionRuntime implements SessionRepairPorts {
   /**
    * 顺序写入审批请求、等待外部决定或 Stop，再写入审批结果。
    * @param toolName 待审批工具。
-   * @param path 已规范化路径。
+   * @param reason 工具提供的审批说明；文件调用包含已规范化路径。
    * @param context 完整的调用身份与参数。
    * @returns 明确决定或取消。
    */
-  private async requestFileApproval(
+  private async requestToolApproval(
     toolName: string,
-    path: string,
+    reason: string,
     context: ToolExecutionContext<object>,
   ): Promise<ApprovalDecision> {
     const previous = this.approvalTail
@@ -786,7 +792,7 @@ export class SessionRuntime implements SessionRepairPorts {
           approvalId, toolCallEventId: context.toolCallEventId,
           toolCallId: context.toolCallId, blockId: context.blockId,
           toolName, arguments: context.validatedArguments,
-          reason: `文件路径需要授权：${path}`,
+          reason,
         })
       } catch (error) {
         this.pendingApprovals.delete(approvalId)
@@ -868,11 +874,14 @@ export class SessionRuntime implements SessionRepairPorts {
    * 停止当前 Session Runtime 活动期。
    *
    * 同一实例中的所有 Turn / Loop 观察同一个信号；首次调用会使其永久进入
-   * aborted 状态。重复停止或实例已关闭时不产生额外效果。
+   * aborted 状态，并向此对话全部活动 PTY 发送一次 Ctrl+C；终端状态仍等待后端完成标记。
+   * 重复停止或实例已关闭时不产生额外效果。
    */
   stop(): void {
     if (this.closed || this.abortController.signal.aborted) return
     this.abortController.abort()
+    const failures = this.global.interruptTerminals(this.projectGroupId, this.sessionId)
+    for (const error of failures) console.error("PTY Ctrl+C 发送失败：", error)
     this.onStateChanged?.()
   }
 

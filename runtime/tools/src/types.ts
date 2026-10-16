@@ -45,6 +45,25 @@ export interface ToolCallContext {
   signal: AbortSignal
   /** 由 SessionRuntime 注入的当前 Session 文件工具资源。 */
   fileRuntime?: FileToolRuntimeContext
+  /** Runtime 注入的进程工具身份、输出目录和审批出口。 */
+  processRuntime?: ProcessToolRuntimeContext
+}
+
+/** 进程工具的 Session 边界；不包含文件变更追踪器。 */
+export interface ProcessToolRuntimeContext {
+  /** 所属分组。 */ projectId: string
+  /** 对话身份。 */ sessionId: string
+  /** Session 已初始化的工具输出绝对目录。 */ outputDirectory: string
+  /**
+   * 通过当前 Session 的审批出口记录请求，顺序等待用户决定，再记录结果。
+   *
+   * @param toolName - 需要审批的进程工具名称。
+   * @param reason - 供审批卡片和事件记录使用的操作说明。
+   * @param context - 当前调用身份、已校验的完整参数和取消信号。
+   * @returns 用户的 approved/denied 决定，或 Stop 产生的 cancelled。
+   * @throws Error - 审批事件写入失败或缺少调用事件身份；工具执行边界负责转换为错误结果。
+   */
+  requestApproval(toolName: string, reason: string, context: ToolExecutionContext<object>): Promise<ApprovalDecision>
 }
 
 /** 文件工具调用所需的 Session 身份、Turn 追踪器和审批出口。 */

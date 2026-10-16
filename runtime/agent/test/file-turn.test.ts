@@ -89,6 +89,8 @@ async function run(scenario: Scenario): Promise<SessionEvent[]> {
       estimateSkillTokens: () => 0,
       createTurnModelAdapter: async () => adapter,
       listToolDefinitions: () => [],
+      interruptTerminals: () => [],
+      disposeProcessTools: async () => {},
       executeTool: resources.executeTool,
     } as unknown as SessionRuntimeGlobal,
   })

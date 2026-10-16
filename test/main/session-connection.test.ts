@@ -68,6 +68,8 @@ async function fixture(profile: string, approval = false) {
     }),
     estimateSkillTokens: () => 0,
     listToolDefinitions: () => [],
+    interruptTerminals: () => [],
+    disposeProcessTools: async () => {},
     createTurnModelAdapter: async (reference: ModelRef): Promise<ModelAdapter> => {
       models.push(structuredClone(reference))
       const index = ++adapterCount

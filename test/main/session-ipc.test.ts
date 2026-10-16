@@ -190,6 +190,8 @@ function runtimeHarness(options: { blockFirstLoop?: boolean; failInitialization?
         estimateSkillTokens: () => 0,
         createTurnModelAdapter: async () => (await fake.createLoopOptions()).adapter,
         listToolDefinitions: () => [],
+        interruptTerminals: () => [],
+        disposeProcessTools: async () => {},
         executeTool: async () => { throw new Error("unexpected tool call") },
       } as unknown as SessionRuntimeGlobal,
     })

@@ -156,6 +156,28 @@ Project 管理通过 `window.nicode.selectDirectory()`、`createProject(name, di
 
 尚未开始的模块仍以 `index.ts` 占位；各自文件中注明待实现的职责。
 
+**Shell 与 PTY 工具**已实现：`shell` 使用一次性 PowerShell 7，等待 stdout/stderr 关闭并返回实际退出码，
+非零退出码仍是命令结果。`terminal_open`、`terminal_input`、`terminal_close`、`terminal_list`
+提供按 Project + Session 隔离、跨 Turn 和 Runtime 活动期复用的真实 Windows ConPTY。
+本机需安装 PATH 可找到的 `pwsh` 及其 PSReadLine；没有后端或就绪失败时返回工具错误。
+PTY 后端在 PSConsoleHostReadLine 接受命令后发出开始标记，prompt 发出相同执行序号的完成标记。
+终端就绪后为 idle，命令开始后为 running，只有对应完成标记才恢复 idle；超时、无输出和
+发送 Ctrl+C 均不推断命令已经结束。此实际状态规则采用项目负责人本轮决定，替代备忘录第 23–24 节的默认 unknown。
+
+`terminal_input.input` 原样写入，提交命令需包含回车 `\r`；空字符串仅拉取未读输出。
+每次最多收集 3 秒，明确完成标记或进程退出可提前结束。Windows ConPTY 的晚到屏幕文本
+仍归下一次收集，不追加到已返回结果；模型可继续用空输入轮询。
+Stop 向当前聊天全部活动 PTY 各发送一次 Ctrl+C 并保留终端，后台监听继续更新状态。
+正常 Turn 完成、模型失败与 Runtime 关闭不重置终端；显式关闭和应用退出等待实际进程退出。
+自然退出的终端从活动列表移除，尚未读取的尾部仍可用空输入取完。
+
+两类工具共用 `ToolOutputStore`：64 KB 按 65,536 原始字节计算，小输出不创建文件；
+超限输出完整保存为 Session `tool_output/call_<tool-call-id>.log`，模型只接收 UTF-8 尾部、
+总字节数及绝对日志路径。未读 PTY 积压超限时使用内部临时文件，交付时转换为本次调用日志。
+日志不覆盖既有结果；已返回内容不重复。完整日志读取仍遵循现有文件工具沙箱规则。
+shell 与 PTY 修改工具在两个 Sandbox 模式下都需顺序审批，Full Access 直接执行；
+`terminal_list` 无需审批。进程工具不向文件写工具的变更追踪器添加 Shell/PTY 文件改动。
+
 ### 三个 Adapter 的内容划分
 
 | 文件 | 职责 |
@@ -422,6 +444,7 @@ src/main/config-files.ts     →   test/main/config-files.test.ts
 | `yaml` | ^2.9.1 | 解析每个 `SKILL.md` 开头的 YAML frontmatter |
 | `@vscode/ripgrep` | 1.18.0 | 提供当前平台的 ripgrep 二进制，不查系统 PATH |
 | `diff` | 9.0.0 | 计算 Turn 文件变化的三行上下文 diff |
+| `node-pty` | 1.1.0 | Windows ConPTY 原生后端，使用包内当前平台预编译模块 |
 | `electron`（dev） | ^44.4.3 | 桌面主进程、preload 与 BrowserWindow |
 | `typescript`（dev） | ^5.9.3 | 类型检查与产出 |
 | `@types/node`（dev） | ^24.13.5 | Node 全局类型 |
@@ -457,10 +480,15 @@ node --experimental-strip-types runtime/tools/test/tool-scheduler.test.ts
 node --experimental-strip-types runtime/tools/test/file-tools.test.ts
 node --experimental-strip-types runtime/memory/test/memory.test.ts
 node --experimental-strip-types runtime/tools/test/memory-tools.test.ts
+node --experimental-strip-types runtime/tools/test/process-output.test.ts
+node --experimental-strip-types runtime/tools/test/shell-tools.test.ts
+node --experimental-strip-types runtime/tools/test/terminal-tools.test.ts
+node --experimental-strip-types runtime/tools/test/pty-real.test.ts
 node --experimental-strip-types runtime/agent/test/loop.test.ts
 node --experimental-strip-types runtime/agent/test/session-runtime.test.ts
 node --experimental-strip-types runtime/agent/test/file-turn.test.ts
 node --experimental-strip-types runtime/agent/test/memory-turn.test.ts
+node --experimental-strip-types runtime/agent/test/process-turn.test.ts
 node --experimental-strip-types runtime/session/test/event-log.test.ts
 node --experimental-strip-types runtime/session/test/session-state.test.ts
 node --experimental-strip-types runtime/session/test/file-changes.test.ts
@@ -532,6 +560,11 @@ workspace 目录缺失、AGENTS.md、Skill registry 引用及 Project 覆盖。
 `test/renderer/session-state.test.ts` 用 Node 断言验证缓存命中不查询、首载复用与增量合并、
 历史增量暂存、旧状态不覆盖新版本、缺口补齐、失败重试、独立草稿以及权威正文替换流式块；
 同时覆盖 Turn 完成态分组、多段最终正文、停止 / 失败、无最终正文、多轮隔离及历史 / 增量一致性。
+
+进程工具新增测试分别验证输出阈值与 UTF-8 尾部、真实 Shell 退出码与取消、可控 PTY 标记及输出归属、
+真实 PowerShell PTY 交互与自然退出，以及 Session 的 Queue / Continue / Stop 和模型结果回填。
+`test/main/electron-process-tools.test.cjs` 验证当前 Electron 能实际加载 node-pty 并执行上述后端；
+构建后用下方相同的隐藏窗口启动方式，将测试参数替换成该文件即可运行。
 `test/preload/session-updates.test.ts` 验证新增传输契约、联合身份、监听隔离与取消监听。
 
 构建后可运行真实 Electron 的隐藏窗口测试（只使用临时数据和本机假模型）：

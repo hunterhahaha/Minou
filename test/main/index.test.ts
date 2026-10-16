@@ -218,6 +218,8 @@ function startupFixture(
         estimateSkillTokens: (description: string) => description.length,
         createTurnModelAdapter: async () => adapter,
         listToolDefinitions: () => [],
+        interruptTerminals: () => [],
+        disposeProcessTools: async () => {},
         executeTool: async () => ({ status: "success", content: [] }),
       } as unknown as SessionRuntimeGlobal,
     },
@@ -326,6 +328,8 @@ async function testCreatesProjectSessionRuntime(): Promise<void> {
           estimateSkillTokens: (description: string) => description.length,
           createTurnModelAdapter: async () => adapter,
           listToolDefinitions: () => [],
+          interruptTerminals: () => [],
+          disposeProcessTools: async () => {},
           executeTool: async () => ({ status: "success", content: [] }),
         } as unknown as SessionRuntimeGlobal,
       },
@@ -521,6 +525,28 @@ async function testRejectsProjectContextBeforeSessionCreation(): Promise<void> {
   })
 }
 
+/** 应用退出要等待进程资源清理；重复退出请求不能重复启动清理。 */
+async function testWaitsForProcessDisposal(): Promise<void> {
+  await withTempProfile(async (profile) => {
+    const fixture = startupFixture(profile)
+    let disposed = 0
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    fixture.options.sessionRuntime.global.disposeProcessTools = async () => { disposed++; await gate }
+    await startElectronApp(fixture.options)
+    fixture.app.emit("before-quit")
+    fixture.app.emit("before-quit")
+    assert.equal(disposed, 1)
+    assert.equal(fixture.app.quitCalls, 0)
+    release()
+    await new Promise((resolve) => setImmediate(resolve))
+    assert.equal(fixture.app.quitCalls, 1)
+    fixture.app.emit("before-quit")
+    assert.equal(disposed, 1)
+    assert.equal(fixture.app.quitCalls, 1)
+  })
+}
+
 /** 依次运行启动装配的全部断言。 */
 async function main(): Promise<void> {
   await testRegistersIpcAndWindowLifecycle()
@@ -528,6 +554,7 @@ async function main(): Promise<void> {
   await testResolvesContextForEachProject()
   await testForwardsSessionCompletionFailure()
   await testRejectsProjectContextBeforeSessionCreation()
+  await testWaitsForProcessDisposal()
   console.log("index.test.ts: Electron 主进程启动装配断言通过")
 }
 
