@@ -461,6 +461,34 @@ button:focus-visible, textarea:focus-visible { outline: 2px solid #5684c8; outli
 .new-model-form { display: flex; flex-direction: column; gap: 16px; }
 .settings-secondary-button svg { flex: none; }
 
+.mcp-settings { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.mcp-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 20px 24px 14px; border-bottom: 1px solid #eceef1; }
+.mcp-toolbar h3 { margin: 5px 0 0; color: #303743; font-size: 17px; }
+.mcp-message { margin: 10px 24px; color: #687483; font-size: 12px; overflow-wrap: anywhere; }
+.mcp-message.settings-inline-error { color: #b42318; }
+.mcp-management { display: flex; flex: 1; min-height: 0; }
+.mcp-sidebar { flex: 0 0 190px; overflow: auto; padding: 16px 10px; background: #fafbfd; border-right: 1px solid #eceef1; }
+.mcp-detail { flex: 1; min-width: 0; padding: 20px 24px; overflow: auto; }
+.mcp-detail h3 { margin: 0 0 12px; color: #454e59; font-size: 15px; }
+.mcp-connection-state { margin: 0 0 16px; color: #687483; font-size: 12px; overflow-wrap: anywhere; }
+.mcp-connection-state[role="alert"] { color: #b42318; }
+.mcp-form { display: flex; flex-direction: column; gap: 16px; min-width: 0; margin: 0; padding: 0; border: 0; }
+.mcp-enabled { display: flex; align-items: center; gap: 8px; color: #4c5662; font-size: 12px; }
+.mcp-enabled input { accent-color: #596e89; }
+.mcp-rows { display: flex; flex-direction: column; gap: 8px; }
+.mcp-row-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; color: #4c5662; font-size: 12px; }
+.mcp-value-row, .mcp-pair-row { display: flex; align-items: center; gap: 7px; }
+.mcp-value-row input, .mcp-pair-row input { flex: 1; width: 0; min-width: 0; height: 34px; padding: 0 9px; border: 1px solid #dfe4eb; border-radius: 6px; color: #303743; background: #fff; font: inherit; font-size: 12px; }
+.mcp-timeouts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.mcp-form:disabled { opacity: .7; }
+@media (max-width: 680px) {
+  .mcp-toolbar { padding: 16px; flex-wrap: wrap; }
+  .mcp-management { flex-direction: column; }
+  .mcp-sidebar { flex: 0 0 auto; max-height: 130px; border-right: 0; border-bottom: 1px solid #eceef1; }
+  .mcp-detail { padding: 18px 16px; }
+  .mcp-timeouts { grid-template-columns: minmax(0, 1fr); }
+}
+
 @media (max-width: 900px) {
   .settings-dialog-backdrop { padding: 16px; }
   .settings-dialog-nav { flex-basis: 148px; }

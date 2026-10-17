@@ -301,7 +301,7 @@ memory_read / mcp_list_tools。
   execute）。若某次调用抛出，本轮其它调用照常跑完，异常在本轮结束时抛出；之前已交出的结果照常生效。
 - 审批屏障、取消时由调度器直接为未启动调用产出 `CANCELLED` 结果、Session 级调度状态尚未实现。
 
-## MCP 后端
+## MCP 配置与工具调用
 
 应用启动时使用配置初始化快照中的 `mcpServers`，通过一个全局 `MCPManager` 建立连接、获取完整工具目录、构建 BM25 索引并管理实际调用。没有配置 Server 时目录为空，三个发现工具仍可使用。单个 Server 失败会记录稳定错误，其他 Server 和应用继续启动。
 
@@ -341,7 +341,13 @@ memory_read / mcp_list_tools。
 
 载入状态属于各 Session，保存在共享 `meta.sqlite` 的 `additional_meta_json.loadedMcpTools` 中；不增加表。每次请求依据当前 Catalog 过滤有效定义，并修复 `contextstate.mcp`，从下一 Step 向模型暴露新载入工具。预算使用当前 Turn 同一模型配置快照的 `contextWindow × 5%` 和现有本地 Token 估算；按最久未调用顺序清理，单批自身超过预算仍整批载入。工具定义持有稳定的 `mcp_` 名称和独立的远端身份，不通过解析名称路由。
 
-真正调用继续经过统一执行器、Schema 检查、Session 审批与 SDK 取消信号；只有 Full Access 直接执行。其他模式使用已有审批事件，不增加 IPC。SDK 原始返回由 MCP render 只保留顶层文本，非文本不进入 ToolResult；业务错误保留远端文本并标为 `MCP_TOOL_CALL_ERROR`。目录变更通知更新全局目录及成对注册；断开连接的工具不再暴露。应用退出释放 MCP 连接和 STDIO 子进程。本次不提供配置热重载、应用级自动重连、IPC 或前端管理界面。
+真正调用继续经过统一执行器、Schema 检查、Session 审批与 SDK 取消信号；只有 Full Access 直接执行。其他模式使用已有审批事件。SDK 原始返回由 MCP render 只保留顶层文本，非文本不进入 ToolResult；业务错误保留远端文本并标为 `MCP_TOOL_CALL_ERROR`。目录变更通知更新全局目录及成对注册；断开连接的工具不再暴露。应用退出释放 MCP 连接和 STDIO 子进程。
+
+在设置弹窗的 **MCP** 页面可以新增、修改、改名、启用或删除连接。STDIO 提供有序参数、工作目录及多行环境变量，Streamable HTTP 提供 URL、Bearer 环境变量名及多行请求头；可选超时留空时继续使用后端默认值。参数和值中的空白、空字符串按原输入保存；通过页面或 IPC 新建与改名时名称必须唯一。每次显式保存整份配置，主进程先原子写入 `config.json.mcpServers`，再同步启动时创建的同一个 Manager；其他普通配置字段保留。未变化的 Server 继续复用连接，修改项重启，禁用或删除项立即失效并关闭。连接失败仍保留已保存配置，页面展示稳定错误；输入或文件写入失败不会改变当前连接。
+
+**刷新** 会重读并校验配置，关闭现有连接，再连接全部启用项，重建工具目录、搜索索引和注册信息。损坏配置在关闭连接前报告；旧资源清理失败时阻止替代实例启动，已保存配置不会回滚，可修复后再次刷新。变更立即影响正在执行的 MCP 调用，失败调用不会自动重放。旧连接的异步目录结果不会覆盖新连接；下一次模型请求沿用现有 Session 有效工具过滤机制。
+
+preload 增加 `listMcpServers`、`createMcpServer`、`updateMcpServer(originalName, config)`、`deleteMcpServer` 和 `reloadMcpServers` 五个窄接口，使用 `nicode:mcp:*` 固定 channel。主进程串行处理完整配置操作，返回配置、连接状态、工具数量及错误快照，不向页面提供 Client、Transport 或解析后的 Bearer Token。当前没有应用级自动重连。
 
 新增本地验证命令（HTTP 只监听 127.0.0.1，STDIO 使用仓库测试进程，不需要外部 MCP 服务）：
 
@@ -349,7 +355,17 @@ memory_read / mcp_list_tools。
 node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types runtime/mcp/test/manager.test.ts
 node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types runtime/session/test/mcp-state.test.ts
 node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types runtime/agent/test/mcp-turn.test.ts
+node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types runtime/mcp/test/lifecycle.test.ts
+node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types runtime/mcp/test/in-flight.test.ts
+node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types runtime/agent/test/mcp-reconfigure.test.ts
+node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/main/mcp-ipc.test.ts
+node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/preload/mcp-api.test.ts
 ```
+
+生命周期测试验证实际连接次数、其他连接复用、改名、禁用、完整重载、旧目录通知和清理失败后的重试；进行中调用测试验证立即中断、不重放及审批/持久化间隙的重新检查。Session 测试验证下一请求的失效工具过滤、新 Schema 与 `contextstate.mcp` 同步。IPC 测试覆盖两种配置、并发写入、重名、可选字段清除、配置损坏、真实文件写入失败与恢复；preload 测试验证固定 channel、参数和非法快照拒绝。
+
+构建后可按下文「验证方式」的隐藏窗口启动方式运行 `test/renderer/electron-mcp-settings.test.cjs`。
+它使用临时用户目录和本机测试服务验证真实页面的多值编辑、重开回显、启用、改名、删除、刷新、失败恢复、忙碌保护、窄窗口和模型设置回归，截图保存在 `dist/electron-mcp-settings-preview.png` 与 `dist/electron-mcp-settings-narrow-preview.png`。此测试不连接真实第三方 MCP 服务。
 
 ## 目录结构
 

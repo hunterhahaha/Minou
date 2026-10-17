@@ -1,4 +1,4 @@
-/** 模型设置弹窗：维护 Provider 基本信息、凭据与所属模型。 */
+/** 设置弹窗：维护模型配置，并提供 MCP 配置与共享连接管理页面。 */
 
 import { type FormEvent, useEffect, useRef, useState } from "react"
 import { IconPlus, IconX } from "@tabler/icons-react"
@@ -12,8 +12,9 @@ import type {
 } from "../preload/session-api.ts"
 import { PROTOCOLS } from "../../runtime/model/src/types.ts"
 import type { Protocol } from "../../runtime/model/src/types.ts"
+import { McpSettings } from "./mcp-settings.tsx"
 
-/** 模型设置弹窗可通知工作区的 Provider 列表变更。 */
+/** 设置弹窗的关闭出口与工作区 Provider 列表同步出口。 */
 interface SettingsDialogProps {
   /** 关闭设置弹窗。 */
   onClose: () => void
@@ -97,11 +98,12 @@ function isHttpURL(value: string): boolean {
 }
 
 /**
- * 渲染设置导航、供应商创建页或供应商详情页，并同步当前 Provider 列表。
+ * 渲染模型与 MCP 设置导航，阻止请求期间关闭或离开页面，并同步 Provider 列表。
  * @param props 关闭弹窗与同步工作区模型选项的回调。
- * @returns 模型设置弹窗。
+ * @returns 模型与 MCP 设置弹窗。
  */
 export function SettingsDialog({ onClose, onProvidersChange }: SettingsDialogProps) {
+  const [section, setSection] = useState<"models" | "mcp">("models")
   const [loadState, setLoadState] = useState<"loading" | "ready" | "error">("loading")
   const [loadError, setLoadError] = useState<string | null>(null)
   const [providers, setProviders] = useState<ProviderSummary[]>([])
@@ -109,11 +111,11 @@ export function SettingsDialog({ onClose, onProvidersChange }: SettingsDialogPro
   const [page, setPage] = useState<"create" | "manage">("create")
   const [selectedProviderId, setSelectedProviderId] = useState<string | null>(null)
   const [creating, setCreating] = useState(false)
-  /** 同步守住关闭和导航路径，不等待创建状态的下一次渲染。 */
+  /** 同步守住模型创建或 MCP 请求期间的关闭和导航路径。 */
   const creatingRef = useRef(false)
 
   /**
-   * 接收 Provider 或模型创建请求的生命周期，统一控制外层关闭和导航。
+   * 接收 Provider/模型创建及 MCP 请求的生命周期，统一控制外层关闭和导航。
    * @param pending 请求进行中时为 true，成功或失败后为 false。
    */
   function handleCreatingChange(pending: boolean): void {
@@ -121,7 +123,7 @@ export function SettingsDialog({ onClose, onProvidersChange }: SettingsDialogPro
     setCreating(pending)
   }
 
-  /** 请求关闭设置弹窗；创建中的 IPC 完成前保留当前表单。 */
+  /** 请求关闭设置弹窗；受保护的 IPC 请求完成前保留当前表单。 */
   function requestClose(): void {
     if (!creatingRef.current) onClose()
   }
@@ -241,7 +243,7 @@ export function SettingsDialog({ onClose, onProvidersChange }: SettingsDialogPro
     role="presentation"
     onMouseDown={(event) => { if (event.target === event.currentTarget) requestClose() }}
   >
-    <section className="settings-dialog" role="dialog" aria-modal="true" aria-labelledby="settings-dialog-title" aria-busy={loadState === "loading" || creating}>
+    <section className="settings-dialog" role="dialog" aria-modal="true" aria-labelledby="settings-dialog-title" aria-busy={(section === "models" && loadState === "loading") || creating}>
       <header className="settings-dialog-header">
         <h2 id="settings-dialog-title">设置</h2>
         <button className="settings-dialog-close" type="button" aria-label="关闭设置" disabled={creating} onClick={requestClose}>
@@ -250,11 +252,12 @@ export function SettingsDialog({ onClose, onProvidersChange }: SettingsDialogPro
       </header>
       <div className="settings-dialog-body">
         <nav className="settings-dialog-nav" aria-label="设置选项">
-          <button className="settings-nav-option settings-nav-option-active" type="button" aria-current="page">
+          <button className={`settings-nav-option${section === "models" ? " settings-nav-option-active" : ""}`} type="button" aria-current={section === "models" ? "page" : undefined} disabled={creating} onClick={() => { if (!creatingRef.current) setSection("models") }}>
             模型
           </button>
+          <button className={`settings-nav-option${section === "mcp" ? " settings-nav-option-active" : ""}`} type="button" aria-current={section === "mcp" ? "page" : undefined} disabled={creating} onClick={() => { if (!creatingRef.current) setSection("mcp") }}>MCP</button>
         </nav>
-        <section className="settings-dialog-content" aria-label="模型设置">
+        {section === "models" && <section className="settings-dialog-content" aria-label="模型设置">
           {loadState === "loading" && <p className="settings-state" role="status">正在加载供应商…</p>}
           {loadState === "error" && <div className="settings-state settings-state-error" role="alert">
             <span>{loadError}</span>
@@ -316,7 +319,8 @@ export function SettingsDialog({ onClose, onProvidersChange }: SettingsDialogPro
                   />}
             </section>
           </div>}
-        </section>
+        </section>}
+        {section === "mcp" && <section className="settings-dialog-content" aria-label="MCP 设置"><McpSettings onBusyChange={handleCreatingChange} /></section>}
       </div>
     </section>
   </div>
