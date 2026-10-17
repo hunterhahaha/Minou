@@ -4,7 +4,8 @@
  * 架构依据：开发备忘录第 2–4 节，以及配置 V2、Provider 和工作区 SQLite 结构。
  */
 
-import { lstat, mkdir, readFile, writeFile } from "node:fs/promises"
+import { lstat, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises"
+import { randomUUID } from "node:crypto"
 import { isAbsolute, join } from "node:path"
 
 import { initializeSessionEventDatabase } from "../../runtime/session/src/event-log.ts"
@@ -102,6 +103,38 @@ function checkFile<T>(filePath: string, check: () => T): T {
   } catch (error) {
     throw new Error(`配置文件检查失败：${filePath} ${error instanceof Error ? error.message : String(error)}`, { cause: error })
   }
+}
+
+/**
+ * 读取现有普通配置并校验 V2，不创建文件或改写内容。
+ * @param configPath 已初始化的 config.json 路径。
+ * @returns 本次从磁盘读取的已校验配置。
+ * @throws Error 文件缺失、不是普通文件、JSON 损坏或 V2 字段无效；错误包含路径。
+ */
+export async function readConfigFile(configPath: string): Promise<ValidatedStartupConfig> {
+  const config = await readJsonObjectFile(configPath)
+  checkFile(configPath, () => checkConfig(config))
+  return config as unknown as ValidatedStartupConfig
+}
+
+/**
+ * 校验并原子替换 MCP 配置，保留本次读取到的其他 V2 字段。
+ * @param configPath 已初始化的 config.json 路径；调用方负责串行化读改写流程。
+ * @param mcpServers 将完整替换的 MCP 配置列表。
+ * @returns 已成功写入的配置快照，供同一次操作同步 Runtime。
+ * @throws Error 读取、校验或临时文件替换失败；替换失败时保留原文件。
+ */
+export async function writeMcpServers(configPath: string, mcpServers: readonly MCPConfig[]): Promise<ValidatedStartupConfig> {
+  const config = { ...await readConfigFile(configPath), mcpServers: structuredClone([...mcpServers]) }
+  checkFile(configPath, () => checkConfig(config))
+  const temporaryPath = `${configPath}.${randomUUID()}.tmp`
+  try {
+    await writeFile(temporaryPath, `${JSON.stringify(config, null, 2)}\n`, { encoding: "utf8", flag: "wx" })
+    await rename(temporaryPath, configPath)
+  } catch (error) {
+    throw new Error(`无法保存配置文件：${configPath}`, { cause: error })
+  } finally { await unlink(temporaryPath).catch(() => undefined) }
+  return config
 }
 
 /**

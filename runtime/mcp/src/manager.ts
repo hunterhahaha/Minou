@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto"
 import type { Readable } from "node:stream"
+import { isDeepStrictEqual } from "node:util"
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js"
@@ -33,11 +34,13 @@ export class MCPManager {
   private catalog = new Map<string, MCPCatalogTool>()
   private searchIndex = new MCPToolSearch()
   private readonly listeners = new Set<() => void>()
-  private readonly refreshes = new Map<string, Promise<void>>()
+  private readonly refreshes = new Map<MCPConnection, Promise<void>>()
   private readonly startupControllers = new Set<AbortController>()
   private initialization: Promise<void> | undefined
   private disposal: Promise<void> | undefined
   private disposed = false
+  /** 串行化连接配置变更；失败不阻塞后续重试。 */
+  private operations: Promise<void> = Promise.resolve()
   private readonly estimateTokens: (text: string) => number
 
   /**
@@ -54,10 +57,44 @@ export class MCPManager {
    */
   initialize(configs: readonly MCPConfig[]): Promise<void> {
     if (this.disposed) return Promise.reject(new Error("MCPManager 已释放"))
-    return this.initialization ??= (async () => {
-      const final = new Map(configs.map((config) => [config.name, structuredClone(config)]))
-      await Promise.all([...final.values()].filter((config) => config.enabled).map((config) => this.connect(config)))
-    })()
+    return this.initialization ??= this.applyConfigurations(configs)
+  }
+
+  /**
+   * 在同一 Manager 内同步已持久化配置，先使旧目录失效，再关闭和替换连接。
+   * @param configs 已校验配置；同名以后项为准，禁用项不建立连接。
+   * @param options restartAll 为 true 时也重启未变化的连接。
+   * @returns 全部连接尝试结束；单项启动失败保留为 error 状态。
+   * @throws Error Manager 已释放，或旧资源清理失败；清理失败的身份不会启动替代实例。
+   */
+  applyConfigurations(configs: readonly MCPConfig[], options: { restartAll?: boolean } = {}): Promise<void> {
+    if (this.disposed) return Promise.reject(new Error("MCPManager 已释放"))
+    const final = new Map(configs.map((config) => [config.name, structuredClone(config)]))
+    const operation = this.operations.then(async () => {
+      if (this.disposed) throw new Error("MCPManager 已释放")
+      const retiring = [...this.connections].filter(([name, connection]) => {
+        const next = final.get(name)
+        return options.restartAll || !next?.enabled || !isDeepStrictEqual(connection.config, next)
+      })
+      const removed = new Set(retiring.map(([name]) => name))
+      for (const [, connection] of retiring) connection.status = "disconnected"
+      if (removed.size) this.publish(new Map([...this.catalog].filter(([, tool]) => !removed.has(tool.serverId))))
+      const results = await Promise.allSettled(retiring.map(async ([name, connection]) => {
+        try {
+          await this.closeConnection(connection)
+          if (this.connections.get(name) === connection) this.connections.delete(name)
+        } catch {
+          connection.status = "error"
+          connection.error = mcpError("MCP_CLOSE_FAILED", "MCP 连接清理失败，配置已保存，请刷新重试。")
+          throw new Error("MCP 连接清理失败")
+        } finally { this.refreshes.delete(connection) }
+      }))
+      if (results.some((result) => result.status === "rejected")) throw new Error("MCP 配置已保存，但旧连接清理失败，请刷新重试。")
+      if (this.disposed) throw new Error("MCPManager 已释放")
+      await Promise.all([...final.values()].filter((config) => config.enabled && !this.connections.has(config.name)).map((config) => this.connect(config)))
+    })
+    this.operations = operation.catch(() => undefined)
+    return operation
   }
 
   /**
@@ -184,7 +221,7 @@ export class MCPManager {
       if (context.signal.aborted) return mcpError("CANCELLED", "MCP 工具调用已取消。")
       // 持久化让出执行权期间目录也可能更新，真正发送前必须重新定位和校验。
       tool = this.catalog.get(name)
-      if (!tool || connection.status !== "connected" || this.disposed) return mcpError("MCP_TOOL_UNAVAILABLE", "MCP 工具或连接当前不可用。")
+      if (!tool || connection.status !== "connected" || this.connections.get(tool.serverId) !== connection || this.disposed) return mcpError("MCP_TOOL_UNAVAILABLE", "MCP 工具或连接当前不可用。")
       if (!tool.validate(args).valid) return mcpError("INVALID_TOOL_ARGUMENTS", "MCP 工具参数不符合当前 Schema。")
       const timeout = (connection.config.tool_timeout_sec ?? 60) * 1000
       const result = await connection.client.callTool({ name: tool.originalToolName, arguments: args }, undefined,
@@ -206,16 +243,31 @@ export class MCPManager {
     return this.disposal ??= (async () => {
       this.disposed = true
       for (const controller of this.startupControllers) controller.abort()
-      await this.initialization
+      for (const connection of this.connections.values()) connection.status = "disconnected"
+      this.publish(new Map())
+      await this.operations
       const results = await Promise.allSettled([...this.connections.values()].map(async (connection) => {
         connection.status = "disconnected"
-        if (connection.client) await connection.client.close()
-        else await connection.transport?.close()
+        await this.closeConnection(connection)
       }))
+      this.refreshes.clear()
       this.publish(new Map())
       const failures = results.filter((result) => result.status === "rejected")
       if (failures.length) throw new AggregateError(failures.map((result) => result.reason), "MCP 连接清理失败。")
     })()
+  }
+
+  /**
+   * 尽力关闭同一连接的 Client 和 Transport，保留失败供宿主或后续刷新重试。
+   * @param connection 待清理且已从有效目录移除的连接。
+   * @returns 两项资源均完成清理。
+   * @throws AggregateError 任一资源关闭失败。
+   */
+  private async closeConnection(connection: MCPConnection): Promise<void> {
+    const errors: unknown[] = []
+    try { await connection.client?.close() } catch (error) { errors.push(error) }
+    try { await connection.transport?.close() } catch (error) { errors.push(error) }
+    if (errors.length) throw new AggregateError(errors, "MCP 连接清理失败")
   }
 
   /**
@@ -224,6 +276,7 @@ export class MCPManager {
    * @returns 成功或失败状态均已写入 Map 后解析。
    */
   private async connect(config: MCPConfig): Promise<void> {
+    if (this.disposed) return
     const connection: MCPConnection = { config, status: "connecting" }
     this.connections.set(config.name, connection)
     const controller = new AbortController()
@@ -250,26 +303,33 @@ export class MCPManager {
         connection.transport = new StreamableHTTPClientTransport(new URL(config.url), { requestInit: { headers } })
       }
       client.onclose = () => {
-        if (connection.status === "connected") {
+        if (this.connections.get(config.name) === connection && connection.status === "connected") {
           connection.status = "disconnected"
           this.removeServer(config.name)
         }
       }
       client.onerror = () => {
-        if (connection.status === "connected") connection.error = mcpError("MCP_CONNECTION_ERROR", "MCP 连接发生错误。")
+        if (this.connections.get(config.name) === connection && connection.status === "connected") connection.error = mcpError("MCP_CONNECTION_ERROR", "MCP 连接发生错误。")
       }
       client.setNotificationHandler(ToolListChangedNotificationSchema, async () => {
+        if (this.disposed || this.connections.get(config.name) !== connection) return
         if (connection.status === "connecting") { changedDuringStartup = true; return }
-        const previous = this.refreshes.get(config.name) ?? Promise.resolve()
+        const previous = this.refreshes.get(connection) ?? Promise.resolve()
         const refresh = previous.then(async () => {
-          if (this.disposed || connection.status !== "connected") return
+          if (this.disposed || this.connections.get(config.name) !== connection || connection.status !== "connected") return
           try {
             const tools = await this.readTools(connection, AbortSignal.timeout(timeout), timeout)
-            if (!this.disposed && connection.status === "connected") this.replaceServer(config.name, tools)
-            connection.error = undefined
-          } catch { connection.error = mcpError("MCP_CATALOG_REFRESH_FAILED", "MCP 工具目录刷新失败，保留上次完整目录。") }
+            if (!this.disposed && this.connections.get(config.name) === connection && connection.status === "connected") {
+              this.replaceServer(config.name, tools)
+              connection.error = undefined
+            }
+          } catch {
+            if (!this.disposed && this.connections.get(config.name) === connection && connection.status === "connected") {
+              connection.error = mcpError("MCP_CATALOG_REFRESH_FAILED", "MCP 工具目录刷新失败，保留上次完整目录。")
+            }
+          }
         })
-        this.refreshes.set(config.name, refresh)
+        this.refreshes.set(connection, refresh)
         await refresh
       })
       await client.connect(connection.transport, { signal: controller.signal, timeout, maxTotalTimeout: timeout })

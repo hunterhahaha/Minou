@@ -19,6 +19,7 @@ import { PROTOCOLS } from "../../runtime/model/src/types.ts"
 import type { Protocol, ModelRef } from "../../runtime/model/src/types.ts"
 import type { SessionEvent } from "../../runtime/session/src/events.ts"
 import type { AppError } from "../../runtime/error/src/types.ts"
+import type { MCPConfig, MCPConnection } from "../../runtime/mcp/src/types.ts"
 import type { SandboxMode, SessionSettingsPatch } from "../../runtime/session/src/session-state.ts"
 import { isProjectId } from "../../runtime/session/src/project-id.ts"
 
@@ -96,6 +97,23 @@ export const PROVIDER_IPC_CHANNELS = {
   deleteModel: "nicode:provider:delete-model",
   setDefaultModel: "nicode:provider:set-default-model",
 } as const
+
+/** MCP 配置与运行状态操作的固定 channel。 */
+export const MCP_IPC_CHANNELS = {
+  listMcpServers: "nicode:mcp:list",
+  createMcpServer: "nicode:mcp:create",
+  updateMcpServer: "nicode:mcp:update",
+  deleteMcpServer: "nicode:mcp:delete",
+  reloadMcpServers: "nicode:mcp:reload",
+} as const
+
+/** 设置页面可序列化快照；不包含 SDK 对象或从宿主环境读取的 Bearer Token。 */
+export interface MCPServerSummary {
+  /** 当前持久化的完整有效配置。 */ config: MCPConfig
+  /** 查询时全局连接状态；禁用项为 disconnected。 */ status: MCPConnection["status"]
+  /** 当前 Catalog 中可用的工具数。 */ toolCount: number
+  /** 不含远端异常或鉴权内容的稳定运行错误。 */ error?: AppError
+}
 
 /** 系统目录选择窗口返回的目录。 */
 export interface DirectorySelection {
@@ -303,6 +321,16 @@ export interface NiCodePreloadApi {
    * @throws Error 当数据库读取失败或主进程返回无效数据时由页面处理。
    */
   listProviders(): Promise<ProviderSummary[]>
+  /** @returns 当前 MCP 配置和运行状态。 @throws Error 查询或返回值校验失败。 */
+  listMcpServers(): Promise<MCPServerSummary[]>
+  /** @param config 完整配置。 @returns 保存及连接尝试后的列表。 @throws Error 输入、持久化或资源清理失败。 */
+  createMcpServer(config: MCPConfig): Promise<MCPServerSummary[]>
+  /** @param originalName 当前名称。 @param config 完整新配置。 @returns 同步后的列表。 @throws Error 名称冲突、保存或清理失败。 */
+  updateMcpServer(originalName: string, config: MCPConfig): Promise<MCPServerSummary[]>
+  /** @param name 待删除的配置身份。 @returns 删除并清理后的列表。 @throws Error 名称不存在、保存或清理失败。 */
+  deleteMcpServer(name: string): Promise<MCPServerSummary[]>
+  /** @returns 重读配置并重新连接全部启用项后的列表。 @throws Error 配置无效或旧资源清理失败。 */
+  reloadMcpServers(): Promise<MCPServerSummary[]>
   /**
    * 创建 Provider、模型记录与 API Key。
    * @param name Provider 显示名称。
@@ -473,6 +501,22 @@ export function createSessionApi(ipcRenderer: IpcRendererInvokePort): NiCodePrel
       return requireProviderSummaries(await ipcRenderer.invoke(STARTUP_DATA_IPC_CHANNELS.listProviders))
     },
 
+    async listMcpServers(): Promise<MCPServerSummary[]> {
+      return requireMcpSummaries(await ipcRenderer.invoke(MCP_IPC_CHANNELS.listMcpServers))
+    },
+    async createMcpServer(config: MCPConfig): Promise<MCPServerSummary[]> {
+      return requireMcpSummaries(await ipcRenderer.invoke(MCP_IPC_CHANNELS.createMcpServer, config))
+    },
+    async updateMcpServer(originalName: string, config: MCPConfig): Promise<MCPServerSummary[]> {
+      return requireMcpSummaries(await ipcRenderer.invoke(MCP_IPC_CHANNELS.updateMcpServer, originalName, config))
+    },
+    async deleteMcpServer(name: string): Promise<MCPServerSummary[]> {
+      return requireMcpSummaries(await ipcRenderer.invoke(MCP_IPC_CHANNELS.deleteMcpServer, name))
+    },
+    async reloadMcpServers(): Promise<MCPServerSummary[]> {
+      return requireMcpSummaries(await ipcRenderer.invoke(MCP_IPC_CHANNELS.reloadMcpServers))
+    },
+
     async createProvider(
       name: string,
       apiKey: string,
@@ -575,6 +619,45 @@ export function exposeSessionApi(
   const api = createSessionApi(ipcRenderer)
   contextBridge.exposeInMainWorld(NICODE_PRELOAD_GLOBAL, api)
   return api
+}
+
+/**
+ * 检查 MCP 页面快照的可消费字段，不把配置对象当作 SDK 资源。
+ * @param value 主进程返回的未知值。
+ * @returns 可安全供设置页面读取的独立快照。
+ * @throws TypeError 列表、配置、运行状态、工具数或错误字段无效。
+ */
+function requireMcpSummaries(value: unknown): MCPServerSummary[] {
+  if (!Array.isArray(value)) throw new TypeError("主进程返回了无效的 MCP 列表")
+  for (const entry of value) {
+    if (!isRecord(entry) || !isRecord(entry.config) || typeof entry.config.name !== "string" || entry.config.name.trim() === "" ||
+        typeof entry.config.enabled !== "boolean" || !["connecting", "connected", "disconnected", "error"].includes(entry.status as string) ||
+        !Number.isSafeInteger(entry.toolCount) || (entry.toolCount as number) < 0) throw new TypeError("主进程返回了无效的 MCP 状态")
+    const config = entry.config
+    /** @param map 未知键值对象。 @returns 键非空且所有值为字符串时为 true。 */
+    const stringMap = (map: unknown): boolean => isRecord(map) && Object.entries(map).every(([key, item]) => key.trim() !== "" && typeof item === "string")
+    /** @param key 配置字段。 @returns 省略或非空字符串时为 true。 */
+    const optionalString = (key: string): boolean => config[key] === undefined || (typeof config[key] === "string" && (config[key] as string).trim() !== "")
+    /** @param key 超时字段。 @returns 省略或计时器范围内有限正数秒时为 true。 */
+    const timeoutValid = (key: string): boolean => config[key] === undefined || (typeof config[key] === "number" && Number.isFinite(config[key]) && (config[key] as number) > 0 && (config[key] as number) * 1000 <= 2_147_483_647)
+    const valid = config.transport === "stdio"
+      ? typeof config.command === "string" && config.command.trim() !== "" && optionalString("cwd") &&
+        (config.args === undefined || (Array.isArray(config.args) && config.args.every((arg) => typeof arg === "string"))) &&
+        (config.env === undefined || stringMap(config.env))
+      : config.transport === "streamable-http" && typeof config.url === "string" && isMcpHttpUrl(config.url) && optionalString("bearer_token_env_var") &&
+        (config.http_headers === undefined || stringMap(config.http_headers)) &&
+        !(config.bearer_token_env_var !== undefined && isRecord(config.http_headers) && Object.keys(config.http_headers).some((key) => key.toLowerCase() === "authorization"))
+    if (!valid || !timeoutValid("startup_timeout_sec") || !timeoutValid("tool_timeout_sec") ||
+        (entry.error !== undefined && (!isRecord(entry.error) || entry.error.source !== "mcp" || typeof entry.error.code !== "string" || typeof entry.error.message !== "string"))) {
+      throw new TypeError("主进程返回了无效的 MCP 配置")
+    }
+  }
+  return structuredClone(value) as MCPServerSummary[]
+}
+
+/** @param value 待检查的 URL。 @returns 是否为绝对 HTTP(S) 地址。 */
+function isMcpHttpUrl(value: string): boolean {
+  try { return ["http:", "https:"].includes(new URL(value).protocol) } catch { return false }
 }
 
 function requireStartedSessionResponse(value: unknown): StartedSessionResponse {

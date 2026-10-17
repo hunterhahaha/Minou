@@ -27,6 +27,7 @@ import {
   STARTUP_DATA_IPC_CHANNELS,
   PROJECT_IPC_CHANNELS,
   PROVIDER_IPC_CHANNELS,
+  MCP_IPC_CHANNELS,
 } from "../../src/preload/session-api.ts"
 import type { StartedSessionResponse } from "../../src/preload/session-api.ts"
 
@@ -266,6 +267,7 @@ async function testRegistersIpcAndWindowLifecycle(): Promise<void> {
       PROJECT_IPC_CHANNELS.createProject,
       PROJECT_IPC_CHANNELS.addProjectDirectory,
       PROJECT_IPC_CHANNELS.removeProjectDirectory,
+      ...Object.values(MCP_IPC_CHANNELS),
     ])
 
     fixture.app.emit("activate")
