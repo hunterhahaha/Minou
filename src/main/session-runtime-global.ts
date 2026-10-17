@@ -4,7 +4,8 @@ import { isAbsolute, join } from "node:path"
 import type { ModelAdapter, ModelRef, UnifiedToolDefinition } from "../../runtime/model/src/types.ts"
 import type { ExecuteToolCall } from "../../runtime/agent/src/loop.ts"
 import type { ToolCallContext, ToolResult } from "../../runtime/tools/src/types.ts"
-import { createExecuteToolCall, registerShellTools, registerTerminalTools, ShellRouter, TerminalRouter, type RenderRegistry, type ToolRegistry } from "../../runtime/tools/src/index.ts"
+import { createExecuteToolCall, registerShellTools, registerTerminalTools, registerMCPTools, ShellRouter, TerminalRouter, type RenderRegistry, type ToolRegistry } from "../../runtime/tools/src/index.ts"
+import { MCPManager } from "../../runtime/mcp/src/index.ts"
 import type { ConfigFilePaths } from "./config-files.ts"
 import { createTurnModelAdapter } from "./model-adapters.ts"
 import { resolveProjectContext } from "./project-context.ts"
@@ -24,9 +25,11 @@ export class SessionRuntimeGlobal {
   readonly shellRouter = new ShellRouter()
   /** 联合 Session 身份绑定终端，正常 Runtime 关闭不会清理它。 */
   readonly terminalRouter = new TerminalRouter()
+  /** 全应用共享连接与目录，Session 载入状态由各自 SessionState 保存。 */
+  readonly mcpManager = new MCPManager(estimateLocalTokens)
 
   /**
-   * 绑定启动配置与注册表，成对登记 Shell/PTY 工具并创建统一执行入口；构造时不启动命令或终端进程。
+   * 绑定启动路径与注册表，成对登记 Shell、PTY 和 MCP 发现工具并创建统一执行入口；构造时不启动外部进程或连接。
    *
    * @param paths - 启动时初始化的配置根目录及各数据库路径。
    * @param toolRegistry - 应用共用的模型工具定义和业务执行注册表。
@@ -50,6 +53,7 @@ export class SessionRuntimeGlobal {
     }
     registerShellTools(toolRegistry, renderRegistry, this.shellRouter, loadProcessAccess)
     registerTerminalTools(toolRegistry, renderRegistry, this.terminalRouter, loadProcessAccess)
+    registerMCPTools(toolRegistry, renderRegistry, this.mcpManager)
     this.toolExecutor = createExecuteToolCall(toolRegistry, renderRegistry)
   }
 
@@ -65,13 +69,13 @@ export class SessionRuntimeGlobal {
   }
 
   /**
-   * 应用退出时并发清理共享 Shell 和 PTY 资源，等待所有清理任务结束后统一报告失败。
+   * 应用退出时并发清理共享 Shell、PTY 和 MCP 资源，等待所有清理任务结束后统一报告失败。
    *
    * @returns 全部进程工具清理完成时兑现的 Promise。
    * @throws AggregateError - 一个或多个清理任务失败；Electron 宿主负责记录并完成退出流程。
    */
   async disposeProcessTools(): Promise<void> {
-    const results = await Promise.allSettled([this.shellRouter.dispose(), this.terminalRouter.dispose()])
+    const results = await Promise.allSettled([this.shellRouter.dispose(), this.terminalRouter.dispose(), this.mcpManager.dispose()])
     const errors = results.filter((result) => result.status === "rejected").map((result) => result.reason)
     if (errors.length) throw new AggregateError(errors, "部分进程工具清理失败")
   }
@@ -109,12 +113,14 @@ export class SessionRuntimeGlobal {
   }
 
   /**
-   * 复制当前注册工具的模型定义，并在参数 Schema 中加入可选 callDescription；不修改注册表原定义。
+   * 组合基础内置工具和当前 Session 的有效 MCP 定义，再加入可选 callDescription。
    *
-   * @returns 当前模型请求可使用的工具定义副本。
+   * @param mcpDefinitions 当前 Session 依据 Meta 和有效 Catalog 生成的定义；省略时只返回内置工具。
+   * @returns 当前模型请求可使用的工具定义副本，不把全局 Catalog 自动暴露给其他 Session。
    */
-  listToolDefinitions(): UnifiedToolDefinition[] {
-    return this.toolRegistry.listDefinitions().map((tool) => ({
+  listToolDefinitions(mcpDefinitions: readonly UnifiedToolDefinition[] = []): UnifiedToolDefinition[] {
+    const builtin = this.toolRegistry.listDefinitions().filter((tool) => this.toolRegistry.get(tool.name)?.kind === "builtin")
+    return [...builtin, ...mcpDefinitions].map((tool) => ({
       ...tool,
       inputSchema: {
         ...tool.inputSchema,

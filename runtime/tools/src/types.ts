@@ -16,6 +16,9 @@
 import type { AppError } from "../../error/src/types.ts"
 import type { ApprovalDecision } from "../../session/src/events.ts"
 import type { TurnFileChangeTracker } from "../../session/src/file-changes.ts"
+import type { SessionLoadedMCPTool } from "../../mcp/src/types.ts"
+import type { UnifiedToolDefinition } from "../../model/src/types.ts"
+import type { SandboxMode } from "../../session/src/session-state.ts"
 
 /** 模型附在工具参数上的 Runtime 调用说明；它不属于工具的业务参数。 */
 export interface ToolCallMeta {
@@ -47,6 +50,23 @@ export interface ToolCallContext {
   fileRuntime?: FileToolRuntimeContext
   /** Runtime 注入的进程工具身份、输出目录和审批出口。 */
   processRuntime?: ProcessToolRuntimeContext
+  /** 当前 Session 的 MCP 持久化、模型预算和审批边界。 */
+  mcpRuntime?: MCPToolRuntimeContext
+}
+
+/** 由 SessionRuntime 注入的 MCP 访问端口；模型不能提供这些字段。 */
+export interface MCPToolRuntimeContext {
+  /** 当前所属分组。 */ projectId: string
+  /** 当前 Session 身份。 */ sessionId: string
+  /** 当前 Turn 固定的上下文窗口；未装配模型规格时不能载入工具。 */ contextWindow?: number
+  /** @returns 当前 Meta 中的独立载入记录。 @throws Error 状态损坏或不可读取。 */
+  readLoadedTools(): Promise<SessionLoadedMCPTool[]>
+  /** @param tools 完整新状态。 @param definitions 有效定义。 @throws Error 持久化失败，由执行边界归一化。 */
+  writeLoadedTools(tools: SessionLoadedMCPTool[], definitions: UnifiedToolDefinition[]): Promise<void>
+  /** @returns 本次检查时当前权限。 @throws Error 设置不可读取。 */
+  readSandboxMode(): Promise<SandboxMode>
+  /** @param toolName 模型侧名称。 @param reason 审批原因。 @param context 完整调用身份。 @returns 审批或取消结果。 @throws Error 审批事件写入失败。 */
+  requestApproval(toolName: string, reason: string, context: ToolExecutionContext<object>): Promise<ApprovalDecision>
 }
 
 /** 进程工具的 Session 边界；不包含文件变更追踪器。 */

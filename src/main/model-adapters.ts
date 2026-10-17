@@ -68,7 +68,7 @@ export async function resolveTurnModelAdapterSpecification(
  *
  * @param paths 每次调用都重新读取的 Provider 数据库路径。
  * @param model 已从当前 Session Meta 重新读取的模型引用。
- * @returns 只供当前 Turn 全部 AgentLoop Step 共用的 Adapter。
+ * @returns 只供当前 Turn 共用的 Adapter，并附带同一配置快照的 contextWindow 供 MCP 预算使用。
  * @throws Error 当配置解析、凭据读取或协议 Adapter 构造失败时抛出；不返回半构建实例。
  */
 export async function createTurnModelAdapter(
@@ -77,7 +77,9 @@ export async function createTurnModelAdapter(
 ): Promise<ModelAdapter> {
   const specification = await resolveTurnModelAdapterSpecification(paths, model)
   try {
-    return createModelAdapter(specification.modelConfig, specification.clientOptions)
+    return Object.assign(createModelAdapter(specification.modelConfig, specification.clientOptions), {
+      contextWindow: specification.modelConfig.contextWindow,
+    })
   } catch {
     throw new Error(
       `无法为 ${formatModelRef(model)} 创建 Adapter；模型配置与凭据来自 ${paths.providerDatabasePath}。`,

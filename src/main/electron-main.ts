@@ -2,7 +2,7 @@
  * NiCode 的真实 Electron 主进程入口。
  *
  * 本文件直接构造 `startElectronApp` 的完整参数。启动期只初始化配置路径、Dispatcher、
- * Project Context、工具执行器和 BrowserWindow；Adapter 由每个 Turn 的工厂按磁盘状态创建。
+ * Project Context、全局 MCPManager、工具执行器和 BrowserWindow；Adapter 由每个 Turn 的工厂按磁盘状态创建。
  */
 
 import { join } from "node:path"
@@ -18,7 +18,7 @@ import {
   RenderRegistry,
   ToolRegistry,
 } from "../../runtime/tools/src/index.ts"
-import { initializeConfigFiles } from "./config-files.ts"
+import { initializeConfigFilesSnapshot } from "./config-files.ts"
 import { createElectronWindowManager } from "./electron-windows.ts"
 import { startElectronApp } from "./index.ts"
 import { SessionRuntimeGlobal } from "./session-runtime-global.ts"
@@ -33,7 +33,7 @@ const SYSTEM_PROMPT = "You are an AI agent powered by NiCode."
  * @throws Error 当启动配置、窗口端口或 Electron 生命周期初始化失败时抛出。
  */
 async function main(): Promise<void> {
-  const paths = await initializeConfigFiles()
+  const { paths, config } = await initializeConfigFilesSnapshot()
 
   initNetworkDispatcher()
   const toolRegistry = new ToolRegistry()
@@ -45,6 +45,10 @@ async function main(): Promise<void> {
   const memoryManager = new MemoryManager(paths.rootDir)
   registerMemoryTools(toolRegistry, renderRegistry, memoryManager)
   const sessionRuntimeGlobal = new SessionRuntimeGlobal(paths, toolRegistry, renderRegistry)
+  await sessionRuntimeGlobal.mcpManager.initialize(config.mcpServers)
+  for (const state of sessionRuntimeGlobal.mcpManager.getConnectionStates()) {
+    if (state.error) console.error(`MCP Server ${state.name} 初始化失败。`, state.error)
+  }
   const windows = createElectronWindowManager(BrowserWindow, {
     preloadPath: join(__dirname, "../preload/index.js"),
     rendererHtmlPath: join(__dirname, "../renderer/index.html"),

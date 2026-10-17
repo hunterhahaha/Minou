@@ -139,6 +139,8 @@ function fixture(
       appendTurnStartAndUserMessage: overrides.appendTurnStartAndUserMessage,
     },
     sessionState: {
+      readLoadedMCPTools: async () => [],
+      writeLoadedMCPTools: async () => {},
       initializeSession: () => repairPorts.initializeSession(),
       repairDerivedState: (values: readonly SessionEvent[]) => repairPorts.repairDerivedState(values),
     },
@@ -782,7 +784,7 @@ async function testConcreteRuntimeBindings(): Promise<void> {
 
     const loopResources = await runtime.createLoopOptions(MODEL)
     assert.equal(loopResources.adapter, createdAdapters[0])
-    assert.deepEqual(loopResources.tools, [])
+    assert.deepEqual(typeof loopResources.tools === "function" ? await loopResources.tools() : loopResources.tools, [])
     const nextTurnResources = await runtime.createLoopOptions(MODEL)
     assert.notEqual(loopResources.adapter, nextTurnResources.adapter)
     assert.equal(createdAdapters.length, 2)

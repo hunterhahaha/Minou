@@ -2,7 +2,8 @@
  * Project 工作区数据库、AGENTS.md 与 Skill 固定上下文的实现。
  *
  * 工作区数据库在同步 Runtime 构造边界读取；可能随 Turn 变化的 AGENTS.md 与 Skill
- * 内容由异步 baseline 函数重新读取。MCP Runtime 尚未实现，因此当前基线明确返回空 MCP 列表。
+ * 内容由异步 baseline 函数重新读取。Project 基线不读取 Session 的 MCP 载入状态，
+ * MCP 定义由 SessionRuntime 在每次模型请求前从 Meta 与全局 Catalog 组合。
  */
 
 import { createHash } from "node:crypto"

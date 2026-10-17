@@ -10,6 +10,7 @@ import { isAbsolute, join } from "node:path"
 import { initializeSessionEventDatabase } from "../../runtime/session/src/event-log.ts"
 import { initializeSessionMetaDatabase } from "../../runtime/session/src/meta-store.ts"
 import { checkConfig } from "./config-schema.ts"
+import type { MCPConfig } from "../../runtime/mcp/src/types.ts"
 import { initializeProviderDatabase } from "./provider-store.ts"
 import { initializeWorkspaceDatabase } from "./workspace-store.ts"
 
@@ -35,8 +36,8 @@ export interface ConfigFilePaths {
 export interface ValidatedStartupConfig {
   /** V2 持久化结构版本。 */
   version: 2
-  /** 已校验的 MCP 配置；本次启动构建不消费其内容。 */
-  mcpServers: unknown[]
+  /** 已校验、供启动时全局 MCPManager 消费的配置。 */
+  mcpServers: MCPConfig[]
   /** 已校验的全局 Runtime 普通配置。 */
   runtime: { userMessageMode: "insert" | "queue" }
 }

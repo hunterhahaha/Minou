@@ -132,8 +132,8 @@ export interface AgentLoopOptions {
    * Loop 内直接原地维护，不重新构建（第 13.3 节）。
    */
   content: ModelMessage[]
-  /** 当前 Tool Exposure State 构建的工具定义（第 11.4 节）；Loop 只透传，不解释。 */
-  tools: UnifiedToolDefinition[]
+  /** 当前工具快照，或每次模型请求前解析 Session Tool Exposure State 的提供函数；Loop 不解释工具内容。 */
+  tools: UnifiedToolDefinition[] | (() => Promise<UnifiedToolDefinition[]>)
   /** 工具执行入口；模型产生 Tool Call 时由 Loop 调用（第 16.4 节）。 */
   executeTool: ExecuteToolCall
   /** 当前 Agent Loop 的取消信号（第 14 节）；用户 Stop 后 Adapter 会以取消错误结束流。 */
@@ -166,7 +166,8 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
 
     let outcome: ModelStepOutcome
     try {
-      outcome = await runModelStep({ turn, step, model, adapter, content, tools, executeTool, signal, appendEvent })
+      const currentTools = typeof tools === "function" ? await tools() : tools
+      outcome = await runModelStep({ turn, step, model, adapter, content, tools: currentTools, executeTool, signal, appendEvent })
 
       // 第 13.3 节「有 Tool Call」：工具小轮完成后才写 step/end，
       // 且因为工具结果必须交还模型，本 Step 一定会进入下一轮。

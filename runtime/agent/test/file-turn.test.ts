@@ -101,6 +101,8 @@ async function run(scenario: Scenario): Promise<SessionEvent[]> {
       appendTurnStartAndUserMessage: fake.appendTurnStartAndUserMessage,
     },
     sessionState: {
+      readLoadedMCPTools: async () => [],
+      writeLoadedMCPTools: async () => {},
       initializeSession: fake.repairPorts.initializeSession,
       repairDerivedState: fake.repairPorts.repairDerivedState,
     },
