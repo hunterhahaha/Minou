@@ -31,7 +31,7 @@ function baseline(root: string): CurrentSessionBaseline {
       descriptions: { alpha: "alpha" },
     },
     mcp: [],
-    additionalMeta: { loadedMcpTools: [{ name: "tool", estimatedTokens: 3 }] },
+    additionalMeta: { loadedMcpTools: [{ name: "mcp_server_tool", serverId: "server", originalToolName: "tool", estimatedTokens: 3, lastCalledAt: 0 }] },
   }
 }
 

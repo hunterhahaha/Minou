@@ -42,13 +42,19 @@ export type ToolName = BuiltinToolName | MCPToolName
 /** 工具实现的来源；真正的 MCP 工具与内置工具使用不同执行分派。 */
 export type ToolKind = "builtin" | "mcp"
 
+/** 真正 MCP 工具的远端身份；不从模型侧名称反向解析。 */
+export interface MCPToolMetadata {
+  /** 配置 name，对应全局连接 Map 的 key。 */ serverId: string
+  /** 远端 callTool 使用的原始名称。 */ originalToolName: string
+}
+
 /** ToolRegistry 保存、后续可由 ToolExposureManager 转换为模型定义的基础信息。 */
 export interface ToolDefinition {
   /** 协议侧使用的工具名称。 */
   name: ToolName
   /** 给模型看的工具说明。 */
   description?: string
-  /** 工具自身的业务参数 JSON Schema；`callDescription` 由未来的暴露层统一加入。 */
+  /** 工具自身的业务参数 JSON Schema；callDescription 在构建模型工具列表时统一加入。 */
   inputSchema: Record<string, unknown>
 }
 
@@ -66,6 +72,8 @@ export type ToolArgumentValidation<TArguments extends object> =
 export interface RegisteredTool<TArguments extends object = Record<string, unknown>, TOutput = unknown> {
   /** 工具来自 NiCode 内置实现还是真正的 MCP 工具。 */
   kind: ToolKind
+  /** 动态 MCP 登记的来源身份；内置工具不提供。 */
+  mcp?: MCPToolMetadata
   /** 工具名称、说明和基础业务参数 Schema。 */
   definition: ToolDefinition
   /**
@@ -110,6 +118,16 @@ export class ToolRegistry {
   private readonly tools = new Map<string, StoredTool>()
 
   /**
+   * 移除动态 MCP 登记；内置工具不能通过此入口删除。
+   * @param name 要移除的模型名称。
+   * @throws Error 名称对应内置工具。
+   */
+  removeMCP(name: string): void {
+    if (this.tools.get(name)?.kind === "builtin") throw new Error("不能移除内置工具")
+    this.tools.delete(name)
+  }
+
+  /**
    * 登记一个工具。正常业务装配应优先使用 `registerTool` 同时登记结果整理器。
    *
    * @param tool 要登记的工具。
@@ -122,6 +140,7 @@ export class ToolRegistry {
 
     const stored: StoredTool = {
       kind: tool.kind,
+      ...(tool.mcp === undefined ? {} : { mcp: { ...tool.mcp } }),
       definition: cloneDefinition(tool.definition),
       validateArguments: (input) => {
         const validation = tool.validateArguments(input)
@@ -189,6 +208,12 @@ export class ToolRegistry {
 /** 保存每个工具对应结果整理器的进程内注册表。 */
 export class RenderRegistry {
   private readonly renders = new Map<string, StoredRender>()
+
+  /** @param name 要成对移除的动态 MCP 名称。 @throws Error 名称不是动态工具名称。 */
+  removeMCP(name: string): void {
+    if (!name.startsWith("mcp_") || BUILTIN_TOOL_NAME_SET.has(name)) throw new Error("不能移除内置结果整理器")
+    this.renders.delete(name)
+  }
 
   /**
    * 登记一个工具的结果整理器。

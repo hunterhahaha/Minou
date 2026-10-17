@@ -45,6 +45,11 @@ function stringList(value: unknown, field: string): void {
   }
 }
 
+/**
+ * 校验 V2 全局配置及两种 MCP 传输，不补默认字段、不迁移或改写文件。
+ * @param value 已解析的全局 JSON 对象。
+ * @throws Error 字段、版本、超时、URL 或鉴权来源无效；启动文件入口补充路径后报告。
+ */
 export function checkConfig(value: JsonObject): void {
   if (value.version !== 2) throw new Error("config.version 必须是 2；旧版配置不会自动迁移。")
   fields(value, "config", ["version", "mcpServers", "runtime"])
@@ -55,16 +60,29 @@ export function checkConfig(value: JsonObject): void {
     const server = object(serverValue, field)
     nonEmptyString(server.name, `${field}.name`)
     if (typeof server.enabled !== "boolean") throw new Error(`${field}.enabled 必须是布尔值。`)
+    for (const key of ["startup_timeout_sec", "tool_timeout_sec"]) {
+      if (key in server && (typeof server[key] !== "number" || !Number.isFinite(server[key]) || server[key] <= 0 || server[key] * 1000 > 2_147_483_647)) {
+        throw new Error(`${field}.${key} 必须是计时器范围内的有限正数秒。`)
+      }
+    }
+    const common = ["name", "enabled", "transport", "startup_timeout_sec", "tool_timeout_sec"]
     if (server.transport === "stdio") {
-      fields(server, field, ["name", "enabled", "transport", "command", "args", "env", "cwd"])
+      fields(server, field, [...common, "command", "args", "env", "cwd"])
       nonEmptyString(server.command, `${field}.command`)
       if ("args" in server) stringList(server.args, `${field}.args`)
       optionalStringMap(server, "env", field)
       optionalString(server, "cwd", field)
     } else if (server.transport === "streamable-http") {
-      fields(server, field, ["name", "enabled", "transport", "url", "headers"])
+      fields(server, field, [...common, "url", "bearer_token_env_var", "http_headers"])
       nonEmptyString(server.url, `${field}.url`)
-      optionalStringMap(server, "headers", field)
+      let url: URL
+      try { url = new URL(server.url as string) } catch { throw new Error(`${field}.url 必须是绝对 HTTP(S) URL。`) }
+      if (!["http:", "https:"].includes(url.protocol)) throw new Error(`${field}.url 必须使用 HTTP(S)。`)
+      optionalStringMap(server, "http_headers", field)
+      optionalString(server, "bearer_token_env_var", field)
+      if ("bearer_token_env_var" in server && server.http_headers && Object.keys(server.http_headers).some((key) => key.toLowerCase() === "authorization")) {
+        throw new Error(`${field} 不得重复配置 Authorization 和 bearer_token_env_var。`)
+      }
     } else {
       throw new Error(`${field}.transport 不是支持的传输方式。`)
     }

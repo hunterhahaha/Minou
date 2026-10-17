@@ -202,6 +202,8 @@ function runtimeHarness(options: { blockFirstLoop?: boolean; failInitialization?
         appendTurnStartAndUserMessage: fake.appendTurnStartAndUserMessage,
       },
       sessionState: {
+        readLoadedMCPTools: async () => [],
+        writeLoadedMCPTools: async () => {},
         initializeSession: () => repairPorts.initializeSession(),
         repairDerivedState: () => repairPorts.repairDerivedState(),
         readSettings: async () => ({ name: "新对话", currentModel: structuredClone(diskModel), sandboxMode }),

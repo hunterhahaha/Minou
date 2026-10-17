@@ -379,6 +379,8 @@ export type ModelStreamEvent =
 
 /** 模型适配器（第 6 节，已定义）。三个 Adapter 均实现此接口。 */
 export interface ModelAdapter {
+  /** 每 Turn 装配时从同一模型快照提供的 MCP 预算窗口；直接构造的 Adapter 可不提供。 */
+  contextWindow?: number
   /**
    * 把一次统一模型请求转换为协议请求并以统一事件流返回。
    *

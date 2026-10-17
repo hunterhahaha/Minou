@@ -682,10 +682,24 @@ export class SessionRuntime implements SessionRepairPorts {
     const adapter = await this.global.createTurnModelAdapter(structuredClone(model))
     return {
       adapter,
-      tools: this.global.listToolDefinitions(),
+      tools: async () => {
+        const loaded = await this.sessionState.readLoadedMCPTools()
+        const definitions = this.global.mcpManager?.getDefinitions(loaded) ?? []
+        await this.sessionState.writeLoadedMCPTools(loaded, definitions)
+        return this.global.listToolDefinitions(definitions)
+      },
       executeTool: (name, args, context) => this.global.executeTool(name, args, {
         ...context,
         projectId: this.projectGroupId,
+        mcpRuntime: {
+          projectId: this.projectGroupId,
+          sessionId: this.sessionId,
+          contextWindow: adapter.contextWindow,
+          readLoadedTools: () => this.sessionState.readLoadedMCPTools(),
+          writeLoadedTools: (tools, definitions) => this.sessionState.writeLoadedMCPTools(tools, definitions),
+          readSandboxMode: async () => (await this.sessionState.readSettings()).sandboxMode,
+          requestApproval: (toolName, reason, execution) => this.requestToolApproval(toolName, reason, execution),
+        },
         fileRuntime: {
           projectId: this.projectGroupId,
           sessionId: this.sessionId,

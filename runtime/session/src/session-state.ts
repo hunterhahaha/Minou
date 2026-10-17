@@ -17,6 +17,7 @@ import type { ContextUpdateEvent, SessionEvent, SkillContextChange, SkillScope }
 import { INITIAL_SESSION_NAME, readSessionMeta, saveSessionMeta } from "./meta-store.ts"
 import { requireProjectId } from "./project-id.ts"
 import type { ProjectId } from "./project-id.ts"
+import type { SessionLoadedMCPTool } from "../../mcp/src/types.ts"
 
 export type { ProjectId } from "./project-id.ts"
 
@@ -85,6 +86,8 @@ export interface SessionMeta {
   sandboxMode: SandboxMode
   usage: RealUsage
   skills: SessionSkillContextState
+  /** MCP 载入身份和预算记录，保存在 additional_meta_json 中。 */
+  loadedMcpTools?: SessionLoadedMCPTool[]
   [field: string]: unknown
 }
 
@@ -145,6 +148,15 @@ export interface FileSessionStateOptions {
 
 /** `SessionRepairPorts` 中派生状态部分的文件系统实现。 */
 export interface FileSessionState {
+  /** @returns 从 Meta 重读并校验的 MCP 载入记录。 @throws Error 状态损坏或不可读取。 */
+  readLoadedMCPTools(): Promise<SessionLoadedMCPTool[]>
+  /**
+   * 在 Session 串行边界先保存 Meta，再原子更新 contextstate.mcp。
+   * @param tools 完整载入状态。
+   * @param definitions 当前有效 Catalog 的定义。
+   * @throws Error 校验或写入失败；已提交的 Meta 用于下次同步恢复定义。
+   */
+  writeLoadedMCPTools(tools: SessionLoadedMCPTool[], definitions: UnifiedToolDefinition[]): Promise<void>
   /**
    * 幂等补齐或重建缺失、损坏的 Session 派生文件。
    *
@@ -276,6 +288,7 @@ export function createFileSessionState(options: FileSessionStateOptions): FileSe
             id: latestSkillEventId,
             entries: cloneSkillEntries(baseline.skills.entries),
           },
+          loadedMcpTools: (additionalMeta.loadedMcpTools as SessionLoadedMCPTool[] | undefined) ?? [],
         }
         saveSessionMeta(paths.metaDatabasePath, initialMeta)
       }
@@ -413,6 +426,22 @@ export function createFileSessionState(options: FileSessionStateOptions): FileSe
 
   return {
     initializeSession,
+    readLoadedMCPTools: () => runSerialized(queue, async () => {
+      const tools = readRequiredMeta(paths).loadedMcpTools ?? []
+      if (!isLoadedMCPTools(tools)) throw new Error(`Session MCP 状态无效：${paths.metaDatabasePath}`)
+      return structuredClone(tools)
+    }),
+    writeLoadedMCPTools: async (tools, definitions) => {
+      if (!isLoadedMCPTools(tools) || !definitions.every(isUnifiedToolDefinition)) throw new Error("Session MCP 更新无效。")
+      const nextTools = structuredClone(tools)
+      const nextDefinitions = structuredClone(definitions)
+      await runSerialized(queue, async () => {
+        const meta = readRequiredMeta(paths)
+        const state = await readRequiredJson(paths.contextStatePath, isSessionContextState, "Session Context State")
+        if (!isDeepStrictEqual(meta.loadedMcpTools, nextTools)) saveSessionMeta(paths.metaDatabasePath, { ...meta, loadedMcpTools: nextTools })
+        if (!isDeepStrictEqual(state.mcp, nextDefinitions)) await atomicWriteJson(paths.contextStatePath, { ...state, mcp: nextDefinitions })
+      })
+    },
     writeCurrentModel: writeBoundCurrentModel,
     readCurrentModel,
     /** @returns 在当前 Session 串行状态边界内重读名称、模型与权限的脱离引用副本。 @throws Error Meta 缺失或损坏。 */
@@ -440,6 +469,24 @@ export function createFileSessionState(options: FileSessionStateOptions): FileSe
     repairDerivedState,
     readContextComparisonState,
   }
+}
+
+/**
+ * 检查 MCP 身份和预算记录，不根据持久化条目推断连接可用性。
+ * @param value 从 Meta 读取或即将提交的数组。
+ * @returns 身份唯一且估算值、时间戳有效时为 true。
+ */
+function isLoadedMCPTools(value: unknown): value is SessionLoadedMCPTool[] {
+  if (!Array.isArray(value)) return false
+  const names = new Set<string>()
+  return value.every((entry: unknown) => {
+    if (!isRecord(entry) || typeof entry.name !== "string" || !entry.name.startsWith("mcp_") || names.has(entry.name)
+      || typeof entry.serverId !== "string" || entry.serverId.length === 0 || typeof entry.originalToolName !== "string" || entry.originalToolName.length === 0
+      || !Number.isSafeInteger(entry.estimatedTokens) || (entry.estimatedTokens as number) < 0
+      || !Number.isSafeInteger(entry.lastCalledAt) || (entry.lastCalledAt as number) < 0) return false
+    names.add(entry.name)
+    return true
+  })
 }
 
 /**
@@ -729,6 +776,9 @@ function validateCurrentBaseline(baseline: CurrentSessionBaseline): void {
   }
   if (baseline.additionalMeta !== undefined && !isRecord(baseline.additionalMeta)) {
     throw new Error("当前 Session 基线的 additionalMeta 无效。")
+  }
+  if (baseline.additionalMeta && "loadedMcpTools" in baseline.additionalMeta && !isLoadedMCPTools(baseline.additionalMeta.loadedMcpTools)) {
+    throw new Error("当前 Session 基线的 loadedMcpTools 无效。")
   }
 }
 

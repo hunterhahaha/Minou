@@ -60,7 +60,7 @@ Workspace Info；每个 Turn 的 baseline 异步读取当前 cwd 下的 `AGENTS.
 Skills。每个 `skills/` 直接子目录中的 `SKILL.md` 以 YAML frontmatter 的 `name` 为唯一身份，目录名可以
 不同；`registry.json` 的 name 引用 YAML name 并提供 scope / enabled，Project 同名项覆盖 Global，
 包括 disabled Project 项屏蔽同名 Global Skill。YAML `description` 进入固定 Skill Context；Token 粗估
-暂按 `Math.ceil(text.length / 4)`。default 分组仅使用 Global Skill。MCP Runtime 尚未实现，因此 baseline 的 MCP 列表仍明确为空。
+暂按 `Math.ceil(text.length / 4)`。default 分组仅使用 Global Skill。Project baseline 不读取 Session 的 MCP 载入状态；MCP 定义由 SessionRuntime 在每次模型请求前从 Meta 和全局 Catalog 组合。
 
 真实 BrowserWindow 使用编译后的 preload 与 Vite 构建的 React `src/renderer/index.html`；
 页面启动时通过 `window.nicode` 并行读取 Project、default 对话及 Provider 摘要，显示 default 新聊天首屏。
@@ -300,6 +300,56 @@ memory_read / mcp_list_tools。
 - 调度器只决定谁和谁一轮，实际执行仍由调用方注入的 `execute` 完成（第 17 节要求所有执行走统一
   execute）。若某次调用抛出，本轮其它调用照常跑完，异常在本轮结束时抛出；之前已交出的结果照常生效。
 - 审批屏障、取消时由调度器直接为未启动调用产出 `CANCELLED` 结果、Session 级调度状态尚未实现。
+
+## MCP 后端
+
+应用启动时使用配置初始化快照中的 `mcpServers`，通过一个全局 `MCPManager` 建立连接、获取完整工具目录、构建 BM25 索引并管理实际调用。没有配置 Server 时目录为空，三个发现工具仍可使用。单个 Server 失败会记录稳定错误，其他 Server 和应用继续启动。
+
+`config.json` 示例（仍使用 V2，不自动迁移旧 MCP 字段）：
+
+```json
+{
+  "version": 2,
+  "mcpServers": [
+    {
+      "name": "local-tools",
+      "transport": "stdio",
+      "enabled": true,
+      "command": "node",
+      "args": ["C:/tools/mcp-server.js"],
+      "cwd": "C:/tools",
+      "env": { "EXAMPLE_MODE": "development" },
+      "startup_timeout_sec": 10,
+      "tool_timeout_sec": 60
+    },
+    {
+      "name": "remote-tools",
+      "transport": "streamable-http",
+      "enabled": true,
+      "url": "https://example.com/mcp",
+      "bearer_token_env_var": "MCP_TOKEN",
+      "http_headers": { "X-Custom-Header": "value" }
+    }
+  ],
+  "runtime": { "userMessageMode": "queue" }
+}
+```
+
+`name`、`transport`、`enabled` 必填；STDIO 的 `command` 和 HTTP 的 `url` 必填。两个超时可省略，运行时分别使用 10 秒和 60 秒；启动时限包含连接和首次完整工具目录。超时需为计时器可表示的有限正数秒。STDIO 使用 SDK 默认继承环境，再合并显式 `env`，不额外继承全部宿主变量。Bearer 从宿主环境读取；变量不存在或为空仅让该 Server 初始化失败。配置 Bearer 时不能同时在 `http_headers` 中提供任何大小写的 Authorization。HTTP 使用 `http_headers`，旧 `headers` 字段会被拒绝。同名配置以后项为准，禁用项不建立连接。
+
+模型优先使用 `tool_search` 检索并自动载入，搜索不到时使用 `mcp_list_tools` 查看轻量名称，再将返回名称传给 `mcp_load_tools`。检索文档仅含 Server 名称、工具名称和描述，统一通用分词，最多载入八个匹配项。wink 要求至少三个索引文档，因此少于三个工具时加入无词元空占位；占位不会成为搜索结果。
+
+载入状态属于各 Session，保存在共享 `meta.sqlite` 的 `additional_meta_json.loadedMcpTools` 中；不增加表。每次请求依据当前 Catalog 过滤有效定义，并修复 `contextstate.mcp`，从下一 Step 向模型暴露新载入工具。预算使用当前 Turn 同一模型配置快照的 `contextWindow × 5%` 和现有本地 Token 估算；按最久未调用顺序清理，单批自身超过预算仍整批载入。工具定义持有稳定的 `mcp_` 名称和独立的远端身份，不通过解析名称路由。
+
+真正调用继续经过统一执行器、Schema 检查、Session 审批与 SDK 取消信号；只有 Full Access 直接执行。其他模式使用已有审批事件，不增加 IPC。SDK 原始返回由 MCP render 只保留顶层文本，非文本不进入 ToolResult；业务错误保留远端文本并标为 `MCP_TOOL_CALL_ERROR`。目录变更通知更新全局目录及成对注册；断开连接的工具不再暴露。应用退出释放 MCP 连接和 STDIO 子进程。本次不提供配置热重载、应用级自动重连、IPC 或前端管理界面。
+
+新增本地验证命令（HTTP 只监听 127.0.0.1，STDIO 使用仓库测试进程，不需要外部 MCP 服务）：
+
+```powershell
+node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types runtime/mcp/test/manager.test.ts
+node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types runtime/session/test/mcp-state.test.ts
+node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types runtime/agent/test/mcp-turn.test.ts
+```
 
 ## 目录结构
 
