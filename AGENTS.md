@@ -41,13 +41,14 @@ Global 与 Project Skill 的 `registry.json` 结构见
 工作区配置只按 Project ID 检查数据库记录是否存在；缺失时报项目损坏，
 不再读取或检查旧 `workspace.json`。
 Provider、Protocol、Models、凭据与 Skill 管理文件的结构已在上述当前文档中确定；
-当前初始化入口尚未创建或校验 `skills/registry.json`，不得自行补充文档外的字段默认值。
+当前初始化入口会补齐 Global 与已登记 Project 的 `skills/registry.json`，随后扫描实际目录同步；非法 registry 按实际目录整体重建，新条目默认启用。存在检查阶段不校验内容。
 
 Project / default 的 `workspace.sqlite` 保存分组配置与 `sessions` 对话索引；
 每个 Project 保存由写入方提供的 `updatedAt` 更新时间；
 每个对话索引项保存 `id`、`name`、`createdAt`、`updatedAt`。
 工作区数据库不保存 Skill 信息；Global 与 Project 的各自 `skills/` 目录中
-分别由 `registry.json` 记录当前目录 Skill 的 `name`、`scope`、`enabled`。
+分别由 `registry.json` 记录当前目录 Skill 的 `name`、绝对目录 `path`、`scope`、`enabled`。
+文件夹名是 Skill 名称，YAML 仅提供 description。对话载入记录按 scope + path 区分，允许同名来源并存；只有新增来源记录产生 Skill 增量通知，已有记录状态变化静默保存。每条 name + description 本地估算最多 500 tokens，总量不限。
 全局目录条目的 `scope` 为 `global`，Project 目录条目的 `scope` 为 `project`。
 
 Provider 数据库中每个 Provider 恰好保存一个协议，模型通过 `provider_id` 归属

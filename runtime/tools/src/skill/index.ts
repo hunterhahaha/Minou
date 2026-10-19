@@ -1,15 +1,52 @@
 /**
- * 目录占位，阶段 0 无实现。
+ * 定义并注册 skill_load 工具。
  *
- * 模块职责：skill 工具本体 —— skill_load（第 12.4 节）。
- * 输入 `SkillLoadInput { name }`；执行时依据当前 Project / default 的 Skill 可用表判断目标 Skill 是否允许，
- * 允许则读取并返回完整 Skill 内容，不允许或不存在则返回结构化工具错误；
- * 成功数据为 `SkillLoadResult { name, content, scope }`，使用独立 renderer 组织为 ToolResultTextContent。
- *
- * 与 ../skill/ 的分工：../skill/ 是 Skill Runtime 本体（SkillManager / SkillContextManager，
- * Skill 可用表、Session Skill Context State、预算治理，第 12 节）；本目录只放暴露给模型的工具。
- *
- * 架构依据：.git/技术文档/开发备忘录1.0.17.md 第 12.4 节（Skill 内容载入工具）、第 12.6 节（Skill 工具成功数据）
- * 实施阶段：不在 TODOList 阶段 1–6 范围内
+ * 本模块校验工具参数并委托 SkillManager 检查实时启用状态、读取正文。
  */
-export {}
+import { SkillManager } from "../../../skill/src/index.ts"
+import { isProjectId } from "../../../session/src/project-id.ts"
+import { registerTool, isPlainRecord } from "../tool-registry.ts"
+import type { ToolRegistry, RenderRegistry, ToolArgumentValidation } from "../tool-registry.ts"
+import type { ToolCallMeta } from "../types.ts"
+import { renderSkillLoad } from "../render/skill.ts"
+
+/**
+ * skill_load 接受的业务参数；Session 和 Project 身份由 Runtime 提供。
+ */
+export interface SkillLoadInput extends ToolCallMeta {
+  /**
+   * Skill 的完整文件夹名，用于匹配当前有效来源。
+   */
+  name: string
+}
+
+/**
+ * 成对登记 Skill 读取工具和专属 renderer，不读取来源配置。
+ *
+ * @param tools 应用工具注册表。
+ * @param renders 应用结果整理器注册表。
+ * @param manager 应用共享的 Skill 来源管理器。
+ * @throws Error 注册表名称冲突或定义无效。
+ */
+export function registerSkillTools(tools: ToolRegistry, renders: RenderRegistry, manager: SkillManager): void {
+  registerTool(tools, renders, {
+    kind: "builtin",
+    definition: {
+      name: "skill_load",
+      description: "Load the complete SKILL.md of an enabled Skill by its exact folder name. Project Skills override Global Skills of the same name. Current source configuration is checked on every call.",
+      inputSchema: { type: "object", properties: { name: { type: "string", minLength: 1 } }, required: ["name"], additionalProperties: false },
+    },
+    validateArguments: (value): ToolArgumentValidation<SkillLoadInput> => isPlainRecord(value) && Object.keys(value).length === 1 && typeof value.name === "string" && value.name.trim() !== ""
+      ? { success: true, data: { name: value.name } }
+      : { success: false, error: { source: "tool", code: "INVALID_TOOL_ARGUMENTS", message: "skill_load 需要非空 name，且不接受其他业务参数。" } },
+    execute: async ({ name }, context) => {
+      if (!isProjectId(context.projectId)) return { source: "tool", code: "SKILL_PROJECT_INVALID", message: "Skill 调用缺少有效 Project 身份。" }
+      try { return await manager.loadSkill(context.projectId, name, context.signal) }
+      catch (error) {
+        const code = context.signal.aborted ? "CANCELLED" : error instanceof Error && "code" in error && typeof error.code === "string" ? error.code : "SKILL_LOAD_FAILED"
+        return { source: "tool", code, message: error instanceof Error ? error.message : "Skill 读取失败。" }
+      }
+    },
+    render: renderSkillLoad,
+  })
+}

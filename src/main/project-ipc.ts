@@ -1,5 +1,6 @@
 /** 目录选择与 Project 配置变更的主进程 IPC。 */
 
+import { initializeSkillSource } from "../../runtime/skill/src/index.ts"
 import { randomUUID } from "node:crypto"
 import { mkdir, rm, stat } from "node:fs/promises"
 import { basename, dirname, isAbsolute, join, normalize, parse, resolve } from "node:path"
@@ -130,6 +131,7 @@ export function registerProjectIpcHandlers(
       await mkdir(projectDirectory)
       created = true
       await mkdir(join(projectDirectory, "workspace"))
+      await initializeSkillSource(join(projectDirectory, "skills"))
       const project = {
         version: 1 as const,
         id: projectId,

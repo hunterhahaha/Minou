@@ -173,17 +173,33 @@ export interface ApprovalResultEvent extends EventBase {
 
 export type SkillScope = "global" | "project"
 
-export type SkillContextChange =
-  | { type: "new"; name: string; scope: SkillScope; description: string }
-  | {
-      type: "replaced"
-      name: string
-      fromScope: SkillScope
-      toScope: SkillScope
-      description: string
-    }
-  | { type: "enabled"; name: string }
-  | { type: "disabled"; name: string }
+/**
+ * 记录首次载入到对话中的一个 Skill 来源。
+ *
+ * 已有来源的启用状态变化保存在 Session Meta，不产生模型通知。
+ */
+export interface SkillContextChange {
+  /**
+   * 此事件只表示新增载入记录。
+   */
+  type: "new"
+  /**
+   * Skill 文件夹名；允许与其他来源的记录同名。
+   */
+  name: string
+  /**
+   * 当时载入的 Skill 文件夹绝对路径。
+   */
+  path: string
+  /**
+   * 当时载入的来源作用域。
+   */
+  scope: SkillScope
+  /**
+   * 当时实际注入模型的截断描述，用于历史回放和派生状态修复。
+   */
+  description: string
+}
 
 /** 已有 Session 在 Turn 开始前提交的固定上下文增量（第 8.10、11.5 节）。 */
 export interface ContextUpdateEvent extends EventBase {

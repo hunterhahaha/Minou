@@ -39,6 +39,7 @@ import type {
 } from "../../session/src/events.ts"
 import { createFileSessionEventLog } from "../../session/src/event-log.ts"
 import type { FileSessionEventLog } from "../../session/src/event-log.ts"
+import { skillSourceKey } from "../../skill/src/context.ts"
 import { createFileSessionState } from "../../session/src/session-state.ts"
 import { TurnFileChangeTracker } from "../../session/src/file-changes.ts"
 import type { ApprovalDecision, FileChange } from "../../session/src/events.ts"
@@ -157,54 +158,20 @@ function replayModelContent(
 }
 
 /**
- * 按第 12.3 节比较当前有效 Skills 与 Session 已保存比较状态。
+ * 按来源身份找出当前有效 Skills 中尚未载入过的记录。
  *
- * @param current 当前实际启用的有效 Skill，顺序即新增/替换事件顺序。
+ * @param current 当前实际启用的有效 Skill，顺序即新增事件顺序。
  * @param previous `meta.skills.entries` 中的历史比较状态。
  * @param descriptions 当前有效 Skill 的预算后 description。
  * @returns 应写入同一条 `context_update` 的有序 changes。
  */
-function collectSkillChanges(
-  current: readonly SessionSkillContextEntry[],
-  previous: readonly SessionSkillContextEntry[],
-  descriptions: Readonly<Record<string, string>>,
-): SkillContextChange[] {
-  const changes: SkillContextChange[] = []
-  const currentByName = new Map(current.filter((entry) => entry.enabled).map((entry) => [entry.name, entry]))
-  const previousByName = new Map(previous.map((entry) => [entry.name, entry]))
-
-  for (const entry of current) {
-    if (!entry.enabled) continue
-    const old = previousByName.get(entry.name)
+function collectSkillChanges(current: readonly SessionSkillContextEntry[], previous: readonly SessionSkillContextEntry[], descriptions: Readonly<Record<string, string>>): SkillContextChange[] {
+  const loaded = new Set(previous.map(skillSourceKey))
+  return current.filter((entry) => entry.enabled && !loaded.has(skillSourceKey(entry))).map((entry) => {
     const description = descriptions[entry.name]
-    if (typeof description !== "string") {
-      throw new Error(`当前 Session 基线缺少 Skill description：${entry.name}`)
-    }
-    if (old === undefined) {
-      changes.push({ type: "new", name: entry.name, scope: entry.scope, description })
-      continue
-    }
-    if (old.scope === entry.scope) {
-      if (!old.enabled) changes.push({ type: "enabled", name: entry.name })
-      continue
-    }
-    if (entry.scope === "project" && old.scope === "global") {
-      changes.push({
-        type: "replaced",
-        name: entry.name,
-        fromScope: old.scope,
-        toScope: entry.scope,
-        description,
-      })
-    }
-  }
-
-  for (const old of previous) {
-    if (old.enabled && !currentByName.has(old.name)) {
-      changes.push({ type: "disabled", name: old.name })
-    }
-  }
-  return changes
+    if (typeof description !== "string") throw new Error(`当前 Skill 缺少 description：${entry.name}`)
+    return { type: "new", name: entry.name, path: entry.path, scope: entry.scope, description }
+  })
 }
 
 /**
@@ -583,6 +550,18 @@ export class SessionRuntime implements SessionRepairPorts {
   }
 
   /**
+   * 完整重载 Skill 来源与固定上下文，供创建之外的完整重载场景复用。
+   *
+   * @returns 保存后的 Skill 基线。
+   * @throws Error 来源或保存失败；调用方负责 Summary 等完整重载的提交边界。
+   */
+  async reloadSkills(): Promise<CurrentSessionBaseline["skills"]> {
+    this.assertOpen()
+    this.turnBaseline = undefined
+    return this.sessionState.reloadSkills()
+  }
+
+  /**
    * 执行已有 Session 的 AGENTS.md / Skill 比较和提交。
    * @returns 基线变化提交并修复派生状态后解析。
    * @throws Error 日志不一致或提交失败。
@@ -609,10 +588,11 @@ export class SessionRuntime implements SessionRepairPorts {
       throw new Error("无法为非当前开放 Turn 构建 Context：期望 " +
         (lifecycle.openTurn ?? "无") + "，实际 " + turn)
     }
+    const fixedSkills = await this.sessionState.readSkillBaseline()
     return replayModelContent(events, composeSystemMessage(
       this.systemPrompt,
       this.projectContext.workspaceInfo,
-      baseline,
+      { ...baseline, skills: { ...baseline.skills, content: fixedSkills.content } },
     ))
   }
 
@@ -1012,6 +992,7 @@ export class SessionRuntime implements SessionRepairPorts {
     if (appended.length > 0) {
       await this.sessionState.repairDerivedState([...events, ...appended])
     }
+    await this.sessionState.synchronizeSkillStatus(baseline.skills.entries)
   }
 
   /**
@@ -1522,7 +1503,10 @@ function validateSessionEvent(sessionId: string, value: unknown, index: number):
           corrupted(sessionId, `第 ${index + 1} 条事件的 agents_md source 无效`)
         }
       } else if (event.source.type === "skill") {
-        if (!Array.isArray(event.source.changes)) {
+        if (!Array.isArray(event.source.changes) || event.source.changes.length === 0 || event.source.changes.some((change: unknown) =>
+          !isRecord(change) || change.type !== "new" || !isNonEmptyString(change.name) ||
+          typeof change.path !== "string" || !isAbsolute(change.path) ||
+          (change.scope !== "global" && change.scope !== "project") || typeof change.description !== "string")) {
           corrupted(sessionId, `第 ${index + 1} 条事件的 skill changes 无效`)
         }
       } else {

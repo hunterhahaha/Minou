@@ -1,4 +1,8 @@
-/** Project workspace、AGENTS.md 与 YAML Skill baseline 的测试。 */
+/**
+ * 验证 Project workspace、AGENTS.md 和 Skill 固定上下文解析。
+ *
+ * Skill 名称取自文件夹，来源 registry 由实际目录扫描同步。
+ */
 
 import assert from "node:assert/strict"
 import { createHash } from "node:crypto"
@@ -7,6 +11,7 @@ import { tmpdir } from "node:os"
 import { join, resolve, sep } from "node:path"
 import { DatabaseSync } from "node:sqlite"
 
+import { SkillManager } from "../../runtime/skill/src/index.ts"
 import { resolveProjectContext } from "../../src/main/project-context.ts"
 import { estimateLocalTokens } from "../../src/main/token-estimator.ts"
 import { initializeWorkspaceDatabase, saveProjectWorkspace } from "../../src/main/workspace-store.ts"
@@ -46,7 +51,16 @@ async function createProject(
   return projectDirectory
 }
 
-/** 写入一个目录名与 YAML name 无关的 Skill。 */
+/**
+ * 写入一个文件夹名与 YAML name 不同的 Skill。
+ *
+ * @param sourceDirectory Skill 来源目录。
+ * @param directoryName Skill 文件夹名，也是运行时使用的 Skill 名称。
+ * @param name 写入 frontmatter 的 YAML name，用于验证它不决定 Skill 身份。
+ * @param description 写入 frontmatter 的 Skill 描述。
+ * @returns 文件写入完成后兑现的 Promise。
+ * @throws 文件夹或 SKILL.md 无法创建时抛出文件系统异常。
+ */
 async function writeSkill(
   sourceDirectory: string,
   directoryName: string,
@@ -70,11 +84,16 @@ async function writeRegistry(
   await mkdir(sourceDirectory, { recursive: true })
   await writeFile(join(sourceDirectory, "registry.json"), JSON.stringify({
     version: 1,
-    skills: skills.map((skill) => ({ ...skill, scope })),
+    skills: skills.map((skill) => ({ ...skill, path: join(sourceDirectory, skill.name), scope })),
   }))
 }
 
-/** 验证工作区路径、AGENTS.md、YAML 身份和 Project 覆盖的完整 baseline。 */
+/**
+ * 验证工作区路径、AGENTS.md、文件夹身份和 Project 覆盖后的完整基线。
+ *
+ * @returns 所有固定上下文断言完成后兑现的 Promise。
+ * @throws 断言失败或临时文件读写失败时抛出。
+ */
 async function testResolvesWorkspaceAgentsAndSkills(): Promise<void> {
   await withTempRoot(async (root) => {
     const associatedDirectory = join(root, "associated-worktree")
@@ -83,16 +102,16 @@ async function testResolvesWorkspaceAgentsAndSkills(): Promise<void> {
     const projectDirectory = await createProject(root, [associatedDirectory])
 
     const globalSkills = join(root, "skills")
-    await writeSkill(globalSkills, "directory-does-not-match", "review", "Review every change")
-    await writeSkill(globalSkills, "second-directory", "global-only", "Use the global workflow")
+    await writeSkill(globalSkills, "review", "yaml-review", "Review every change")
+    await writeSkill(globalSkills, "global-only", "yaml-global", "Use the global workflow")
     await writeRegistry(globalSkills, "global", [
       { name: "review", enabled: true },
       { name: "global-only", enabled: true },
     ])
 
     const projectSkills = join(projectDirectory, "skills")
-    await writeSkill(projectSkills, "project-folder", "review", "Use the project review rules")
-    await writeSkill(projectSkills, "disabled-folder", "disabled", "Do not expose this")
+    await writeSkill(projectSkills, "review", "yaml-project", "Use the project review rules")
+    await writeSkill(projectSkills, "disabled", "yaml-disabled", "Do not expose this")
     await writeRegistry(projectSkills, "project", [
       { name: "review", enabled: true },
       { name: "disabled", enabled: false },
@@ -100,7 +119,7 @@ async function testResolvesWorkspaceAgentsAndSkills(): Promise<void> {
 
     const context = resolveProjectContext({
       rootDirectory: root,
-      estimateSkillTokens: estimateLocalTokens,
+      skillManager: new SkillManager(root, estimateLocalTokens),
     }, PROJECT_ID)
     assert.ok(context.workspaceInfo.includes(`"cwd": "${associatedDirectory.replaceAll("\\", "\\\\")}"`))
     assert.ok(context.workspaceInfo.includes(`"projectId": "${PROJECT_ID}"`))
@@ -112,17 +131,19 @@ async function testResolvesWorkspaceAgentsAndSkills(): Promise<void> {
       baseline.agentsmd.hash,
       createHash("sha256").update("Always verify changes.\n").digest("hex"),
     )
-    assert.deepEqual(baseline.skills.entries, [{
+    assert.deepEqual(baseline.skills.entries.slice().sort((a, b) => a.name.localeCompare(b.name)), [{
       name: "review",
+      path: join(projectSkills, "review"),
       scope: "project",
       enabled: true,
-      estimatedTokens: estimateLocalTokens("Use the project review rules"),
+      estimatedTokens: estimateLocalTokens("reviewUse the project review rules"),
     }, {
       name: "global-only",
+      path: join(globalSkills, "global-only"),
       scope: "global",
       enabled: true,
-      estimatedTokens: estimateLocalTokens("Use the global workflow"),
-    }])
+      estimatedTokens: estimateLocalTokens("global-onlyUse the global workflow"),
+    }].sort((a, b) => a.name.localeCompare(b.name)))
     assert.deepEqual(baseline.skills.descriptions, {
       review: "Use the project review rules",
       "global-only": "Use the global workflow",
@@ -134,25 +155,35 @@ async function testResolvesWorkspaceAgentsAndSkills(): Promise<void> {
   })
 }
 
-/** 验证 Project disabled Skill 会按 YAML name 屏蔽同名 Global Skill。 */
+/**
+ * 验证 Project 中禁用的 Skill 会按文件夹名屏蔽同名 Global Skill。
+ *
+ * @returns 来源覆盖断言完成后兑现的 Promise。
+ * @throws 断言失败或临时文件读写失败时抛出。
+ */
 async function testProjectDisabledSkillSuppressesGlobal(): Promise<void> {
   await withTempRoot(async (root) => {
     const projectDirectory = await createProject(root)
-    await writeSkill(join(root, "skills"), "global-folder", "review", "Global review")
+    await writeSkill(join(root, "skills"), "review", "yaml-global", "Global review")
     await writeRegistry(join(root, "skills"), "global", [{ name: "review", enabled: true }])
-    await writeSkill(join(projectDirectory, "skills"), "project-folder", "review", "Project review")
+    await writeSkill(join(projectDirectory, "skills"), "review", "yaml-project", "Project review")
     await writeRegistry(join(projectDirectory, "skills"), "project", [{ name: "review", enabled: false }])
 
     const baseline = await resolveProjectContext({
       rootDirectory: root,
-      estimateSkillTokens: estimateLocalTokens,
+      skillManager: new SkillManager(root, estimateLocalTokens),
     }, PROJECT_ID).resolveCurrentBaseline()
     assert.deepEqual(baseline.skills, { content: "", entries: [], descriptions: {} })
     assert.equal(baseline.agentsmd.content, "")
   })
 }
 
-/** 验证缺失数据库记录和 registry 的无效 YAML 引用。 */
+/**
+ * 验证缺失的 Project 数据库记录报错，损坏的 Skill registry 按目录重建。
+ *
+ * @returns Project 配置和 Skill registry 断言完成后兑现的 Promise。
+ * @throws 断言失败或临时数据库、文件操作失败时抛出。
+ */
 async function testRejectsInvalidProjectAndSkillConfiguration(): Promise<void> {
   await withTempRoot(async (root) => {
     const projectDirectory = await createProject(root)
@@ -161,7 +192,7 @@ async function testRejectsInvalidProjectAndSkillConfiguration(): Promise<void> {
     const databasePath = join(root, "workspace.sqlite")
     const options = {
       rootDirectory: root,
-      estimateSkillTokens: estimateLocalTokens,
+      skillManager: new SkillManager(root, estimateLocalTokens),
     }
     assert.ok(resolveProjectContext(options, PROJECT_ID).workspaceInfo.includes('"projectName": "NiCode"'))
     const db = new DatabaseSync(databasePath)
@@ -187,17 +218,12 @@ async function testRejectsInvalidProjectAndSkillConfiguration(): Promise<void> {
     })
     assert.equal(await readFile(workspacePath, "utf8"), "旧文件不是有效 JSON")
     const globalSkills = join(root, "skills")
-    await writeSkill(globalSkills, "unrelated-directory", "actual-yaml-name", "Description")
-    await writeRegistry(globalSkills, "global", [{ name: "registry-name", enabled: true }])
-    await assert.rejects(
-      resolveProjectContext(options, PROJECT_ID).resolveCurrentBaseline(),
-      (error: unknown) => {
-        assert.ok(error instanceof Error)
-        assert.ok(error.message.includes(join(globalSkills, "registry.json")))
-        assert.ok(error.message.includes("registry-name"))
-        return true
-      },
-    )
+    await writeSkill(globalSkills, "folder-name", "different-yaml-name", "Description")
+    await writeFile(join(globalSkills, "registry.json"), "invalid json")
+    const repaired = await resolveProjectContext(options, PROJECT_ID).resolveCurrentBaseline()
+    assert.equal(repaired.skills.entries[0].name, "folder-name")
+    assert.equal(repaired.skills.entries[0].path, join(globalSkills, "folder-name"))
+    assert.equal(JSON.parse(await readFile(join(globalSkills, "registry.json"), "utf8")).skills[0].enabled, true)
   })
 }
 
@@ -207,7 +233,7 @@ async function testRequiresProjectDirectories(): Promise<void> {
     const projectDirectory = await createProject(root)
     const options = {
       rootDirectory: root,
-      estimateSkillTokens: estimateLocalTokens,
+      skillManager: new SkillManager(root, estimateLocalTokens),
     }
     await rm(join(projectDirectory, "workspace"), { recursive: true })
     assert.throws(() => resolveProjectContext(options, PROJECT_ID), /Project workspace 目录/)
@@ -222,14 +248,14 @@ async function testDefaultContext(): Promise<void> {
     const workspace = join(root, "sessions", "default", "workspace")
     await mkdir(workspace, { recursive: true })
     initializeWorkspaceDatabase(join(root, "workspace.sqlite"))
-    await writeSkill(join(root, "skills"), "global-folder", "global-skill", "Global description")
+    await writeSkill(join(root, "skills"), "global-skill", "yaml-global", "Global description")
     await writeRegistry(join(root, "skills"), "global", [{ name: "global-skill", enabled: true }])
-    await writeSkill(join(root, "sessions", "default", "skills"), "project-folder", "project-skill", "Ignore")
+    await writeSkill(join(root, "sessions", "default", "skills"), "project-skill", "yaml-project", "Ignore")
     await writeRegistry(join(root, "sessions", "default", "skills"), "project", [
       { name: "project-skill", enabled: true },
     ])
     const context = resolveProjectContext({
-      rootDirectory: root, estimateSkillTokens: estimateLocalTokens,
+      rootDirectory: root, skillManager: new SkillManager(root, estimateLocalTokens),
     }, "default")
     assert.ok(context.workspaceInfo.includes('"projectId": "default"'))
     assert.ok(context.workspaceInfo.includes(`"cwd": "${workspace.replaceAll("\\", "\\\\")}"`))

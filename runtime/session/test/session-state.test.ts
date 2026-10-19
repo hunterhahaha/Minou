@@ -27,7 +27,7 @@ function baseline(root: string): CurrentSessionBaseline {
     agentsmd: { path: join(root, "AGENTS.md"), hash: "hash", content: "rules" },
     skills: {
       content: "skills",
-      entries: [{ name: "alpha", scope: "global", enabled: true, estimatedTokens: 5 }],
+      entries: [{ name: "alpha", path: join(root, "skills", "alpha"), scope: "global", enabled: true, estimatedTokens: 5 }],
       descriptions: { alpha: "alpha" },
     },
     mcp: [],
@@ -122,8 +122,7 @@ async function testDerivedRepair(root: string): Promise<void> {
     },
     {
       type: "context_update", turn: 2, source: { type: "skill", changes: [
-        { type: "new", name: "beta", scope: "project", description: "beta skill" },
-        { type: "disabled", name: "alpha" },
+        { type: "new", name: "beta", path: join(root, "skills", "beta"), scope: "project", description: "beta skill" },
       ] }, content: "<skills_update>beta</skills_update>",
     },
     {
@@ -137,6 +136,7 @@ async function testDerivedRepair(root: string): Promise<void> {
     seq: index + 3, createdAt: "2026-09-24T00:00:00Z",
   } as SessionEvent))
   await item.state.repairDerivedState(events)
+  await item.state.synchronizeSkillStatus([{ name: "beta", path: join(root, "skills", "beta"), scope: "project", enabled: true, estimatedTokens: 14 }])
   await item.state.repairDerivedState(events)
   const meta = readSessionMeta(item.metaDatabasePath, PROJECT_ID, "derived-repair") as SessionMeta
   assert.equal(meta.name, "已命名")
@@ -145,8 +145,8 @@ async function testDerivedRepair(root: string): Promise<void> {
     inputTokens: 17, cacheHitTokens: 5, cacheMissTokens: 10, cacheHitRate: 1 / 3,
   })
   assert.deepEqual(meta.skills, { id: "event-4", entries: [
-    { name: "alpha", scope: "global", enabled: false, estimatedTokens: 5 },
-    { name: "beta", scope: "project", enabled: true, estimatedTokens: 10 },
+    { name: "alpha", path: join(root, "skills", "alpha"), scope: "global", enabled: false, estimatedTokens: 5 },
+    { name: "beta", path: join(root, "skills", "beta"), scope: "project", enabled: true, estimatedTokens: 14 },
   ] })
   assert.equal(await readFile(join(item.sessionDirectory, "agents_md.snapshot"), "utf8"), "new rules")
 }

@@ -728,7 +728,7 @@ async function testConcreteRuntimeBindings(): Promise<void> {
       },
       skills: {
         content: "skills-1",
-        entries: [{ name: "alpha", scope: "global" as const, enabled: true, estimatedTokens: 5 }],
+        entries: [{ name: "alpha", path: join(root, "skills", "alpha"), scope: "global" as const, enabled: true, estimatedTokens: 5 }],
         descriptions: { alpha: "alpha" },
       },
       mcp: [],
@@ -798,7 +798,7 @@ async function testConcreteRuntimeBindings(): Promise<void> {
       },
       skills: {
         content: "skills-2",
-        entries: [{ name: "beta", scope: "project" as const, enabled: true, estimatedTokens: 4 }],
+        entries: [{ name: "beta", path: join(root, "skills", "beta"), scope: "project" as const, enabled: true, estimatedTokens: 4 }],
         descriptions: { beta: "beta" },
       },
       mcp: [],
@@ -811,7 +811,7 @@ async function testConcreteRuntimeBindings(): Promise<void> {
 
     const content = await runtime.buildContent(2)
     assert.equal(content[0]?.role, "system")
-    assert.equal(content[0]?.content, "system\n\nworkspace\n\nUse pnpm.\n\nskills-2")
+    assert.equal(content[0]?.content, "system\n\nworkspace\n\nUse pnpm.\n\nskills-1")
     assert.deepEqual(content.slice(1).map((message) => message.role), ["user", "user", "user", "user"])
     const log = await runtime.readEvents() as SessionEvent[]
     const updates = log.filter((event) => event.type === "context_update")
@@ -821,8 +821,7 @@ async function testConcreteRuntimeBindings(): Promise<void> {
     assert.deepEqual(updates[1].source, {
       type: "skill",
       changes: [
-        { type: "new", name: "beta", scope: "project", description: "beta" },
-        { type: "disabled", name: "alpha" },
+        { type: "new", name: "beta", path: join(root, "skills", "beta"), scope: "project", description: "beta" },
       ],
     })
 
@@ -840,7 +839,7 @@ async function testConcreteRuntimeBindings(): Promise<void> {
       throughEventSeq: 5,
     })
     assert.deepEqual(await runtime.buildContent(2), [
-      { role: "system", content: "system\n\nworkspace\n\nUse pnpm.\n\nskills-2" },
+      { role: "system", content: "system\n\nworkspace\n\nUse pnpm.\n\nskills-1" },
       { role: "user", content: "Earlier context summary." },
       { role: "user", content: [{ type: "text", text: "继续" }] },
     ])
