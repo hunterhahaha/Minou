@@ -1,5 +1,7 @@
 /** 进程启动时创建一次的 Session Runtime 共享能力。 */
 
+import { SkillManager } from "../../runtime/skill/src/index.ts"
+import { registerSkillTools } from "../../runtime/tools/src/skill/index.ts"
 import { isAbsolute, join } from "node:path"
 import type { ModelAdapter, ModelRef, UnifiedToolDefinition } from "../../runtime/model/src/types.ts"
 import type { ExecuteToolCall } from "../../runtime/agent/src/loop.ts"
@@ -27,14 +29,18 @@ export class SessionRuntimeGlobal {
   readonly terminalRouter = new TerminalRouter()
   /** 全应用共享连接与目录，Session 载入状态由各自 SessionState 保存。 */
   readonly mcpManager = new MCPManager(estimateLocalTokens)
+  /**
+   * 全局共享的 Skill 来源配置与读取能力；对话载入历史由各自的 SessionState 保存。
+   */
+  readonly skillManager: SkillManager
 
   /**
-   * 绑定启动路径与注册表，成对登记 Shell、PTY 和 MCP 发现工具并创建统一执行入口；构造时不启动外部进程或连接。
+   * 绑定启动路径与注册表，成对登记 Shell、PTY、Skill 和 MCP 发现工具并创建统一执行入口；构造时不启动外部进程或连接。
    *
    * @param paths - 启动时初始化的配置根目录及各数据库路径。
    * @param toolRegistry - 应用共用的模型工具定义和业务执行注册表。
    * @param renderRegistry - 应用共用的工具结果整理器注册表。
-   * @throws Error - 配置根目录不是绝对路径，或 Shell/PTY 工具登记失败；启动装配负责报告初始化错误。
+   * @throws Error - 配置根目录无效，或 Shell、PTY、MCP、Skill 工具登记失败；启动装配负责报告初始化错误。
    */
   constructor(
     paths: ConfigFilePaths,
@@ -44,6 +50,7 @@ export class SessionRuntimeGlobal {
     if (!isAbsolute(paths.rootDir)) {
       throw new Error("Project Context 根目录必须是绝对路径：" + paths.rootDir)
     }
+    this.skillManager = new SkillManager(paths.rootDir, estimateLocalTokens)
     this.paths = paths
     this.toolRegistry = toolRegistry
     const loadProcessAccess = (projectId: string, sessionId: string) => {
@@ -54,6 +61,7 @@ export class SessionRuntimeGlobal {
     registerShellTools(toolRegistry, renderRegistry, this.shellRouter, loadProcessAccess)
     registerTerminalTools(toolRegistry, renderRegistry, this.terminalRouter, loadProcessAccess)
     registerMCPTools(toolRegistry, renderRegistry, this.mcpManager)
+    registerSkillTools(toolRegistry, renderRegistry, this.skillManager)
     this.toolExecutor = createExecuteToolCall(toolRegistry, renderRegistry)
   }
 
@@ -89,13 +97,14 @@ export class SessionRuntimeGlobal {
   resolveProjectContext(projectId: string): ReturnType<typeof resolveProjectContext> {
     return resolveProjectContext({
       rootDirectory: this.paths.rootDir,
-      estimateSkillTokens: (description) => this.estimateSkillTokens(description),
+      skillManager: this.skillManager,
     }, projectId)
   }
 
   /**
-   * 使用现有本地 Token 估算器计算 Skill 描述。
-   * @param description Skill 的描述。
+   * 使用现有本地 Token 估算器计算 Skill 元信息。
+   *
+   * @param description 要估算的 Skill 元信息文本。
    * @returns 用于上下文计算的本地 Token 估算值。
    */
   estimateSkillTokens(description: string): number {

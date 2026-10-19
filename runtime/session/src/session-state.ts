@@ -16,6 +16,7 @@ import type { ModelRef, UnifiedToolDefinition } from "../../model/src/types.ts"
 import type { ContextUpdateEvent, SessionEvent, SkillContextChange, SkillScope } from "./events.ts"
 import { INITIAL_SESSION_NAME, readSessionMeta, saveSessionMeta } from "./meta-store.ts"
 import { requireProjectId } from "./project-id.ts"
+import { skillSourceKey } from "../../skill/src/context.ts"
 import type { ProjectId } from "./project-id.ts"
 import type { SessionLoadedMCPTool } from "../../mcp/src/types.ts"
 
@@ -59,13 +60,31 @@ export interface RealUsage {
 
 /** Session Meta 中用于下一 Turn Skill 增量比较的条目。 */
 export interface SessionSkillContextEntry {
+  /**
+   * Skill 文件夹名；不同来源可以使用相同名称。
+   */
   name: string
+  /**
+   * 曾载入到当前对话的 Skill 文件夹绝对路径。
+   */
+  path: string
+  /**
+   * 该记录对应的 Skill 来源作用域。
+   */
   scope: SkillScope
+  /**
+   * 该来源当前是否处于有效启用集合；禁用后保留历史记录并更新此状态。
+   */
   enabled: boolean
+  /**
+   * 实际注入的 name 与 description 的本地 Token 估算值。
+   */
   estimatedTokens: number
 }
 
-/** Session Meta 中的 Session Skill 比较状态。 */
+/**
+ * Session 已载入过的 Skill 来源记录及其当前有效状态。
+ */
 export interface SessionSkillContextState {
   id: string | null
   entries: SessionSkillContextEntry[]
@@ -142,12 +161,39 @@ export interface FileSessionStateOptions {
   readEvents(): Promise<readonly unknown[]>
   /** 读取恢复当下的 AGENTS.md、Skill、MCP 及其它 Session meta 基线。 */
   resolveCurrentBaseline(): Promise<CurrentSessionBaseline>
-  /** 计算 Skill description 的估算 Token，用于重放 Skill 增量。 */
+  /**
+   * 计算 name 与 description 的本地估算，用于重放已提交 Skill 增量。
+   *
+   * @param description 事件中记录的 Skill 名称与截断描述。
+   * @returns 本地估算器返回的 Token 数。
+   */
   estimateSkillTokens(description: string): number
 }
 
 /** `SessionRepairPorts` 中派生状态部分的文件系统实现。 */
 export interface FileSessionState {
+  /**
+   * 读取持久化的固定 Skill 内容，供普通 Turn 继续使用同一上下文基线。
+   *
+   * @returns 从 Session Context State 重读并复制的 Skill 固定内容。
+   * @throws Error 状态文件无效或无法读取时抛出。
+   */
+  readSkillBaseline(): Promise<SessionContextState["skills"]>
+  /**
+   * 按当前有效来源静默更新已载入记录的 enabled 状态。
+   *
+   * @param current 已完成目录同步和来源合并的当前 Skill 条目。
+   * @returns Meta 状态保存完成后兑现的 Promise；没有变化时不写入。
+   * @throws Error 输入状态无效，或 Meta 读取、写入失败时抛出。
+   */
+  synchronizeSkillStatus(current: readonly SessionSkillContextEntry[]): Promise<void>
+  /**
+   * 重新读取来源并保存完整 Skill 基线；不提交 Summary 或决定其 checkpoint。
+   *
+   * @returns 同步并保存的完整 Skill 元信息。
+   * @throws Error 来源、已有派生状态或保存失败；调用方负责在合适的完整重载边界调用。
+   */
+  reloadSkills(): Promise<CurrentSessionBaseline["skills"]>
   /** @returns 从 Meta 重读并校验的 MCP 载入记录。 @throws Error 状态损坏或不可读取。 */
   readLoadedMCPTools(): Promise<SessionLoadedMCPTool[]>
   /**
@@ -241,6 +287,19 @@ export function createFileSessionState(options: FileSessionStateOptions): FileSe
   const queue = getSessionStateQueue(paths.sessionDirectory)
 
   /**
+   * 首次初始化和显式完整重载共用的 Skill 保存流程；调用方持有 Session 队列。
+   *
+   * @param meta 本次重新读取或初始化的 Meta。
+   * @param state 当前或新建的固定上下文状态。
+   * @param skills 已同步、合并和截断的 Skill 基线。
+   * @throws Error SQLite 或文件保存失败；重试此流程可幂等完成。
+   */
+  const saveSkillBaseline = async (meta: SessionMeta, state: SessionContextState, skills: CurrentSessionBaseline["skills"]): Promise<void> => {
+    saveSessionMeta(paths.metaDatabasePath, { ...meta, skills: { id: meta.skills.id, entries: cloneSkillEntries(skills.entries) } })
+    await atomicWriteJson(paths.contextStatePath, { ...state, skills: { ...state.skills, content: skills.content } })
+  }
+
+  /**
    * 在同一 Session 的状态队列内补齐全部派生文件。
    *
    * @throws Error 当路径、当前基线或 Event Log 无法用于初始化时抛出。
@@ -268,6 +327,7 @@ export function createFileSessionState(options: FileSessionStateOptions): FileSe
       const turnModel = findLastTurnModel(rawEvents, paths.eventsPath)
       const latestSkillEventId = findLatestSkillEventId(rawEvents)
 
+      let nextMeta = meta
       if (needsMeta) {
         const additionalMeta = baseline.additionalMeta ?? {}
         for (const reserved of ["projectId", "sessionId", "name", "version", "currentModel", "sandboxMode", "usage", "skills"]) {
@@ -290,7 +350,7 @@ export function createFileSessionState(options: FileSessionStateOptions): FileSe
           },
           loadedMcpTools: (additionalMeta.loadedMcpTools as SessionLoadedMCPTool[] | undefined) ?? [],
         }
-        saveSessionMeta(paths.metaDatabasePath, initialMeta)
+        nextMeta = initialMeta
       }
 
       let nextContextState = contextState
@@ -312,7 +372,9 @@ export function createFileSessionState(options: FileSessionStateOptions): FileSe
           },
         }
       }
-      if (nextContextState !== contextState) {
+      if (needsMeta || needsContextState) {
+        await saveSkillBaseline(nextMeta!, nextContextState!, baseline.skills)
+      } else if (nextContextState !== contextState) {
         await atomicWriteJson(paths.contextStatePath, nextContextState)
       }
 
@@ -382,10 +444,7 @@ export function createFileSessionState(options: FileSessionStateOptions): FileSe
 
       if (!shouldUseCurrentSkillBaseline) {
         for (const event of skillEvents.slice(cursorIndex + 1)) {
-          if (!applySkillChanges(nextMeta.skills.entries, event.source.changes, options.estimateSkillTokens)) {
-            shouldUseCurrentSkillBaseline = true
-            break
-          }
+          applySkillChanges(nextMeta.skills.entries, event.source.changes, options.estimateSkillTokens)
           nextMeta.skills.id = event.eventId
         }
       }
@@ -425,6 +484,25 @@ export function createFileSessionState(options: FileSessionStateOptions): FileSe
   })
 
   return {
+    readSkillBaseline: () => runSerialized(queue, async () => {
+      const state = await readRequiredJson(paths.contextStatePath, isSessionContextState, "Session Context State")
+      return structuredClone(state.skills)
+    }),
+    synchronizeSkillStatus: (current) => runSerialized(queue, async () => {
+      if (!isSkillEntries(current)) throw new Error("当前 Skill 来源状态无效。")
+      const active = new Set(current.filter((entry) => entry.enabled).map(skillSourceKey))
+      const meta = readRequiredMeta(paths)
+      const entries = meta.skills.entries.map((entry) => ({ ...entry, enabled: active.has(skillSourceKey(entry)) }))
+      if (!isDeepStrictEqual(entries, meta.skills.entries)) saveSessionMeta(paths.metaDatabasePath, { ...meta, skills: { ...meta.skills, entries } })
+    }),
+    reloadSkills: () => runSerialized(queue, async () => {
+      const baseline = await options.resolveCurrentBaseline()
+      validateCurrentBaseline(baseline)
+      const meta = readRequiredMeta(paths)
+      const state = await readRequiredJson(paths.contextStatePath, isSessionContextState, "Session Context State")
+      await saveSkillBaseline(meta, state, baseline.skills)
+      return structuredClone(baseline.skills)
+    }),
     initializeSession,
     readLoadedMCPTools: () => runSerialized(queue, async () => {
       const tools = readRequiredMeta(paths).loadedMcpTools ?? []
@@ -683,67 +761,40 @@ function isSkillContextUpdate(
 }
 
 /**
- * 把一条已提交 Skill 增量幂等应用到 meta 条目。
+ * 按来源身份幂等补入已提交新增记录，不从磁盘重读描述或覆盖历史状态。
  *
- * @param entries 当前 `meta.skills.entries`；成功时原地推进。
- * @param changes Event Log 中已经提交的 Skill changes。
- * @param estimateSkillTokens Skill description 的 Token 估算器。
- * @returns 全部 change 均可由现有信息应用时返回 true；缺少 enabled/disabled 目标时返回 false。
+ * @param entries 本次 Meta 条目副本，成功时原地追加。
+ * @param changes 已提交事件内的新增来源。
+ * @param estimateSkillTokens 现有本地文本估算器。
+ * @throws Error 事件来源字段或估算开销无效，不使用当前文件替换损坏历史。
  */
-function applySkillChanges(
-  entries: SessionSkillContextEntry[],
-  changes: readonly SkillContextChange[],
-  estimateSkillTokens: (description: string) => number,
-): boolean {
+function applySkillChanges(entries: SessionSkillContextEntry[], changes: readonly SkillContextChange[], estimateSkillTokens: (text: string) => number): void {
   for (const change of changes) {
-    const index = entries.findIndex((entry) => entry.name === change.name)
-    switch (change.type) {
-      case "new": {
-        const entry = skillEntryFromDescription(change.name, change.scope, change.description, estimateSkillTokens)
-        if (index < 0) entries.push(entry)
-        else entries[index] = entry
-        break
-      }
-      case "replaced": {
-        const entry = skillEntryFromDescription(change.name, change.toScope, change.description, estimateSkillTokens)
-        if (index < 0) entries.push(entry)
-        else entries[index] = entry
-        break
-      }
-      case "enabled":
-        if (index < 0) return false
-        entries[index] = { ...entries[index], enabled: true }
-        break
-      case "disabled":
-        if (index < 0) return false
-        entries[index] = { ...entries[index], enabled: false }
-        break
+    if (!isRecord(change) || change.type !== "new" || !isNonEmptyString(change.name) ||
+        typeof change.path !== "string" || !isAbsolute(change.path) ||
+        (change.scope !== "global" && change.scope !== "project") || typeof change.description !== "string") {
+      throw new Error("已提交 Skill 增量记录无效。")
     }
+    const entry = skillEntryFromDescription(change.name, change.path, change.scope, change.description, estimateSkillTokens)
+    if (!entries.some((existing) => skillSourceKey(existing) === skillSourceKey(entry))) entries.push(entry)
   }
-  return true
 }
 
 /**
- * 由事件中的 description 生成可持久化 Skill 比较条目。
+ * 从事件中的原始来源和已截断描述生成记录。
  *
- * @param name Skill 名称。
- * @param scope Skill 当前来源作用域。
- * @param description 用于估算 Token 的描述。
- * @param estimateSkillTokens 调用 Context TokenEstimator 的注入函数。
- * @returns 启用状态的 Skill 比较条目。
- * @throws Error 当估算结果不是非负安全整数时抛出。
+ * @param name 文件夹名。
+ * @param path Skill 文件夹绝对路径。
+ * @param scope 来源作用域。
+ * @param description 当时真正注入模型的描述。
+ * @param estimateSkillTokens 本地估算器。
+ * @returns 启用的来源记录。
+ * @throws Error name + description 估算不是 0 到 500 的安全整数。
  */
-function skillEntryFromDescription(
-  name: string,
-  scope: SkillScope,
-  description: string,
-  estimateSkillTokens: (description: string) => number,
-): SessionSkillContextEntry {
-  const estimatedTokens = estimateSkillTokens(description)
-  if (!Number.isSafeInteger(estimatedTokens) || estimatedTokens < 0) {
-    throw new Error(`Skill ${name} 的 estimatedTokens 必须是非负安全整数。`)
-  }
-  return { name, scope, enabled: true, estimatedTokens }
+function skillEntryFromDescription(name: string, path: string, scope: SkillScope, description: string, estimateSkillTokens: (text: string) => number): SessionSkillContextEntry {
+  const estimatedTokens = estimateSkillTokens(name + description)
+  if (!Number.isSafeInteger(estimatedTokens) || estimatedTokens < 0 || estimatedTokens > 500) throw new Error(`Skill ${name} 的 estimatedTokens 无效。`)
+  return { name, path, scope, enabled: true, estimatedTokens }
 }
 
 /**
@@ -1093,25 +1144,21 @@ function isSessionSkillContextState(value: unknown): value is SessionSkillContex
 }
 
 /**
- * 校验 Skill 比较条目数组及名称唯一性。
+ * 校验 Skill 载入条目及来源身份唯一性，允许不同来源同名。
  *
  * @param value 待检查的 JSON 值。
  * @returns 值是否为有效 Skill 条目数组。
  */
 function isSkillEntries(value: unknown): value is SessionSkillContextEntry[] {
   if (!Array.isArray(value)) return false
-  const names = new Set<string>()
+  const sources = new Set<string>()
   for (const entry of value) {
-    if (
-      !isRecord(entry)
-      || !isNonEmptyString(entry.name)
-      || (entry.scope !== "global" && entry.scope !== "project")
-      || typeof entry.enabled !== "boolean"
-      || !Number.isSafeInteger(entry.estimatedTokens)
-      || (entry.estimatedTokens as number) < 0
-      || names.has(entry.name)
-    ) return false
-    names.add(entry.name)
+    if (!isRecord(entry) || !isNonEmptyString(entry.name) || typeof entry.path !== "string" || !isAbsolute(entry.path) ||
+        (entry.scope !== "global" && entry.scope !== "project") || typeof entry.enabled !== "boolean" ||
+        !Number.isSafeInteger(entry.estimatedTokens) || (entry.estimatedTokens as number) < 0 || (entry.estimatedTokens as number) > 500) return false
+    const key = skillSourceKey(entry as unknown as SessionSkillContextEntry)
+    if (sources.has(key)) return false
+    sources.add(key)
   }
   return true
 }

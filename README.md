@@ -57,10 +57,16 @@ await startElectronApp({
 **Project 固定上下文解析**已接入：`src/main/project-context.ts` 同步读取并检查
 `.nicode/workspace.sqlite` 中对应项目的记录，生成包含关联目录、cwd、内置 workspace 和 allowedRoots 的
 Workspace Info；每个 Turn 的 baseline 异步读取当前 cwd 下的 `AGENTS.md`，并合并 Global / Project
-Skills。每个 `skills/` 直接子目录中的 `SKILL.md` 以 YAML frontmatter 的 `name` 为唯一身份，目录名可以
-不同；`registry.json` 的 name 引用 YAML name 并提供 scope / enabled，Project 同名项覆盖 Global，
-包括 disabled Project 项屏蔽同名 Global Skill。YAML `description` 进入固定 Skill Context；Token 粗估
-暂按 `Math.ceil(text.length / 4)`。default 分组仅使用 Global Skill。Project baseline 不读取 Session 的 MCP 载入状态；MCP 定义由 SessionRuntime 在每次模型请求前从 Meta 和全局 Catalog 组合。
+Skills。每个 `skills/` 直接子目录的文件夹名是 Skill 名称，`SKILL.md` 的 YAML
+frontmatter 提供 description。来源目录内的 `registry.json` 保存 name、绝对目录 path、scope、enabled；
+启动先补齐目录与空文件，再扫描同步，非法配置整体重建。每个 Turn 前也同步当前来源。
+Project 的同名条目覆盖 Global，包括以 disabled 状态屏蔽 Global。每条 `name + description`
+按 `Math.ceil(text.length / 4)` 粗估最多 500 tokens，名称完整、只截断描述，总量不限。
+对话 Meta 按 scope + path 保存载入过的来源，允许同名记录并存；只有新增来源记录才写 Skill
+增量通知，禁用、删除、重新启用和切回已有来源只静默更新状态。普通 Turn 使用已保存固定基线加
+已提交增量。`SessionRuntime.reloadSkills()` 可完整重载；Summary 本体及其 checkpoint 契约尚未实现。
+`skill_load` 每次按实时来源配置检查权限，再返回完整 SKILL.md（含 frontmatter），不截断正文。
+default 分组仅使用 Global Skill。Project baseline 不读取 Session 的 MCP 载入状态；MCP 定义由 SessionRuntime 在每次模型请求前从 Meta 和全局 Catalog 组合。
 
 真实 BrowserWindow 使用编译后的 preload 与 Vite 构建的 React `src/renderer/index.html`；
 页面启动时通过 `window.nicode` 并行读取 Project、default 对话及 Provider 摘要，显示 default 新聊天首屏。
@@ -378,7 +384,7 @@ src/                                 Electron 外壳
 │  ├─ electron-windows.ts            BrowserWindow 创建、静态页面加载与窗口存活检查
 │  ├─ index.ts                       startElectronApp、Project SessionRuntime 工厂与生命周期端口
 │  ├─ model-adapters.ts              每 Turn 从 Provider 数据库读取并创建单个模型 Adapter
-│  ├─ project-context.ts             workspace、AGENTS.md 与 YAML Skill baseline 解析
+│  ├─ project-context.ts             workspace、AGENTS.md 与共享 SkillManager 的 baseline 接线
 │  ├─ session-runtime-global.ts      进程级 Project、模型与工具能力
 │  ├─ token-estimator.ts             Skill / MCP 元信息的本地 Token 粗估
 │  ├─ config-files.ts                .nicode 初始化与 V2 全局配置读取
@@ -434,7 +440,7 @@ runtime/                             Runtime 模块，各自含 src/ 与 test/
 │  └─ test/                          event-log.test.ts / session-state.test.ts
 ├─ project/                          Project / ProjectManager / ProjectRules
 ├─ credential/                       只读 CredentialStore 与测试
-├─ skill/                            Skill Runtime 本体：SkillManager / SkillContextManager
+├─ skill/                            Skill Runtime：来源管理、来源身份和单条元信息截断
 ├─ memory/                           MemoryManager：Markdown 分类、按需读取与整批追加；含存储测试
 ├─ error/
 │  ├─ src/
@@ -546,6 +552,10 @@ node --experimental-strip-types runtime/tools/test/tool-scheduler.test.ts
 node --experimental-strip-types runtime/tools/test/file-tools.test.ts
 node --experimental-strip-types runtime/memory/test/memory.test.ts
 node --experimental-strip-types runtime/tools/test/memory-tools.test.ts
+node --experimental-strip-types runtime/skill/test/skill.test.ts
+node --experimental-strip-types runtime/tools/test/skill-tools.test.ts
+node --experimental-strip-types runtime/agent/test/skill-turn.test.ts
+node --experimental-strip-types test/main/skill-startup.test.ts
 node --experimental-strip-types runtime/tools/test/process-output.test.ts
 node --experimental-strip-types runtime/tools/test/shell-tools.test.ts
 node --experimental-strip-types runtime/tools/test/terminal-tools.test.ts
@@ -611,7 +621,7 @@ Adapter 失败的事件提交边界、Queue 不覆盖模型、同一 Turn 多 St
 按当时磁盘模型分别创建 Adapter。
 
 `test/main/project-context.test.ts` 验证数据库中的 Project 配置、旧 JSON 忽略、项目或
-workspace 目录缺失、AGENTS.md、Skill registry 引用及 Project 覆盖。
+workspace 目录缺失、AGENTS.md、文件夹 Skill 身份、损坏 registry 重建及 Project 覆盖。
 
 `test/main/electron-windows.test.ts` 验证 BrowserWindow 参数、preload / Renderer 绝对路径、页面装载
 错误出口，以及窗口创建和存活状态。
@@ -688,3 +698,10 @@ ToolRegistry / ToolExecutor 测试使用假工具验证成对登记与冲突回�
 1. 测试框架（现有测试不依赖框架）。
 2. 同一 Provider 配置多种协议时的模型绑定规则；重试次数与退避目前是
    `runtime/network/src/retry.ts` 里的常量，是否加入配置尚未确定。
+
+Skill 后端验证分工：`runtime/skill/test/skill.test.ts` 覆盖来源同步、原子替换失败、配置损坏、
+单条截断与 Global/Project 隔离；`runtime/tools/test/skill-tools.test.ts` 覆盖 Schema、实时禁用、
+未找到、取消及完整正文 render；`runtime/agent/test/skill-turn.test.ts` 使用离线模型和真实存储
+验证 Queue/Continue、同名来源并存、静默状态、事件先提交后的恢复与完整重载。
+`test/main/skill-startup.test.ts` 验证全部已登记 Project 的启动补齐，Project IPC 测试只增加
+已有创建入口调用后端初始化后的目录断言。没有新增 Skill IPC 或 UI。

@@ -13,7 +13,8 @@ import { initializeSessionMetaDatabase } from "../../runtime/session/src/meta-st
 import { checkConfig } from "./config-schema.ts"
 import type { MCPConfig } from "../../runtime/mcp/src/types.ts"
 import { initializeProviderDatabase } from "./provider-store.ts"
-import { initializeWorkspaceDatabase } from "./workspace-store.ts"
+import { initializeSkillSource, synchronizeSkillSource } from "../../runtime/skill/src/index.ts"
+import { initializeWorkspaceDatabase, listProjectWorkspaces } from "./workspace-store.ts"
 
 const INITIAL_CONFIG = `${JSON.stringify({
   version: 2,
@@ -139,7 +140,8 @@ export async function writeMcpServers(configPath: string, mcpServers: readonly M
 
 /**
  * 按启动顺序补齐配置目录、配置文件和四份 SQLite 数据库，并检查全局配置的 V2 结构。
- * 已有文件不会被覆盖。
+ *
+ * 已有全局普通配置不会被覆盖；Skill registry 会按实际来源目录扫描并同步。
  * 检查失败时由调用方决定如何呈现启动错误。
  *
  * @param userProfile 用户目录；省略时读取当前进程的 USERPROFILE。
@@ -189,6 +191,12 @@ export async function initializeConfigFilesSnapshot(
   await mkdir(join(defaultDir, "workspace"), { recursive: true })
   initializeProviderDatabase(providerDatabasePath)
   initializeWorkspaceDatabase(workspaceDatabasePath)
+  const sources = [
+    { directory: join(rootDir, "skills"), scope: "global" as const },
+    ...listProjectWorkspaces(workspaceDatabasePath).map((project) => ({ directory: join(sessionsDir, project.id, "skills"), scope: "project" as const })),
+  ]
+  await Promise.all(sources.map(({ directory }) => initializeSkillSource(directory)))
+  await Promise.all(sources.map(({ directory, scope }) => synchronizeSkillSource(directory, scope)))
   await initializeSessionEventDatabase(join(rootDir, "events.sqlite"))
   initializeSessionMetaDatabase(metaDatabasePath)
 

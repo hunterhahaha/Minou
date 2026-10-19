@@ -1,7 +1,7 @@
 /** 目录选择、Project 创建与关联目录变更的主进程 IPC 测试。 */
 
 import assert from "node:assert/strict"
-import { mkdtemp, mkdir, readdir, rm, stat } from "node:fs/promises"
+import { mkdtemp, mkdir, readFile, readdir, rm, stat } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, parse, resolve, sep } from "node:path"
 
@@ -74,6 +74,7 @@ async function main(): Promise<void> {
     assert.equal(new Date(empty.updatedAt).toISOString(), empty.updatedAt)
     assert.equal((await stat(join(sessionsDirectory, empty.projectId, "workspace"))).isDirectory(), true)
     assert.deepEqual(readProjectWorkspace(databasePath, empty.projectId).sessions, [])
+    assert.deepEqual(JSON.parse(await readFile(join(sessionsDirectory, empty.projectId, "skills", "registry.json"), "utf8")), { version: 1, skills: [] })
 
     const project = await ipc.invoke<ProjectSummary>(
       PROJECT_IPC_CHANNELS.createProject, "Project", [firstDirectory, secondDirectory],
