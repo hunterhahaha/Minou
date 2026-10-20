@@ -15,6 +15,7 @@ import type { SessionRuntimeGlobal } from "./session-runtime-global.ts"
 import type { ConfigFilePaths } from "./config-files.ts"
 import { registerModelIpcHandlers } from "./provider-ipc.ts"
 import { registerMcpIpcHandlers } from "./mcp-ipc.ts"
+import { registerSkillIpcHandlers } from "./skill-ipc.ts"
 import { registerStartupDataIpcHandlers } from "./startup-data-ipc.ts"
 import { registerProjectIpcHandlers } from "./project-ipc.ts"
 import type { DirectoryDialogPort } from "./project-ipc.ts"
@@ -138,6 +139,7 @@ export async function startElectronApp(options: ElectronStartupOptions): Promise
   registerModelIpcHandlers(options.ipcMain, options.configPaths)
   registerProjectIpcHandlers(options.ipcMain, options.dialog, options.configPaths)
   registerMcpIpcHandlers(options.ipcMain, options.configPaths, options.sessionRuntime.global.mcpManager)
+  registerSkillIpcHandlers(options.ipcMain, options.configPaths, options.sessionRuntime.global.skillManager)
 
   await options.app.whenReady()
   let processesDisposed = false

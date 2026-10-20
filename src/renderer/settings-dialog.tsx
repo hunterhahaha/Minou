@@ -1,4 +1,4 @@
-/** 设置弹窗：维护模型配置，并提供 MCP 配置与共享连接管理页面。 */
+/** 设置弹窗：维护模型、MCP 配置与按来源管理的技能。 */
 
 import { type FormEvent, useEffect, useRef, useState } from "react"
 import { IconPlus, IconX } from "@tabler/icons-react"
@@ -13,9 +13,11 @@ import type {
 import { PROTOCOLS } from "../../runtime/model/src/types.ts"
 import type { Protocol } from "../../runtime/model/src/types.ts"
 import { McpSettings } from "./mcp-settings.tsx"
+import { SkillSettings } from "./skill-settings.tsx"
+import type { SkillSettingsProps } from "./skill-settings.tsx"
 
 /** 设置弹窗的关闭出口与工作区 Provider 列表同步出口。 */
-interface SettingsDialogProps {
+interface SettingsDialogProps extends Omit<SkillSettingsProps, "onBusyChange"> {
   /** 关闭设置弹窗。 */
   onClose: () => void
   /** 将完整 Provider 列表同步到工作区模型选择器。 */
@@ -98,12 +100,12 @@ function isHttpURL(value: string): boolean {
 }
 
 /**
- * 渲染模型与 MCP 设置导航，阻止请求期间关闭或离开页面，并同步 Provider 列表。
- * @param props 关闭弹窗与同步工作区模型选项的回调。
- * @returns 模型与 MCP 设置弹窗。
+ * 渲染模型、MCP 与技能设置导航，阻止受保护请求期间关闭或离开页面。
+ * @param props 关闭及同步回调，以及工作区持有的项目摘要和技能缓存。
+ * @returns 设置弹窗。
  */
-export function SettingsDialog({ onClose, onProvidersChange }: SettingsDialogProps) {
-  const [section, setSection] = useState<"models" | "mcp">("models")
+export function SettingsDialog({ onClose, onProvidersChange, projects, onReloadProjects, skillsByScope, onSkillsChange }: SettingsDialogProps) {
+  const [section, setSection] = useState<"models" | "mcp" | "skills">("models")
   const [loadState, setLoadState] = useState<"loading" | "ready" | "error">("loading")
   const [loadError, setLoadError] = useState<string | null>(null)
   const [providers, setProviders] = useState<ProviderSummary[]>([])
@@ -111,11 +113,11 @@ export function SettingsDialog({ onClose, onProvidersChange }: SettingsDialogPro
   const [page, setPage] = useState<"create" | "manage">("create")
   const [selectedProviderId, setSelectedProviderId] = useState<string | null>(null)
   const [creating, setCreating] = useState(false)
-  /** 同步守住模型创建或 MCP 请求期间的关闭和导航路径。 */
+  /** 同步守住模型创建、MCP 或技能请求期间的关闭和导航路径。 */
   const creatingRef = useRef(false)
 
   /**
-   * 接收 Provider/模型创建及 MCP 请求的生命周期，统一控制外层关闭和导航。
+   * 接收 Provider/模型创建、MCP 及技能请求的生命周期，统一控制外层关闭和导航。
    * @param pending 请求进行中时为 true，成功或失败后为 false。
    */
   function handleCreatingChange(pending: boolean): void {
@@ -256,6 +258,7 @@ export function SettingsDialog({ onClose, onProvidersChange }: SettingsDialogPro
             模型
           </button>
           <button className={`settings-nav-option${section === "mcp" ? " settings-nav-option-active" : ""}`} type="button" aria-current={section === "mcp" ? "page" : undefined} disabled={creating} onClick={() => { if (!creatingRef.current) setSection("mcp") }}>MCP</button>
+          <button className={`settings-nav-option${section === "skills" ? " settings-nav-option-active" : ""}`} type="button" aria-current={section === "skills" ? "page" : undefined} disabled={creating} onClick={() => { if (!creatingRef.current) setSection("skills") }}>技能</button>
         </nav>
         {section === "models" && <section className="settings-dialog-content" aria-label="模型设置">
           {loadState === "loading" && <p className="settings-state" role="status">正在加载供应商…</p>}
@@ -321,6 +324,7 @@ export function SettingsDialog({ onClose, onProvidersChange }: SettingsDialogPro
           </div>}
         </section>}
         {section === "mcp" && <section className="settings-dialog-content" aria-label="MCP 设置"><McpSettings onBusyChange={handleCreatingChange} /></section>}
+        {section === "skills" && <section className="settings-dialog-content" aria-label="技能设置"><SkillSettings projects={projects} onReloadProjects={onReloadProjects} skillsByScope={skillsByScope} onSkillsChange={onSkillsChange} onBusyChange={handleCreatingChange} /></section>}
       </div>
     </section>
   </div>

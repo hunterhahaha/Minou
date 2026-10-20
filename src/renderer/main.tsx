@@ -19,6 +19,7 @@ import {
 } from "@tabler/icons-react"
 import type { DirectorySelection, ProjectSummary, ProviderSummary, SessionSummary } from "../preload/session-api.ts"
 import { SettingsDialog } from "./settings-dialog.tsx"
+import type { SkillCache } from "./skill-settings.tsx"
 import { WorkspaceSessionState, sessionKey, errorMessage } from "./session-state.ts"
 import { SessionPage } from "./session-page.tsx"
 import "./workspace.css"
@@ -142,6 +143,8 @@ function Workspace() {
   const [creatingProject, setCreatingProject] = useState(false)
   const [focusComposerAfterNavigation, setFocusComposerAfterNavigation] = useState(false)
   const [settingsDialogOpen, setSettingsDialogOpen] = useState(false)
+  /** 技能列表只在查看时读取，弹窗卸载和工作区路由切换均保留字典。 */
+  const [skillsByScope, setSkillsByScope] = useState<SkillCache>({})
 
   /** @param projectId 要刷新的摘要分组；不重查聊天历史。 @returns 摘要更新完成。 */
   async function refreshSessionSummaries(projectId: string): Promise<void> {
@@ -589,6 +592,10 @@ function Workspace() {
     {settingsDialogOpen && <SettingsDialog
       onClose={closeSettingsDialog}
       onProvidersChange={(value) => setProviders({ status: "ready", value })}
+      projects={projects}
+      onReloadProjects={() => { void loadProjects() }}
+      skillsByScope={skillsByScope}
+      onSkillsChange={setSkillsByScope}
     />}
   </div>
 }

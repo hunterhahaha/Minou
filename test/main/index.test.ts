@@ -28,6 +28,7 @@ import {
   PROJECT_IPC_CHANNELS,
   PROVIDER_IPC_CHANNELS,
   MCP_IPC_CHANNELS,
+  SKILL_IPC_CHANNELS,
 } from "../../src/preload/session-api.ts"
 import type { StartedSessionResponse } from "../../src/preload/session-api.ts"
 
@@ -235,6 +236,10 @@ async function testRegistersIpcAndWindowLifecycle(): Promise<void> {
   await withTempProfile(async (profile) => {
     const fixture = startupFixture(profile)
     let adapterFactoryCalls = 0
+    let skillReads = 0
+    Object.defineProperty(fixture.options.sessionRuntime.global, "skillManager", {
+      value: { listSkills: async () => { skillReads += 1; return [] } },
+    })
     fixture.options.sessionRuntime.global.createTurnModelAdapter = async () => {
       adapterFactoryCalls += 1
       throw new Error("启动阶段不得创建 Adapter")
@@ -244,6 +249,7 @@ async function testRegistersIpcAndWindowLifecycle(): Promise<void> {
     assert.equal(fixture.app.readyCalls, 1)
     assert.equal(fixture.windows.createCalls, 1)
     assert.equal(adapterFactoryCalls, 0)
+    assert.equal(skillReads, 0, "注册 Skill IPC 不主动读取列表")
     assert.deepEqual([...fixture.ipcMain.handlers.keys()], [
       SESSION_IPC_CHANNELS.startNewSession,
       SESSION_IPC_CHANNELS.continueSession,
@@ -268,6 +274,7 @@ async function testRegistersIpcAndWindowLifecycle(): Promise<void> {
       PROJECT_IPC_CHANNELS.addProjectDirectory,
       PROJECT_IPC_CHANNELS.removeProjectDirectory,
       ...Object.values(MCP_IPC_CHANNELS),
+      ...Object.values(SKILL_IPC_CHANNELS),
     ])
 
     fixture.app.emit("activate")
