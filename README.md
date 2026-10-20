@@ -68,6 +68,14 @@ Project 的同名条目覆盖 Global，包括以 disabled 状态屏蔽 Global。
 `skill_load` 每次按实时来源配置检查权限，再返回完整 SKILL.md（含 frontmatter），不截断正文。
 default 分组仅使用 Global Skill。Project baseline 不读取 Session 的 MCP 载入状态；MCP 定义由 SessionRuntime 在每次模型请求前从 Meta 和全局 Catalog 组合。
 
+设置弹窗的「技能」页面按来源管理 Global 与各 Project 自己的全部技能，包括禁用项。
+列表展示文件夹名、完整 description、绝对路径和启停开关；单条 SKILL.md 或描述无效时只显示该条错误，仍可禁用。
+Workspace 持有以 `global` / `project:<UUID>` 为键的 React 字典，首次查看才通过 `listSkills(target)` 请求，
+关闭设置与工作区路由切换保留缓存，空列表也缓存；刷新或失败重试仅请求当前来源，不轮询、不预取。
+`setSkillEnabled(target, name, enabled)` 在共享 SkillManager 的来源串行队列内读取最新 registry 并原子保存，
+后端确认后才更新前端开关。保存失败保留原状态；后端不另存技能内存字典，default 不设独立技能来源。
+两个 IPC 分别为 `nicode:skill:list` 与 `nicode:skill:set-enabled`；Project 请求必须对应数据库已登记且目录存在的项目。
+
 真实 BrowserWindow 使用编译后的 preload 与 Vite 构建的 React `src/renderer/index.html`；
 页面启动时通过 `window.nicode` 并行读取 Project、default 对话及 Provider 摘要，显示 default 新聊天首屏。
 首屏按 Figma 工作区原型支持侧栏收起与展开、项目和聊天分组折叠、项目索引折叠，以及权限和模型弹层选择。
@@ -553,6 +561,7 @@ node --experimental-strip-types runtime/tools/test/file-tools.test.ts
 node --experimental-strip-types runtime/memory/test/memory.test.ts
 node --experimental-strip-types runtime/tools/test/memory-tools.test.ts
 node --experimental-strip-types runtime/skill/test/skill.test.ts
+node --experimental-strip-types runtime/skill/test/management.test.ts
 node --experimental-strip-types runtime/tools/test/skill-tools.test.ts
 node --experimental-strip-types runtime/agent/test/skill-turn.test.ts
 node --experimental-strip-types test/main/skill-startup.test.ts
@@ -574,6 +583,7 @@ node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types t
 node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/main/provider-ipc.test.ts
 node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/main/workspace-store.test.ts
 node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/main/project-ipc.test.ts
+node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/main/skill-ipc.test.ts
 node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/main/model-adapters.test.ts
 node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/main/project-context.test.ts
 node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/main/session-runtime-global.test.ts
@@ -582,6 +592,7 @@ node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types t
 node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/main/index.test.ts
 node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/main/session-ipc.test.ts
 node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/preload/session-api.test.ts
+node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/preload/skill-api.test.ts
 node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/preload/session-updates.test.ts
 node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/main/session-connection.test.ts
 node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/renderer/session-state.test.ts
@@ -653,6 +664,12 @@ Get-Content dist/electron-session.stderr.log
 $testProcess.ExitCode
 ```
 
+同样的隐藏窗口启动方式可运行 `test/renderer/electron-skill-settings.test.cjs`。
+该测试使用临时用户目录、真实 SkillManager 与 IPC，通过请求次数验证按需加载、空列表缓存、
+关闭重开及路由切换后缓存保留、仅刷新当前来源，并覆盖描述错误、启停落盘、保存确认前保持原值、
+加载/保存失败重试、请求期间的导航与关闭保护、键盘操作和窄窗口无横向溢出。
+测试截图写入 `dist/skill-settings-wide.png` 与 `dist/skill-settings-narrow.png` 供视觉检查。
+
 该测试验证实际 React 页面新建、Queue、流式正文、Turn 完成后的父容器与正文位置、
 内外层折叠交互、后续事件保持展开、不同对话的折叠状态隔离、跨路由缓存和草稿保留；
 另外通过已有事件推送通道验证停止、失败及无最终正文的页面结构。
@@ -704,4 +721,7 @@ Skill 后端验证分工：`runtime/skill/test/skill.test.ts` 覆盖来源同步
 未找到、取消及完整正文 render；`runtime/agent/test/skill-turn.test.ts` 使用离线模型和真实存储
 验证 Queue/Continue、同名来源并存、静默状态、事件先提交后的恢复与完整重载。
 `test/main/skill-startup.test.ts` 验证全部已登记 Project 的启动补齐，Project IPC 测试只增加
-已有创建入口调用后端初始化后的目录断言。没有新增 Skill IPC 或 UI。
+已有创建入口调用后端初始化后的目录断言。
+`runtime/skill/test/management.test.ts` 覆盖单来源管理、描述失败隔离、不截断展示描述、
+并发扫描/启停、原子替换失败保留原配置和后续恢复；`test/main/skill-ipc.test.ts` 与
+`test/preload/skill-api.test.ts` 验证来源身份、项目登记、参数、返回快照及持久化。

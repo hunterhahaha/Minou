@@ -22,6 +22,9 @@ import type { AppError } from "../../runtime/error/src/types.ts"
 import type { MCPConfig, MCPConnection } from "../../runtime/mcp/src/types.ts"
 import type { SandboxMode, SessionSettingsPatch } from "../../runtime/session/src/session-state.ts"
 import { isProjectId } from "../../runtime/session/src/project-id.ts"
+import type { SkillRegistryEntry, SkillSummary, SkillTarget } from "../../runtime/skill/src/index.ts"
+
+export type { SkillRegistryEntry, SkillSummary, SkillTarget }
 
 export const NICODE_PRELOAD_GLOBAL = "nicode"
 
@@ -105,6 +108,12 @@ export const MCP_IPC_CHANNELS = {
   updateMcpServer: "nicode:mcp:update",
   deleteMcpServer: "nicode:mcp:delete",
   reloadMcpServers: "nicode:mcp:reload",
+} as const
+
+/** 单个来源的技能管理 channel；不参与启动数据预取。 */
+export const SKILL_IPC_CHANNELS = {
+  listSkills: "nicode:skill:list",
+  setSkillEnabled: "nicode:skill:set-enabled",
 } as const
 
 /** 设置页面可序列化快照；不包含 SDK 对象或从宿主环境读取的 Bearer Token。 */
@@ -321,6 +330,22 @@ export interface NiCodePreloadApi {
    * @throws Error 当数据库读取失败或主进程返回无效数据时由页面处理。
    */
   listProviders(): Promise<ProviderSummary[]>
+  /**
+   * 按需同步并读取单个来源的全部技能，包含禁用项和单条描述错误。
+   * @param target Global 或已登记的非 default Project。
+   * @returns 来源技能列表；空列表同样是有效查询结果。
+   * @throws Error 来源读取失败或主进程返回值无效。
+   */
+  listSkills(target: SkillTarget): Promise<SkillSummary[]>
+  /**
+   * 保存单个来源中指定技能的启停状态，不改写描述或对话历史。
+   * @param target 要修改的来源。
+   * @param name 完整文件夹名。
+   * @param enabled 目标启用状态。
+   * @returns 后端确认已持久化的登记项。
+   * @throws Error 输入无效、技能不存在、保存失败或返回值无效。
+   */
+  setSkillEnabled(target: SkillTarget, name: string, enabled: boolean): Promise<SkillRegistryEntry>
   /** @returns 当前 MCP 配置和运行状态。 @throws Error 查询或返回值校验失败。 */
   listMcpServers(): Promise<MCPServerSummary[]>
   /** @param config 完整配置。 @returns 保存及连接尝试后的列表。 @throws Error 输入、持久化或资源清理失败。 */
@@ -452,6 +477,11 @@ export interface ContextBridgePort {
   exposeInMainWorld(apiKey: string, api: unknown): void
 }
 
+/**
+ * 创建只调用固定 channel 并检查业务返回值的冻结 API，不暴露 ipcRenderer 本体。
+ * @param ipcRenderer preload 持有的 IPC 调用与可选事件监听端口。
+ * @returns Renderer 使用的 NiCode 窄接口；构造时不发起请求。
+ */
 export function createSessionApi(ipcRenderer: IpcRendererInvokePort): NiCodePreloadApi {
   return Object.freeze({
     async getSessionData(projectId: string, sessionId: string): Promise<SessionData> {
@@ -499,6 +529,28 @@ export function createSessionApi(ipcRenderer: IpcRendererInvokePort): NiCodePrel
 
     async listProviders(): Promise<ProviderSummary[]> {
       return requireProviderSummaries(await ipcRenderer.invoke(STARTUP_DATA_IPC_CHANNELS.listProviders))
+    },
+
+    async listSkills(target: SkillTarget): Promise<SkillSummary[]> {
+      const value = await ipcRenderer.invoke(SKILL_IPC_CHANNELS.listSkills, target)
+      if (!Array.isArray(value)) throw new TypeError("主进程返回了无效的 Skill 列表")
+      const names = new Set<string>()
+      return value.map((item: unknown): SkillSummary => {
+        const entry = requireSkillEntry(item, target)
+        if (!isRecord(item) || names.has(entry.name) ||
+            !((typeof item.description === "string" && item.description.trim() !== "" && item.descriptionError === undefined) ||
+              (typeof item.descriptionError === "string" && item.descriptionError.trim() !== "" && item.description === undefined))) {
+          throw new TypeError("主进程返回了无效的 Skill 描述")
+        }
+        names.add(entry.name)
+        return { ...entry, ...(typeof item.description === "string" ? { description: item.description } : { descriptionError: item.descriptionError as string }) }
+      })
+    },
+
+    async setSkillEnabled(target: SkillTarget, name: string, enabled: boolean): Promise<SkillRegistryEntry> {
+      const entry = requireSkillEntry(await ipcRenderer.invoke(SKILL_IPC_CHANNELS.setSkillEnabled, target, name, enabled), target)
+      if (entry.name !== name || entry.enabled !== enabled) throw new TypeError("Skill 保存结果与请求不一致")
+      return entry
     },
 
     async listMcpServers(): Promise<MCPServerSummary[]> {
@@ -619,6 +671,21 @@ export function exposeSessionApi(
   const api = createSessionApi(ipcRenderer)
   contextBridge.exposeInMainWorld(NICODE_PRELOAD_GLOBAL, api)
   return api
+}
+
+/**
+ * 检查技能登记返回值的名称、绝对路径、作用域及启停状态，只保留消费字段。
+ * @param value 主进程返回的未知登记项。
+ * @param target 本次请求的作用域。
+ * @returns 独立的有效登记项。
+ * @throws TypeError 字段无效或返回的来源作用域与请求不符。
+ */
+function requireSkillEntry(value: unknown, target: SkillTarget): SkillRegistryEntry {
+  if (!isRecord(value) || typeof value.name !== "string" || value.name.trim() === "" ||
+      value.name === "." || value.name === ".." || /[/\\]/.test(value.name) ||
+      typeof value.path !== "string" || !/^(?:[a-z]:[/\\]|\\\\|\/)/i.test(value.path) ||
+      value.scope !== target.scope || typeof value.enabled !== "boolean") throw new TypeError("主进程返回了无效的 Skill 登记项")
+  return { name: value.name, path: value.path, scope: target.scope, enabled: value.enabled }
 }
 
 /**

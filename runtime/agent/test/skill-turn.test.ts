@@ -4,7 +4,7 @@
  * 覆盖首次载入、Queue、Continue、来源状态静默更新和已提交事件恢复。
  */
 import assert from "node:assert/strict"
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve, sep } from "node:path"
 import type { ModelAdapter, ModelRef, UnifiedModelRequest } from "../../model/src/types.ts"
@@ -38,7 +38,7 @@ async function addSkill(source: string, name: string, description: string): Prom
 }
 
 /**
- * 执行真实 Turn、增量通知和故障恢复验证。
+ * 执行真实 Turn、管理器启停保存、增量通知和故障恢复验证。
  *
  * @returns 全部 Session 与 Skill 验证完成后兑现的 Promise。
  * @throws AssertionError 记录、通知或恢复结果不符合契约时抛出；运行时和文件系统错误也会向上传递。
@@ -121,17 +121,13 @@ async function main(): Promise<void> {
       await next()
       assert.equal((await notifications()).length, 1, "切回载入过的 Global 来源静默")
       assert.deepEqual(meta().skills.entries.map((item) => item.enabled), [true, false])
-      const registryPath = join(globalDirectory, "registry.json")
-      const registry = JSON.parse(await readFile(registryPath, "utf8"))
-      registry.skills[0].enabled = false
-      await writeFile(registryPath, JSON.stringify(registry))
+      await global.skillManager.setSkillEnabled({ scope: "global" }, "review", false)
       await next()
       assert.equal((await notifications()).length, 1)
       assert.ok(meta().skills.entries.every((item) => !item.enabled))
       const results = (await runtime.readEvents() as readonly SessionEvent[]).filter((event) => event.type === "tool/result")
       assert.equal(results.at(-1)!.result.status, "error")
-      registry.skills[0].enabled = true
-      await writeFile(registryPath, JSON.stringify(registry))
+      await global.skillManager.setSkillEnabled({ scope: "global" }, "review", true)
       await next()
       assert.equal((await notifications()).length, 1, "重新启用已有来源静默")
       await addSkill(globalDirectory, "review", "edited-description")

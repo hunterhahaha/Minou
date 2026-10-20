@@ -32,6 +32,18 @@ export interface SkillRegistryEntry {
    */
   enabled: boolean
 }
+/** 技能管理请求的单个来源；default 对话使用 Global，不是 Project 来源。 */
+export type SkillTarget =
+  | { /** 全局技能来源。 */ scope: "global" }
+  | { /** 项目技能来源。 */ scope: "project"; /** 已登记的非 default Project UUID。 */ projectId: string }
+
+/** 管理页面的来源条目；描述错误不影响登记信息与启停操作。 */
+export interface SkillSummary extends SkillRegistryEntry {
+  /** SKILL.md 中的完整 description，不应用模型上下文截断。 */
+  description?: string
+  /** 读取文件或解析 description 失败的说明；与 description 互斥。 */
+  descriptionError?: string
+}
 /**
  * 每个来源目录持久化的 registry.json 结构。
  */
@@ -64,7 +76,7 @@ export interface SkillLoadResult {
 }
 
 /**
- * 按来源目录串行化启动初始化与 Runtime 同步，避免并发覆盖 registry。
+ * 按来源目录串行化初始化、Runtime 扫描与启停保存，避免并发覆盖 registry。
  */
 const sourceQueues = new Map<string, Promise<void>>()
 
@@ -164,14 +176,23 @@ export async function synchronizeSkillSource(directory: string, scope: SkillScop
       const enabled = new Map(old?.skills.map((entry) => [entry.name, entry.enabled]))
       const registry: SkillRegistry = { version: 1, skills: directories.map(({ name }) => ({ name, path: join(directory, name), scope, enabled: enabled.get(name) ?? true })) }
       const next = `${JSON.stringify(registry, null, 2)}\n`
-      if (content !== next) {
-        const temporary = `${path}.${randomUUID()}.tmp`
-        try { await writeFile(temporary, next, { encoding: "utf8", flag: "wx" }); await rename(temporary, path) }
-        finally { await unlink(temporary).catch(() => undefined) }
-      }
+      if (content !== next) await writeRegistry(path, next)
       return registry
     } catch (error) { throw new Error(`无法同步 Skill 来源：${directory}`, { cause: error }) }
   })
+}
+
+/**
+ * 以同目录临时文件原子替换 registry；调用方负责持有来源串行队列。
+ * @param path registry.json 的绝对路径。
+ * @param content 已序列化的完整配置。
+ * @returns 原子替换完成的 Promise。
+ * @throws Error 写入或替换失败；替换前的原文件保留，临时文件尽力清理。
+ */
+async function writeRegistry(path: string, content: string): Promise<void> {
+  const temporary = `${path}.${randomUUID()}.tmp`
+  try { await writeFile(temporary, content, { encoding: "utf8", flag: "wx" }); await rename(temporary, path) }
+  finally { await unlink(temporary).catch(() => undefined) }
 }
 
 /**
@@ -259,6 +280,62 @@ export class SkillManager {
     if (!isAbsolute(rootDirectory)) throw new Error(`Skill 根目录必须是绝对路径：${rootDirectory}`)
     this.rootDirectory = resolve(rootDirectory)
     this.estimate = estimate
+  }
+
+  /**
+   * 同步一个管理来源并读取全部技能描述，包括禁用项，不合并 Global 与 Project。
+   * @param target 指定 Global 或一个非 default Project；项目登记由 IPC 边界检查。
+   * @returns 按名称排序的独立列表，单条描述失败保存为 descriptionError。
+   * @throws Error 来源不存在、扫描或 registry 读写失败；无效 Project 身份也会抛出。
+   */
+  async listSkills(target: SkillTarget): Promise<SkillSummary[]> {
+    const directory = this.managementSource(target)
+    const registry = await synchronizeSkillSource(directory, target.scope)
+    return Promise.all(registry.skills.map(async (entry): Promise<SkillSummary> => {
+      try {
+        return { ...entry, description: readDescription(await readDefinition(entry.path), join(entry.path, "SKILL.md")) }
+      } catch (error) {
+        return { ...entry, descriptionError: error instanceof Error ? error.message : String(error) }
+      }
+    }))
+  }
+
+  /**
+   * 在来源队列内读取最新登记并原子保存启停状态；不读取描述或修改对话历史。
+   * @param target 要修改的单个来源；项目登记由 IPC 边界检查。
+   * @param name 完整文件夹名，仅用于登记查找。
+   * @param enabled 要保存的目标启用状态。
+   * @returns 原子保存成功或状态已相同时的独立登记项。
+   * @throws Error 输入无效、来源配置损坏、技能已不存在或保存失败；失败不会阻塞队列后续操作。
+   */
+  async setSkillEnabled(target: SkillTarget, name: string, enabled: boolean): Promise<SkillRegistryEntry> {
+    if (typeof name !== "string" || name.trim() === "" || name === "." || name === ".." || /[/\\]/.test(name)) throw new TypeError("Skill 名称必须是完整文件夹名")
+    if (typeof enabled !== "boolean") throw new TypeError("Skill 启用状态必须是布尔值")
+    const directory = this.managementSource(target)
+    return serializeSource(directory, async () => {
+      await requireDirectory(directory)
+      const skills = await readRegistry(directory, target.scope)
+      const entry = skills.find((item) => item.name === name)
+      if (entry === undefined) throw new Error(`Skill 已不存在：${name}`)
+      await requireDirectory(entry.path)
+      if (entry.enabled === enabled) return { ...entry }
+      const updated = { ...entry, enabled }
+      const registry: SkillRegistry = { version: 1, skills: skills.map((item) => item.name === name ? updated : item) }
+      await writeRegistry(join(directory, "registry.json"), `${JSON.stringify(registry, null, 2)}\n`)
+      return updated
+    })
+  }
+
+  /**
+   * 从可信根目录解析单个管理来源，不接受 Renderer 提供路径。
+   * @param target 全局或非 default 项目身份。
+   * @returns 当前来源的绝对目录。
+   * @throws TypeError 作用域或项目身份无效。
+   */
+  private managementSource(target: SkillTarget): string {
+    if (target.scope === "global") return join(this.rootDirectory, "skills")
+    if (target.scope !== "project" || target.projectId === "default") throw new TypeError("Skill 管理作用域无效")
+    return join(this.rootDirectory, "sessions", requireProjectId(target.projectId), "skills")
   }
 
   /**
