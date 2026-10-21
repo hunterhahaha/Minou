@@ -61,7 +61,7 @@ async function main(): Promise<void> {
     global.createTurnModelAdapter = async (): Promise<ModelAdapter> => {
       const turn = ++adapters
       let step = 0
-      return { stream: async function* (request) {
+      return { contextWindow: 128000, maxOutputTokens: 4096, stream: async function* (request) {
         requests.push(structuredClone(request))
         assert.ok(request.tools?.some((tool) => tool.name === "skill_load"))
         if (++step === 1) {

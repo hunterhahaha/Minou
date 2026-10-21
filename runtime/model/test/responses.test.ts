@@ -170,6 +170,11 @@ async function main(): Promise<void> {
 
   {
     const params = buildResponsesRequest(agentRequest())
+    const compact = buildResponsesRequest({ ...agentRequest(), toolChoice: "none" })
+    assert.equal(compact.tool_choice, "none")
+    assert.deepEqual(compact.tools, params.tools)
+    assert.deepEqual(compact.input, params.input)
+    assert.equal(params.tool_choice, undefined)
 
     assert.equal(params.model, "gpt-responses-test")
     assert.equal(params.stream, true)

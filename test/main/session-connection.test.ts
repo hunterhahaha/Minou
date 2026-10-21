@@ -74,7 +74,7 @@ async function fixture(profile: string, approval = false) {
       models.push(structuredClone(reference))
       const index = ++adapterCount
       let requestCount = 0
-      return { stream: async function* (_request, signal) {
+      return { contextWindow: 128000, maxOutputTokens: 4096, stream: async function* (_request, signal) {
         if (!approval && index === 1) await Promise.race([gate, new Promise<never>((_resolve, reject) => {
           const cancel = () => reject(createAbortError())
           if (signal.aborted) cancel(); else signal.addEventListener("abort", cancel, { once: true })

@@ -99,7 +99,7 @@ function fixture(
       seenModels.push(model)
       return {
         adapter: {
-          stream: async function* (request: Parameters<import("../../model/src/types.ts").ModelAdapter["stream"]>[0]) {
+          contextWindow: 128000, maxOutputTokens: 4096, stream: async function* (request: Parameters<import("../../model/src/types.ts").ModelAdapter["stream"]>[0]) {
             calls.push("modelRequest")
             assert.deepEqual(request.model, model)
             assert.deepEqual(request.context.messages.map((message: import("../../model/src/types.ts").ModelMessage) => message.role), ["system", "user"])
@@ -139,6 +139,8 @@ function fixture(
       appendTurnStartAndUserMessage: overrides.appendTurnStartAndUserMessage,
     },
     sessionState: {
+      readAgentInputTokens: async () => 0,
+      synchronizeUsage: async () => {},
       readLoadedMCPTools: async () => [],
       writeLoadedMCPTools: async () => {},
       initializeSession: () => repairPorts.initializeSession(),
@@ -311,7 +313,7 @@ async function testOneAdapterServesAllStepsInTurn(): Promise<void> {
   state.global.createTurnModelAdapter = async (model: ModelRef) => {
     adapterFactoryCalls += 1
     const adapter: ModelAdapter = {
-      stream: async function* (): AsyncGenerator<ModelStreamEvent> {
+      contextWindow: 128000, maxOutputTokens: 4096, stream: async function* (): AsyncGenerator<ModelStreamEvent> {
         modelRequests += 1
         if (modelRequests === 1) {
           yield { type: "block_start", index: 0, blockType: "tool_call" }
@@ -674,10 +676,7 @@ async function testRepairPreservesContextAndUncommittedSummary(): Promise<void> 
       message: { id: "message-2", role: "user", content: MESSAGE },
     }),
     persistedEvent(sessionId, 10, {
-      type: "summary/start",
-      turn: 2,
-      summaryId: "summary-uncommitted",
-      throughEventSeq: 9,
+      type: "summary/start", turn: 2, summaryId: "uncommitted", fromEventSeq: 3, throughEventSeq: 9,
     }),
   )
   const state = repairFixture(initial)
@@ -752,7 +751,7 @@ async function testConcreteRuntimeBindings(): Promise<void> {
         createTurnModelAdapter: async (model: ModelRef) => {
           if (model.modelId === "missing") throw new Error("model missing")
           const adapter = {
-            stream: async function* () {
+            contextWindow: 128000, maxOutputTokens: 4096, stream: async function* () {
               yield { type: "stream_end" as const, completion: "finished" as const }
             },
           }
@@ -829,6 +828,7 @@ async function testConcreteRuntimeBindings(): Promise<void> {
       type: "summary/start",
       turn: 2,
       summaryId: "summary-1",
+      fromEventSeq: 2,
       throughEventSeq: 5,
     })
     await runtime.appendEvent({
@@ -836,7 +836,9 @@ async function testConcreteRuntimeBindings(): Promise<void> {
       turn: 2,
       summaryId: "summary-1",
       summary: "Earlier context summary.",
+      fromEventSeq: 2,
       throughEventSeq: 5,
+      baseline: { agentsmd: baseline.agentsmd, skills: baseline.skills },
     })
     assert.deepEqual(await runtime.buildContent(2), [
       { role: "system", content: "system\n\nworkspace\n\nUse pnpm.\n\nskills-1" },
@@ -899,7 +901,7 @@ async function testStoppedThinkingCanContinue(): Promise<void> {
     }),
     estimateSkillTokens: () => 0,
     createTurnModelAdapter: async () => ({
-      stream: async function* (request: Parameters<ModelAdapter["stream"]>[0]): AsyncGenerator<ModelStreamEvent> {
+      contextWindow: 128000, maxOutputTokens: 4096, stream: async function* (request: Parameters<ModelAdapter["stream"]>[0]): AsyncGenerator<ModelStreamEvent> {
         requests++
         if (requests === 1) {
           yield { type: "block_start", index: 0, blockType: "thinking" }

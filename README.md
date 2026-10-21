@@ -64,7 +64,7 @@ Project 的同名条目覆盖 Global，包括以 disabled 状态屏蔽 Global。
 按 `Math.ceil(text.length / 4)` 粗估最多 500 tokens，名称完整、只截断描述，总量不限。
 对话 Meta 按 scope + path 保存载入过的来源，允许同名记录并存；只有新增来源记录才写 Skill
 增量通知，禁用、删除、重新启用和切回已有来源只静默更新状态。普通 Turn 使用已保存固定基线加
-已提交增量。`SessionRuntime.reloadSkills()` 可完整重载；Summary 本体及其 checkpoint 契约尚未实现。
+已提交增量。`SessionRuntime.reloadSkills()` 可完整重载；Summary 的 `summary/end` 保存完整 AGENTS.md / Skills 基线，并据此恢复派生文件。
 `skill_load` 每次按实时来源配置检查权限，再返回完整 SKILL.md（含 frontmatter），不截断正文。
 default 分组仅使用 Global Skill。Project baseline 不读取 Session 的 MCP 载入状态；MCP 定义由 SessionRuntime 在每次模型请求前从 Meta 和全局 Catalog 组合。
 
@@ -98,7 +98,7 @@ Adapter 与 Usage 转换，含流式调用、双向转换、取消与错误归�
 负责工具小轮的串并行调度，配套 `runtime/session/src/events.ts` 提供事件结构与事件出口契约、
 `runtime/tools/src/types.ts` 提供统一 `ToolResult` 结构。ToolRegistry、RenderRegistry 与统一
 ToolExecutor 调用入口以及 glob、grep、read、write、edit、present 六个文件工具与 render 已实现；
-ToolExposureManager、压缩、Usage 记账、Insert 与最终 Surface 仍未实现，见下文。
+Summary 压缩已接通，见下文；Usage 展示扩展、Insert 与最终 Surface 等仍按各自模块推进。
 
 **Project Memory 三件套**已实现：`memory_list` 只返回分类索引，`memory_read` 按二级分类读取，
 各分类按创建时间从新到旧排序，`limitPerSection` 独立限制每个分类，省略时返回全部。
@@ -256,8 +256,32 @@ content + tools + 本 Turn 固定 ModelRef + AbortSignal
 - 取消：模型流未结束时 Adapter 抛出取消类错误（`CANCELLED`），Loop 写 `step/end(stopped)` 后正常返回；
   工具小轮期间取消时，小轮仍为已产生的每个调用写 `tool/result`，再以 `step/end(stopped)` 关闭 Step
   且不再发起下一次模型请求；其它错误写 `step/end(error)` 后原样抛出，由调用方以 error 终止 Turn。
-- Queue 已由单 Session 活动实例按 FIFO 串行处理；Usage 记账（6.3）、Insert（6.5）、压缩（6.2）
+- Queue 已由单 Session 活动实例按 FIFO 串行处理；Usage 展示扩展（6.3）、Insert（6.5）
   及完整 Turn 收尾（6.6）仍未实现。
+
+### Summary 压缩
+
+每一步写入 `step/start` 前检查最近正常模型请求的完整输入 Token（含缓存输入），使用同一 Turn
+模型配置快照的 `C = contextWindow`、`O = maxOutputTokens`，阈值为
+`min(C * 0.8, C - O - (10000 + O))`。达到阈值时直接调用当前 Adapter，保留最新 AGENTS.md / Skills、
+完整消息和工具定义，末尾追加 compact prompt 原文。提示词随代码构建发布，运行时不读取 `.git`。
+压缩请求设置 `tool_choice=none`，没有工具执行器；任何返回的工具调用、非正常结束或空正文均视为失败。
+
+压缩先写 `summary/start`，再独立调用模型，成功后写配对的 `summary/end`。两者使用同一 `summaryId`、
+`fromEventSeq` 和 `throughEventSeq`；只有 end 携带正文、可选 Usage 和完整 AGENTS.md / Skills 基线。
+end 落盘后才更新派生状态和内存上下文。只有 start 的失败或取消尝试在恢复时忽略。首次覆盖起点为首个历史 Step，
+没有 Step 时使用首个有效输入消息；再次压缩继承旧起点。终点包含当前输入对应的最新事件，
+也包含新 Turn 首步前的本轮用户消息。回放遮蔽终点及以前的全部事件，只插入最新 Summary，
+保留终点之后的有效消息。原日志和 UI 历史保留，MCP 载入身份、预算和工具快照不因压缩清空。
+
+固定基线版本使用 `summary/end` 的 eventId，后续普通 Skill 增量只推进比较游标。恢复从最新已完成 Summary
+基线及覆盖终点后的增量重建状态，不让旧增量覆盖新基线。压缩 Usage 不参与正常 Agent 统计或下次触发判断。
+失败不创建 Step；已提交 Summary 后派生状态更新失败可在下次打开恢复。用户取消按 stopped 收尾。
+本模块不增加依赖、旧双事件迁移、分段/递归压缩或额外业务重试。
+
+正常请求的 `assistant/message.usage` 落盘后立即幂等同步 SQLite Meta Usage；每次 `step/end`
+落盘后再次同步，确保该 Step 发布结束及下一步阈值检测前 Meta 已更新。没有报告 Usage 的 Step
+保留最近已知正常 Usage，压缩 Usage 不参与该统计。同步失败保留权威事件并终止 Turn，下次从日志恢复。
 
 ### ToolRegistry / ToolExecutor（第 16 节）
 
@@ -546,6 +570,8 @@ src/main/config-files.ts     →   test/main/config-files.test.ts
 ```bash
 npm run typecheck                                        # 主进程、Runtime、测试与 Renderer TSX
 npm run build                                            # tsc 与 Vite 产出到 dist/
+node --experimental-strip-types runtime/context/test/summary.test.ts
+node --experimental-strip-types runtime/agent/test/summary-turn.test.ts
 node --experimental-strip-types runtime/model/test/types.test.ts
 node --experimental-strip-types runtime/model/test/usage.test.ts
 node --experimental-strip-types runtime/model/test/shared.test.ts

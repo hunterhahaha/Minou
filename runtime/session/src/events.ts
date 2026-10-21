@@ -22,6 +22,7 @@ import type {
 } from "../../model/src/types.ts"
 import type { AppError } from "../../error/src/types.ts"
 import type { ToolResult } from "../../tools/src/types.ts"
+import type { CurrentSessionBaseline } from "./session-state.ts"
 
 /** 事件基类（第 8.2 节）。 */
 export interface EventBase {
@@ -220,22 +221,34 @@ export interface AppErrorEvent extends EventBase {
   sourceEventId?: string
 }
 
-/** 一次尚未提交的压缩尝试（第 8.8、10.5 节）。 */
+/** 压缩尝试开始；不改变上下文，只有同一 summaryId 的 end 成功提交才生效。 */
 export interface SummaryStartEvent extends EventBase {
   type: "summary/start"
   turn: number
+  /** 本次压缩尝试的配对身份。 */
   summaryId: string
+  /** 累计覆盖起点；再次压缩继承最近已提交 Summary 的起点。 */
+  fromEventSeq: number
+  /** 写入 start 前捕获的输入历史截止事件。 */
   throughEventSeq: number
 }
 
-/** 已提交的压缩结果（第 8.8、10.5 节）。 */
+/** 已完成的完整压缩结果；end 是正文与固定基线的唯一提交点。 */
 export interface SummaryEndEvent extends EventBase {
   type: "summary/end"
   turn: number
+  /** 与对应 start 一致的压缩尝试身份。 */
   summaryId: string
+  /** 压缩正文，回放时作为一条 user 消息。 */
   summary: string
+  /** 累计覆盖起点；再次压缩继承旧 Summary 的起点。 */
+  fromEventSeq: number
+  /** 输入历史的截止事件；回放遮蔽此序号及以前的所有事件。 */
   throughEventSeq: number
+  /** 压缩本身的 Usage，不进入正常 Agent Usage。 */
   usage?: Usage
+  /** 最新 AGENTS.md / Skills 完整基线；不包含 MCP 状态。 */
+  baseline: Pick<CurrentSessionBaseline, "agentsmd" | "skills">
 }
 
 export interface FileDiffHunk {
@@ -275,7 +288,9 @@ export type ApprovalRequestEventInput = Omit<ApprovalRequestEvent, EventIdentity
 export type ApprovalResultEventInput = Omit<ApprovalResultEvent, EventIdentity>
 export type ContextUpdateEventInput = Omit<ContextUpdateEvent, EventIdentity>
 export type AppErrorEventInput = Omit<AppErrorEvent, EventIdentity>
+/** 待写入的压缩开始事件；持久化身份与序号由 Event Log 分配。 */
 export type SummaryStartEventInput = Omit<SummaryStartEvent, EventIdentity>
+/** 待写入的压缩提交事件；包含正文、覆盖区间和完整基线。 */
 export type SummaryEndEventInput = Omit<SummaryEndEvent, EventIdentity>
 export type TurnFileChangesEventInput = Omit<TurnFileChangesEvent, EventIdentity>
 

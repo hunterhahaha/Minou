@@ -150,6 +150,11 @@ async function main(): Promise<void> {
 
   {
     const params = buildAnthropicRequest(agentRequest(), MODEL.maxOutputTokens)
+    const compact = buildAnthropicRequest({ ...agentRequest(), toolChoice: "none" }, MODEL.maxOutputTokens)
+    assert.deepEqual(compact.tool_choice, { type: "none" })
+    assert.deepEqual(compact.tools, params.tools)
+    assert.deepEqual(compact.messages, params.messages)
+    assert.equal(params.tool_choice, undefined)
 
     assert.equal(params.model, "claude-test")
     assert.equal(params.max_tokens, MODEL.maxOutputTokens)

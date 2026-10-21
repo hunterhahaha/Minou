@@ -37,7 +37,7 @@ async function main(): Promise<void> {
   global.createTurnModelAdapter = async (): Promise<ModelAdapter> => {
     const turn = ++adapterCount
     let step = 0
-    return { contextWindow: 10000, stream: async function* (request) {
+    return { contextWindow: 128000, maxOutputTokens: 4096, stream: async function* (request) {
       step++
       const names = request.tools?.map((tool) => tool.name) ?? []
       visible.push(names)

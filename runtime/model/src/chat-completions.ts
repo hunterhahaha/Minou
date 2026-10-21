@@ -194,6 +194,7 @@ export function buildChatCompletionsRequest(
   if (request.tools.length > 0) {
     params.tools = toChatCompletionsTools(request.tools)
   }
+  if (request.toolChoice === "none") params.tool_choice = "none"
 
   return params
 }

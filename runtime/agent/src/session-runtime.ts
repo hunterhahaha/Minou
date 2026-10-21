@@ -11,6 +11,8 @@ import { randomUUID } from "node:crypto"
 import { mkdir } from "node:fs/promises"
 import { isAbsolute, join, resolve } from "node:path"
 import { isDeepStrictEqual } from "node:util"
+import { compressContext, summaryThreshold } from "../../context/src/index.ts"
+import { createAbortError } from "../../error/src/abort.ts"
 
 import { CANCELLED, normalizeError } from "../../error/src/normalizer.ts"
 import type { AppError } from "../../error/src/types.ts"
@@ -40,7 +42,7 @@ import type {
 import { createFileSessionEventLog } from "../../session/src/event-log.ts"
 import type { FileSessionEventLog } from "../../session/src/event-log.ts"
 import { skillSourceKey } from "../../skill/src/context.ts"
-import { createFileSessionState } from "../../session/src/session-state.ts"
+import { createFileSessionState, validateCurrentBaseline } from "../../session/src/session-state.ts"
 import { TurnFileChangeTracker } from "../../session/src/file-changes.ts"
 import type { ApprovalDecision, FileChange } from "../../session/src/events.ts"
 import type {
@@ -702,11 +704,15 @@ export class SessionRuntime implements SessionRepairPorts {
    * 追加并发布当前 Session 的一条完整事件。
    *
    * @param event 尚未分配持久化身份的事件输入。
-   * @returns 已成功写入 Event Log 的完整事件。
+   * @returns 已成功写入的事件；正常权威 Usage 和 Step 结束事件发布前已同步 Meta。
+   * @throws Error 事件或 Usage 保存失败；已提交的权威事件保留供恢复。
    */
   async appendEvent(event: SessionEventInput): Promise<SessionEvent> {
     this.assertOpen()
     const written = await this.eventLog.appendEvent(event)
+    if ((written.type === "assistant/message" && written.usage !== undefined) || written.type === "step/end") {
+      await this.sessionState.synchronizeUsage()
+    }
     this.publishPersistedEvent(written, event.type)
     return written
   }
@@ -1116,7 +1122,52 @@ export class SessionRuntime implements SessionRepairPorts {
     options: Omit<AgentLoopOptions, "turn" | "model" | "content">,
   ): Promise<AgentLoopResult> {
     const content = await this.buildContent(turn)
-    return runAgentLoop({ ...options, turn, model, content })
+    const threshold = summaryThreshold(options.adapter.contextWindow, options.adapter.maxOutputTokens)
+    return runAgentLoop({
+      ...options, turn, model, content,
+      /** @param input 下一 Step 的当前内容及一次确定的工具快照。 @throws Error 压缩或持久化失败。 */
+      beforeStep: async (input) => {
+        if (options.signal.aborted) throw createAbortError()
+        if (await this.sessionState.readAgentInputTokens() < threshold) return
+        const baseline = structuredClone(await this.projectContext.resolveCurrentBaseline())
+        validateCurrentBaseline(baseline)
+        const events = validateEventLog(this.sessionId, await this.eventLog.readEvents())
+        validateLifecycle(this.sessionId, events)
+        validateBlockStreams(this.sessionId, events)
+        validateSummaries(this.sessionId, events)
+        const previous = events.filter((event) => event.type === "summary/end").at(-1)
+        const comparison = await this.sessionState.readContextComparisonState()
+        const currentSources = new Set(baseline.skills.entries.map(skillSourceKey))
+        for (const entry of comparison.skills.entries) {
+          if (currentSources.has(skillSourceKey(entry))) continue
+          baseline.skills.entries.push({ ...entry, enabled: false })
+          /** 不再启用的来源只保留载入身份；它的描述不会进入最新固定文本。 */
+          baseline.skills.descriptions[entry.name] ??= previous?.baseline.skills.descriptions[entry.name] ?? ""
+        }
+        const throughEventSeq = events.at(-1)?.seq
+        const fromEventSeq = previous?.fromEventSeq ?? events.find((event) => event.type === "step/start")?.seq ??
+          events.find((event) => event.type === "user/message" || event.type === "context_update")?.seq
+        if (throughEventSeq === undefined || fromEventSeq === undefined) throw new Error("Summary 缺少可覆盖的输入事件。")
+        const systemMessage = composeSystemMessage(this.systemPrompt, this.projectContext.workspaceInfo, baseline)
+        const summaryId = randomUUID()
+        await this.appendEvent({ type: "summary/start", turn, summaryId, fromEventSeq, throughEventSeq })
+        const result = await compressContext({
+          adapter: options.adapter, model, signal: options.signal, tools: input.tools,
+          content: [{ role: "system", content: systemMessage }, ...input.content.slice(1)],
+        })
+        if (options.signal.aborted) throw createAbortError()
+        await this.appendEvent({
+          type: "summary/end", turn, summaryId, fromEventSeq, throughEventSeq, ...result,
+          baseline: { agentsmd: baseline.agentsmd, skills: baseline.skills },
+        })
+        const committed = validateEventLog(this.sessionId, await this.eventLog.readEvents())
+        validateSummaries(this.sessionId, committed)
+        await this.sessionState.repairDerivedState(committed)
+        this.turnBaseline = Promise.resolve(baseline)
+        const replacement = replayModelContent(committed, systemMessage)
+        input.content.splice(0, input.content.length, ...replacement)
+      },
+    })
   }
 
   /**
@@ -1533,19 +1584,18 @@ function validateSessionEvent(sessionId: string, value: unknown, index: number):
       }
       break
     case "summary/start":
-      requireTurn(sessionId, event, index)
-      requireStringField(sessionId, event, "summaryId", index)
-      if (!isPositiveInteger(event.throughEventSeq)) {
-        corrupted(sessionId, `第 ${index + 1} 条事件的 throughEventSeq 无效`)
-      }
-      break
     case "summary/end":
       requireTurn(sessionId, event, index)
       requireStringField(sessionId, event, "summaryId", index)
-      if (!isNonEmptyString(event.summary) || !isPositiveInteger(event.throughEventSeq)) {
-        corrupted(sessionId, `第 ${index + 1} 条事件的 summary/end 无效`)
+      if (event.step !== undefined || !isPositiveInteger(event.fromEventSeq) || !isPositiveInteger(event.throughEventSeq)) {
+        corrupted(sessionId, `第 ${index + 1} 条事件的 Summary 区间或作用域无效`)
       }
-      if (event.usage !== undefined) requireUsage(sessionId, event.usage, index)
+      if (event.type === "summary/end") {
+        if (!isNonEmptyString(event.summary) || event.summary.trim().length === 0) corrupted(sessionId, `第 ${index + 1} 条事件的 Summary 正文无效`)
+        try { validateCurrentBaseline({ ...(event.baseline as Pick<CurrentSessionBaseline, "agentsmd" | "skills">), mcp: [] }) }
+        catch { corrupted(sessionId, `第 ${index + 1} 条事件的 Summary 基线无效`) }
+        if (event.usage !== undefined) requireUsage(sessionId, event.usage, index)
+      }
       break
     case "turn/file_changes":
       requireTurn(sessionId, event, index)
@@ -1734,32 +1784,45 @@ function validateBlockStreams(sessionId: string, events: readonly SessionEvent[]
 }
 
 /**
- * 校验 Summary 事件的配对关系及其覆盖范围。
+ * 校验 Summary 配对、覆盖端点、累计起点和完整 Step 边界；未完成 start 不提交上下文。
  *
  * @param sessionId 被校验的 Session ID。
  * @param events 已通过基础结构和生命周期校验的事件序列。
- * @throws SessionLogCorruptedError 当 Summary 重复、缺少配对事件或覆盖序号不一致时抛出。
+ * @throws SessionLogCorruptedError 当配对缺失、身份重复、区间不一致、覆盖倒退或截断 Step 时抛出。
  */
 function validateSummaries(sessionId: string, events: readonly SessionEvent[]): void {
+  const bySeq = new Map(events.map((event) => [event.seq, event]))
   const starts = new Map<string, Extract<SessionEvent, { type: "summary/start" }>>()
-  const ends = new Set<string>()
+  const completed = new Set<string>()
+  let previous: Extract<SessionEvent, { type: "summary/end" }> | undefined
   for (const event of events) {
+    if (event.type !== "summary/start" && event.type !== "summary/end") continue
     if (event.type === "summary/start") {
-      if (starts.has(event.summaryId)) corrupted(sessionId, `summary/start 重复：${event.summaryId}`)
-      if (event.throughEventSeq >= event.seq) {
-        corrupted(sessionId, `summary/start 的 throughEventSeq 未早于自身：${event.summaryId}`)
-      }
+      if (starts.has(event.summaryId)) corrupted(sessionId, `Summary start 身份重复：${event.summaryId}`)
       starts.set(event.summaryId, event)
-    }
-    if (event.type === "summary/end") {
+    } else {
       const start = starts.get(event.summaryId)
-      if (start === undefined) corrupted(sessionId, `summary/end 缺少 start：${event.summaryId}`)
-      if (ends.has(event.summaryId)) corrupted(sessionId, `summary/end 重复：${event.summaryId}`)
-      if (event.turn !== start.turn || event.throughEventSeq !== start.throughEventSeq) {
-        corrupted(sessionId, `summary/end 与 start 不匹配：${event.summaryId}`)
+      if (start === undefined || completed.has(event.summaryId) || start.turn !== event.turn ||
+          start.fromEventSeq !== event.fromEventSeq || start.throughEventSeq !== event.throughEventSeq || start.seq >= event.seq) {
+        corrupted(sessionId, `Summary end 缺少匹配且唯一的 start：${event.summaryId}`)
       }
-      ends.add(event.summaryId)
+      completed.add(event.summaryId)
     }
+    if (!bySeq.has(event.fromEventSeq) || !bySeq.has(event.throughEventSeq) ||
+        event.fromEventSeq > event.throughEventSeq || event.throughEventSeq >= event.seq) {
+      corrupted(sessionId, `Summary 覆盖端点无效：${event.eventId}`)
+    }
+    if (previous !== undefined && (event.fromEventSeq !== previous.fromEventSeq || event.throughEventSeq < previous.seq)) {
+      corrupted(sessionId, `Summary 未继承上次覆盖区间：${event.eventId}`)
+    }
+    let openStep = false
+    for (const covered of events) {
+      if (covered.seq > event.throughEventSeq) break
+      if (covered.type === "step/start") openStep = true
+      if (covered.type === "step/end") openStep = false
+    }
+    if (openStep) corrupted(sessionId, `Summary 截断了 Step：${event.eventId}`)
+    if (event.type === "summary/end") previous = event
   }
 }
 

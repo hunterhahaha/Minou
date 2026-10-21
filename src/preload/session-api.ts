@@ -794,7 +794,10 @@ function isSessionEvent(value: unknown): value is SessionEvent {
       "turn/start", "turn/end", "step/start", "step/end", "approval/request", "approval/result"].includes(value.type as string)
 }
 
-/** @param value IPC 查询结果。 @returns 身份与事件顺序已检查的历史。 @throws TypeError 当结果无效时抛出。 */
+/** @param value IPC 查询结果。
+ * @returns 身份与事件顺序已检查的历史。
+ * @throws TypeError 当结果无效时抛出。
+ */
 function requireSessionData(value: unknown): SessionData {
   if (!isRecord(value) || !isProjectId(value.projectId) || typeof value.sessionId !== "string" ||
       !Array.isArray(value.events) || !value.events.every((event, index, events) => isSessionEvent(event) &&
@@ -805,8 +808,10 @@ function requireSessionData(value: unknown): SessionData {
   return { projectId: value.projectId, sessionId: value.sessionId, summary, events: value.events,
     latestSeq: value.latestSeq as number, control: requireSessionControl(value.control) }
 }
-
-/** @param value 主进程推送值。 @returns 已检查的业务更新。 @throws TypeError 当更新无效时抛出。 */
+/** @param value 主进程推送值。
+ * @returns 已检查的业务更新。
+ * @throws TypeError 当更新无效时抛出。
+ */
 function requireSessionUpdate(value: unknown): SessionUpdate {
   if (!isRecord(value) || !isProjectId(value.projectId) || typeof value.sessionId !== "string") {
     throw new TypeError("对话更新身份无效")

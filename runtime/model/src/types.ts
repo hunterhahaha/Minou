@@ -320,6 +320,8 @@ export interface UnifiedModelRequest {
   tools: UnifiedToolDefinition[]
   /** 本请求实际采用的模型，必须与 Adapter 绑定的配置一致。 */
   model: ModelRef
+  /** 请求级禁止工具调用；未提供时沿用协议默认行为，仍可携带完整工具定义。 */
+  toolChoice?: "none"
 }
 
 /**
@@ -379,8 +381,10 @@ export type ModelStreamEvent =
 
 /** 模型适配器（第 6 节，已定义）。三个 Adapter 均实现此接口。 */
 export interface ModelAdapter {
-  /** 每 Turn 装配时从同一模型快照提供的 MCP 预算窗口；直接构造的 Adapter 可不提供。 */
+  /** 每 Turn 装配时从同一模型快照提供的压缩及 MCP 预算窗口；直接构造的 Adapter 可不提供。 */
   contextWindow?: number
+  /** 与 contextWindow 同一 Turn 配置快照的最大输出；直接构造的 Adapter 可不提供。 */
+  maxOutputTokens?: number
   /**
    * 把一次统一模型请求转换为协议请求并以统一事件流返回。
    *

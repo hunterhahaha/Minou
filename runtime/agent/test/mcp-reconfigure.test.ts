@@ -31,7 +31,7 @@ async function main(): Promise<void> {
   global.createTurnModelAdapter = async () => {
     const current = ++turn
     let step = 0
-    return { contextWindow: 10000, stream: async function* (request) {
+    return { contextWindow: 128000, maxOutputTokens: 4096, stream: async function* (request) {
       step++
       const definitions = request.tools ?? []
       visible.push(definitions)

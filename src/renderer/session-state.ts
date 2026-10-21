@@ -284,7 +284,7 @@ export function projectSessionEvents(events: readonly SessionEvent[]): ChatDispl
         }
       }
       state.display.blocks = [...state.blocks.values()].sort((a, b) => a.index - b.index).map((value) => value.block)
-    } else if (["user/message", "tool/result", "approval/request", "approval/result", "app/error", "turn/file_changes", "turn/end", "summary/end", "context_update"].includes(event.type)) {
+    } else if (["user/message", "tool/result", "approval/request", "approval/result", "app/error", "turn/file_changes", "turn/end", "summary/start", "summary/end", "context_update"].includes(event.type)) {
       result.push({ kind: "event", id: event.eventId, event })
     }
   }

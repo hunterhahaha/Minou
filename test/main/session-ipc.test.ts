@@ -148,7 +148,7 @@ function runtimeHarness(options: { blockFirstLoop?: boolean; failInitialization?
       ],
       createLoopOptions: async () => ({
         adapter: {
-          stream: async function* (
+          contextWindow: 128000, maxOutputTokens: 4096, stream: async function* (
             _request: Parameters<ModelAdapter["stream"]>[0],
             signal: AbortSignal,
           ) {

@@ -179,6 +179,11 @@ async function main(): Promise<void> {
 
   {
     const params = buildChatCompletionsRequest(agentRequest())
+    const compact = buildChatCompletionsRequest({ ...agentRequest(), toolChoice: "none" })
+    assert.equal(compact.tool_choice, "none")
+    assert.deepEqual(compact.tools, params.tools)
+    assert.deepEqual(compact.messages, params.messages)
+    assert.equal(params.tool_choice, undefined)
 
     assert.equal(params.model, "gpt-test")
     assert.equal(params.stream, true)

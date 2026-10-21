@@ -193,7 +193,7 @@ function startupFixture(
     mcp: [],
   }
   const adapter: ModelAdapter = {
-    stream: async function* () {
+    contextWindow: 128000, maxOutputTokens: 4096, stream: async function* () {
       yield { type: "stream_end", completion: "finished" }
     },
   }
@@ -309,7 +309,7 @@ async function testCreatesProjectSessionRuntime(): Promise<void> {
     const forwarded: SessionEvent[] = []
     const failures: SessionCompletionFailure[] = []
     const adapter: ModelAdapter = {
-      stream: async function* (request) {
+      contextWindow: 128000, maxOutputTokens: 4096, stream: async function* (request) {
         resolveRequest(request)
         yield { type: "stream_end", completion: "finished" }
       },
@@ -407,7 +407,7 @@ async function testResolvesContextForEachProject(): Promise<void> {
     let resolveTurns!: () => void
     const turnsCompleted = new Promise<void>((resolve) => { resolveTurns = resolve })
     const adapter: ModelAdapter = {
-      stream: async function* (request) {
+      contextWindow: 128000, maxOutputTokens: 4096, stream: async function* (request) {
         const systemMessage = request.context.messages[0]
         assert.equal(systemMessage.role, "system")
         assert.equal(typeof systemMessage.content, "string")
@@ -478,7 +478,7 @@ async function testForwardsSessionCompletionFailure(): Promise<void> {
     let resolveFailure!: (failure: SessionCompletionFailure) => void
     const failureSeen = new Promise<SessionCompletionFailure>((resolve) => { resolveFailure = resolve })
     const adapter: ModelAdapter = {
-      stream: async function* () {
+      contextWindow: 128000, maxOutputTokens: 4096, stream: async function* () {
         throw expected
       },
     }

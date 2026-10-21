@@ -2,6 +2,7 @@
 import assert from "node:assert/strict"
 import { createSessionApi, SESSION_IPC_CHANNELS } from "../../src/preload/session-api.ts"
 import type { SessionControl, SessionData, SessionUpdate } from "../../src/preload/session-api.ts"
+import type { SummaryEndEvent } from "../../runtime/session/src/events.ts"
 const control: SessionControl = { revision: 1, throughSeq: 0, currentModel: { providerId: "p", protocol: "responses", modelId: "m", name: "test" },
   phase: "idle", sandboxMode: "sandbox-full-access", pendingMessages: [], discardedMessages: [] }
 const history: SessionData = { projectId: "default", sessionId: "s", events: [], latestSeq: 0, control,
@@ -31,6 +32,27 @@ async function main(): Promise<void> {
   const update: SessionUpdate = { kind: "state", projectId: "default", sessionId: "s", control }
   for (const handler of handlers) handler({ secret: "electron event" }, update)
   assert.deepEqual(updates, [update])
+  const summary: SummaryEndEvent = {
+    type: "summary/end", summaryId: "compression-1", eventId: "summary-1", sessionId: "s", seq: 4, createdAt: "2026-10-21T00:00:00.000Z",
+    turn: 1, fromEventSeq: 2, throughEventSeq: 2, summary: "compressed",
+    baseline: { agentsmd: { path: "G:/AGENTS.md", hash: "hash", content: "rules" }, skills: { content: "", entries: [], descriptions: {} } },
+  }
+  const started: SessionUpdate = { kind: "event", projectId: "default", sessionId: "s", event: {
+    type: "summary/start", summaryId: summary.summaryId, turn: 1, fromEventSeq: 2, throughEventSeq: 2,
+    eventId: "start-1", seq: 3, sessionId: "s", createdAt: summary.createdAt,
+  } }
+  for (const handler of handlers) handler({}, started)
+  assert.deepEqual(updates.at(-1), started, "Summary 开始可通过推送事件白名单")
+  const summaryUpdate: SessionUpdate = { kind: "event", projectId: "default", sessionId: "s", event: summary }
+  for (const handler of handlers) handler({}, summaryUpdate)
+  assert.deepEqual(updates.at(-1), summaryUpdate, "Summary 完成可通过推送事件白名单")
+  const withSummary: SessionData = { ...history, events: [
+    { type: "turn/start", turn: 1, model: control.currentModel, eventId: "turn-1", sessionId: "s", seq: 1, createdAt: summary.createdAt },
+    { type: "user/message", turn: 1, message: { id: "user-1", role: "user", content: [{ type: "text", text: "user" }] }, eventId: "user-1", sessionId: "s", seq: 2, createdAt: summary.createdAt },
+    started.event, summary,
+  ], latestSeq: 4, control: { ...control, throughSeq: 4 } }
+  const querySummary = createSessionApi({ invoke: async () => withSummary })
+  assert.deepEqual(await querySummary.getSessionData("default", "s"), withSummary)
   cancel(); cancel()
   assert.equal(handlers.size, 0)
   const foreign = createSessionApi({ invoke: async () => ({ ...history, sessionId: "other", summary: { ...history.summary, sessionId: "other" } }) })
