@@ -50,7 +50,7 @@ async function scenario(profile: string, projectId: string): Promise<void> {
   global.createTurnModelAdapter = async (): Promise<ModelAdapter> => {
     const turn = ++adapterCount
     let step = 0
-    return { stream: async function* (request) {
+    return { contextWindow: 128000, maxOutputTokens: 4096, stream: async function* (request) {
       requests.push(structuredClone(request))
       step += 1
       const system = request.context.messages[0]

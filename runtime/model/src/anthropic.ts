@@ -204,6 +204,7 @@ export function buildAnthropicRequest(
   if (request.tools.length > 0) {
     params.tools = toAnthropicTools(request.tools)
   }
+  if (request.toolChoice === "none") params.tool_choice = { type: "none" }
 
   return params
 }

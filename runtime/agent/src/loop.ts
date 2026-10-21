@@ -22,7 +22,8 @@
  * ToolExecutor 由 `runtime/tools/src/tool-executor.ts` 创建并由调用方注入；串并行调度委托给
  * `runtime/tools/src/tool-scheduler.ts`。真实工具与注册表的装配都不进入 AgentLoop。
  *
- * 不做的事（属后续子阶段，见 TODOList 6.2、6.3、6.5、6.6）：压缩检查、Usage 记账、
+ * Step 前检查通过 beforeStep 委托给 SessionRuntime；压缩使用独立调用，不进入 runModelStep。
+ * Loop 不负责持久化 Usage 派生统计、
  * Insert 与完整 Turn 收尾。Queue 和最小 `turn/end` 由外层 SessionRuntime 处理，因此本函数的边界是：
  *   - `turn/start + user/message` 由 SessionRuntime 在进入 Loop 前写入（第 13.1、13.2 节）；
  *   - 最小 `turn/end` 由调用方在 Loop 退出后写入；`turn/file_changes` 与 `app/error` 留待后续。
@@ -108,7 +109,7 @@ export type ExecuteToolCall = ToolRuntimeExecuteToolCall
 
 /** `runAgentLoop` 的结果。Turn 的终态由调用方据此写成 `turn/end`（第 13.5、14 节）。 */
 export interface AgentLoopResult {
-  /** 是否因用户取消而停止；此时最后一步的 `step/end` 为 `stopped`（第 14 节）。 */
+  /** 是否因用户取消而停止；已创建的最后一步以 stopped 收尾，Step 前取消不产生 Step 事件。 */
   stopped: boolean
   /** 实际执行的 Step 数；Turn 内 Step 从 1 起（第 8.2 节）。 */
   steps: number
@@ -140,18 +141,25 @@ export interface AgentLoopOptions {
   signal: AbortSignal
   /** 事件出口，由 SessionEventLog 提供。 */
   appendEvent: AppendSessionEvent
+  /**
+   * Step 创建前的异步检查；可原地替换 content，不得创建 Step 或执行工具。
+   * @param input 即将执行的 Step、当前完整消息与本次实际工具快照。
+   * @returns 检查及必要压缩提交完成后解析。
+   * @throws Error 检查失败时终止 Turn；取消时 Loop 返回 stopped，不补写 Step 事件。
+   */
+  beforeStep?(input: { step: number; content: ModelMessage[]; tools: UnifiedToolDefinition[] }): Promise<void>
 }
 
 /**
  * 运行一个 Turn 的 Step 循环。
  *
  * 正常返回表示 Loop 自己结束（无待执行的 Tool Call，或被用户取消）；
- * Adapter 或工具执行抛出非取消错误时，写完 `step/end(error)` 后原样抛出，`turn/end(error)` 与
+ * Step 开始前检查失败直接抛出；Adapter 或工具执行抛出非取消错误时，写完 `step/end(error)` 后原样抛出，`turn/end(error)` 与
  * `app/error` 由调用方负责（第 13.5 节）。
  *
  * @param options AgentLoop 的模型、上下文、工具执行入口、取消信号和事件出口。
  * @returns 本 Turn 的停止状态、Step 数量以及最后一次模型请求的完成信息。
- * @throws 非取消的模型或工具执行错误；抛出前会写入当前 Step 的 `step/end(error)`。
+ * @throws 非取消的检查、模型或工具错误；仅已创建的 Step 会补写 `step/end(error)`。
  */
 export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoopResult> {
   const { turn, model, adapter, content, tools, executeTool, signal, appendEvent } = options
@@ -160,13 +168,27 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
 
   while (true) {
     const step = result.steps + 1
+    let currentTools: UnifiedToolDefinition[] | undefined
+    if (options.beforeStep !== undefined) {
+      try {
+        currentTools = typeof tools === "function" ? await tools() : tools
+        await options.beforeStep({ step, content, tools: currentTools })
+        if (signal.aborted) throw createAbortError()
+      } catch (error) {
+        if (signal.aborted || isAbortError(error)) {
+          result.stopped = true
+          return result
+        }
+        throw error
+      }
+    }
     result.steps = step
 
     await appendEvent({ type: "step/start", turn, step })
 
     let outcome: ModelStepOutcome
     try {
-      const currentTools = typeof tools === "function" ? await tools() : tools
+      currentTools ??= typeof tools === "function" ? await tools() : tools
       outcome = await runModelStep({ turn, step, model, adapter, content, tools: currentTools, executeTool, signal, appendEvent })
 
       // 第 13.3 节「有 Tool Call」：工具小轮完成后才写 step/end，

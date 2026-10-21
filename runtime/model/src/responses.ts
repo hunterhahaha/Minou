@@ -163,6 +163,7 @@ export function buildResponsesRequest(
   if (request.tools.length > 0) {
     params.tools = toResponsesTools(request.tools)
   }
+  if (request.toolChoice === "none") params.tool_choice = "none"
 
   return params
 }

@@ -13,7 +13,7 @@ import { isDeepStrictEqual } from "node:util"
 
 import { PROTOCOLS } from "../../model/src/types.ts"
 import type { ModelRef, UnifiedToolDefinition } from "../../model/src/types.ts"
-import type { ContextUpdateEvent, SessionEvent, SkillContextChange, SkillScope } from "./events.ts"
+import type { ContextUpdateEvent, SessionEvent, SkillContextChange, SkillScope, SummaryEndEvent } from "./events.ts"
 import { INITIAL_SESSION_NAME, readSessionMeta, saveSessionMeta } from "./meta-store.ts"
 import { requireProjectId } from "./project-id.ts"
 import { skillSourceKey } from "../../skill/src/context.ts"
@@ -172,6 +172,14 @@ export interface FileSessionStateOptions {
 
 /** `SessionRepairPorts` 中派生状态部分的文件系统实现。 */
 export interface FileSessionState {
+  /** @returns 从 Meta 读取最近正常 Agent 请求的完整输入 Token；不包括压缩 Usage。 @throws Error Meta 不可读或无效。 */
+  readAgentInputTokens(): Promise<number>
+  /**
+   * 按权威 assistant/message Usage 幂等同步 Meta，仅替换 usage，不修改其他派生状态。
+   * @returns Meta 已包含全部已提交正常 Usage 后解析；重复调用不会重复累计。
+   * @throws Error 日志或 Meta 读写失败；事件仍为恢复依据，调用方应终止当前 Turn。
+   */
+  synchronizeUsage(): Promise<void>
   /**
    * 读取持久化的固定 Skill 内容，供普通 Turn 继续使用同一上下文基线。
    *
@@ -321,11 +329,15 @@ export function createFileSessionState(options: FileSessionStateOptions): FileSe
       const needsContextState = contextState === undefined
       if (!needsMeta && !needsAgentBaseline && !needsContextState) return
 
-      const baseline = await options.resolveCurrentBaseline()
-      validateCurrentBaseline(baseline)
       const rawEvents = await options.readEvents()
+      const summary = rawEvents.filter((event) => isRecord(event) && event.type === "summary/end").at(-1) as SummaryEndEvent | undefined
+      const baseline: CurrentSessionBaseline = summary === undefined
+        ? await options.resolveCurrentBaseline()
+        : { ...summary.baseline, mcp: contextState?.mcp ?? [] }
+      validateCurrentBaseline(baseline)
       const turnModel = findLastTurnModel(rawEvents, paths.eventsPath)
-      const latestSkillEventId = findLatestSkillEventId(rawEvents)
+      const latestSkillEventId = summary === undefined ? findLatestSkillEventId(rawEvents)
+        : findLatestSkillEventId(rawEvents.filter((event) => isRecord(event) && typeof event.seq === "number" && event.seq > summary.throughEventSeq)) ?? summary.eventId
 
       let nextMeta = meta
       if (needsMeta) {
@@ -360,7 +372,7 @@ export function createFileSessionState(options: FileSessionStateOptions): FileSe
             hash: baseline.agentsmd.hash,
             content: baseline.agentsmd.content,
           },
-          skills: { id: "initial", content: baseline.skills.content },
+          skills: { id: summary?.eventId ?? "initial", content: baseline.skills.content },
           mcp: structuredClone(baseline.mcp),
         }
       } else if (needsAgentBaseline) {
@@ -424,23 +436,35 @@ export function createFileSessionState(options: FileSessionStateOptions): FileSe
       let nextContextState = contextState
       let nextSnapshot = snapshot
 
-      const latestAgentsUpdate = findLatestAgentsUpdate(events)
+      const summary = events.filter((event) => event.type === "summary/end").at(-1)
+      const effectiveEvents = summary === undefined ? events : events.filter((event) => event.seq > summary.throughEventSeq)
+      if (summary !== undefined) {
+        nextContextState = {
+          ...contextState,
+          agentsmd: { hash: summary.baseline.agentsmd.hash, content: summary.baseline.agentsmd.content },
+          skills: { id: summary.eventId, content: summary.baseline.skills.content },
+        }
+        nextSnapshot = summary.baseline.agentsmd.content
+        nextMeta.skills = { id: summary.eventId, entries: cloneSkillEntries(summary.baseline.skills.entries) }
+      }
+
+      const latestAgentsUpdate = findLatestAgentsUpdate(effectiveEvents)
       if (latestAgentsUpdate !== undefined) {
         const agentsmd = {
           hash: latestAgentsUpdate.source.hash,
           content: latestAgentsUpdate.source.fullContent,
         }
-        if (!isDeepStrictEqual(contextState.agentsmd, agentsmd)) {
+        if (!isDeepStrictEqual(nextContextState.agentsmd, agentsmd)) {
           nextContextState = { ...nextContextState, agentsmd }
         }
         nextSnapshot = latestAgentsUpdate.source.fullContent
       }
 
-      const skillEvents = events.filter(isSkillContextUpdate)
+      const skillEvents = effectiveEvents.filter(isSkillContextUpdate)
       const cursorIndex = nextMeta.skills.id === null
         ? -1
         : skillEvents.findIndex((event) => event.eventId === nextMeta.skills.id)
-      let shouldUseCurrentSkillBaseline = nextMeta.skills.id !== null && cursorIndex < 0
+      const shouldUseCurrentSkillBaseline = nextMeta.skills.id !== null && cursorIndex < 0 && nextMeta.skills.id !== summary?.eventId
 
       if (!shouldUseCurrentSkillBaseline) {
         for (const event of skillEvents.slice(cursorIndex + 1)) {
@@ -484,6 +508,12 @@ export function createFileSessionState(options: FileSessionStateOptions): FileSe
   })
 
   return {
+    readAgentInputTokens: () => runSerialized(queue, async () => readRequiredMeta(paths).usage.inputTokens),
+    synchronizeUsage: () => runSerialized(queue, async () => {
+      const usage = rebuildUsage(await options.readEvents() as SessionEvent[])
+      const meta = readRequiredMeta(paths)
+      if (!isDeepStrictEqual(meta.usage, usage)) saveSessionMeta(paths.metaDatabasePath, { ...meta, usage })
+    }),
     readSkillBaseline: () => runSerialized(queue, async () => {
       const state = await readRequiredJson(paths.contextStatePath, isSessionContextState, "Session Context State")
       return structuredClone(state.skills)
@@ -798,12 +828,12 @@ function skillEntryFromDescription(name: string, path: string, scope: SkillScope
 }
 
 /**
- * 校验初始化提供者返回的当前基线，避免把无效派生状态写入磁盘。
+ * 校验来源同步或 Summary 保存的完整基线，避免把无效派生状态写入磁盘。
  *
  * @param baseline Project / Skill / MCP Runtime 汇总的当前状态。
  * @throws Error 当任一已确认字段不符合持久化结构时抛出。
  */
-function validateCurrentBaseline(baseline: CurrentSessionBaseline): void {
+export function validateCurrentBaseline(baseline: CurrentSessionBaseline): void {
   if (
     !isRecord(baseline)
     || !isAgentsState(baseline.agentsmd)

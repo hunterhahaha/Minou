@@ -31,7 +31,7 @@ async function run(scenario: Scenario): Promise<SessionEvent[]> {
     return event
   }
   const adapter: ModelAdapter = {
-    stream: async function* () {
+    contextWindow: 128000, maxOutputTokens: 4096, stream: async function* () {
       requestCount += 1
       if (requestCount > 1) {
         yield { type: "stream_end", completion: "finished" }
@@ -101,6 +101,8 @@ async function run(scenario: Scenario): Promise<SessionEvent[]> {
       appendTurnStartAndUserMessage: fake.appendTurnStartAndUserMessage,
     },
     sessionState: {
+      readAgentInputTokens: async () => 0,
+      synchronizeUsage: async () => {},
       readLoadedMCPTools: async () => [],
       writeLoadedMCPTools: async () => {},
       initializeSession: fake.repairPorts.initializeSession,

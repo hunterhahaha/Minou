@@ -156,7 +156,7 @@ const _adapterImpl: ModelAdapter = {
 }
 
 type _RequestShape = Expect<
-  Equals<keyof UnifiedModelRequest, "context" | "tools" | "model">
+  Equals<keyof UnifiedModelRequest, "context" | "tools" | "model" | "toolChoice">
 >
 type _ToolDefinitionHasSchema = Expect<Equals<UnifiedToolDefinition["inputSchema"], Record<string, unknown>>>
 

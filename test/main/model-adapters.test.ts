@@ -87,8 +87,15 @@ async function testResolvesCurrentDatabaseConfiguration(): Promise<void> {
 
     initNetworkDispatcher()
     const firstAdapter = await createTurnModelAdapter(paths, MODEL)
+    assert.equal(firstAdapter.contextWindow, 64000)
+    assert.equal(firstAdapter.maxOutputTokens, 4096)
+    updateModel(database, { providerId: "configured", modelId: "model-a" }, { contextWindow: 96000, maxOutputTokens: 8192 })
     const secondAdapter = await createTurnModelAdapter(paths, MODEL)
     assert.notEqual(firstAdapter, secondAdapter)
+    assert.equal(firstAdapter.contextWindow, 64000, "当前 Turn 的窗口快照不可变化")
+    assert.equal(firstAdapter.maxOutputTokens, 4096)
+    assert.equal(secondAdapter.contextWindow, 96000)
+    assert.equal(secondAdapter.maxOutputTokens, 8192)
   })
 }
 

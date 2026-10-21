@@ -48,7 +48,7 @@ async function main(): Promise<void> {
   global.createTurnModelAdapter = async (): Promise<ModelAdapter> => {
     const turn = ++adapterCount
     let step = 0
-    return { stream: async function* (request, signal) {
+    return { contextWindow: 128000, maxOutputTokens: 4096, stream: async function* (request, signal) {
       step++
       assert.ok(["shell", "terminal_open", "terminal_input", "terminal_close", "terminal_list"].every((name) => request.tools?.some((tool) => tool.name === name)))
       if (turn === 1 && step === 1) await firstGate
