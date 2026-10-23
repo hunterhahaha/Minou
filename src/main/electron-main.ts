@@ -23,6 +23,7 @@ import { createElectronWindowManager } from "./electron-windows.ts"
 import { startElectronApp } from "./index.ts"
 import { SessionRuntimeGlobal } from "./session-runtime-global.ts"
 import { loadFileAccessState } from "./file-access.ts"
+import { registerWindowIpcHandlers } from "./window-ipc.ts"
 
 const SYSTEM_PROMPT = "You are an AI agent powered by NiCode."
 
@@ -49,6 +50,7 @@ async function main(): Promise<void> {
   for (const state of sessionRuntimeGlobal.mcpManager.getConnectionStates()) {
     if (state.error) console.error(`MCP Server ${state.name} 初始化失败。`, state.error)
   }
+  registerWindowIpcHandlers(ipcMain, BrowserWindow)
   const windows = createElectronWindowManager(BrowserWindow, {
     preloadPath: join(__dirname, "../preload/index.js"),
     rendererHtmlPath: join(__dirname, "../renderer/index.html"),

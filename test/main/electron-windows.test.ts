@@ -52,6 +52,12 @@ class FakeBrowserWindow {
     return this
   }
 
+  /** @param event 窗口状态事件。 @param listener 状态同步回调。 @returns 当前假窗口。 */
+  on(event: string, listener: Listener): this {
+    this.listeners.set(event, listener)
+    return this
+  }
+
   show(): void {
     this.showCalls += 1
   }
@@ -93,11 +99,9 @@ async function testCreatesAndLoadsWindow(): Promise<void> {
   const window = FakeBrowserWindow.instances[0]
   assert.equal(windows.hasOpenWindows(), true)
   assert.equal(window.loadedPath, rendererHtmlPath)
-  assert.equal(window.options.backgroundColor, "#fbfcfe")
-  assert.equal(window.options.titleBarStyle, "hidden")
-  assert.deepEqual(window.options.titleBarOverlay, {
-    color: "#f6f8fb", symbolColor: "#626c78", height: 40,
-  })
+  assert.equal(window.options.backgroundColor, "#f0f1ed")
+  assert.equal(window.options.frame, false)
+  assert.equal(window.options.titleBarOverlay, undefined)
   assert.equal(window.options.autoHideMenuBar, true)
   assert.deepEqual(window.options.webPreferences, {
     preload: preloadPath,

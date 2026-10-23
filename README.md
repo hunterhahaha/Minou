@@ -79,7 +79,10 @@ Workspace 持有以 `global` / `project:<UUID>` 为键的 React 字典，首次�
 真实 BrowserWindow 使用编译后的 preload 与 Vite 构建的 React `src/renderer/index.html`；
 页面启动时通过 `window.nicode` 并行读取 Project、default 对话及 Provider 摘要，显示 default 新聊天首屏。
 首屏按 Figma 工作区原型支持侧栏收起与展开、项目和聊天分组折叠、项目索引折叠，以及权限和模型弹层选择。
-窗口使用 40px 标题栏覆盖层，保留系统窗口控制按钮。
+窗口使用无系统边框模式，由 Renderer 的 42px 顶部栏绘制最小化、最大化 / 还原和关闭按钮。
+关闭按钮按产品约定最小化到任务栏，保留窗口和后台任务；窗口控制通过独立的
+`window.nicodeWindow` 窄接口完成，不修改既有业务 IPC。主进程只操作请求来源窗口的主 frame，
+系统触发的最大化 / 还原也会同步标题栏按钮。
 模型摘要包含当前有效默认模型标记。Renderer 保持 `contextIsolation=true`、`nodeIntegration=false`。由于 preload 目前是
 未经打包的多文件 CommonJS 输出，窗口暂时显式使用 `sandbox=false`。
 权限与模型选择目前只影响当前页面展示；首屏尚不发送消息，也不读取历史对话内容。
@@ -615,6 +618,8 @@ node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types t
 node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/main/session-runtime-global.test.ts
 node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/main/file-access.test.ts
 node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/main/electron-windows.test.ts
+node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/main/window-ipc.test.ts
+node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/preload/window-api.test.ts
 node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/main/index.test.ts
 node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/main/session-ipc.test.ts
 node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/preload/session-api.test.ts
@@ -695,6 +700,15 @@ $testProcess.ExitCode
 关闭重开及路由切换后缓存保留、仅刷新当前来源，并覆盖描述错误、启停落盘、保存确认前保持原值、
 加载/保存失败重试、请求期间的导航与关闭保护、键盘操作和窄窗口无横向溢出。
 测试截图写入 `dist/skill-settings-wide.png` 与 `dist/skill-settings-narrow.png` 供视觉检查。
+
+工作台改版的交互验证使用同样的隐藏窗口启动方式运行
+`test/renderer/electron-workspace-design.test.cjs`。测试通过真实 preload 与离线 IPC 夹具验证：
+摘要搜索与空结果、键盘导航、首次打开才读取历史、缓存命中、草稿保留、Project 入口、
+浅色 / 深色主题恢复、设置分区入口与弹窗比例、焦点及窄窗口无横向溢出。
+另外验证输入框单行起步、随内容增长、到上限后内部滚动、清空收缩，
+并通过真实窗口验证自绘最小化、最大化 / 还原、系统状态同步和关闭仅最小化。
+测试使用独立临时用户目录，不读取现有用户数据或访问模型网络，
+并生成 `dist/workspace-*.png`，覆盖首页、项目、对话、搜索、模型、MCP、技能和创建项目。
 
 该测试验证实际 React 页面新建、Queue、流式正文、Turn 完成后的父容器与正文位置、
 内外层折叠交互、后续事件保持展开、不同对话的折叠状态隔离、跨路由缓存和草稿保留；

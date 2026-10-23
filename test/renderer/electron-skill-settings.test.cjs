@@ -4,6 +4,7 @@ const { mkdtemp, mkdir, rm, writeFile, readFile } = require("node:fs/promises")
 const { tmpdir } = require("node:os")
 const { join, resolve, sep } = require("node:path")
 const { app, BrowserWindow, ipcMain } = require("electron")
+const { registerWindowIpcHandlers } = require("../../dist/src/main/window-ipc.js")
 const { initializeConfigFiles } = require("../../dist/src/main/config-files.js")
 const { SkillManager } = require("../../dist/runtime/skill/src/index.js")
 const { registerSkillIpcHandlers } = require("../../dist/src/main/skill-ipc.js")
@@ -70,6 +71,7 @@ async function assertProtected() {
 
 /** @returns 所有真实页面场景及截图完成。 @throws AssertionError 页面行为不符。 */
 async function main() {
+  registerWindowIpcHandlers(ipcMain, BrowserWindow)
   profile = await mkdtemp(join(tmpdir(), "nicode-electron-skill-"))
   app.setPath("userData", join(profile, "electron-user-data"))
   paths = await initializeConfigFiles(profile)
