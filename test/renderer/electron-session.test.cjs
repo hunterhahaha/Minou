@@ -4,6 +4,7 @@ const { mkdtemp, rm, writeFile } = require("node:fs/promises")
 const { tmpdir } = require("node:os")
 const { join, resolve, sep } = require("node:path")
 const { app, BrowserWindow, ipcMain } = require("electron")
+const { registerWindowIpcHandlers } = require("../../dist/src/main/window-ipc.js")
 const { initializeConfigFiles } = require("../../dist/src/main/config-files.js")
 const { SessionRuntime } = require("../../dist/runtime/agent/src/session-runtime.js")
 const { registerSessionIpcHandlers } = require("../../dist/src/main/session-ipc.js")
@@ -38,6 +39,7 @@ async function type(label, text) {
 }
 /** @returns 真实 Renderer 操作与缓存命中验证完成。 */
 async function main() {
+  registerWindowIpcHandlers(ipcMain, BrowserWindow)
   profile = await mkdtemp(join(tmpdir(), "nicode-renderer-electron-"))
   const paths = await initializeConfigFiles(profile)
   await app.whenReady()
@@ -48,7 +50,8 @@ async function main() {
     }) }),
     estimateSkillTokens: () => 0, listToolDefinitions: () => [],
     executeTool: async () => { throw new Error("unexpected tool") },
-    createTurnModelAdapter: async () => ({ stream: async function* () {
+    /** 对话展示测试使用足够大的窗口，避免进入另有专门测试的 Summary 压缩流程。 */
+    createTurnModelAdapter: async () => ({ contextWindow: 256000, maxOutputTokens: 32000, stream: async function* () {
       await loopGate
       yield { type: "block_start", index: 0, blockType: "thinking" }
       yield { type: "block_delta", index: 0, delta: { type: "thinking", text: "本机思考过程" } }
@@ -78,11 +81,11 @@ async function main() {
   registerStartupDataIpcHandlers(port, paths)
   ipcMain.removeHandler(STARTUP_DATA_IPC_CHANNELS.listProviders)
   ipcMain.handle(STARTUP_DATA_IPC_CHANNELS.listProviders, () => [{ providerId: "p", name: "测试", protocol: "responses",
-    models: [{ modelId: "m", name: model.name, isDefault: true, contextWindow: 10000, maxOutputTokens: 1000 }] }])
+    models: [{ modelId: "m", name: model.name, isDefault: true, contextWindow: 256000, maxOutputTokens: 32000 }] }])
   window = new BrowserWindow({ show: false, width: 1200, height: 800, webPreferences: {
     preload: join(process.cwd(), "dist/src/preload/index.js"), contextIsolation: true, nodeIntegration: false, sandbox: false, backgroundThrottling: false,
   } })
-  window.webContents.on("console-message", (_event, details) => { if (details.level === "error") rendererErrors.push(details.message) })
+  window.webContents.on("console-message", (details) => { if (details.level === "error") rendererErrors.push(details.message) })
   await window.loadFile(join(process.cwd(), "dist/src/renderer/index.html"))
   await until(() => evaluate(`document.querySelector('textarea[aria-label="任务描述"]') !== null`))
   await type("任务描述", "第一条真实页面消息")
@@ -106,12 +109,12 @@ async function main() {
   await until(() => evaluate(`Array.from(document.querySelectorAll('.assistant-text')).some(node => node.textContent === '本机流式正文')`))
   assert.equal(await evaluate(`document.querySelectorAll('.turn-process, .final-answer').length`), 0, "没有 turn/end 时保持流式展示")
   releaseAnswer()
-  await until(() => evaluate(`document.querySelectorAll('.user-bubble').length === 2 && document.querySelector('.chat-footer [role="status"]')?.textContent === '空闲'`))
+  await until(() => evaluate(`document.querySelectorAll('.user-bubble').length === 2 && document.querySelector('.session-phase')?.textContent === '准备就绪'`))
   assert.deepEqual(await evaluate(`Array.from(document.querySelectorAll('.assistant-entry[data-turn]')).map(node => ({
     turn: Number(node.dataset.turn), parent: node.tagName,
     process: node.querySelector(':scope > .turn-process')?.tagName,
     open: node.querySelector(':scope > .turn-process')?.open,
-    summary: node.querySelector(':scope > .turn-process > summary')?.textContent,
+    summary: node.querySelector(':scope > .turn-process > summary .process-title')?.textContent,
     final: node.querySelector(':scope > .final-answer')?.tagName,
     text: Array.from(node.querySelectorAll(':scope > .final-answer > .assistant-text')).map(text => text.textContent),
     innerDetails: node.querySelectorAll('.turn-process details').length,
@@ -129,7 +132,7 @@ async function main() {
   assert.equal(await evaluate(`document.querySelector('.turn-process').open`), true, "草稿重绘不能关闭过程区域")
   await until(() => evaluate(`document.querySelector('[aria-label="发送消息"]')?.disabled === false`))
   await evaluate(`document.querySelector('[aria-label="发送消息"]').click()`)
-  await until(() => evaluate(`document.querySelectorAll('.turn-process').length === 3 && document.querySelector('.chat-footer [role="status"]')?.textContent === '空闲'`))
+  await until(() => evaluate(`document.querySelectorAll('.turn-process').length === 3 && document.querySelector('.session-phase')?.textContent === '准备就绪'`))
   assert.equal(await evaluate(`document.querySelector('.turn-process').open`), true, "后续 Turn 事件不能关闭已展开过程")
   await evaluate(`document.querySelector('.new-chat').click()`)
   await until(() => evaluate(`document.querySelector('textarea[aria-label="任务描述"]')?.value === '切换保留的草稿'`))
@@ -144,7 +147,7 @@ async function main() {
   await type("任务描述", "不同对话的第一轮")
   await until(() => evaluate(`document.querySelector('[aria-label="发送消息"]')?.disabled === false`))
   await evaluate(`document.querySelector('[aria-label="发送消息"]').click()`)
-  await until(() => evaluate(`document.querySelector('.turn-process') !== null && document.querySelector('.chat-footer [role="status"]')?.textContent === '空闲'`))
+  await until(() => evaluate(`document.querySelector('.turn-process') !== null && document.querySelector('.session-phase')?.textContent === '准备就绪'`))
   assert.notEqual(await evaluate(`document.querySelector('.chat-page').dataset.sessionId`), originalSession)
   assert.equal(await evaluate(`document.querySelector('.turn-process').open`), false, "不同对话的相同 Turn 编号不能继承展开状态")
   await evaluate("location.hash = " + JSON.stringify(route))

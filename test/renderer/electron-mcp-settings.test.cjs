@@ -5,6 +5,7 @@ const { tmpdir } = require("node:os")
 const { join, resolve, sep } = require("node:path")
 const { createServer } = require("node:http")
 const { app, BrowserWindow, ipcMain } = require("electron")
+const { registerWindowIpcHandlers } = require("../../dist/src/main/window-ipc.js")
 const { initializeConfigFiles, readConfigFile } = require("../../dist/src/main/config-files.js")
 const { MCPManager } = require("../../dist/runtime/mcp/src/manager.js")
 const { registerMcpIpcHandlers } = require("../../dist/src/main/mcp-ipc.js")
@@ -69,6 +70,7 @@ async function openMcp() {
 
 /** @returns 真实页面的配置、状态同步、恢复和回归场景完成。 */
 async function main() {
+  registerWindowIpcHandlers(ipcMain, BrowserWindow)
   profile = await mkdtemp(join(tmpdir(), "nicode-electron-mcp-"))
   app.setPath("userData", join(profile, "electron-user-data"))
   paths = await initializeConfigFiles(profile)

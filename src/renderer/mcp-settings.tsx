@@ -186,7 +186,7 @@ export function McpSettings({ onBusyChange }: McpSettingsProps) {
 
   return <div className="mcp-settings" aria-busy={busy}>
     <div className="mcp-toolbar">
-      <div><p className="settings-eyebrow">工具连接</p><h3>MCP 服务器</h3></div>
+      <div><p className="settings-eyebrow">拓展工作的边界</p><h3>MCP 服务器</h3><p className="settings-page-description">连接你的工具，让 NiCode 在熟悉的工作流中协作。</p></div>
       <div className="settings-field-actions">
         <button type="button" className="settings-secondary-button" aria-label="刷新 MCP" disabled={busy} onClick={() => { void perform(() => window.nicode.reloadMcpServers(), selected, "已重新加载全部 MCP 连接。") }}>
           <IconRefresh size={15} aria-hidden="true" />{busy ? "处理中…" : "刷新"}
@@ -207,7 +207,7 @@ export function McpSettings({ onBusyChange }: McpSettingsProps) {
         </li>)}</ul>
       </aside>
       <section className="mcp-detail" aria-label="MCP 配置">
-        <h3>{selected === null ? "新增 MCP" : "编辑 MCP"}</h3>
+        <div className="mcp-detail-heading"><span className="settings-eyebrow">{selected === null ? "新的连接" : "连接配置"}</span><h3>{selected === null ? "新增 MCP" : "编辑 MCP"}</h3></div>
         {current && <p className="mcp-connection-state" role={current.error ? "alert" : "status"}>
           {current.error ? `配置已保存，但运行状态异常：${current.error.message}` : `${statusLabel(current)} · ${current.toolCount} 个工具`}
         </p>}

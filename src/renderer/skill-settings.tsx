@@ -1,7 +1,7 @@
 /** 设置中的技能管理页面；列表字典由 Workspace 持有，页面只在查看或显式刷新时读取。 */
 import { useEffect, useRef, useState } from "react"
 import type { Dispatch, SetStateAction } from "react"
-import { IconRefresh } from "@tabler/icons-react"
+import { IconRefresh, IconSparkles } from "@tabler/icons-react"
 import type { ProjectSummary, SkillSummary, SkillTarget } from "../preload/session-api.ts"
 
 /** 单个作用域的已加载列表及查询状态；skills 为空数组时仍为有效缓存。 */
@@ -107,7 +107,7 @@ export function SkillSettings({ projects, onReloadProjects, skillsByScope, onSki
 
   return <div className="skill-settings" aria-busy={busy}>
     <div className="skill-toolbar">
-      <div><p className="settings-eyebrow">技能管理</p><h3>技能</h3></div>
+      <div><p className="settings-eyebrow">让经验成为能力</p><h3>技能</h3><p className="settings-page-description">为不同项目配备恰到好处的知识与工作方法。</p></div>
       <button type="button" className="settings-secondary-button" aria-label="刷新技能" disabled={busy} onClick={() => { void load(true) }}>
         <IconRefresh size={15} aria-hidden="true" />刷新
       </button>
@@ -124,9 +124,9 @@ export function SkillSettings({ projects, onReloadProjects, skillsByScope, onSki
     {operationError && <p className="settings-inline-error" role="alert">{operationError}</p>}
     {cache?.error && <div className="skill-message settings-inline-error" role="alert"><span>{cache.error}</span><button type="button" className="settings-secondary-button" aria-label="重试加载技能" disabled={busy} onClick={() => { void load(true) }}>重试</button></div>}
     {(!cache || cache.status === "loading") && <p className="settings-field-hint" role="status">正在加载技能…</p>}
-    {cache?.skills?.length === 0 && <p className="settings-empty-note">此作用域暂无技能。</p>}
+    {cache?.skills?.length === 0 && <div className="settings-illustrated-empty"><IconSparkles size={30} stroke={1.3} /><strong>这里还有更多可能</strong><p className="settings-empty-note">此作用域暂无技能。</p><span>将技能放入对应的 skills 文件夹，再点击刷新。</span></div>}
     <ul className="skill-list" aria-label="技能列表">{cache?.skills?.map((entry) => <li className="skill-entry" key={entry.name}>
-      <div className="skill-entry-content">
+      <span className="skill-entry-icon" aria-hidden="true"><IconSparkles size={19} stroke={1.5} /></span><div className="skill-entry-content">
         <h4>{entry.name}</h4>
         {entry.description !== undefined && <p className="skill-description">{entry.description}</p>}
         {entry.descriptionError && <p className="settings-inline-error skill-description" role="alert">{entry.descriptionError}</p>}

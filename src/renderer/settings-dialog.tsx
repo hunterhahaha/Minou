@@ -1,7 +1,8 @@
 /** 设置弹窗：维护模型、MCP 配置与按来源管理的技能。 */
 
 import { type FormEvent, useEffect, useRef, useState } from "react"
-import { IconPlus, IconX } from "@tabler/icons-react"
+import { IconCpu, IconPlugConnected, IconPlus, IconSettings, IconSparkles, IconX } from "@tabler/icons-react"
+import { useDialogFocus } from "./dialog-focus.tsx"
 
 import type {
   ModelAppend,
@@ -18,6 +19,8 @@ import type { SkillSettingsProps } from "./skill-settings.tsx"
 
 /** 设置弹窗的关闭出口与工作区 Provider 列表同步出口。 */
 interface SettingsDialogProps extends Omit<SkillSettingsProps, "onBusyChange"> {
+  /** 由工作台入口决定的初始分区；不改变各分区的按需加载时机。 */
+  initialSection?: "models" | "mcp" | "skills"
   /** 关闭设置弹窗。 */
   onClose: () => void
   /** 将完整 Provider 列表同步到工作区模型选择器。 */
@@ -104,8 +107,10 @@ function isHttpURL(value: string): boolean {
  * @param props 关闭及同步回调，以及工作区持有的项目摘要和技能缓存。
  * @returns 设置弹窗。
  */
-export function SettingsDialog({ onClose, onProvidersChange, projects, onReloadProjects, skillsByScope, onSkillsChange }: SettingsDialogProps) {
-  const [section, setSection] = useState<"models" | "mcp" | "skills">("models")
+export function SettingsDialog({ initialSection = "models", onClose, onProvidersChange, projects, onReloadProjects, skillsByScope, onSkillsChange }: SettingsDialogProps) {
+  const [section, setSection] = useState<"models" | "mcp" | "skills">(initialSection)
+  const dialogRef = useRef<HTMLElement>(null)
+  useDialogFocus(dialogRef)
   const [loadState, setLoadState] = useState<"loading" | "ready" | "error">("loading")
   const [loadError, setLoadError] = useState<string | null>(null)
   const [providers, setProviders] = useState<ProviderSummary[]>([])
@@ -245,20 +250,22 @@ export function SettingsDialog({ onClose, onProvidersChange, projects, onReloadP
     role="presentation"
     onMouseDown={(event) => { if (event.target === event.currentTarget) requestClose() }}
   >
-    <section className="settings-dialog" role="dialog" aria-modal="true" aria-labelledby="settings-dialog-title" aria-busy={(section === "models" && loadState === "loading") || creating}>
+    <section ref={dialogRef} tabIndex={-1} className="settings-dialog" role="dialog" aria-modal="true" aria-labelledby="settings-dialog-title" aria-busy={(section === "models" && loadState === "loading") || creating}>
       <header className="settings-dialog-header">
-        <h2 id="settings-dialog-title">设置</h2>
+        <div className="settings-title"><span className="settings-title-icon"><IconSettings size={19} /></span><h2 id="settings-dialog-title">设置</h2><span className="settings-title-caption">让 NiCode 更适合你</span></div>
         <button className="settings-dialog-close" type="button" aria-label="关闭设置" disabled={creating} onClick={requestClose}>
           <IconX size={20} stroke={1.5} aria-hidden="true" />
         </button>
       </header>
       <div className="settings-dialog-body">
         <nav className="settings-dialog-nav" aria-label="设置选项">
+          <p className="settings-nav-label">工作空间</p>
           <button className={`settings-nav-option${section === "models" ? " settings-nav-option-active" : ""}`} type="button" aria-current={section === "models" ? "page" : undefined} disabled={creating} onClick={() => { if (!creatingRef.current) setSection("models") }}>
-            模型
+            <IconCpu size={18} stroke={1.6} /><span>模型</span>
           </button>
-          <button className={`settings-nav-option${section === "mcp" ? " settings-nav-option-active" : ""}`} type="button" aria-current={section === "mcp" ? "page" : undefined} disabled={creating} onClick={() => { if (!creatingRef.current) setSection("mcp") }}>MCP</button>
-          <button className={`settings-nav-option${section === "skills" ? " settings-nav-option-active" : ""}`} type="button" aria-current={section === "skills" ? "page" : undefined} disabled={creating} onClick={() => { if (!creatingRef.current) setSection("skills") }}>技能</button>
+          <button className={`settings-nav-option${section === "mcp" ? " settings-nav-option-active" : ""}`} type="button" aria-current={section === "mcp" ? "page" : undefined} disabled={creating} onClick={() => { if (!creatingRef.current) setSection("mcp") }}><IconPlugConnected size={18} stroke={1.6} /><span>MCP</span></button>
+          <button className={`settings-nav-option${section === "skills" ? " settings-nav-option-active" : ""}`} type="button" aria-current={section === "skills" ? "page" : undefined} disabled={creating} onClick={() => { if (!creatingRef.current) setSection("skills") }}><IconSparkles size={18} stroke={1.6} /><span>技能</span></button>
+          <div className="settings-nav-footer"><span className="brand-name">NiCode</span><p>为你的工作方式而设</p></div>
         </nav>
         {section === "models" && <section className="settings-dialog-content" aria-label="模型设置">
           {loadState === "loading" && <p className="settings-state" role="status">正在加载供应商…</p>}
@@ -938,6 +945,8 @@ function CreateModelDialog({
   onCreated: (model: ModelAppend) => void
   onCreatingChange: (creating: boolean) => void
 }) {
+  const dialogRef = useRef<HTMLElement>(null)
+  useDialogFocus(dialogRef)
   const [name, setName] = useState("")
   const [contextWindow, setContextWindow] = useState("256000")
   const [maxOutputTokens, setMaxOutputTokens] = useState("32000")
@@ -990,7 +999,7 @@ function CreateModelDialog({
     role="presentation"
     onMouseDown={(event) => { if (event.target === event.currentTarget && !creatingRef.current) onClose() }}
   >
-    <section className="new-model-dialog" role="dialog" aria-modal="true" aria-labelledby="new-model-title" aria-busy={creating}>
+    <section ref={dialogRef} tabIndex={-1} className="new-model-dialog" role="dialog" aria-modal="true" aria-labelledby="new-model-title" aria-busy={creating}>
       <header className="new-model-dialog-header">
         <div>
           <p className="settings-eyebrow">{provider.name}</p>
@@ -1005,7 +1014,7 @@ function CreateModelDialog({
           <span>模型名称</span>
           <input
             type="text"
-            autoFocus
+            data-dialog-autofocus
             placeholder="例如：gpt-4.1"
             value={name}
             disabled={creating}

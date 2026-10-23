@@ -5,7 +5,9 @@ import { contextBridge, ipcRenderer } from "electron"
 import {
   exposeSessionApi,
 } from "./session-api.ts"
+import { exposeWindowApi } from "./window-api.ts"
 
 exposeSessionApi(contextBridge, ipcRenderer)
+exposeWindowApi(contextBridge, ipcRenderer)
 
 export * from "./session-api.ts"

@@ -10,6 +10,7 @@ import type {
 import type { MainWindowLifecyclePort } from "./index.ts"
 import { SESSION_IPC_CHANNELS } from "../preload/session-api.ts"
 import type { SessionUpdate } from "../preload/session-api.ts"
+import { WINDOW_IPC_CHANNELS } from "../preload/window-api.ts"
 
 /** `BrowserWindow` 类在本模块使用的构造与静态能力。 */
 export interface BrowserWindowConstructorPort {
@@ -70,13 +71,8 @@ export function createElectronWindowManager(
         minWidth: 800,
         minHeight: 600,
         show: false,
-        backgroundColor: "#fbfcfe",
-        titleBarStyle: "hidden",
-        titleBarOverlay: {
-          color: "#f6f8fb",
-          symbolColor: "#626c78",
-          height: 40,
-        },
+        backgroundColor: "#f0f1ed",
+        frame: false,
         autoHideMenuBar: true,
         webPreferences: {
           preload: options.preloadPath,
@@ -86,6 +82,12 @@ export function createElectronWindowManager(
         },
       })
       retainedWindows.add(window)
+      /** 同步系统触发的最大化/还原；尺寸和拖动仍由 Electron 管理。 */
+      const sendWindowState = (): void => {
+        if (!window.isDestroyed() && !window.webContents.isDestroyed()) window.webContents.send(WINDOW_IPC_CHANNELS.stateChanged, { maximized: window.isMaximized() })
+      }
+      window.on("maximize", sendWindowState)
+      window.on("unmaximize", sendWindowState)
       let windowHasBeenShown = false
       /**
        * Electron 首帧事件或页面装载结束后只显示一次主窗口。
