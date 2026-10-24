@@ -43,15 +43,13 @@ async function testResolvesCurrentDatabaseConfiguration(): Promise<void> {
     })
     saveModel(database, {
       providerId: "configured", modelId: "model-a", name: "gpt-test", contextWindow: 128000,
-      maxOutputTokens: 4096, supportsReasoning: true, supportsTools: true,
-      supportsParallelTools: true, supportsResponseId: true,
+      maxOutputTokens: 4096,
     })
     setProviderApiKey(database, "configured", "first-secret")
     const first = await resolveTurnModelAdapterSpecification(paths, MODEL)
     assert.deepEqual(first.modelConfig, {
       modelId: "model-a", name: "gpt-test", providerId: "configured", protocol: "chat_completions",
-      contextWindow: 128000, maxOutputTokens: 4096, supportsReasoning: true,
-      supportsTools: true, supportsParallelTools: true, supportsResponseId: true,
+      contextWindow: 128000, maxOutputTokens: 4096,
     })
     assert.deepEqual(first.clientOptions, {
       apiKey: "first-secret", baseURL: "https://api.example.com/v1",
@@ -69,16 +67,12 @@ async function testResolvesCurrentDatabaseConfiguration(): Promise<void> {
     updateModel(database, { providerId: "configured", modelId: "model-a" }, {
       name: "gpt-updated",
       contextWindow: 64000,
-      supportsReasoning: null,
-      supportsTools: false,
-      supportsParallelTools: null,
-      supportsResponseId: null,
     })
     setProviderApiKey(database, "configured", "second-secret")
     const second = await resolveTurnModelAdapterSpecification(paths, MODEL)
     assert.deepEqual(second.modelConfig, {
       modelId: "model-a", name: "gpt-updated", providerId: "configured", protocol: "chat_completions",
-      contextWindow: 64000, maxOutputTokens: 4096, supportsTools: false,
+      contextWindow: 64000, maxOutputTokens: 4096,
     })
     assert.deepEqual(second.clientOptions, {
       apiKey: "second-secret", baseURL: "https://updated.example.com/v2",

@@ -15,8 +15,7 @@
  * 本文件的五条实现决定（均为文档未规定处，已在阶段报告中单列）：
  *   1. `store: false`：NiCode 自己维护 Session 与上下文，不依赖服务端保存响应；
  *      即使 Provider 默认开启存储，也不把会话内容留在服务端。
- *   2. 不使用 `previous_response_id`，每次完整传入上下文（示例文档明确该方式）；
- *      因此 `supportsResponseId` 在 V1 不参与请求构建。
+ *   2. 不使用 `previous_response_id`，每次完整传入上下文（示例文档明确该方式）。
  *   3. thinking 增量优先取 `reasoning_summary_text.delta`（这是回传给用户的那份），
  *      缺失时退回 `reasoning_text.delta`。两者语义不同（原始推理 vs 摘要），
  *      若同一次响应都出现，会拼进同一个 thinking 块。

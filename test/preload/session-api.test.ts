@@ -24,7 +24,7 @@ const MODEL: ModelRef = {
 }
 const CONTENT = [{ type: "text" as const, text: "你好" }]
 const PROJECT_ID = "00000000-0000-4000-8000-000000000017"
-const PROVIDER_MODEL = { name: "claude-test", contextWindow: 256000, maxOutputTokens: 4096, supportsTools: true }
+const PROVIDER_MODEL = { name: "claude-test", contextWindow: 256000, maxOutputTokens: 4096 }
 const PROVIDER_REFERENCE = { providerId: "provider-1", modelId: "model-1" }
 const MODEL_APPEND = {
   providerId: "provider-1", modelId: "model-2", name: "new-model", contextWindow: 128000, maxOutputTokens: 4096,
@@ -112,7 +112,7 @@ async function testCallsFixedChannels(): Promise<void> {
   await api.updateApiKey("provider-1", null)
   assert.deepEqual(await api.createModel("provider-1", PROVIDER_MODEL), MODEL_APPEND)
   await api.updateModel(PROVIDER_REFERENCE, { name: "renamed-model" })
-  await api.updateModel(PROVIDER_REFERENCE, { contextWindow: 128000, supportsTools: null })
+  await api.updateModel(PROVIDER_REFERENCE, { contextWindow: 128000 })
   await api.deleteModel(PROVIDER_REFERENCE)
   await api.setDefaultModel(PROVIDER_REFERENCE)
   await api.setDefaultModel(null)
@@ -148,7 +148,7 @@ async function testCallsFixedChannels(): Promise<void> {
     { channel: PROVIDER_IPC_CHANNELS.updateApiKey, args: ["provider-1", null] },
     { channel: PROVIDER_IPC_CHANNELS.createModel, args: ["provider-1", PROVIDER_MODEL] },
     { channel: PROVIDER_IPC_CHANNELS.updateModel, args: [PROVIDER_REFERENCE, { name: "renamed-model" }] },
-    { channel: PROVIDER_IPC_CHANNELS.updateModel, args: [PROVIDER_REFERENCE, { contextWindow: 128000, supportsTools: null }] },
+    { channel: PROVIDER_IPC_CHANNELS.updateModel, args: [PROVIDER_REFERENCE, { contextWindow: 128000 }] },
     { channel: PROVIDER_IPC_CHANNELS.deleteModel, args: [PROVIDER_REFERENCE] },
     { channel: PROVIDER_IPC_CHANNELS.setDefaultModel, args: [PROVIDER_REFERENCE] },
     { channel: PROVIDER_IPC_CHANNELS.setDefaultModel, args: [null] },

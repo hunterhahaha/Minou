@@ -43,7 +43,7 @@ async function testCatalogAndDefaults(): Promise<void> {
     })
     saveModel(path, {
       modelId: "model-b", name: "Model B", providerId: "first", contextWindow: 256000,
-      maxOutputTokens: 32000, supportsTools: false,
+      maxOutputTokens: 32000,
     })
     saveModel(path, {
       modelId: "model-a", name: "Model A", providerId: "first", contextWindow: 128000, maxOutputTokens: 32000,
@@ -58,7 +58,7 @@ async function testCatalogAndDefaults(): Promise<void> {
         models: [
           {
             modelId: "model-b", name: "Model B", providerId: "first", contextWindow: 256000,
-            maxOutputTokens: 32000, supportsTools: false,
+            maxOutputTokens: 32000,
           },
           {
             modelId: "model-a", name: "Model A", providerId: "first", contextWindow: 128000,
@@ -93,6 +93,9 @@ async function testCatalogAndDefaults(): Promise<void> {
       assert.equal((db.prepare("SELECT COUNT(*) AS count FROM models").get() as { count: number }).count, 0)
       assert.equal((db.prepare("SELECT COUNT(*) AS count FROM provider_credentials").get() as { count: number }).count, 0)
       const columns = db.prepare("PRAGMA table_info(models)").all() as Array<{ name: string; notnull: number }>
+      assert.deepEqual(columns.map(({ name }) => name), [
+        "id", "name", "provider_id", "position", "context_window", "max_output_tokens",
+      ])
       assert.equal(columns.find(({ name }) => name === "context_window")?.notnull, 1)
       assert.equal(columns.find(({ name }) => name === "max_output_tokens")?.notnull, 1)
       const insertModel = db.prepare(`INSERT INTO models
@@ -145,11 +148,10 @@ async function testReadAndRollback(): Promise<void> {
       modelId: "model-a", name: "Duplicate", providerId: "other", contextWindow: 256000, maxOutputTokens: 32000,
     }), /UNIQUE constraint failed/)
     updateModel(path, { providerId: "configured", modelId: "model-a" }, {
-      name: "updated-claude-test", maxOutputTokens: 2048, supportsTools: true,
+      name: "updated-claude-test", maxOutputTokens: 2048,
     })
     assert.equal(listProviders(path)[0].models[0].name, "updated-claude-test")
     assert.equal(listProviders(path)[0].models[0].maxOutputTokens, 2048)
-    assert.equal(listProviders(path)[0].models[0].supportsTools, true)
     assert.equal(readTurnProviderSnapshot(path, reference).model.name, "updated-claude-test")
     assert.throws(() => updateModel(path, { providerId: "configured", modelId: "model-a" }, { name: "  " }), /name must not be empty/)
     updateModel(path, { providerId: "configured", modelId: "model-a" }, { maxOutputTokens: 2048 })

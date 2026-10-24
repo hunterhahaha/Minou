@@ -141,13 +141,11 @@ async function testModelCreationReturnsGeneratedIdentity(): Promise<void> {
       { providerId: provider.providerId, modelId: original.modelId },
       { maxOutputTokens: null },
     ), /模型更新内容错误/)
-    ipc.invoke(
+    assert.throws(() => ipc.invoke(
       PROVIDER_IPC_CHANNELS.updateModel,
       { providerId: provider.providerId, modelId: original.modelId },
-      { supportsTools: false },
-    )
-    assert.equal(listProviders(providerDatabasePath)[0]?.models[0]?.name, "renamed-model")
-    assert.equal(listProviders(providerDatabasePath)[0]?.models[0]?.supportsTools, false)
+      { extra: true },
+    ), /模型更新内容错误/)
 
     assert.throws(() => ipc.invoke(
       PROVIDER_IPC_CHANNELS.createModel,
@@ -163,6 +161,11 @@ async function testModelCreationReturnsGeneratedIdentity(): Promise<void> {
       PROVIDER_IPC_CHANNELS.createModel,
       provider.providerId,
       { name: "invalid-output-limit", maxOutputTokens: 0 },
+    ), /模型配置错误/)
+    assert.throws(() => ipc.invoke(
+      PROVIDER_IPC_CHANNELS.createModel,
+      provider.providerId,
+      { name: "unknown-field", extra: true },
     ), /模型配置错误/)
     assert.throws(() => ipc.invoke(
       PROVIDER_IPC_CHANNELS.updateProvider,
