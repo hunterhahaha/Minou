@@ -17,7 +17,7 @@
 .project-name-input input { width: 100%; min-width: 0; height: 100%; padding: 0; border: 0; outline: 0; color: var(--text); background: transparent; font-size: 12px; }
 .project-name-input input::placeholder { color: var(--muted); }
 .project-name-input input:focus-visible { box-shadow: none; }
-.project-directory-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; width: 100%; min-height: 132px; padding: 20px; border: 0; border-radius: 10px; color: var(--secondary); background: var(--surface-muted); font-size: 11px; }
+.project-directory-empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; width: 100%; min-height: 132px; padding: 20px; border: 0; border-radius: 10px; color: var(--secondary); background: transparent; font-size: 11px; }
 .project-directory-empty > svg { color: var(--accent); }
 .project-directory-empty:hover { background: var(--field-focus); }
 .project-directory-list { overflow: hidden; width: 100%; border: 0; border-radius: 9px; color: var(--text); background: var(--canvas); }
@@ -30,8 +30,8 @@
 .project-directory-add { border: 0; text-align: left; } .project-directory-add:hover { background: var(--hover); }
 .project-dialog-error { margin: 0; color: var(--error); font-size: 11px; }
 .project-dialog-footer { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding-top: 4px; }
-.create-project-button { height: 36px; padding: 0 18px; border: 0; border-radius: 7px; color: var(--on-accent); background: var(--accent); font-size: 12px; }
-.create-project-button:hover:not(:disabled) { background: var(--accent-hover); }
+.create-project-button { height: 36px; padding: 0 18px; border: 0; border-radius: 7px; color: var(--accent); background: transparent; font-size: 12px; font-weight: 600; }
+.create-project-button:hover:not(:disabled) { color: var(--text); background: var(--hover); }
 .settings-dialog { display: flex; flex-direction: column; width: clamp(min(720px, 78vw), 84vw, min(1080px, 88vw)); height: clamp(min(420px, 70vh), 78vh, min(760px, 84vh)); max-width: 100%; max-height: 100%; min-height: 0; overflow: hidden; border-radius: 14px; }
 .settings-dialog-header { display: flex; align-items: center; justify-content: space-between; flex: 0 0 64px; padding: 0 23px; border: 0; background: var(--surface-gradient); }
 .settings-title { display: flex; align-items: center; gap: 10px; min-width: 0; }
@@ -55,10 +55,10 @@
 .settings-page-heading h3, .provider-detail-heading h3 { margin: 7px 0 10px; color: var(--text-strong); font-size: 24px; font-weight: 550; letter-spacing: -.6px; line-height: 1.4; }
 .settings-page-heading p:not(.settings-eyebrow), .settings-page-description { margin: 8px 0 0; color: var(--secondary); font-size: 11px; line-height: 1.8; }
 .settings-eyebrow { margin: 0; color: var(--muted); font-size: 9px; letter-spacing: 1px; line-height: 1.5; }
-.settings-secondary-button, .settings-primary-button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 34px; padding: 0 13px; border: 0; border-radius: 7px; color: var(--secondary); background: var(--field); font-size: 11px; white-space: nowrap; }
+.settings-secondary-button, .settings-primary-button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 34px; padding: 0 13px; border: 0; border-radius: 7px; color: var(--secondary); background: transparent; font-size: 11px; white-space: nowrap; }
 .settings-secondary-button:hover { color: var(--text); background: var(--hover); }
-.settings-primary-button { color: var(--on-accent); background: var(--accent); }
-.settings-primary-button:hover:not(:disabled) { background: var(--accent-hover); }
+.settings-primary-button { color: var(--accent); font-weight: 600; }
+.settings-primary-button:hover:not(:disabled) { color: var(--text); background: var(--hover); }
 .settings-field { display: flex; flex-direction: column; gap: 8px; min-width: 0; color: var(--secondary); font-size: 12px; }
 .settings-field > span:first-child { color: var(--text); font-weight: 500; }
 .settings-field input, .settings-field select { width: 100%; min-width: 0; height: 39px; padding: 0 11px; border: 0; border-radius: 7px; outline: 0; color: var(--text); background: var(--field); font-size: 13px; }
@@ -77,7 +77,7 @@
 .settings-section-heading h4 { margin: 0 0 5px; color: var(--text); font-size: 12px; font-weight: 600; }
 .settings-section-heading p { margin: 0; color: var(--muted); font-size: 10px; line-height: 1.6; }
 .create-model-list, .provider-model-list { display: flex; flex-direction: column; gap: 12px; }
-.create-model-row, .provider-model-editor { padding: 18px; border: 0; border-radius: 10px; background: var(--surface-gradient); }
+.create-model-row, .provider-model-editor { padding: 18px 0; border: 0; background: transparent; }
 .create-model-row-heading, .provider-model-editor-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 15px; color: var(--secondary); font-size: 10px; font-weight: 550; }
 .provider-model-editor-heading { align-items: flex-start; }
 .provider-model-editor-heading h5 { display: inline; margin: 0 8px 0 0; color: var(--text); font-size: 12px; font-weight: 600; }
@@ -141,8 +141,8 @@
 .skill-scope { max-width: 350px; } .skill-scope select { min-width: 0; max-width: 100%; }
 .skill-message { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin: 0; font-size: 11px; line-height: 1.7; overflow-wrap: anywhere; }
 .skill-list { display: flex; flex-direction: column; gap: 12px; list-style: none; margin: 0; padding: 0; }
-.skill-entry { display: flex; align-items: flex-start; gap: 12px; padding: 18px; border: 0; border-radius: 10px; background: var(--surface-gradient); }
-.skill-entry-icon { display: grid; place-items: center; width: 33px; height: 33px; border: 0; border-radius: 9px; color: var(--accent); background: var(--surface-muted); }
+.skill-entry { display: flex; align-items: flex-start; gap: 12px; padding: 18px 0; border: 0; background: transparent; }
+.skill-entry-icon { display: grid; place-items: center; width: 33px; height: 33px; border: 0; color: var(--accent); background: transparent; }
 .skill-entry-content { flex: 1; min-width: 0; }
 .skill-entry h4 { margin: 2px 0 0; color: var(--text); font-size: 14px; font-weight: 550; overflow-wrap: anywhere; }
 .skill-description { margin: 9px 0 0; color: var(--secondary); font-size: 12px; line-height: 1.8; white-space: pre-wrap; overflow-wrap: anywhere; }

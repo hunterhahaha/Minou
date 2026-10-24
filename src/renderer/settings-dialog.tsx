@@ -235,9 +235,9 @@ export function SettingsDialog({ initialSection = "models", onClose, onProviders
   }, [])
 
   useEffect(() => {
-    /** @param event 键盘事件；Escape 在没有创建请求时关闭设置弹窗。 */
+    /** @param event 键盘事件；原生下拉浮层优先处理 Escape，其余情况沿用创建期间的关闭保护。 */
     function closeOnEscape(event: KeyboardEvent): void {
-      if (event.key === "Escape") requestClose()
+      if (event.key === "Escape" && !document.querySelector("select:open")) requestClose()
     }
     window.addEventListener("keydown", closeOnEscape)
     return () => window.removeEventListener("keydown", closeOnEscape)
