@@ -53,16 +53,6 @@ export interface ModelConfig {
   contextWindow: number
   /** 模型创建时确定的最大输出 Token 数；是否使用由具体 Adapter 决定。 */
   maxOutputTokens: number
-
-  /** 模型是否支持 reasoning / thinking 能力。 */
-  supportsReasoning?: boolean
-  /** 模型是否支持工具调用。 */
-  supportsTools?: boolean
-  /** 模型是否支持同一响应中的并行工具调用。 */
-  supportsParallelTools?: boolean
-
-  /** 模型是否支持服务端响应 ID；当前 V1 的 Responses Adapter 不依赖该能力。 */
-  supportsResponseId?: boolean
 }
 
 // ---------------------------------------------------------------------------

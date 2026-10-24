@@ -179,14 +179,6 @@ export interface ProviderModelInput {
   contextWindow?: number | null
   /** 请求允许的最大输出 Token；省略或传 null 时创建模型使用 32000。 */
   maxOutputTokens?: number | null
-  /** 是否支持 reasoning。 */
-  supportsReasoning?: boolean
-  /** 是否支持工具调用。 */
-  supportsTools?: boolean
-  /** 是否支持并行工具调用。 */
-  supportsParallelTools?: boolean
-  /** 是否支持服务端响应 ID。 */
-  supportsResponseId?: boolean
 }
 
 /** 按 Provider 与全局唯一 modelId 定位的模型引用。 */
@@ -197,7 +189,7 @@ export interface ProviderModelReference {
   modelId: string
 }
 
-/** 更新模型名称、必填 Token 限制或能力；省略名称时不修改名称，能力字段传 null 清除对应可选值。 */
+/** 更新模型名称或必填 Token 限制；省略名称时不修改名称。 */
 export interface ProviderModelUpdate {
   /** Provider API 请求中使用的非空模型名称；省略时本次不更新名称。 */
   name?: string
@@ -205,14 +197,6 @@ export interface ProviderModelUpdate {
   contextWindow?: number
   /** 新最大输出 Token 数。 */
   maxOutputTokens?: number
-  /** 新 reasoning 能力；传 null 表示未声明。 */
-  supportsReasoning?: boolean | null
-  /** 新工具调用能力；传 null 表示未声明。 */
-  supportsTools?: boolean | null
-  /** 新并行工具调用能力；传 null 表示未声明。 */
-  supportsParallelTools?: boolean | null
-  /** 新响应 ID 能力；传 null 表示未声明。 */
-  supportsResponseId?: boolean | null
 }
 
 /** 不含凭据、包含协议连接地址的 Provider 页面摘要。 */
@@ -398,9 +382,9 @@ export interface NiCodePreloadApi {
    */
   createModel(providerId: string, model: ProviderModelInput): Promise<ModelAppend>
   /**
-   * 更新指定模型身份的名称或能力字段。
+   * 更新指定模型身份的名称或 Token 限制。
    * @param reference 要更新的 Provider 与模型引用。
-   * @param update 要替换的名称或能力字段；能力字段可传 null 清除或使用默认值。
+   * @param update 要替换的名称或 Token 限制。
    */
   updateModel(reference: ProviderModelReference, update: ProviderModelUpdate): Promise<void>
   /**

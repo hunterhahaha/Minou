@@ -49,15 +49,14 @@ function isProtocol(value: unknown): value is Protocol {
 }
 
 /**
- * 检查模型创建输入及可选数值字段的范围。
+ * 检查模型创建输入、可选数值字段的范围及允许的字段集合。
  * @param value Renderer 传入的未知模型对象。
  * @returns value 符合创建输入约束、可在写库前补入默认值时为 true。
  */
 function isModelInput(value: unknown): value is ProviderModelInput {
   if (!isRecord(value) || typeof value.name !== "string" || value.name.trim() === "") return false
   if (!isOptionalPositiveInteger(value.contextWindow) || !isOptionalPositiveInteger(value.maxOutputTokens)) return false
-  return isOptionalBoolean(value.supportsReasoning) && isOptionalBoolean(value.supportsTools) &&
-    isOptionalBoolean(value.supportsParallelTools) && isOptionalBoolean(value.supportsResponseId)
+  return Object.keys(value).every((key) => ["name", "contextWindow", "maxOutputTokens"].includes(key))
 }
 
 /**
@@ -67,7 +66,7 @@ function isModelInput(value: unknown): value is ProviderModelInput {
  */
 function completeModelInput(model: ProviderModelInput): PersistableModelInput {
   return {
-    ...model,
+    name: model.name,
     contextWindow: model.contextWindow ?? DEFAULT_MODEL_CONTEXT_WINDOW,
     maxOutputTokens: model.maxOutputTokens ?? DEFAULT_MODEL_MAX_OUTPUT_TOKENS,
   }
@@ -83,16 +82,13 @@ function isModels(value: unknown): value is Models {
 }
 
 /**
- * 检查模型补丁；省略名称时保持原值，数值限制必须为正整数，布尔能力可用 null 清除。
+ * 检查模型补丁；省略名称时保持原值，数值限制必须为正整数。
  * @param value Renderer 传入的未知补丁。
  * @returns 补丁字段合法且至少有一个可更新字段时为 true。
  */
 function isModelUpdate(value: unknown): value is ProviderModelUpdate {
   if (!isRecord(value)) return false
-  const fields = [
-    "name", "contextWindow", "maxOutputTokens", "supportsReasoning", "supportsTools",
-    "supportsParallelTools", "supportsResponseId",
-  ] as const
+  const fields = ["name", "contextWindow", "maxOutputTokens"] as const
   if (Object.keys(value).length === 0 || !Object.keys(value).every((key) => fields.includes(key as typeof fields[number]))) {
     return false
   }
@@ -102,9 +98,6 @@ function isModelUpdate(value: unknown): value is ProviderModelUpdate {
   }
   for (const field of ["contextWindow", "maxOutputTokens"] as const) {
     if (field in value && !isPositiveInteger(value[field])) return false
-  }
-  for (const field of ["supportsReasoning", "supportsTools", "supportsParallelTools", "supportsResponseId"] as const) {
-    if (field in value && !isNullableBoolean(value[field])) return false
   }
   return true
 }
@@ -295,24 +288,6 @@ function isPositiveInteger(value: unknown): value is number {
  */
 function isOptionalPositiveInteger(value: unknown): value is number | null | undefined {
   return value === undefined || value === null || isPositiveInteger(value)
-}
-
-/**
- * 检查可选布尔值。
- * @param value 待检查的未知值。
- * @returns value 缺失或为布尔值时为 true。
- */
-function isOptionalBoolean(value: unknown): value is boolean | undefined {
-  return value === undefined || typeof value === "boolean"
-}
-
-/**
- * 检查允许清除的布尔值。
- * @param value 待检查的未知值。
- * @returns value 为 null 或布尔值时为 true。
- */
-function isNullableBoolean(value: unknown): value is boolean | null {
-  return value === null || typeof value === "boolean"
 }
 
 /**

@@ -33,7 +33,7 @@ export interface ProviderModelReference {
   modelId: string
 }
 
-/** 更新模型补丁；数值限制只接受正整数，省略名称时保持原值，布尔能力为 null 时清除。 */
+/** 更新模型补丁；数值限制只接受正整数，省略名称时保持原值。 */
 export interface ProviderModelUpdate {
   /** Provider API 请求中使用的非空模型名称；省略时本次不更新名称。 */
   name?: string
@@ -41,14 +41,6 @@ export interface ProviderModelUpdate {
   contextWindow?: number
   /** 新的最大输出 Token 数。 */
   maxOutputTokens?: number
-  /** 是否支持 reasoning；null 表示未声明。 */
-  supportsReasoning?: boolean | null
-  /** 是否支持工具调用；null 表示未声明。 */
-  supportsTools?: boolean | null
-  /** 是否支持并行工具调用；null 表示未声明。 */
-  supportsParallelTools?: boolean | null
-  /** 是否支持服务端响应 ID；null 表示未声明。 */
-  supportsResponseId?: boolean | null
 }
 
 /** 不含凭据的 Provider 与模型列表项。 */
@@ -81,10 +73,6 @@ interface ModelRow {
   provider_id: string
   context_window: number
   max_output_tokens: number
-  supports_reasoning: number | null
-  supports_tools: number | null
-  supports_parallel_tools: number | null
-  supports_response_id: number | null
 }
 
 const CREATE_PROVIDERS = `CREATE TABLE providers (
@@ -102,10 +90,6 @@ const CREATE_MODELS = `CREATE TABLE models (
   position INTEGER NOT NULL CHECK (position >= 0),
   context_window INTEGER NOT NULL CHECK (context_window > 0),
   max_output_tokens INTEGER NOT NULL CHECK (max_output_tokens > 0),
-  supports_reasoning INTEGER CHECK (supports_reasoning IN (0, 1)),
-  supports_tools INTEGER CHECK (supports_tools IN (0, 1)),
-  supports_parallel_tools INTEGER CHECK (supports_parallel_tools IN (0, 1)),
-  supports_response_id INTEGER CHECK (supports_response_id IN (0, 1)),
   UNIQUE (provider_id, position)
 ) STRICT`
 const CREATE_CREDENTIALS = `CREATE TABLE provider_credentials (
@@ -308,16 +292,6 @@ function modelFromRow(row: ModelRow): ProviderModelRecord {
     const value = model[field]
     if (!Number.isSafeInteger(value) || value <= 0) throw new Error(`Model ${field} 必须是正整数。`)
   }
-  for (const [column, field] of [
-    ["supports_reasoning", "supportsReasoning"], ["supports_tools", "supportsTools"],
-    ["supports_parallel_tools", "supportsParallelTools"], ["supports_response_id", "supportsResponseId"],
-  ] as const) {
-    const value = row[column]
-    if (value !== null) {
-      if (value !== 0 && value !== 1) throw new Error(`Model ${field} 必须是布尔值。`)
-      model[field] = value === 1
-    }
-  }
   return model
 }
 
@@ -330,8 +304,7 @@ function modelFromRow(row: ModelRow): ProviderModelRecord {
 function listProvidersInDatabase(db: DatabaseSync): ProviderCatalogEntry[] {
   const providerRows = db.prepare(`SELECT id, name, protocol, base_url, default_headers_json
     FROM providers ORDER BY position, id`).all() as unknown as ProviderRow[]
-  const modelRows = db.prepare(`SELECT id, name, provider_id, context_window, max_output_tokens,
-    supports_reasoning, supports_tools, supports_parallel_tools, supports_response_id
+  const modelRows = db.prepare(`SELECT id, name, provider_id, context_window, max_output_tokens
     FROM models ORDER BY provider_id, position, id`).all() as unknown as ModelRow[]
   const models = new Map<string, ProviderModelRecord[]>()
   for (const row of modelRows) {
@@ -421,8 +394,8 @@ export function deleteProvider(databasePath: string, providerId: string): void {
 /**
  * 在 Provider 模型列表末尾新增一条全局唯一 modelId 的记录。
  * @param databasePath Provider 数据库绝对路径。
- * @param model 模型能力与所属 Provider。
- * @throws Error 当 Provider 不存在或模型能力字段无效时抛出。
+ * @param model 模型字段与所属 Provider。
+ * @throws Error 当 Provider 不存在或模型字段无效时抛出。
  */
 export function saveModel(databasePath: string, model: ProviderModelRecord): void {
   const id = nonEmpty(model.modelId, "Model id")
@@ -434,21 +407,14 @@ export function saveModel(databasePath: string, model: ProviderModelRecord): voi
       throw new Error(`Model ${field} 必须是正整数。`)
     }
   }
-  for (const field of ["supportsReasoning", "supportsTools", "supportsParallelTools", "supportsResponseId"] as const) {
-    const value = model[field]
-    if (value !== undefined && typeof value !== "boolean") throw new Error(`Model ${field} 必须是布尔值。`)
-  }
   withDatabase(databasePath, false, (db) => transaction(db, () => {
     const provider = db.prepare("SELECT id FROM providers WHERE id = ?").get(providerId)
     if (provider === undefined) throw new Error(`Provider ${providerId} 不存在。`)
     const position = db.prepare("SELECT COALESCE(MAX(position) + 1, 0) AS next FROM models WHERE provider_id = ?")
       .get(providerId) as { next: number }
-    db.prepare(`INSERT INTO models (id, name, provider_id, position, context_window, max_output_tokens,
-      supports_reasoning, supports_tools, supports_parallel_tools, supports_response_id)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(id, name, providerId, position.next, model.contextWindow, model.maxOutputTokens,
-        booleanColumn(model.supportsReasoning), booleanColumn(model.supportsTools),
-        booleanColumn(model.supportsParallelTools), booleanColumn(model.supportsResponseId))
+    db.prepare(`INSERT INTO models (id, name, provider_id, position, context_window, max_output_tokens)
+      VALUES (?, ?, ?, ?, ?, ?)`)
+      .run(id, name, providerId, position.next, model.contextWindow, model.maxOutputTokens)
   }))
 }
 
@@ -456,7 +422,7 @@ export function saveModel(databasePath: string, model: ProviderModelRecord): voi
  * 更新由 Provider 与全局唯一 modelId 指定的模型记录。
  * @param databasePath Provider 数据库绝对路径。
  * @param reference 要更新的 Provider 与模型引用。
- * @param update 要替换的名称、数值限制或能力字段；省略名称时保持原值，布尔能力为 null 时清除。
+ * @param update 要替换的名称或数值限制；省略名称时保持原值。
  * @throws Error 当模型不存在、字段无效或数据库无法写入时抛出。
  */
 export function updateModel(
@@ -474,12 +440,6 @@ export function updateModel(
     const value = update[field]
     if (value !== undefined && (!Number.isSafeInteger(value) || value <= 0)) {
       throw new Error(`Model ${field} 必须是正整数。`)
-    }
-  }
-  for (const field of ["supportsReasoning", "supportsTools", "supportsParallelTools", "supportsResponseId"] as const) {
-    const value = update[field]
-    if (value !== undefined && value !== null && typeof value !== "boolean") {
-      throw new Error(`Model ${field} 必须是布尔值。`)
     }
   }
   withDatabase(databasePath, false, (db) => transaction(db, () => {
@@ -502,30 +462,11 @@ export function updateModel(
       assignments.push("max_output_tokens = ?")
       values.push(update.maxOutputTokens)
     }
-    for (const [field, column] of [
-      ["supportsReasoning", "supports_reasoning"], ["supportsTools", "supports_tools"],
-      ["supportsParallelTools", "supports_parallel_tools"], ["supportsResponseId", "supports_response_id"],
-    ] as const) {
-      const value = update[field]
-      if (value !== undefined) {
-        assignments.push(`${column} = ?`)
-        values.push(booleanColumn(value))
-      }
-    }
     if (assignments.length === 0) return
     const result = db.prepare(`UPDATE models SET ${assignments.join(", ")} WHERE id = ?`)
       .run(...values, row.id)
     if (result.changes !== 1) throw new Error(`Provider ${providerId} 的模型 ${modelId} 更新失败。`)
   }))
-}
-
-/**
- * 把可选布尔值转换为 SQLite 的可空整数。
- * @param value 模型能力值。
- * @returns 1、0 或 null。
- */
-function booleanColumn(value: boolean | null | undefined): number | null {
-  return value == null ? null : value ? 1 : 0
 }
 
 /**
@@ -609,8 +550,7 @@ export function readTurnProviderSnapshot(databasePath: string, reference: ModelR
       if (provider.protocol !== reference.protocol) {
         throw new Error(`Provider ${provider.id} 的唯一协议 ${provider.protocol} 与 Session 协议不一致。`)
       }
-      const modelRow = db.prepare(`SELECT id, name, provider_id, context_window, max_output_tokens,
-        supports_reasoning, supports_tools, supports_parallel_tools, supports_response_id
+      const modelRow = db.prepare(`SELECT id, name, provider_id, context_window, max_output_tokens
         FROM models WHERE id = ? AND provider_id = ? ORDER BY position, id LIMIT 1`)
         .get(reference.modelId, reference.providerId) as ModelRow | undefined
       if (modelRow === undefined) throw new Error(`Provider ${provider.id} 不包含模型 ${reference.modelId}。`)
