@@ -5,7 +5,7 @@ import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
-import { initializeProviderDatabase, listProviders } from "../../src/main/provider-store.ts"
+import { initializeProviderDatabase, listProviders, readDefaultModel } from "../../src/main/provider-store.ts"
 import { registerModelIpcHandlers } from "../../src/main/provider-ipc.ts"
 import type { ModelAppend, ProviderSummary } from "../../src/preload/session-api.ts"
 import { PROVIDER_IPC_CHANNELS } from "../../src/preload/session-api.ts"
@@ -210,12 +210,48 @@ async function testProviderURLValidation(): Promise<void> {
 }
 
 /**
+ * 验证默认模型 IPC 的持久化、引用校验、错误后保留原值，以及清空后的顺序回退。
+ * @returns 默认模型的正常路径、错误边界和重新初始化后的恢复断言完成。
+ */
+async function testDefaultModelPersistence(): Promise<void> {
+  await withDatabase((providerDatabasePath) => {
+    const ipc = new FakeIpcMain()
+    registerModelIpcHandlers(ipc as unknown as Electron.IpcMain, { providerDatabasePath })
+    const first = ipc.invoke(PROVIDER_IPC_CHANNELS.createProvider,
+      "First", "test-key", "responses", "http://127.0.0.1:8080/v1", [{ name: "First model" }]) as ProviderSummary
+    const second = ipc.invoke(PROVIDER_IPC_CHANNELS.createProvider,
+      "Second", "test-key", "responses", "http://127.0.0.1:8080/v1", [{ name: "Second model" }]) as ProviderSummary
+    const reference = { providerId: second.providerId, modelId: second.models[0]!.modelId }
+    ipc.invoke(PROVIDER_IPC_CHANNELS.setDefaultModel, reference)
+    initializeProviderDatabase(providerDatabasePath)
+    assert.deepEqual(readDefaultModel(providerDatabasePath), reference, "重新打开数据库后保留显式默认值")
+
+    for (const invalid of [undefined, {}, { providerId: second.providerId }, { ...reference, modelId: " " }]) {
+      assert.throws(() => ipc.invoke(PROVIDER_IPC_CHANNELS.setDefaultModel, invalid), /默认模型引用错误/)
+      assert.deepEqual(readDefaultModel(providerDatabasePath), reference)
+    }
+    for (const invalid of [
+      { ...reference, providerId: first.providerId },
+      { ...reference, modelId: "missing-model" },
+    ]) {
+      assert.throws(() => ipc.invoke(PROVIDER_IPC_CHANNELS.setDefaultModel, invalid), /不存在/)
+      assert.deepEqual(readDefaultModel(providerDatabasePath), reference, "不存在或不属于 Provider 的模型不得覆盖默认值")
+    }
+    ipc.invoke(PROVIDER_IPC_CHANNELS.setDefaultModel, null)
+    assert.deepEqual(readDefaultModel(providerDatabasePath), {
+      providerId: first.providerId, modelId: first.models[0]!.modelId,
+    }, "清空显式选择后使用顺序中的第一个模型")
+  })
+}
+
+/**
  * Runs the Provider IPC regression assertions and reports failures through process exit status.
- * @returns Completion after the model and URL scenarios.
+ * @returns Completion after the model, URL and default selection scenarios.
  */
 async function main(): Promise<void> {
   await testModelCreationReturnsGeneratedIdentity()
   await testProviderURLValidation()
+  await testDefaultModelPersistence()
   console.log("provider-ipc.test.ts: Provider IPC 断言通过")
 }
 
