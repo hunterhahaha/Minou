@@ -10,6 +10,7 @@
 import assert from "node:assert/strict"
 
 import { CANCELLED, MODEL_REQUEST_FAILED } from "../../error/src/normalizer.ts"
+import { defaultReasoningConfig, isReasoningField, preferredReasoningLevel, renderReasoningField } from "../src/reasoning.ts"
 import {
   INVALID_MODEL_REQUEST,
   assertRequestMatchesModel,
@@ -37,6 +38,8 @@ const MODEL: ModelConfig = {
   protocol: "anthropic_messages",
   contextWindow: 256000,
   maxOutputTokens: 32000,
+  reasoningLevels: ["low", "medium", "high"],
+  reasoningField: { path: ["output_config", "effort"] },
 }
 
 function requestWith(
@@ -45,7 +48,7 @@ function requestWith(
   return {
     context: { messages },
     tools: [],
-    model: { providerId: "test-provider", protocol: "anthropic_messages", modelId: "model-record-1", name: "test-model" },
+    model: { providerId: "test-provider", protocol: "anthropic_messages", modelId: "model-record-1", name: "test-model", reasoningLevel: "medium" },
   }
 }
 
@@ -127,7 +130,7 @@ async function main(): Promise<void> {
   // 请求模型与 Adapter 绑定的模型不一致 → 不合法。
   {
     const mismatch = requestWith([{ role: "system", content: "s" }])
-    mismatch.model = { providerId: "other", protocol: "responses", modelId: "other-model", name: "other-model" }
+    mismatch.model = { providerId: "other", protocol: "responses", modelId: "other-model", name: "other-model", reasoningLevel: "medium" }
     const error = caught(() => assertRequestMatchesModel(mismatch, MODEL))
     assert.ok(isAppError(error))
     assert.equal(error.code, INVALID_MODEL_REQUEST)
@@ -144,6 +147,15 @@ async function main(): Promise<void> {
 
   // 一致时不抛错。
   assertRequestMatchesModel(requestWith([{ role: "system", content: "s" }]), MODEL)
+  assert.equal(preferredReasoningLevel(["low", "medium", "high"], "high"), "high")
+  assert.equal(preferredReasoningLevel(["low", "medium", "high"], "removed"), "medium")
+  assert.equal(preferredReasoningLevel(["eco", "deep"], "removed"), "eco")
+  assert.deepEqual(defaultReasoningConfig("anthropic_messages").reasoningField.path, ["output_config", "effort"])
+  assert.deepEqual(defaultReasoningConfig("chat_completions").reasoningField.path, ["reasoning_effort"])
+  assert.deepEqual(renderReasoningField({ path: ["reasoning", "effort"] }, "medium", "responses"), { reasoning: { effort: "medium" } })
+  for (const path of [[], ["__proto__"], ["constructor"], ["model"], ["reasoning", "bad-key"]]) {
+    assert.equal(isReasoningField({ path }, "responses"), false)
+  }
 
   // -------------------------------------------------------------------------
   // 2. 文本拼接与工具调用参数

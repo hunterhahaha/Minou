@@ -3,6 +3,8 @@
 import { randomUUID } from "node:crypto"
 
 import type { ConfigFilePaths } from "./config-files.ts"
+import { listCompatibleProviderNames, resolveCompatibleProvider } from "./compatible-providers.ts"
+import type { CompatibleProviderDefinition } from "./compatible-providers.ts"
 import {
   deleteModel,
   deleteProvider,
@@ -18,12 +20,15 @@ import { PROVIDER_IPC_CHANNELS } from "../preload/session-api.ts"
 import type {
   ModelAppend,
   ModelSummary,
+  CompatibleProviderCreateInput,
+  CustomProviderCreateInput,
   ProviderModelInput,
   ProviderModelReference,
   ProviderModelUpdate,
   ProviderSummary,
 } from "../preload/session-api.ts"
 import type { Protocol } from "../../runtime/model/src/types.ts"
+import { defaultReasoningConfig, isReasoningField, isReasoningLevels } from "../../runtime/model/src/reasoning.ts"
 
 type Models = ProviderModelInput[]
 
@@ -34,9 +39,11 @@ const DEFAULT_MODEL_CONTEXT_WINDOW = 256_000
 const DEFAULT_MODEL_MAX_OUTPUT_TOKENS = 32_000
 
 /** 已补齐创建默认值、可写入 Provider 数据库的模型配置。 */
-type PersistableModelInput = Omit<ProviderModelInput, "contextWindow" | "maxOutputTokens"> & {
+type PersistableModelInput = Omit<ProviderModelInput, "contextWindow" | "maxOutputTokens" | "reasoningLevels" | "reasoningField"> & {
   contextWindow: number
   maxOutputTokens: number
+  reasoningLevels: string[]
+  reasoningField: { path: string[] }
 }
 
 /**
@@ -51,44 +58,53 @@ function isProtocol(value: unknown): value is Protocol {
 /**
  * 检查模型创建输入、可选数值字段的范围及允许的字段集合。
  * @param value Renderer 传入的未知模型对象。
+ * @param protocol 模型所属 Provider 的协议，用于校验字段路径。
  * @returns value 符合创建输入约束、可在写库前补入默认值时为 true。
  */
-function isModelInput(value: unknown): value is ProviderModelInput {
+function isModelInput(value: unknown, protocol: Protocol): value is ProviderModelInput {
   if (!isRecord(value) || typeof value.name !== "string" || value.name.trim() === "") return false
   if (!isOptionalPositiveInteger(value.contextWindow) || !isOptionalPositiveInteger(value.maxOutputTokens)) return false
-  return Object.keys(value).every((key) => ["name", "contextWindow", "maxOutputTokens"].includes(key))
+  if (value.reasoningLevels !== undefined && value.reasoningLevels !== null && !isReasoningLevels(value.reasoningLevels)) return false
+  if (value.reasoningField !== undefined && value.reasoningField !== null && !isReasoningField(value.reasoningField, protocol)) return false
+  return Object.keys(value).every((key) => ["name", "contextWindow", "maxOutputTokens", "reasoningLevels", "reasoningField"].includes(key))
 }
 
 /**
  * 在模型写入数据库前为缺失的限制字段补入创建默认值。
  * @param model 已通过 IPC 校验的模型创建配置。
- * @returns 同时包含有效上下文窗口和最大输出 Token 数的模型配置。
+ * @param protocol 模型所属 Provider 的协议，用于补入默认推理路径。
+ * @returns 包含限制值和推理配置的完整模型配置。
  */
-function completeModelInput(model: ProviderModelInput): PersistableModelInput {
+function completeModelInput(model: ProviderModelInput, protocol: Protocol): PersistableModelInput {
+  const defaults = defaultReasoningConfig(protocol)
   return {
     name: model.name,
     contextWindow: model.contextWindow ?? DEFAULT_MODEL_CONTEXT_WINDOW,
     maxOutputTokens: model.maxOutputTokens ?? DEFAULT_MODEL_MAX_OUTPUT_TOKENS,
+    reasoningLevels: model.reasoningLevels ?? defaults.reasoningLevels,
+    reasoningField: model.reasoningField ?? defaults.reasoningField,
   }
 }
 
 /**
  * 检查新 Provider 提交的模型列表。
  * @param value Renderer 传入的未知模型列表。
+ * @param protocol Provider 的协议，用于校验每个模型的字段路径。
  * @returns 每条记录都符合模型创建契约时为 true。
  */
-function isModels(value: unknown): value is Models {
-  return Array.isArray(value) && value.every(isModelInput)
+function isModels(value: unknown, protocol: Protocol): value is Models {
+  return Array.isArray(value) && value.every((model) => isModelInput(model, protocol))
 }
 
 /**
  * 检查模型补丁；省略名称时保持原值，数值限制必须为正整数。
  * @param value Renderer 传入的未知补丁。
+ * @param protocol 模型所属 Provider 的协议，用于校验字段路径。
  * @returns 补丁字段合法且至少有一个可更新字段时为 true。
  */
-function isModelUpdate(value: unknown): value is ProviderModelUpdate {
+function isModelUpdate(value: unknown, protocol: Protocol): value is ProviderModelUpdate {
   if (!isRecord(value)) return false
-  const fields = ["name", "contextWindow", "maxOutputTokens"] as const
+  const fields = ["name", "contextWindow", "maxOutputTokens", "reasoningLevels", "reasoningField"] as const
   if (Object.keys(value).length === 0 || !Object.keys(value).every((key) => fields.includes(key as typeof fields[number]))) {
     return false
   }
@@ -99,6 +115,8 @@ function isModelUpdate(value: unknown): value is ProviderModelUpdate {
   for (const field of ["contextWindow", "maxOutputTokens"] as const) {
     if (field in value && !isPositiveInteger(value[field])) return false
   }
+  if ("reasoningLevels" in value && !isReasoningLevels(value.reasoningLevels)) return false
+  if ("reasoningField" in value && !isReasoningField(value.reasoningField, protocol)) return false
   return true
 }
 
@@ -112,69 +130,101 @@ function isProviderModelReference(value: unknown): value is ProviderModelReferen
 }
 
 /**
- * 注册 Provider 管理的八个 IPC handler，校验 Renderer 输入后调用 Provider Store。
+ * 注册 Provider 管理 IPC，校验 Renderer 输入后调用 Provider Store。
  * 创建 Provider 由多笔 Store 写入组成；中途失败时删除已创建的 Provider 及其关联数据。
  * @param ipcMain Electron 主进程 IPC 注册端口。
  * @param paths 启动阶段已初始化的 Provider 数据库路径。
+ * @param compatibleProviders 已确认的内置供应商资料；测试可传入样例目录。
  * @throws Error 当 channel 重复注册、请求无效或 Provider 数据库操作失败时抛出。
  */
 export function registerModelIpcHandlers(
   ipcMain: import("./session-ipc.ts").IpcMainHandlePort,
   paths: Pick<ConfigFilePaths, "providerDatabasePath">,
+  compatibleProviders?: readonly CompatibleProviderDefinition[],
 ): void {
   const databasePath = paths.providerDatabasePath
 
-  ipcMain.handle(
-    PROVIDER_IPC_CHANNELS.createProvider,
-    (_event, name: unknown, apiKey: unknown, protocol: unknown, url: unknown, models: unknown): ProviderSummary => {
-      const providerName = requireNonEmptyString(name, "供应商名称")
-      if (!isNonEmptyString(apiKey)) throw new TypeError("API key 必须是非空字符串")
-      if (!isProtocol(protocol)) throw new TypeError("协议错误")
-      const baseURL = requireProviderURL(url)
-      if (!isModels(models)) throw new TypeError("模型列表错误")
-
-      const normalizedModels = models.map((model) => ({
-        ...completeModelInput(model),
-        name: model.name.trim(),
-        modelId: randomUUID(),
-      }))
-      const providerId = randomUUID()
-      let providerSaved = false
-      try {
-        saveProvider(databasePath, { id: providerId, name: providerName, protocol, baseURL })
-        providerSaved = true
-        for (const model of normalizedModels) {
-          const { modelId, name, ...fields } = model
-          saveModel(databasePath, { modelId, name, providerId, ...fields })
-        }
-        setProviderApiKey(databasePath, providerId, apiKey)
-      } catch (error) {
-        if (providerSaved) {
-          try {
-            deleteProvider(databasePath, providerId)
-          } catch (cleanupError) {
-            throw new AggregateError([error, cleanupError], "Provider 创建失败，且清理未完成。")
-          }
-        }
-        throw error
+  /**
+   * 共同保存已校验的 Provider、模型和凭据，失败时清理已创建记录。
+   * @param input 已确定类型、连接地址和完整模型来源的创建输入。
+   * @returns 不含凭据的页面摘要。
+   */
+  function createProviderRecords(input: {
+    type: "compatible" | "custom"; name: string; protocol: Protocol; apiKey: string; url: string; models: ProviderModelInput[]
+  }): ProviderSummary {
+    const normalizedModels = input.models.map((model) => ({
+      ...completeModelInput(model, input.protocol),
+      name: model.name.trim(),
+      modelId: randomUUID(),
+    }))
+    const providerId = randomUUID()
+    let providerSaved = false
+    try {
+      saveProvider(databasePath, { id: providerId, name: input.name, type: input.type, protocol: input.protocol, baseURL: input.url })
+      providerSaved = true
+      for (const model of normalizedModels) {
+        const { modelId, name, ...fields } = model
+        saveModel(databasePath, { modelId, name, providerId, ...fields })
       }
-
-      const defaultModel = readDefaultModel(databasePath)
-      let defaultIncluded = false
-      return {
-        providerId,
-        name: providerName,
-        protocol,
-        baseURL,
-        models: normalizedModels.map((model) => {
-          const isDefault = !defaultIncluded && model.modelId === defaultModel?.modelId &&
-            providerId === defaultModel.providerId
-          if (isDefault) defaultIncluded = true
-          return modelSummary(model, isDefault)
-        }),
+      setProviderApiKey(databasePath, providerId, input.apiKey)
+    } catch (error) {
+      if (providerSaved) {
+        try {
+          deleteProvider(databasePath, providerId)
+        } catch (cleanupError) {
+          throw new AggregateError([error, cleanupError], "Provider 创建失败，且清理未完成。")
+        }
       }
-    },
-  )
+      throw error
+    }
+
+    const defaultModel = readDefaultModel(databasePath)
+    let defaultIncluded = false
+    return {
+      providerId,
+      name: input.name,
+      type: input.type,
+      protocol: input.protocol,
+      baseURL: input.url,
+      models: normalizedModels.map((model) => {
+        const isDefault = !defaultIncluded && model.modelId === defaultModel?.modelId &&
+          providerId === defaultModel.providerId
+        if (isDefault) defaultIncluded = true
+        return modelSummary(model, isDefault)
+      }),
+    }
+  }
+
+  ipcMain.handle(PROVIDER_IPC_CHANNELS.listCompatibleProviderNames, (): string[] =>
+    listCompatibleProviderNames(compatibleProviders))
+
+  ipcMain.handle(PROVIDER_IPC_CHANNELS.createCompatibleProvider, (_event, rawInput: unknown): ProviderSummary => {
+    if (!isRecord(rawInput) || rawInput.type !== "compatible" || !isProtocol(rawInput.protocol) ||
+        !isNonEmptyString(rawInput.name) || !isNonEmptyString(rawInput.apiKey) ||
+        Object.keys(rawInput).length !== 4) throw new TypeError("已兼容供应商创建输入无效")
+    const input = rawInput as unknown as CompatibleProviderCreateInput
+    const name = input.name.trim()
+    const definition = resolveCompatibleProvider(name, input.protocol, compatibleProviders)
+    if (definition === undefined) throw new TypeError(`供应商 ${name} 不在已兼容目录中，或不支持 ${input.protocol} 协议。`)
+    if (!isModels(definition.models, input.protocol)) throw new Error(`已兼容供应商 ${name} 的模型资料无效。`)
+    return createProviderRecords({
+      type: "compatible", name: definition.name, protocol: input.protocol, apiKey: input.apiKey,
+      url: requireProviderURL(definition.url), models: definition.models,
+    })
+  })
+
+  ipcMain.handle(PROVIDER_IPC_CHANNELS.createCustomProvider, (_event, rawInput: unknown): ProviderSummary => {
+    if (!isRecord(rawInput) || rawInput.type !== "custom" || !isProtocol(rawInput.protocol) ||
+        !isNonEmptyString(rawInput.name) || !isNonEmptyString(rawInput.apiKey) ||
+        !isModels(rawInput.models, rawInput.protocol) || Object.keys(rawInput).length !== 6) {
+      throw new TypeError("自定义供应商创建输入无效")
+    }
+    const input = rawInput as unknown as CustomProviderCreateInput
+    return createProviderRecords({
+      type: "custom", name: input.name.trim(), protocol: input.protocol, apiKey: input.apiKey,
+      url: requireProviderURL(input.url), models: input.models,
+    })
+  })
 
   /**
    * 更新已有 Provider 的名称与可选 URL，并保留其协议、默认请求头、模型和凭据。
@@ -192,6 +242,7 @@ export function registerModelIpcHandlers(
       saveProvider(databasePath, {
         id: normalizedProviderId,
         name: providerName,
+        type: existing.type,
         protocol: existing.protocol,
         ...(normalizedURL === "" ? {} : { baseURL: normalizedURL }),
         ...(existing.defaultHeaders === undefined ? {} : { defaultHeaders: existing.defaultHeaders }),
@@ -211,8 +262,10 @@ export function registerModelIpcHandlers(
 
   ipcMain.handle(PROVIDER_IPC_CHANNELS.createModel, (_event, providerId: unknown, model: unknown): ModelAppend => {
     const normalizedProviderId = requireNonEmptyString(providerId, "Provider ID")
-    if (!isModelInput(model)) throw new TypeError("模型配置错误")
-    const completedModel = completeModelInput(model)
+    const provider = listProviders(databasePath).find((entry) => entry.id === normalizedProviderId)
+    if (provider === undefined) throw new Error(`Provider ${normalizedProviderId} 不存在。`)
+    if (!isModelInput(model, provider.protocol)) throw new TypeError("模型配置错误")
+    const completedModel = completeModelInput(model, provider.protocol)
     const { name: inputName, ...fields } = completedModel
     const modelId = randomUUID()
     const name = inputName.trim()
@@ -223,6 +276,8 @@ export function registerModelIpcHandlers(
       name,
       contextWindow: completedModel.contextWindow,
       maxOutputTokens: completedModel.maxOutputTokens,
+      reasoningLevels: completedModel.reasoningLevels,
+      reasoningField: completedModel.reasoningField,
     }
   })
 
@@ -230,7 +285,9 @@ export function registerModelIpcHandlers(
     PROVIDER_IPC_CHANNELS.updateModel,
     (_event, reference: unknown, update: unknown): void => {
       if (!isProviderModelReference(reference)) throw new TypeError("模型引用错误")
-      if (!isModelUpdate(update)) throw new TypeError("模型更新内容错误")
+      const provider = listProviders(databasePath).find((entry) => entry.id === reference.providerId.trim())
+      if (provider === undefined) throw new Error(`Provider ${reference.providerId} 不存在。`)
+      if (!isModelUpdate(update, provider.protocol)) throw new TypeError("模型更新内容错误")
       const normalizedUpdate = update.name === undefined
         ? update
         : { ...update, name: update.name.trim() }
@@ -257,10 +314,10 @@ export function registerModelIpcHandlers(
  * 生成 Provider 模型摘要。
  * @param model Provider Store 返回的已保存模型记录。
  * @param isDefault 是否为当前有效默认引用的第一条记录。
- * @returns 包含模型身份、名称、上下文窗口、最大输出 Token 数及默认状态的页面摘要。
+ * @returns 包含模型身份、能力、推理配置及默认状态的页面摘要。
  */
 function modelSummary(
-  model: { modelId: string, name: string, contextWindow: number, maxOutputTokens: number },
+  model: PersistableModelInput & { modelId: string },
   isDefault: boolean,
 ): ModelSummary {
   return {
@@ -268,6 +325,8 @@ function modelSummary(
     name: model.name,
     contextWindow: model.contextWindow,
     maxOutputTokens: model.maxOutputTokens,
+    reasoningLevels: model.reasoningLevels,
+    reasoningField: model.reasoningField,
     isDefault,
   }
 }

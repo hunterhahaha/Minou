@@ -11,8 +11,9 @@ const { registerStartupDataIpcHandlers } = require("../../dist/src/main/startup-
 const { registerWindowIpcHandlers } = require("../../dist/src/main/window-ipc.js")
 const { PROVIDER_IPC_CHANNELS, SESSION_IPC_CHANNELS } = require("../../dist/src/preload/session-api.js")
 
-const first = { providerId: "first-provider", protocol: "responses", modelId: "first-model", name: "First model" }
-const second = { providerId: "second-provider", protocol: "responses", modelId: "second-model", name: "Second model" }
+const first = { providerId: "first-provider", protocol: "responses", modelId: "first-model", name: "First model", reasoningLevel: "medium" }
+const second = { providerId: "second-provider", protocol: "responses", modelId: "second-model", name: "Second model", reasoningLevel: "medium" }
+const reasoning = { reasoningLevels: ["low", "medium", "high"], reasoningField: { path: ["reasoning", "effort"] } }
 let window, profile, releaseSave
 let pauseNextSave = false, failNextSave = false, saveCalls = 0
 const startedModels = [], rendererErrors = []
@@ -49,8 +50,8 @@ async function main() {
   app.setPath("userData", join(profile, "electron"))
   const paths = await initializeConfigFiles(profile)
   for (const model of [first, second]) {
-    saveProvider(paths.providerDatabasePath, { id: model.providerId, name: model.providerId, protocol: model.protocol })
-    saveModel(paths.providerDatabasePath, { ...model, contextWindow: 256000, maxOutputTokens: 32000 })
+    saveProvider(paths.providerDatabasePath, { id: model.providerId, name: model.providerId, type: "custom", protocol: model.protocol })
+    saveModel(paths.providerDatabasePath, { ...model, ...reasoning, contextWindow: 256000, maxOutputTokens: 32000 })
   }
   const port = { handle(channel, listener) {
     ipcMain.handle(channel, async (event, ...args) => {
@@ -119,6 +120,10 @@ async function main() {
   assert.deepEqual(await evaluate("window.nicode.listProviders().then(providers => providers.flatMap(provider => provider.models.filter(model => model.isDefault).map(model => ({ providerId: provider.providerId, modelId: model.modelId }))))"), [
     { providerId: first.providerId, modelId: first.modelId },
   ], "Provider 列表返回唯一已保存的默认模型")
+  await evaluate("document.querySelector('[aria-label=\"推理等级\"]').click()")
+  await until(() => evaluate("Boolean(document.querySelector('[aria-label=\"推理等级选项\"]'))"))
+  await evaluate("[...document.querySelectorAll('[aria-label=\"推理等级选项\"] button')].find(node => node.textContent.includes('high')).click()")
+  assert.equal(await evaluate("document.querySelector('[aria-label=\"推理等级\"]').textContent.includes('high')"), true)
   await evaluate(`(() => {
     const input = document.querySelector('textarea[aria-label="任务描述"]')
     Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(input, '首条消息')
@@ -127,7 +132,7 @@ async function main() {
   await until(() => evaluate("!document.querySelector('[aria-label=\"发送消息\"]').disabled"))
   await evaluate("document.querySelector('[aria-label=\"发送消息\"]').click()")
   await until(() => startedModels.length === 1)
-  assert.deepEqual(startedModels, [first], "首条消息使用成功保存的模型")
+  assert.deepEqual(startedModels, [{ ...first, reasoningLevel: "high" }], "首条消息使用成功保存的模型与页面选择的推理等级")
   assert.deepEqual(rendererErrors, [])
   console.log("electron-default-model: 真实 IPC 落盘、忙碌保护、失败保留与重试、重载恢复、首条消息模型通过")
 }

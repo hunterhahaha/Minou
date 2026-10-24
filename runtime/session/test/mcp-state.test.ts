@@ -18,7 +18,7 @@ async function main(): Promise<void> {
     const sessionDirectory = join(paths.rootDir, "sessions", "default", "mcp-state")
     await mkdir(sessionDirectory)
     const databasePath = join(paths.rootDir, "events.sqlite")
-    const model: ModelRef = { modelId: "one", providerId: "p", name: "model", protocol: "responses" }
+    const model: ModelRef = { modelId: "one", providerId: "p", name: "model", protocol: "responses", reasoningLevel: "medium" }
     const log = createFileSessionEventLog({ projectGroupId: "default", sessionId: "mcp-state", sessionDirectory, databasePath })
     await log.appendTurnStartAndUserMessage([{ type: "turn/start", turn: 1, model }, { type: "user/message", turn: 1, message: { id: "u", role: "user", content: [{ type: "text", text: "test" }] } }])
     const options = { projectId: "default" as const, sessionId: "mcp-state", sessionDirectory, databasePath, metaDatabasePath: paths.metaDatabasePath,

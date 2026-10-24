@@ -36,6 +36,8 @@ const MODEL: ModelConfig = {
   protocol: "chat_completions",
   contextWindow: 256000,
   maxOutputTokens: 32000,
+  reasoningLevels: ["low", "medium", "high"],
+  reasoningField: { path: ["reasoning_effort"] },
 }
 
 /** 离线转换入口：协议 chunk 数组 → 统一事件流。 */
@@ -77,7 +79,7 @@ function usageChunk(usage: Record<string, unknown>): ChatCompletionChunk {
 /** 一条含工具调用与工具结果的统一上下文（对照协议示例文档第 2 节）。 */
 function agentRequest(): UnifiedModelRequest {
   return {
-    model: { providerId: "openai", protocol: "chat_completions", modelId: "model-record-2", name: "gpt-test" },
+    model: { providerId: "openai", protocol: "chat_completions", modelId: "model-record-2", name: "gpt-test", reasoningLevel: "medium" },
     tools: [
       {
         name: "read_file",
@@ -178,14 +180,15 @@ async function main(): Promise<void> {
   // -------------------------------------------------------------------------
 
   {
-    const params = buildChatCompletionsRequest(agentRequest())
-    const compact = buildChatCompletionsRequest({ ...agentRequest(), toolChoice: "none" })
+    const params = buildChatCompletionsRequest(agentRequest(), MODEL)
+    const compact = buildChatCompletionsRequest({ ...agentRequest(), toolChoice: "none" }, MODEL)
     assert.equal(compact.tool_choice, "none")
     assert.deepEqual(compact.tools, params.tools)
     assert.deepEqual(compact.messages, params.messages)
     assert.equal(params.tool_choice, undefined)
 
     assert.equal(params.model, "gpt-test")
+    assert.equal(params.reasoning_effort, "medium")
     assert.equal(params.stream, true)
     // 不发送 max_tokens：不同 Provider 的字段名不兼容（见 chat-completions.ts 文件头）。
     assert.equal((params as unknown as Record<string, unknown>).max_tokens, undefined)

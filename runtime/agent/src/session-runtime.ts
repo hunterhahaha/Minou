@@ -321,8 +321,6 @@ export interface StartedSessionTurn {
 export interface ContinueSessionInput {
   /** 要写入新 Turn 的用户文本内容。 */
   content: ModelTextBlock[]
-  /** 要先保存到 Session Meta、再独立重读用于本 Turn 的模型选择。 */
-  model: ModelRef
 }
 
 /** 运行中 Queue 使用的 content-only 输入；队列不捕获模型选择。 */
@@ -1035,7 +1033,6 @@ export class SessionRuntime implements SessionRepairPorts {
   async continueSession(input: ContinueSessionInput): Promise<StartedSessionTurn> {
     const state = await this.repairSession()
     await this.prepareExistingTurn()
-    await this.writeCurrentModel(input.model)
     const model = await this.readCurrentModel()
     const loopOptions = await this.createLoopOptions(model)
     const turn = state.lastTurn + 1

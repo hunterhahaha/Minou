@@ -6,11 +6,12 @@ const { join, resolve, sep } = require("node:path")
 const { app, BrowserWindow, ipcMain } = require("electron")
 const { registerWindowIpcHandlers } = require("../../dist/src/main/window-ipc.js")
 const { initializeConfigFiles } = require("../../dist/src/main/config-files.js")
+const { readSessionMeta } = require("../../dist/runtime/session/src/meta-store.js")
 const { SessionRuntime } = require("../../dist/runtime/agent/src/session-runtime.js")
 const { registerSessionIpcHandlers } = require("../../dist/src/main/session-ipc.js")
 const { registerStartupDataIpcHandlers } = require("../../dist/src/main/startup-data-ipc.js")
 const { SESSION_IPC_CHANNELS: channels, STARTUP_DATA_IPC_CHANNELS } = require("../../dist/src/preload/session-api.js")
-const model = { providerId: "p", protocol: "responses", modelId: "m", name: "本机测试模型" }
+const model = { providerId: "p", protocol: "responses", modelId: "m", name: "本机测试模型", reasoningLevel: "medium" }
 let window, profile, failed = false
 const rendererErrors = []
 const failures = []
@@ -89,8 +90,9 @@ async function main() {
   } }, paths)
   registerStartupDataIpcHandlers(port, paths)
   ipcMain.removeHandler(STARTUP_DATA_IPC_CHANNELS.listProviders)
-  ipcMain.handle(STARTUP_DATA_IPC_CHANNELS.listProviders, () => [{ providerId: "p", name: "测试", protocol: "responses",
-    models: [{ modelId: "m", name: model.name, isDefault: true, contextWindow: 256000, maxOutputTokens: 32000 }] }])
+  ipcMain.handle(STARTUP_DATA_IPC_CHANNELS.listProviders, () => [{ providerId: "p", name: "测试", type: "custom", protocol: "responses",
+    models: [{ modelId: "m", name: model.name, isDefault: true, contextWindow: 256000, maxOutputTokens: 32000,
+      reasoningLevels: ["low", "medium", "high"], reasoningField: { path: ["reasoning", "effort"] } }] }])
   window = new BrowserWindow({ show: false, width: 1200, height: 800, webPreferences: {
     preload: join(process.cwd(), "dist/src/preload/index.js"), contextIsolation: true, nodeIntegration: false, sandbox: false, backgroundThrottling: false,
   } })
@@ -206,6 +208,10 @@ async function main() {
   await until(() => evaluate("document.querySelector('[aria-label=\"对话模型\"]').matches(':open')"))
   for (const type of ["keyDown", "keyUp"]) window.webContents.sendInputEvent({ type, keyCode: "Escape" })
   await until(() => evaluate("!document.querySelector('select:open')"))
+  assert.deepEqual(await evaluate("[...document.querySelector('[aria-label=\"对话推理等级\"]').options].map(option => option.value)"), ["low", "medium", "high"])
+  const reasoningSessionId = await evaluate("document.querySelector('.chat-page').dataset.sessionId")
+  await evaluate("(() => { const node = document.querySelector('[aria-label=\"对话推理等级\"]'); Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set.call(node, 'high'); node.dispatchEvent(new Event('change', { bubbles: true })) })()")
+  await until(() => readSessionMeta(paths.metaDatabasePath, "default", reasoningSessionId)?.currentModel.reasoningLevel === "high")
   await evaluate(`document.querySelector('.turn-process > summary').click()`)
   await until(() => evaluate(`document.querySelector('.turn-process').open`))
   await evaluate(`document.querySelector('.turn-process details > summary').click()`)

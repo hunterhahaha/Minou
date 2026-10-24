@@ -26,6 +26,13 @@ default 分组不存在时补入空记录。已有全局配置按 V2 检查；�
 不保留 Provider 配置或凭据快照。每个 Provider（包括暂时没有模型的 Provider）必须
 恰好配置一个协议。每个 Turn 只读打开 `providers.sqlite`，在同一数据库快照中取得
 所选模型、协议参数和 API Key；读取不会创建缺失数据库，也不读取 workspace。
+Provider 数据库当前为 V2，旧版本启动时拒绝且保留原文件。Provider 必填 `type`，值为
+`compatible` 或 `custom`；模型必填推理等级列表与 `{ path: string[] }` 请求字段路径。
+创建模型可省略这两项，默认等级是 `low`、`medium`、`high`，Anthropic Messages 默认路径为
+`output_config.effort`，Chat Completions 为 `reasoning_effort`，Responses 为 `reasoning.effort`。
+供应商创建 IPC 分为已兼容和自定义两种；已兼容目录本次为空，可在
+`src/main/compatible-providers.ts` 中加入经过确认的资料，页面会读取其名称列表。
+自定义模型创建和编辑采用逗号分隔等级、点分字段路径与 JSON 预览，不引入 YAML 或 CEL。
 
 **Electron 可执行入口和 `startElectronApp` 参数装配**已完成：package 的 `main` 指向
 `src/main/electron-main.ts` 的编译产物。该入口直接导入真实 Electron `app`、`ipcMain` 和
@@ -119,8 +126,9 @@ Turn 首批事件提交、AGENTS.md / Skill 增量、上下文回放、FIFO 用�
 工具定义和统一工具执行能力。Electron 入口向模型提供六个文件工具及三件记忆工具的定义。
 新 Session 保持 Event Log 先于派生状态的提交顺序；所有 Session Meta 保存在
 `.nicode/meta.sqlite`，由 Project ID 与 Session ID 联合定位。模型、沙盒模式、Usage、Skills 和额外 Meta
-各占独立 JSON 列，名称独立存列，初始为“新对话”。显式 Continue 先把请求模型写入 Meta，Queue 则不保存或覆盖模型。
-两条路径都会在 Turn 真正开始时重新读取 Meta，随后只读打开 `providers.sqlite`，创建只供该 Turn 全部 Step 共用的
+各占独立 JSON 列，名称独立存列，初始为“新对话”。`session_meta.current_model_json` 的模型引用
+包含所选 `reasoningLevel`。显式 Continue 只提交内容；它与 Queue 都在 Turn 真正开始时读取 Meta，
+并校验当前模型仍支持该等级，随后只读打开 `providers.sqlite`，创建只供该 Turn 全部 Step 共用的
 新 Adapter。Adapter、CredentialStore、数据库读取结果和 SDK Client 都不跨 Turn 缓存。每个 Turn 在
 `turn/end` 前写入有净变化时的 `turn/file_changes`；Insert 与最终 Surface 仍未实现。
 
@@ -131,8 +139,8 @@ Turn 首批事件提交、AGENTS.md / Skill 增量、上下文回放、FIFO 用�
 `window.nicode.stopSession(projectId, sessionId)`。主进程按 Project ID 与 Session ID 的组合管理活动实例；
 `projectId` 是对应 `sessions/<project-id>` 分组目录的 UUID 字符串，default 分组使用 `"default"`；前两个入口在
 首批事件提交后返回 `{ sessionId, turn }`，追加入口返回 `{ sessionId, messageId, content }`；
-Queue 提交用户事件时复用该 messageId。start 输入接受可选 sandboxMode，continue 输入包含
-`{ content, model }`，enqueue 只包含 `{ content }`。Stop 入口幂等返回
+Queue 提交用户事件时复用该 messageId。start 输入接受可选 sandboxMode，continue 与 enqueue
+都只包含 `{ content }`。Stop 入口幂等返回
 `{ sessionId }`。每个活动 `SessionRuntime` 中的所有 Turn / Loop 共享同一取消信号；
 取消后不再消费后续内存 Queue，并在最终控制状态中保留未发送项供重试。
 
@@ -659,7 +667,7 @@ Project 配置新增 `updatedAt`，已有数据库在启动时为旧 Project 记
 重新访问磁盘、外部修改立即可见、损坏或缺失 Meta 带路径失败，以及全局 project/session 写入口与
 绑定式 SessionState 共用串行状态边界。
 
-`runtime/agent/test/session-runtime.test.ts` 验证新 Session、显式 Continue 和 Queue 的不同模型时序，
+`runtime/agent/test/session-runtime.test.ts` 验证新 Session、显式 Continue 和 Queue 读取 Meta 的不同时序，
 Adapter 失败的事件提交边界、Queue 不覆盖模型、同一 Turn 多 Step 只创建一个 Adapter，以及连续 Turn
 按当时磁盘模型分别创建 Adapter。
 

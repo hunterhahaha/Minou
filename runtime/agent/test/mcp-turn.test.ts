@@ -12,7 +12,7 @@ import { initializeConfigFiles } from "../../../src/main/config-files.ts"
 import { SessionRuntimeGlobal } from "../../../src/main/session-runtime-global.ts"
 import { createMCPTestServer, testTool } from "../../mcp/test/helpers.ts"
 
-const MODEL: ModelRef = { providerId: "offline", protocol: "responses", modelId: "offline", name: "Offline" }
+const MODEL: ModelRef = { providerId: "offline", protocol: "responses", modelId: "offline", name: "Offline", reasoningLevel: "medium" }
 const MESSAGE = [{ type: "text" as const, text: "测试 MCP" }]
 
 /**
@@ -102,7 +102,7 @@ async function main(): Promise<void> {
     await writeFile(statePath, JSON.stringify({ ...state, mcp: [] }))
     resumed = createRuntime()
     const approvalResume = approve(resumed)
-    const continued = await resumed.continueSession({ content: MESSAGE, model: MODEL })
+    const continued = await resumed.continueSession({ content: MESSAGE })
     await continued.completion
     assert.equal(continued.turn, 3)
     const events = await resumed.readEvents() as readonly SessionEvent[]

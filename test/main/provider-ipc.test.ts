@@ -4,11 +4,15 @@ import assert from "node:assert/strict"
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { DatabaseSync } from "node:sqlite"
 
 import { initializeProviderDatabase, listProviders, readDefaultModel } from "../../src/main/provider-store.ts"
 import { registerModelIpcHandlers } from "../../src/main/provider-ipc.ts"
 import type { ModelAppend, ProviderSummary } from "../../src/preload/session-api.ts"
 import { PROVIDER_IPC_CHANNELS } from "../../src/preload/session-api.ts"
+import type { CompatibleProviderDefinition } from "../../src/main/compatible-providers.ts"
+
+const RESPONSE_REASONING = { reasoningLevels: ["low", "medium", "high"], reasoningField: { path: ["reasoning", "effort"] } }
 
 /**
  * IPC handler signature accepted by Electron's invoke-shaped test helper.
@@ -58,13 +62,15 @@ async function testModelCreationReturnsGeneratedIdentity(): Promise<void> {
     const ipc = new FakeIpcMain()
     registerModelIpcHandlers(ipc as unknown as Electron.IpcMain, { providerDatabasePath })
     const provider = ipc.invoke(
-      PROVIDER_IPC_CHANNELS.createProvider,
-      "Provider", "api-key", "responses", "https://example.com/v1",
-      [{ name: "  model-api-name  ", contextWindow: null, maxOutputTokens: null }],
+      PROVIDER_IPC_CHANNELS.createCustomProvider,
+      { type: "custom", name: "Provider", apiKey: "api-key", protocol: "responses", url: "https://example.com/v1",
+        models: [{ name: "  model-api-name  ", contextWindow: null, maxOutputTokens: null }] },
     ) as ProviderSummary
     const original = provider.models[0]
     assert.ok(original)
     assert.equal(provider.baseURL, "https://example.com/v1")
+    assert.equal(provider.type, "custom")
+    assert.deepEqual({ reasoningLevels: original.reasoningLevels, reasoningField: original.reasoningField }, RESPONSE_REASONING)
     const uuidV4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
     assert.match(provider.providerId, uuidV4)
     assert.match(original.modelId, uuidV4)
@@ -93,6 +99,7 @@ async function testModelCreationReturnsGeneratedIdentity(): Promise<void> {
       name: "second-model",
       contextWindow: 64000,
       maxOutputTokens: 32000,
+      ...RESPONSE_REASONING,
     })
     assert.notEqual(appended.modelId, original.modelId)
     assert.deepEqual(listProviders(providerDatabasePath)[0]?.models.map(({ modelId, name }) => ({ modelId, name })), [
@@ -120,6 +127,7 @@ async function testModelCreationReturnsGeneratedIdentity(): Promise<void> {
       providerId: provider.providerId,
       contextWindow: 256000,
       maxOutputTokens: 32000,
+      ...RESPONSE_REASONING,
     })
 
     ipc.invoke(
@@ -130,6 +138,7 @@ async function testModelCreationReturnsGeneratedIdentity(): Promise<void> {
     assert.deepEqual(listProviders(providerDatabasePath)[0]?.models[0], {
       modelId: original.modelId, name: "renamed-model", providerId: provider.providerId,
       contextWindow: 256000, maxOutputTokens: 8192,
+      ...RESPONSE_REASONING,
     })
     assert.throws(() => ipc.invoke(
       PROVIDER_IPC_CHANNELS.updateModel,
@@ -187,15 +196,15 @@ async function testProviderURLValidation(): Promise<void> {
     const invalidURLs = ["not-a-url", "/v1", "https:example.com", "http://", "ftp://example.com/v1"]
     for (const url of invalidURLs) {
       assert.throws(() => ipc.invoke(
-        PROVIDER_IPC_CHANNELS.createProvider,
-        "Invalid Provider", "test-key", "responses", url, [],
+        PROVIDER_IPC_CHANNELS.createCustomProvider,
+        { type: "custom", name: "Invalid Provider", apiKey: "test-key", protocol: "responses", url, models: [] },
       ), /URL/)
       assert.deepEqual(listProviders(providerDatabasePath), [])
     }
 
     const provider = ipc.invoke(
-      PROVIDER_IPC_CHANNELS.createProvider,
-      "Provider", "test-key", "responses", "  https://example.com/v1  ", [{ name: "model" }],
+      PROVIDER_IPC_CHANNELS.createCustomProvider,
+      { type: "custom", name: "Provider", apiKey: "test-key", protocol: "responses", url: "  https://example.com/v1  ", models: [{ name: "model" }] },
     ) as ProviderSummary
     assert.equal(provider.baseURL, "https://example.com/v1")
     const baseline = listProviders(providerDatabasePath)
@@ -220,10 +229,10 @@ async function testDefaultModelPersistence(): Promise<void> {
   await withDatabase((providerDatabasePath) => {
     const ipc = new FakeIpcMain()
     registerModelIpcHandlers(ipc as unknown as Electron.IpcMain, { providerDatabasePath })
-    const first = ipc.invoke(PROVIDER_IPC_CHANNELS.createProvider,
-      "First", "test-key", "responses", "http://127.0.0.1:8080/v1", [{ name: "First model" }]) as ProviderSummary
-    const second = ipc.invoke(PROVIDER_IPC_CHANNELS.createProvider,
-      "Second", "test-key", "responses", "http://127.0.0.1:8080/v1", [{ name: "Second model" }]) as ProviderSummary
+    const first = ipc.invoke(PROVIDER_IPC_CHANNELS.createCustomProvider,
+      { type: "custom", name: "First", apiKey: "test-key", protocol: "responses", url: "http://127.0.0.1:8080/v1", models: [{ name: "First model" }] }) as ProviderSummary
+    const second = ipc.invoke(PROVIDER_IPC_CHANNELS.createCustomProvider,
+      { type: "custom", name: "Second", apiKey: "test-key", protocol: "responses", url: "http://127.0.0.1:8080/v1", models: [{ name: "Second model" }] }) as ProviderSummary
     const reference = { providerId: second.providerId, modelId: second.models[0]!.modelId }
     ipc.invoke(PROVIDER_IPC_CHANNELS.setDefaultModel, reference)
     initializeProviderDatabase(providerDatabasePath)
@@ -247,6 +256,73 @@ async function testDefaultModelPersistence(): Promise<void> {
   })
 }
 
+/** 验证空目录、注入的兼容目录、协议默认值及创建失败后的清理。 */
+async function testCompatibleCatalogAndReasoning(): Promise<void> {
+  await withDatabase((providerDatabasePath) => {
+    const empty = new FakeIpcMain()
+    registerModelIpcHandlers(empty as unknown as Electron.IpcMain, { providerDatabasePath })
+    assert.deepEqual(empty.invoke(PROVIDER_IPC_CHANNELS.listCompatibleProviderNames), [])
+    assert.throws(() => empty.invoke(PROVIDER_IPC_CHANNELS.createCompatibleProvider,
+      { type: "compatible", name: "Sample", protocol: "responses", apiKey: "secret" }), /不在已兼容目录/)
+
+    const definitions: CompatibleProviderDefinition[] = [{
+      name: "Sample", protocol: "responses", url: "https://sample.example/v1",
+      models: [{ name: "sample-model", contextWindow: 64000, maxOutputTokens: 8192,
+        reasoningLevels: ["minimal", "medium"], reasoningField: { path: ["reasoning", "effort"] } }],
+    }]
+    const ipc = new FakeIpcMain()
+    registerModelIpcHandlers(ipc as unknown as Electron.IpcMain, { providerDatabasePath }, definitions)
+    assert.deepEqual(ipc.invoke(PROVIDER_IPC_CHANNELS.listCompatibleProviderNames), ["Sample"])
+    assert.throws(() => ipc.invoke(PROVIDER_IPC_CHANNELS.createCompatibleProvider,
+      { type: "compatible", name: "Unknown", protocol: "responses", apiKey: "secret" }), /不在已兼容目录/)
+    assert.throws(() => ipc.invoke(PROVIDER_IPC_CHANNELS.createCompatibleProvider,
+      { type: "compatible", name: "Sample", protocol: "chat_completions", apiKey: "secret" }), /不在已兼容目录/)
+    assert.throws(() => ipc.invoke(PROVIDER_IPC_CHANNELS.createCompatibleProvider,
+      { type: "custom", name: "Sample", protocol: "responses", apiKey: "secret" }), /创建输入无效/)
+    const created = ipc.invoke(PROVIDER_IPC_CHANNELS.createCompatibleProvider,
+      { type: "compatible", name: "Sample", protocol: "responses", apiKey: "secret" }) as ProviderSummary
+    assert.equal(created.type, "compatible")
+    assert.equal(created.baseURL, "https://sample.example/v1")
+    assert.deepEqual(created.models[0]?.reasoningLevels, ["minimal", "medium"])
+    assert.deepEqual(listProviders(providerDatabasePath)[0]?.models[0]?.reasoningField, { path: ["reasoning", "effort"] })
+    ipc.invoke(PROVIDER_IPC_CHANNELS.updateProvider, created.providerId, "Renamed sample", "https://new.example/v1")
+    ipc.invoke(PROVIDER_IPC_CHANNELS.updateModel,
+      { providerId: created.providerId, modelId: created.models[0]?.modelId }, { reasoningLevels: ["light", "strong"] })
+    assert.equal(listProviders(providerDatabasePath)[0]?.type, "compatible")
+    assert.deepEqual(listProviders(providerDatabasePath)[0]?.models[0]?.reasoningLevels, ["light", "strong"])
+
+    const anthropic = ipc.invoke(PROVIDER_IPC_CHANNELS.createCustomProvider,
+      { type: "custom", name: "Anthropic", protocol: "anthropic_messages", apiKey: "secret",
+        url: "https://anthropic.example", models: [{ name: "a" }] }) as ProviderSummary
+    assert.deepEqual(anthropic.models[0]?.reasoningField, { path: ["output_config", "effort"] })
+    const chat = ipc.invoke(PROVIDER_IPC_CHANNELS.createCustomProvider,
+      { type: "custom", name: "Chat", protocol: "chat_completions", apiKey: "secret",
+        url: "https://chat.example", models: [{ name: "c", reasoningLevels: ["economy", "deep"] }] }) as ProviderSummary
+    assert.deepEqual(chat.models[0]?.reasoningLevels, ["economy", "deep"])
+    assert.deepEqual(chat.models[0]?.reasoningField, { path: ["reasoning_effort"] })
+    assert.throws(() => ipc.invoke(PROVIDER_IPC_CHANNELS.createModel, chat.providerId,
+      { name: "invalid", reasoningField: { path: ["model"] } }), /模型配置错误/)
+    assert.throws(() => ipc.invoke(PROVIDER_IPC_CHANNELS.createModel, chat.providerId,
+      { name: "invalid", reasoningField: { path: ["__proto__"] } }), /模型配置错误/)
+    assert.throws(() => ipc.invoke(PROVIDER_IPC_CHANNELS.updateModel,
+      { providerId: chat.providerId, modelId: chat.models[0]?.modelId }, { reasoningLevels: [] }), /模型更新内容错误/)
+    ipc.invoke(PROVIDER_IPC_CHANNELS.updateModel,
+      { providerId: chat.providerId, modelId: chat.models[0]?.modelId },
+      { reasoningLevels: ["fast", "deep"], reasoningField: { path: ["effort"] } })
+    assert.deepEqual(listProviders(providerDatabasePath).find((entry) => entry.id === chat.providerId)?.models[0]?.reasoningLevels,
+      ["fast", "deep"])
+
+    const db = new DatabaseSync(providerDatabasePath)
+    try { db.exec("CREATE TRIGGER fail_model BEFORE INSERT ON models BEGIN SELECT RAISE(ABORT, 'injected failure'); END") }
+    finally { db.close() }
+    const before = listProviders(providerDatabasePath)
+    assert.throws(() => ipc.invoke(PROVIDER_IPC_CHANNELS.createCustomProvider,
+      { type: "custom", name: "Fail", protocol: "responses", apiKey: "secret", url: "https://fail.example",
+        models: [{ name: "f" }] }), /injected failure/)
+    assert.deepEqual(listProviders(providerDatabasePath), before)
+  })
+}
+
 /**
  * Runs the Provider IPC regression assertions and reports failures through process exit status.
  * @returns Completion after the model, URL and default selection scenarios.
@@ -255,6 +331,7 @@ async function main(): Promise<void> {
   await testModelCreationReturnsGeneratedIdentity()
   await testProviderURLValidation()
   await testDefaultModelPersistence()
+  await testCompatibleCatalogAndReasoning()
   console.log("provider-ipc.test.ts: Provider IPC 断言通过")
 }
 

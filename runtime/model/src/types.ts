@@ -36,6 +36,14 @@ export interface ModelRef {
   modelId: string
   /** Provider API 请求中使用的模型名称。 */
   name: string
+  /** 当前 Session 为本 Turn 选择的推理等级。 */
+  reasoningLevel: string
+}
+
+/** 推理等级在协议请求体中的字段路径，以 JSON 对象保存。 */
+export interface ReasoningField {
+  /** 从请求体根对象到等级字符串的逐级键名。 */
+  path: string[]
 }
 
 /** 模型配置。 */
@@ -53,6 +61,10 @@ export interface ModelConfig {
   contextWindow: number
   /** 模型创建时确定的最大输出 Token 数；是否使用由具体 Adapter 决定。 */
   maxOutputTokens: number
+  /** 模型允许选择的推理等级，按页面展示顺序保存。 */
+  reasoningLevels: string[]
+  /** 将所选等级放入协议请求体的字段路径。 */
+  reasoningField: ReasoningField
 }
 
 // ---------------------------------------------------------------------------

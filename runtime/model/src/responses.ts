@@ -32,6 +32,7 @@ import {
   assertRequestMatchesModel,
   joinTextBlocks,
   parseToolCallArguments,
+  reasoningRequestFragment,
   runModelStream,
   serializeToolCallArguments,
   splitSystemMessage,
@@ -143,11 +144,13 @@ function toResponsesTools(tools: UnifiedToolDefinition[]): FunctionTool[] {
  * `tools` 为空时不传该字段（协议不接受空数组）。
  *
  * @param request 待转换的统一模型请求。
+ * @param config 当前 Adapter 绑定的完整模型配置，包含推理字段路径。
  * @returns SDK 可接受的流式 Responses 请求参数。
- * @throws `AppError` 当统一上下文缺少首个 System Message 或包含多个 System Message 时抛出。
+ * @throws `AppError` 当统一上下文或推理等级配置无效时抛出。
  */
 export function buildResponsesRequest(
   request: UnifiedModelRequest,
+  config: ModelConfig,
 ): ResponseCreateParamsStreaming {
   const { system, rest } = splitSystemMessage(request)
 
@@ -163,6 +166,8 @@ export function buildResponsesRequest(
     params.tools = toResponsesTools(request.tools)
   }
   if (request.toolChoice === "none") params.tool_choice = "none"
+
+  Object.assign(params, reasoningRequestFragment(request, config))
 
   return params
 }
@@ -597,7 +602,7 @@ export function createResponsesAdapter(
   ): AsyncGenerator<ModelStreamEvent> {
     // 校验与请求构建在迭代时抛出：AgentLoop 只需在一处处理 Adapter 的错误。
     assertRequestMatchesModel(request, config)
-    const params = buildResponsesRequest(request)
+    const params = buildResponsesRequest(request, config)
 
     yield* runModelStream((attemptSignal) => {
       return mapResponsesStream(requestResponsesStream(client, params, attemptSignal))

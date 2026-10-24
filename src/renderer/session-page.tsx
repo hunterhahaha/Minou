@@ -1,7 +1,8 @@
 /** 从工作区事件字典派生聊天页面；输入操作仅走 preload 的固定 Session API。 */
 import { useEffect, useLayoutEffect, useRef, useState } from "react"
 import { IconArrowDown, IconArrowUp, IconBrain, IconCheck, IconCopy, IconPlayerStop, IconShieldCheck, IconSparkles, IconTool } from "@tabler/icons-react"
-import type { ModelRef, AssistantContentBlock } from "../../runtime/model/src/types.ts"
+import type { AssistantContentBlock } from "../../runtime/model/src/types.ts"
+import { preferredReasoningLevel } from "../../runtime/model/src/reasoning.ts"
 import type { SessionEvent } from "../../runtime/session/src/events.ts"
 import type { ProviderSummary, SandboxMode, SessionSettingsPatch } from "../preload/session-api.ts"
 import { errorMessage, projectSessionEvents, sessionKey, WorkspaceSessionState, type ChatItem } from "./session-state.ts"
@@ -105,9 +106,12 @@ export function SessionPage({ projectId, sessionId, state, providers }: SessionP
     ? [...approvalRequests.values()].find((event) => event.turn === control.currentTurn && !approvalResults.has(event.approvalId)) : undefined
   const modelOptions = providers.flatMap((provider) => provider.models.map((model) => ({
     providerId: provider.providerId, protocol: provider.protocol, modelId: model.modelId, name: model.name,
+    reasoningLevels: model.reasoningLevels,
     label: provider.name + " / " + model.name,
   })))
   const selectedKey = control ? JSON.stringify([control.currentModel.providerId, control.currentModel.modelId]) : ""
+  const currentModelOption = modelOptions.find((model) => JSON.stringify([model.providerId, model.modelId]) === selectedKey)
+  const reasoningOptions = currentModelOption?.reasoningLevels ?? (control ? [control.currentModel.reasoningLevel] : [])
   useEffect(() => { followsRef.current = true; setShowScrollToBottom(false); endRef.current?.scrollIntoView() }, [key])
   useEffect(() => { if (followsRef.current) endRef.current?.scrollIntoView({ block: "end" }) }, [events.length, key])
   useLayoutEffect(() => {
@@ -143,7 +147,7 @@ export function SessionPage({ projectId, sessionId, state, providers }: SessionP
     await operate(async () => {
       const content = [{ type: "text" as const, text }]
       if (control.phase === "running") await window.nicode.enqueueSessionMessage(projectId, sessionId, { content })
-      else await window.nicode.continueSession(projectId, sessionId, { content, model: control.currentModel })
+      else await window.nicode.continueSession(projectId, sessionId, { content })
       if (state.draftsByKey[key] === text) state.setDraft(key, "")
     })
   }
@@ -266,10 +270,20 @@ export function SessionPage({ projectId, sessionId, state, providers }: SessionP
             </select></label>
             <label className="chat-select-label"><select aria-label="对话模型" disabled={!control || view.busy} value={selectedKey} onChange={(event) => {
               const model = modelOptions.find((item) => JSON.stringify([item.providerId, item.modelId]) === event.target.value)
-              if (model) { const { label: _label, ...reference } = model; void settings({ model: reference as ModelRef }) }
+              if (model) { const { label: _label, reasoningLevels, ...reference } = model; void settings({ model: {
+                ...reference, reasoningLevel: preferredReasoningLevel(reasoningLevels, control?.currentModel.reasoningLevel),
+              } }) }
             }}>
               {control && !modelOptions.some((model) => JSON.stringify([model.providerId, model.modelId]) === selectedKey) && <option value={selectedKey}>{control.currentModel.name}</option>}
               {modelOptions.map((model) => <option value={JSON.stringify([model.providerId, model.modelId])} key={JSON.stringify([model.providerId, model.modelId])}>{model.label}</option>)}
+            </select></label>
+            <label className="chat-select-label"><select aria-label="对话推理等级" disabled={!control || view.busy || !currentModelOption}
+              value={control?.currentModel.reasoningLevel ?? ""} onChange={(event) => {
+                if (control) void settings({ model: { ...control.currentModel, reasoningLevel: event.target.value } })
+              }}>
+              {control && !reasoningOptions.includes(control.currentModel.reasoningLevel) &&
+                <option value={control.currentModel.reasoningLevel}>{control.currentModel.reasoningLevel}（已失效）</option>}
+              {reasoningOptions.map((level) => <option key={level} value={level}>{level}</option>)}
             </select></label>
           </div>
           <div className="composer-controls">

@@ -13,7 +13,7 @@ import { initializeConfigFiles } from "../../../src/main/config-files.ts"
 import { SessionRuntimeGlobal } from "../../../src/main/session-runtime-global.ts"
 import { insertProjectWorkspace } from "../../../src/main/workspace-store.ts"
 
-const MODEL: ModelRef = { providerId: "offline", protocol: "responses", modelId: "offline", name: "Offline" }
+const MODEL: ModelRef = { providerId: "offline", protocol: "responses", modelId: "offline", name: "Offline", reasoningLevel: "medium" }
 const MESSAGE = [{ type: "text" as const, text: "测试记忆工具" }]
 const PROJECT = "00000000-0000-4000-8000-000000000001"
 const PRIOR = "仅保存在记忆文件中的跨对话偏好"
@@ -104,7 +104,7 @@ async function scenario(profile: string, projectId: string): Promise<void> {
   assert.equal(adapterCount, 2, "首轮完成后自动消费 Queue")
   const resumed = createRuntime()
   try {
-    const continued = await resumed.continueSession({ content: MESSAGE, model: MODEL })
+    const continued = await resumed.continueSession({ content: MESSAGE })
     await continued.completion
     assert.equal(continued.turn, 3)
     assert.equal(adapterCount, 3)

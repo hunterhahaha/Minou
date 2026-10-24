@@ -4,7 +4,7 @@ import { compressContext, summaryThreshold } from "../src/summary.ts"
 import { COMPACT_PROMPT } from "../src/compact-prompt.ts"
 import type { ModelAdapter, ModelMessage, ModelRef, ModelStreamEvent, UnifiedModelRequest, UnifiedToolDefinition } from "../../model/src/types.ts"
 
-const MODEL: ModelRef = { providerId: "test", protocol: "responses", modelId: "test", name: "test" }
+const MODEL: ModelRef = { providerId: "test", protocol: "responses", modelId: "test", name: "test", reasoningLevel: "medium" }
 const CONTENT: ModelMessage[] = [
   { role: "system", content: "Original system, AGENTS.md and skills" },
   { role: "user", content: "Existing summary" },

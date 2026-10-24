@@ -16,7 +16,8 @@ import type {
   SessionRuntimeSnapshot,
 } from "../../runtime/agent/src/session-runtime.ts"
 import { PROTOCOLS } from "../../runtime/model/src/types.ts"
-import type { Protocol, ModelRef } from "../../runtime/model/src/types.ts"
+import type { Protocol, ModelRef, ReasoningField } from "../../runtime/model/src/types.ts"
+import { isReasoningField, isReasoningLevels } from "../../runtime/model/src/reasoning.ts"
 import type { SessionEvent } from "../../runtime/session/src/events.ts"
 import type { AppError } from "../../runtime/error/src/types.ts"
 import type { MCPConfig, MCPConnection } from "../../runtime/mcp/src/types.ts"
@@ -91,7 +92,9 @@ export const PROJECT_IPC_CHANNELS = {
 
 /** 供应商创建和修改的固定 IPC channel。 */
 export const PROVIDER_IPC_CHANNELS = {
-  createProvider: "nicode:provider:create",
+  listCompatibleProviderNames: "nicode:provider:compatible-names",
+  createCompatibleProvider: "nicode:provider:create-compatible",
+  createCustomProvider: "nicode:provider:create-custom",
   updateProvider: "nicode:provider:update",
   deleteProvider: "nicode:provider:delete",
   updateApiKey: "nicode:provider:update-api-key",
@@ -167,11 +170,15 @@ export interface ModelSummary {
   contextWindow: number
   /** 单次请求允许的最大输出 Token 数。 */
   maxOutputTokens: number
+  /** 可供当前对话选择的推理等级。 */
+  reasoningLevels: string[]
+  /** 将等级写入协议请求体的字段路径。 */
+  reasoningField: ReasoningField
   /** 是否是当前有效默认模型。 */
   isDefault: boolean
 }
 
-/** 创建 Provider 或 Model 时提交的模型配置；主进程为缺失的 Token 限制补入默认值并生成模型身份。 */
+/** 创建 Provider 或 Model 时提交的模型配置；主进程补入缺失的限制与推理字段并生成模型身份。 */
 export interface ProviderModelInput {
   /** Provider API 请求中使用的模型名称。 */
   name: string
@@ -179,6 +186,10 @@ export interface ProviderModelInput {
   contextWindow?: number | null
   /** 请求允许的最大输出 Token；省略或传 null 时创建模型使用 32000。 */
   maxOutputTokens?: number | null
+  /** 省略或传 null 时采用协议默认等级。 */
+  reasoningLevels?: string[] | null
+  /** 省略或传 null 时采用协议默认字段路径。 */
+  reasoningField?: ReasoningField | null
 }
 
 /** 按 Provider 与全局唯一 modelId 定位的模型引用。 */
@@ -189,7 +200,7 @@ export interface ProviderModelReference {
   modelId: string
 }
 
-/** 更新模型名称或必填 Token 限制；省略名称时不修改名称。 */
+/** 更新模型名称、限制或推理配置；省略字段时不修改原值。 */
 export interface ProviderModelUpdate {
   /** Provider API 请求中使用的非空模型名称；省略时本次不更新名称。 */
   name?: string
@@ -197,6 +208,28 @@ export interface ProviderModelUpdate {
   contextWindow?: number
   /** 新最大输出 Token 数。 */
   maxOutputTokens?: number
+  /** 完整替换可选等级列表。 */
+  reasoningLevels?: string[]
+  /** 完整替换请求字段路径。 */
+  reasoningField?: ReasoningField
+}
+
+/** 已兼容供应商创建输入；连接地址及模型由内置目录决定。 */
+export interface CompatibleProviderCreateInput {
+  type: "compatible"
+  name: string
+  protocol: Protocol
+  apiKey: string
+}
+
+/** 自定义供应商创建输入；模型缺省推理配置由主进程补齐。 */
+export interface CustomProviderCreateInput {
+  type: "custom"
+  name: string
+  protocol: Protocol
+  apiKey: string
+  url: string
+  models: ProviderModelInput[]
 }
 
 /** 不含凭据、包含协议连接地址的 Provider 页面摘要。 */
@@ -205,6 +238,8 @@ export interface ProviderSummary {
   providerId: string
   /** Provider 显示名称。 */
   name: string
+  /** 创建来源；内置资料只用于创建时。 */
+  type: "compatible" | "custom"
   /** 当前 Provider 唯一的协议。 */
   protocol: Protocol
   /** 可选的 Provider 服务地址。 */
@@ -225,6 +260,10 @@ export interface ModelAppend {
   contextWindow: number
   /** 已保存模型的最大输出 Token 数。 */
   maxOutputTokens: number
+  /** 已保存的推理等级。 */
+  reasoningLevels: string[]
+  /** 已保存的请求字段路径。 */
+  reasoningField: ReasoningField
 }
 
 /** 首批 Turn 事件成功提交后即可返回前端的可序列化结果。 */
@@ -340,22 +379,12 @@ export interface NiCodePreloadApi {
   deleteMcpServer(name: string): Promise<MCPServerSummary[]>
   /** @returns 重读配置并重新连接全部启用项后的列表。 @throws Error 配置无效或旧资源清理失败。 */
   reloadMcpServers(): Promise<MCPServerSummary[]>
-  /**
-   * 创建 Provider、模型记录与 API Key。
-   * @param name Provider 显示名称。
-   * @param apiKey Provider API Key。
-   * @param protocol Provider 使用的唯一协议。
-   * @param url Provider 服务地址。
-   * @param models 按顺序保存的模型名称与能力配置。
-   * @returns 新建 Provider 的无凭据摘要。
-   */
-  createProvider(
-    name: string,
-    apiKey: string,
-    protocol: Protocol,
-    url: string,
-    models: ProviderModelInput[],
-  ): Promise<ProviderSummary>
+  /** @returns 内置目录中的已兼容供应商名称；目录为空时返回空数组。 */
+  listCompatibleProviderNames(): Promise<string[]>
+  /** @param input 已兼容供应商名称、协议与凭据。 @returns 内置模型已保存后的无凭据摘要。 */
+  createCompatibleProvider(input: CompatibleProviderCreateInput): Promise<ProviderSummary>
+  /** @param input 自定义连接和模型配置。 @returns 已保存的无凭据摘要。 */
+  createCustomProvider(input: CustomProviderCreateInput): Promise<ProviderSummary>
   /**
    * 更新 Provider 显示名称与服务地址；空 URL 表示清除地址。
    * @param providerId 要更新的 Provider ID。
@@ -382,7 +411,7 @@ export interface NiCodePreloadApi {
    */
   createModel(providerId: string, model: ProviderModelInput): Promise<ModelAppend>
   /**
-   * 更新指定模型身份的名称或 Token 限制。
+   * 更新指定模型身份的名称、Token 限制或推理配置。
    * @param reference 要更新的 Provider 与模型引用。
    * @param update 要替换的名称或 Token 限制。
    */
@@ -413,7 +442,7 @@ export interface NiCodePreloadApi {
    *
    * @param projectId Session 所属 Project UUID 或 default。
    * @param sessionId 要恢复的 Session 身份。
-   * @param input 新 Turn 的用户消息与要先保存到 Session Meta 的模型选择。
+   * @param input 新 Turn 的用户消息；模型与推理等级从 Session Meta 读取。
    * @returns 新 Turn 首批事件成功提交后的 Session 身份和 Turn 编号。
    */
   continueSession(
@@ -553,16 +582,19 @@ export function createSessionApi(ipcRenderer: IpcRendererInvokePort): NiCodePrel
       return requireMcpSummaries(await ipcRenderer.invoke(MCP_IPC_CHANNELS.reloadMcpServers))
     },
 
-    async createProvider(
-      name: string,
-      apiKey: string,
-      protocol: Protocol,
-      url: string,
-      models: ProviderModelInput[],
-    ): Promise<ProviderSummary> {
-      return requireProviderSummary(await ipcRenderer.invoke(
-        PROVIDER_IPC_CHANNELS.createProvider, name, apiKey, protocol, url, models,
-      ))
+    async listCompatibleProviderNames(): Promise<string[]> {
+      const value = await ipcRenderer.invoke(PROVIDER_IPC_CHANNELS.listCompatibleProviderNames)
+      if (!Array.isArray(value) || !value.every((name) => typeof name === "string" && name.trim() !== "") ||
+          new Set(value).size !== value.length) throw new TypeError("主进程返回了无效的已兼容供应商名称")
+      return value
+    },
+
+    async createCompatibleProvider(input: CompatibleProviderCreateInput): Promise<ProviderSummary> {
+      return requireProviderSummary(await ipcRenderer.invoke(PROVIDER_IPC_CHANNELS.createCompatibleProvider, input))
+    },
+
+    async createCustomProvider(input: CustomProviderCreateInput): Promise<ProviderSummary> {
+      return requireProviderSummary(await ipcRenderer.invoke(PROVIDER_IPC_CHANNELS.createCustomProvider, input))
     },
 
     async updateProvider(providerId: string, name: string, url: string): Promise<void> {
@@ -748,6 +780,7 @@ function requireEnqueuedSessionMessageResponse(value: unknown): EnqueuedSessionM
 function isModelReference(value: unknown): value is ModelRef {
   return isRecord(value) && typeof value.providerId === "string" && value.providerId.length > 0 &&
     typeof value.modelId === "string" && value.modelId.length > 0 && typeof value.name === "string" &&
+    typeof value.reasoningLevel === "string" && value.reasoningLevel.trim() !== "" &&
     (PROTOCOLS as readonly unknown[]).includes(value.protocol)
 }
 
@@ -890,12 +923,14 @@ function requireProjectDirectoryResult(value: unknown): ProjectDirectoryResult {
 function requireProviderSummaries(value: unknown): ProviderSummary[] {
   if (!Array.isArray(value) || !value.every((item) =>
     isRecord(item) && typeof item.providerId === "string" && typeof item.name === "string" &&
+    (item.type === "compatible" || item.type === "custom") &&
     (PROTOCOLS as readonly unknown[]).includes(item.protocol) &&
     (item.baseURL === undefined || typeof item.baseURL === "string") &&
     Array.isArray(item.models) && item.models.every((model: unknown) =>
       isRecord(model) && typeof model.modelId === "string" && model.modelId.trim() !== "" && typeof model.name === "string" && model.name.trim() !== "" &&
       typeof model.contextWindow === "number" && Number.isSafeInteger(model.contextWindow) && model.contextWindow > 0 &&
       typeof model.maxOutputTokens === "number" && Number.isSafeInteger(model.maxOutputTokens) && model.maxOutputTokens > 0 &&
+      isReasoningLevels(model.reasoningLevels) && isReasoningField(model.reasoningField, item.protocol as Protocol) &&
       typeof model.isDefault === "boolean")
   )) throw new TypeError("主进程返回了无效的 Provider 列表")
   return value as ProviderSummary[]
@@ -924,7 +959,11 @@ function requireModelAppend(value: unknown): ModelAppend {
       typeof value.modelId !== "string" || value.modelId.trim() === "" ||
       typeof value.name !== "string" || value.name.trim() === "" ||
       typeof value.contextWindow !== "number" || !Number.isSafeInteger(value.contextWindow) || value.contextWindow <= 0 ||
-      typeof value.maxOutputTokens !== "number" || !Number.isSafeInteger(value.maxOutputTokens) || value.maxOutputTokens <= 0) {
+      typeof value.maxOutputTokens !== "number" || !Number.isSafeInteger(value.maxOutputTokens) || value.maxOutputTokens <= 0 ||
+      !isReasoningLevels(value.reasoningLevels) ||
+      !(isReasoningField(value.reasoningField, "anthropic_messages") ||
+        isReasoningField(value.reasoningField, "chat_completions") ||
+        isReasoningField(value.reasoningField, "responses"))) {
     throw new TypeError("主进程返回了无效的新建模型")
   }
   return {
@@ -933,6 +972,8 @@ function requireModelAppend(value: unknown): ModelAppend {
     name: value.name,
     contextWindow: value.contextWindow,
     maxOutputTokens: value.maxOutputTokens,
+    reasoningLevels: value.reasoningLevels,
+    reasoningField: value.reasoningField,
   }
 }
 

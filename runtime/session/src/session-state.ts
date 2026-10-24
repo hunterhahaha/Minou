@@ -23,7 +23,7 @@ import type { SessionLoadedMCPTool } from "../../mcp/src/types.ts"
 export type { ProjectId } from "./project-id.ts"
 
 /** 当前 Session Meta 已确认的持久化结构版本。 */
-export const SESSION_META_VERSION = 1 as const
+export const SESSION_META_VERSION = 2 as const
 
 /** Session Meta sandboxMode 支持的对话级沙盒模式。 */
 export const SANDBOX_MODES = [
@@ -1227,6 +1227,7 @@ function isModelRef(value: unknown): value is ModelRef {
     && isNonEmptyString(value.providerId)
     && isNonEmptyString(value.modelId)
     && isNonEmptyString(value.name)
+    && isNonEmptyString(value.reasoningLevel)
     && (PROTOCOLS as readonly unknown[]).includes(value.protocol)
 }
 

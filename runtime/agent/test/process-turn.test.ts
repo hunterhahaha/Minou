@@ -10,7 +10,7 @@ import { SessionRuntime } from "../src/session-runtime.ts"
 import { initializeConfigFiles } from "../../../src/main/config-files.ts"
 import { SessionRuntimeGlobal } from "../../../src/main/session-runtime-global.ts"
 
-const MODEL: ModelRef = { providerId: "offline", protocol: "responses", modelId: "offline", name: "Offline" }
+const MODEL: ModelRef = { providerId: "offline", protocol: "responses", modelId: "offline", name: "Offline", reasoningLevel: "medium" }
 const MESSAGE = [{ type: "text" as const, text: "测试进程工具" }]
 
 /**
@@ -114,7 +114,7 @@ async function main(): Promise<void> {
     assert.deepEqual(global.terminalRouter.list("default", "different"), [])
 
     const resumed = runtime()
-    const continuation = await resumed.continueSession({ content: MESSAGE, model: MODEL })
+    const continuation = await resumed.continueSession({ content: MESSAGE })
     await waiting
     let interrupts = 0
     const interrupt = global.interruptTerminals.bind(global)
@@ -126,7 +126,7 @@ async function main(): Promise<void> {
     for (let attempt = 0; attempt < 100 && global.terminalRouter.list("default", sessionId)[0].status !== "idle"; attempt++) await new Promise((resolve) => setTimeout(resolve, 30))
     assert.equal(global.terminalRouter.list("default", sessionId)[0].status, "idle")
     const next = runtime()
-    const continued = await next.continueSession({ content: MESSAGE, model: MODEL })
+    const continued = await next.continueSession({ content: MESSAGE })
     await continued.completion
     const events = await next.readEvents() as readonly SessionEvent[]
     assert.ok(events.some((event) => event.type === "turn/end" && event.reason === "stopped"))

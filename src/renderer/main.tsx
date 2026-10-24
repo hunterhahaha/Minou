@@ -19,6 +19,7 @@ import {
   IconTerminal2,
 } from "@tabler/icons-react"
 import type { DirectorySelection, ProjectSummary, ProviderSummary, SessionSummary } from "../preload/session-api.ts"
+import { preferredReasoningLevel } from "../../runtime/model/src/reasoning.ts"
 import { SettingsDialog } from "./settings-dialog.tsx"
 import type { SkillCache } from "./skill-settings.tsx"
 import { WorkspaceSessionState, sessionKey, errorMessage } from "./session-state.ts"
@@ -134,7 +135,8 @@ function Workspace() {
   const [savingDefaultModel, setSavingDefaultModel] = useState(false)
   const [defaultModelError, setDefaultModelError] = useState<string | undefined>()
   const [permission, setPermission] = useState<Permission>("default")
-  const [openMenu, setOpenMenu] = useState<"permission" | "model" | null>(null)
+  const [newChatReasoningLevel, setNewChatReasoningLevel] = useState("medium")
+  const [openMenu, setOpenMenu] = useState<"permission" | "model" | "reasoning" | null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [projectsOpen, setProjectsOpen] = useState(true)
   const [chatsOpen, setChatsOpen] = useState(true)
@@ -435,6 +437,8 @@ function Workspace() {
       })
     : []
   const selectedModel = modelOptions.find((model) => model.isDefault)
+  const selectedReasoningLevel = selectedModel === undefined ? undefined
+    : preferredReasoningLevel(selectedModel.reasoningLevels, newChatReasoningLevel)
   const activeProject = workspaceRoute.group === "project" && projects.status === "ready"
     ? projects.value.find((project) => project.projectId === workspaceRoute.projectId)
     : undefined
@@ -458,6 +462,7 @@ function Workspace() {
     setDefaultModelError(undefined)
     try {
       await window.nicode.setDefaultModel({ providerId: model.providerId, modelId: model.modelId })
+      setNewChatReasoningLevel(preferredReasoningLevel(model.reasoningLevels, newChatReasoningLevel))
       setProviders((current) => current.status !== "ready" ? current : {
         status: "ready",
         value: current.value.map((provider) => ({
@@ -478,12 +483,12 @@ function Workspace() {
   /** @returns 新对话首批事件提交后清理当前分组草稿并导航；失败保留草稿。 */
   async function sendNewChat(): Promise<void> {
     const text = sessionsState.draftsByKey[newDraftKey] ?? ""
-    if (!text.trim() || !selectedModel || savingDefaultModel || sessionsState.view(newDraftKey).busy) return
+    if (!text.trim() || !selectedModel || !selectedReasoningLevel || savingDefaultModel || sessionsState.view(newDraftKey).busy) return
     sessionsState.setView(newDraftKey, { busy: true, operationError: undefined })
     try {
       const { providerId, protocol, modelId, name } = selectedModel
       const response = await window.nicode.startNewSession(groupId, {
-        content: [{ type: "text", text }], model: { providerId, protocol, modelId, name },
+        content: [{ type: "text", text }], model: { providerId, protocol, modelId, name, reasoningLevel: selectedReasoningLevel },
         sandboxMode: permission === "workspace-read-only" ? "sandbox-read-only" : permission === "full-access" ? "full-access" : "sandbox-full-access",
       })
       if (sessionsState.draftsByKey[newDraftKey] === text) sessionsState.setDraft(newDraftKey, "")
@@ -567,7 +572,9 @@ function Workspace() {
                 {providers.status === "ready" && (modelOptions.length === 0 ? <button className="selector-trigger setup-model-trigger" type="button" onClick={() => openSettingsDialog()}>配置模型</button>
                   : <div className="selector-anchor model-anchor"><button className="selector-trigger model-trigger" type="button" aria-label="模型" aria-haspopup="menu" aria-expanded={openMenu === "model"} aria-busy={savingDefaultModel} disabled={savingDefaultModel} title={`${selectedModel?.providerName} / ${selectedModel?.name}`} onClick={() => setOpenMenu((current) => current === "model" ? null : "model")}><span>{savingDefaultModel ? "正在保存…" : selectedModel?.name}</span></button>
                     {openMenu === "model" && <div className="selector-menu model-menu" role="menu" aria-label="模型选项"><p className="menu-label">选择模型</p>{modelOptions.map((model) => <button type="button" role="menuitemradio" aria-checked={model.selectionKey === selectedModel?.selectionKey} disabled={savingDefaultModel} key={model.selectionKey} title={`${model.providerName} / ${model.name}`} onClick={() => { void selectDefaultModel(model.selectionKey) }}><span><strong>{model.name}</strong><small>{model.providerName}</small></span>{model.selectionKey === selectedModel?.selectionKey && <span aria-hidden="true">✓</span>}</button>)}</div>}</div>)}
-                <button className="send-button" type="button" disabled={!selectedModel || savingDefaultModel || newChatView.busy || !(sessionsState.draftsByKey[newDraftKey] ?? "").trim()} onClick={() => void sendNewChat()} aria-label="发送消息"><IconArrowUp size={18} stroke={2} /></button>
+                {selectedModel && <div className="selector-anchor reasoning-anchor"><button className="selector-trigger" type="button" aria-label="推理等级" aria-haspopup="menu" aria-expanded={openMenu === "reasoning"} onClick={() => setOpenMenu((current) => current === "reasoning" ? null : "reasoning")}>推理 {selectedReasoningLevel}</button>
+                  {openMenu === "reasoning" && <div className="selector-menu" role="menu" aria-label="推理等级选项"><p className="menu-label">推理等级</p>{selectedModel.reasoningLevels.map((level) => <button type="button" role="menuitemradio" aria-checked={level === selectedReasoningLevel} key={level} onClick={() => { setNewChatReasoningLevel(level); setOpenMenu(null) }}>{level}{level === selectedReasoningLevel && <span aria-hidden="true">✓</span>}</button>)}</div>}</div>}
+                <button className="send-button" type="button" disabled={!selectedModel || !selectedReasoningLevel || savingDefaultModel || newChatView.busy || !(sessionsState.draftsByKey[newDraftKey] ?? "").trim()} onClick={() => void sendNewChat()} aria-label="发送消息"><IconArrowUp size={18} stroke={2} /></button>
               </div>
             </div>
           </div>

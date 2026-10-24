@@ -21,13 +21,16 @@ const MODEL: ModelRef = {
   protocol: "anthropic_messages",
   modelId: "model-1",
   name: "claude-test",
+  reasoningLevel: "medium",
 }
 const CONTENT = [{ type: "text" as const, text: "你好" }]
 const PROJECT_ID = "00000000-0000-4000-8000-000000000017"
 const PROVIDER_MODEL = { name: "claude-test", contextWindow: 256000, maxOutputTokens: 4096 }
+const REASONING = { reasoningLevels: ["low", "medium", "high"], reasoningField: { path: ["reasoning", "effort"] } }
 const PROVIDER_REFERENCE = { providerId: "provider-1", modelId: "model-1" }
 const MODEL_APPEND = {
   providerId: "provider-1", modelId: "model-2", name: "new-model", contextWindow: 128000, maxOutputTokens: 4096,
+  ...REASONING,
 }
 
 async function testCallsFixedChannels(): Promise<void> {
@@ -44,17 +47,20 @@ async function testCallsFixedChannels(): Promise<void> {
       }
       if (channel === STARTUP_DATA_IPC_CHANNELS.listProviders) {
         return [{
-          providerId: "provider-1", name: "Provider", protocol: "responses",
+          providerId: "provider-1", name: "Provider", type: "custom", protocol: "responses",
           models: [{
             modelId: "model-1", name: "claude-test", contextWindow: 256000, maxOutputTokens: 4096, isDefault: true,
+            ...REASONING,
           }],
         }]
       }
-      if (channel === PROVIDER_IPC_CHANNELS.createProvider) {
+      if (channel === PROVIDER_IPC_CHANNELS.listCompatibleProviderNames) return ["Sample"]
+      if (channel === PROVIDER_IPC_CHANNELS.createCustomProvider || channel === PROVIDER_IPC_CHANNELS.createCompatibleProvider) {
         return {
-          providerId: "created-provider", name: "Created", protocol: "responses",
+          providerId: "created-provider", name: "Created", type: channel === PROVIDER_IPC_CHANNELS.createCustomProvider ? "custom" : "compatible", protocol: "responses",
           models: [{
             modelId: "model-1", name: "claude-test", contextWindow: 256000, maxOutputTokens: 4096, isDefault: false,
+            ...REASONING,
           }],
         }
       }
@@ -98,16 +104,22 @@ async function testCallsFixedChannels(): Promise<void> {
     { sessionId: "default-1", name: "Default", updatedAt: "2026-09-03T00:00:00Z" },
   ])
   assert.deepEqual(await api.listProviders(), [{
-    providerId: "provider-1", name: "Provider", protocol: "responses", models: [{
+    providerId: "provider-1", name: "Provider", type: "custom", protocol: "responses", models: [{
       modelId: "model-1", name: "claude-test", contextWindow: 256000, maxOutputTokens: 4096, isDefault: true,
+      ...REASONING,
     }],
   }])
-  assert.deepEqual(await api.createProvider("Created", "api-key", "responses", "https://example.com", [PROVIDER_MODEL]), {
-    providerId: "created-provider", name: "Created", protocol: "responses",
+  assert.deepEqual(await api.listCompatibleProviderNames(), ["Sample"])
+  const customInput = { type: "custom" as const, name: "Created", apiKey: "api-key", protocol: "responses" as const, url: "https://example.com", models: [PROVIDER_MODEL] }
+  assert.deepEqual(await api.createCustomProvider(customInput), {
+    providerId: "created-provider", name: "Created", type: "custom", protocol: "responses",
     models: [{
       modelId: "model-1", name: "claude-test", contextWindow: 256000, maxOutputTokens: 4096, isDefault: false,
+      ...REASONING,
     }],
   })
+  const compatibleInput = { type: "compatible" as const, name: "Sample", apiKey: "api-key", protocol: "responses" as const }
+  assert.equal((await api.createCompatibleProvider(compatibleInput)).type, "compatible")
   await api.deleteProvider("provider-1")
   await api.updateApiKey("provider-1", null)
   assert.deepEqual(await api.createModel("provider-1", PROVIDER_MODEL), MODEL_APPEND)
@@ -121,7 +133,7 @@ async function testCallsFixedChannels(): Promise<void> {
     { sessionId: "new-session", turn: 1 },
   )
   assert.deepEqual(
-    await api.continueSession(PROJECT_ID, "existing-session", { content: CONTENT, model: MODEL }),
+    await api.continueSession(PROJECT_ID, "existing-session", { content: CONTENT }),
     { sessionId: "existing-session", turn: 4 },
   )
   assert.deepEqual(
@@ -140,10 +152,12 @@ async function testCallsFixedChannels(): Promise<void> {
     { channel: STARTUP_DATA_IPC_CHANNELS.listProjects, args: [] },
     { channel: STARTUP_DATA_IPC_CHANNELS.listDefaultSessions, args: [] },
     { channel: STARTUP_DATA_IPC_CHANNELS.listProviders, args: [] },
+    { channel: PROVIDER_IPC_CHANNELS.listCompatibleProviderNames, args: [] },
     {
-      channel: PROVIDER_IPC_CHANNELS.createProvider,
-      args: ["Created", "api-key", "responses", "https://example.com", [PROVIDER_MODEL]],
+      channel: PROVIDER_IPC_CHANNELS.createCustomProvider,
+      args: [customInput],
     },
+    { channel: PROVIDER_IPC_CHANNELS.createCompatibleProvider, args: [compatibleInput] },
     { channel: PROVIDER_IPC_CHANNELS.deleteProvider, args: ["provider-1"] },
     { channel: PROVIDER_IPC_CHANNELS.updateApiKey, args: ["provider-1", null] },
     { channel: PROVIDER_IPC_CHANNELS.createModel, args: ["provider-1", PROVIDER_MODEL] },
@@ -158,7 +172,7 @@ async function testCallsFixedChannels(): Promise<void> {
     },
     {
       channel: SESSION_IPC_CHANNELS.continueSession,
-      args: [PROJECT_ID, "existing-session", { content: CONTENT, model: MODEL }],
+      args: [PROJECT_ID, "existing-session", { content: CONTENT }],
     },
     {
       channel: SESSION_IPC_CHANNELS.enqueueSessionMessage,
@@ -189,7 +203,7 @@ async function testExposesOnlyNiCodeApi(): Promise<void> {
   assert.equal(exposedApi, api)
   assert.deepEqual(
     Object.keys(exposedApi as NiCodePreloadApi).sort(),
-    ["getSessionData", "onSessionUpdate", "updateSessionSettings", "decideSessionApproval", "addProjectDirectory", "continueSession", "createModel", "createProject", "createProvider", "deleteModel", "deleteProvider", "enqueueSessionMessage", "listDefaultSessions", "listProjects", "listProviders", "removeProjectDirectory", "selectDirectory", "setDefaultModel", "startNewSession", "stopSession", "updateApiKey", "updateModel", "updateProvider",
+    ["getSessionData", "onSessionUpdate", "updateSessionSettings", "decideSessionApproval", "addProjectDirectory", "continueSession", "createModel", "createProject", "createCompatibleProvider", "createCustomProvider", "listCompatibleProviderNames", "deleteModel", "deleteProvider", "enqueueSessionMessage", "listDefaultSessions", "listProjects", "listProviders", "removeProjectDirectory", "selectDirectory", "setDefaultModel", "startNewSession", "stopSession", "updateApiKey", "updateModel", "updateProvider",
       "listMcpServers", "createMcpServer", "updateMcpServer", "deleteMcpServer", "reloadMcpServers", "listSkills", "setSkillEnabled"].sort(),
   )
 }
@@ -212,6 +226,11 @@ async function testRejectsInvalidMainResponse(): Promise<void> {
     models: [{ modelId: "m", contextWindow: 256000, isDefault: false }],
   }] })
   await assert.rejects(invalidProviders.listProviders(), /无效的 Provider 列表/)
+  const missingReasoning = createSessionApi({ invoke: async () => [{
+    providerId: "p", name: "P", type: "custom", protocol: "responses",
+    models: [{ modelId: "m", name: "M", contextWindow: 256000, maxOutputTokens: 32000, isDefault: true }],
+  }] })
+  await assert.rejects(missingReasoning.listProviders(), /无效的 Provider 列表/)
   const invalidModelAppend = createSessionApi({ invoke: async () => ({ providerId: "p", modelId: "m" }) })
   await assert.rejects(invalidModelAppend.createModel("p", PROVIDER_MODEL), /无效的新建模型/)
   const missingProtocol = createSessionApi({ invoke: async () => [{ providerId: "p", name: "P", models: [] }] })

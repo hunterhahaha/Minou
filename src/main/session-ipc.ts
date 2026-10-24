@@ -6,7 +6,7 @@ import type { ProjectId } from "../../runtime/session/src/project-id.ts"
 import type { UserMessageInput } from "../../runtime/session/src/events.ts"
 import type { SandboxMode, SessionSettingsPatch } from "../../runtime/session/src/session-state.ts"
 import { SessionRuntime } from "../../runtime/agent/src/session-runtime.ts"
-import type { SessionRuntimeSnapshot, StartNewSessionInput, StartedSessionTurn } from "../../runtime/agent/src/session-runtime.ts"
+import type { ContinueSessionInput, SessionRuntimeSnapshot, StartNewSessionInput, StartedSessionTurn } from "../../runtime/agent/src/session-runtime.ts"
 import { INITIAL_SESSION_NAME } from "../../runtime/session/src/meta-store.ts"
 import { SESSION_IPC_CHANNELS } from "../preload/session-api.ts"
 import type { SessionControl, SessionData, SessionUpdate } from "../preload/session-api.ts"
@@ -240,8 +240,7 @@ export function registerSessionIpcHandlers(
   })
   ipcMain.handle(SESSION_IPC_CHANNELS.continueSession, async (_event, rawProjectId, rawSessionId, rawInput) => {
     const projectId = requireProjectId(rawProjectId), sessionId = requireSessionId(rawSessionId)
-    const input = requireUserMessageInput(rawInput)
-    if (input.sandboxMode !== undefined) throw new TypeError("continueSession 不接受权限，请使用设置接口")
+    const input = requireContinueSessionInput(rawInput)
     const key = keyOf(projectId, sessionId)
     return serial(key, async () => {
       if (activeSessions.has(key)) throw new Error(`Session 正在运行，请使用 enqueueSessionMessage：${sessionId}`)
@@ -320,6 +319,18 @@ function requireUserMessageInput(value: unknown): StartNewSessionInput {
   return { content: value.content, model: value.model, ...(value.sandboxMode === undefined ? {} : { sandboxMode: value.sandboxMode }) }
 }
 /**
+ * 校验已有对话的 content-only 输入，模型选择由 Session Meta 提供。
+ * @param value Renderer 发来的未知值。
+ * @returns 只含文本内容的继续输入。
+ * @throws TypeError 当内容无效或试图覆盖模型、权限时抛出。
+ */
+function requireContinueSessionInput(value: unknown): ContinueSessionInput {
+  if (!isRecord(value) || Object.keys(value).length !== 1 || !isTextContent(value.content)) {
+    throw new TypeError("继续对话输入无效")
+  }
+  return { content: value.content }
+}
+/**
  * @param value IPC patch。
  * @returns 仅含已知设置字段的 patch。
  * @throws TypeError 空 patch 或未知字段。
@@ -345,12 +356,13 @@ function requireSessionId(value: unknown): string {
 function isSandboxMode(value: unknown): value is SandboxMode { return value === "sandbox-full-access" || value === "sandbox-read-only" || value === "full-access" }
 /**
  * @param value IPC 模型引用。
- * @returns 是否含恰好四个有效字段。
+ * @returns 是否含恰好五个有效字段。
  */
 function isModelRef(value: unknown): value is ModelRef {
-  return isRecord(value) && Object.keys(value).length === 4 &&
+  return isRecord(value) && Object.keys(value).length === 5 &&
     typeof value.providerId === "string" && value.providerId.length > 0 && typeof value.modelId === "string" && value.modelId.length > 0 &&
     typeof value.name === "string" && value.name.length > 0 &&
+    typeof value.reasoningLevel === "string" && value.reasoningLevel.trim() !== "" &&
     (value.protocol === "anthropic_messages" || value.protocol === "chat_completions" || value.protocol === "responses")
 }
 /**

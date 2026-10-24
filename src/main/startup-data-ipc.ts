@@ -58,6 +58,7 @@ export function registerStartupDataIpcHandlers(
       return {
         providerId: provider.id,
         name: provider.name,
+        type: provider.type,
         protocol: provider.protocol,
         ...(provider.baseURL === undefined ? {} : { baseURL: provider.baseURL }),
         models: provider.models.map((model) => {
@@ -68,6 +69,8 @@ export function registerStartupDataIpcHandlers(
             name: model.name,
             contextWindow: model.contextWindow,
             maxOutputTokens: model.maxOutputTokens,
+            reasoningLevels: model.reasoningLevels,
+            reasoningField: model.reasoningField,
             isDefault,
           }
         }),

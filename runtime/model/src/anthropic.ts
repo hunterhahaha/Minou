@@ -27,6 +27,7 @@ import {
   assertRequestMatchesModel,
   joinTextBlocks,
   parseToolCallArguments,
+  reasoningRequestFragment,
   resolveToolCallInput,
   runModelStream,
   serializeToolCallArguments,
@@ -183,19 +184,19 @@ function toAnthropicTools(tools: UnifiedToolDefinition[]): ToolUnion[] {
  * `system` 取 `messages[0]`；`tools` 为空时不传该字段（协议不接受空数组）。
  *
  * @param request 待转换的统一模型请求。
- * @param maxOutputTokens Anthropic 必填的最大输出 Token 数。
+ * @param config 当前 Adapter 绑定的完整模型配置。
  * @returns SDK 可接受的流式 Messages 请求参数。
- * @throws `AppError` 当统一上下文缺少首个 System Message 或包含多个 System Message 时抛出。
+ * @throws `AppError` 当统一上下文或推理等级配置无效时抛出。
  */
 export function buildAnthropicRequest(
   request: UnifiedModelRequest,
-  maxOutputTokens: number,
+  config: ModelConfig,
 ): MessageCreateParamsStreaming {
   const { system, rest } = splitSystemMessage(request)
 
   const params: MessageCreateParamsStreaming = {
     model: request.model.name,
-    max_tokens: maxOutputTokens,
+    max_tokens: config.maxOutputTokens,
     system,
     messages: toAnthropicMessages(rest),
     stream: true,
@@ -205,6 +206,8 @@ export function buildAnthropicRequest(
     params.tools = toAnthropicTools(request.tools)
   }
   if (request.toolChoice === "none") params.tool_choice = { type: "none" }
+
+  Object.assign(params, reasoningRequestFragment(request, config))
 
   return params
 }
@@ -585,7 +588,7 @@ export function createAnthropicAdapter(
   ): AsyncGenerator<ModelStreamEvent> {
     // 校验与请求构建在迭代时抛出：AgentLoop 只需在一处处理 Adapter 的错误。
     assertRequestMatchesModel(request, config)
-    const params = buildAnthropicRequest(request, config.maxOutputTokens)
+    const params = buildAnthropicRequest(request, config)
 
     yield* runModelStream((attemptSignal) => {
       return mapAnthropicStream(requestAnthropicStream(client, params, attemptSignal))

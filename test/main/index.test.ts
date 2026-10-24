@@ -37,6 +37,7 @@ const MODEL: ModelRef = {
   protocol: "anthropic_messages",
   modelId: "model-1",
   name: "claude-test",
+  reasoningLevel: "medium",
 }
 const MESSAGE = [{ type: "text" as const, text: "你好" }]
 const PROJECT_ID = "00000000-0000-4000-8000-000000000017"
@@ -261,7 +262,9 @@ async function testRegistersIpcAndWindowLifecycle(): Promise<void> {
       STARTUP_DATA_IPC_CHANNELS.listProjects,
       STARTUP_DATA_IPC_CHANNELS.listDefaultSessions,
       STARTUP_DATA_IPC_CHANNELS.listProviders,
-      PROVIDER_IPC_CHANNELS.createProvider,
+      PROVIDER_IPC_CHANNELS.listCompatibleProviderNames,
+      PROVIDER_IPC_CHANNELS.createCompatibleProvider,
+      PROVIDER_IPC_CHANNELS.createCustomProvider,
       PROVIDER_IPC_CHANNELS.updateProvider,
       PROVIDER_IPC_CHANNELS.deleteProvider,
       PROVIDER_IPC_CHANNELS.updateApiKey,

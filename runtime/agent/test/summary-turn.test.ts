@@ -11,7 +11,7 @@ import { SessionRuntime, SessionLogCorruptedError } from "../src/session-runtime
 import type { SessionRuntimeGlobal } from "../../../src/main/session-runtime-global.ts"
 import { COMPACT_PROMPT } from "../../context/src/compact-prompt.ts"
 
-const MODEL: ModelRef = { providerId: "offline", modelId: "offline", name: "Offline", protocol: "responses" }
+const MODEL: ModelRef = { providerId: "offline", modelId: "offline", name: "Offline", protocol: "responses", reasoningLevel: "medium" }
 const MESSAGE = [{ type: "text" as const, text: "initial user" }]
 const HIGH = 102400
 const MCP: UnifiedToolDefinition = { name: "mcp_remote_read", description: "remote", inputSchema: { type: "object" } }
@@ -184,7 +184,7 @@ async function testNewTurnAndRecovery(root: string): Promise<void> {
   await (await h.runtime.startNewSession({ model: MODEL, content: MESSAGE })).completion
   h.setBaseline("v2")
   const next = h.create()
-  await (await next.continueSession({ model: MODEL, content: [{ type: "text", text: "new user" }] })).completion
+  await (await next.continueSession({ content: [{ type: "text", text: "new user" }] })).completion
   const events = await next.readEvents() as SessionEvent[]
   const summary = events.find((event) => event.type === "summary/end")!
   assert.equal(events.find((event) => event.seq === summary.throughEventSeq)!.type, "user/message")
@@ -357,7 +357,7 @@ async function testUnfinishedAttemptKeepsCommittedSummary(root: string): Promise
   await (await h.runtime.startNewSession({ model: MODEL, content: MESSAGE })).completion
   h.setBaseline("v2")
   const continued = h.create()
-  await assert.rejects((await continued.continueSession({ model: MODEL, content: [{ type: "text", text: "uncompressed second user" }] })).completion, /second compression failed/)
+  await assert.rejects((await continued.continueSession({ content: [{ type: "text", text: "uncompressed second user" }] })).completion, /second compression failed/)
   const restored = h.create()
   await restored.repairSession()
   const events = await restored.readEvents() as SessionEvent[]
