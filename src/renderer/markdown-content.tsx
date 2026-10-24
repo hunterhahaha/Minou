@@ -1,4 +1,4 @@
-/** Assistant 正文与思考内容共用的 Markdown 展示组件。 */
+/** Assistant 正文的 Markdown 展示组件；过程详情由页面直接展示原文。 */
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 

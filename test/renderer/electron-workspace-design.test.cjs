@@ -21,7 +21,10 @@ const sessions = [
   { sessionId: "review", name: "完善工具调用的错误处理", updatedAt },
   { sessionId: "notes", name: "下一次迭代的实现思路", updatedAt },
 ]
-const projects = [{ projectId: PROJECT, name: "NiCode", updatedAt, directories: ["G:\\code\\NiCode"], sessions: [{ sessionId: "project-session", name: "设计新的协作体验", updatedAt }] }]
+const projects = [
+  { projectId: PROJECT, name: "NiCode", updatedAt, directories: ["G:\\code\\NiCode"], sessions: [{ sessionId: "project-session", name: "设计新的协作体验", updatedAt }] },
+  { projectId: "a0000000-0000-4000-8000-000000000002", name: "一个包含较长名称的项目，用来确认侧栏始终保持简洁", updatedAt, directories: [], sessions: [] },
+]
 app.disableHardwareAcceleration()
 app.commandLine.appendSwitch("force-device-scale-factor", "1")
 /** 窗口销毁后仍等待 finally 清理临时目录，并由 app.exit 保留断言失败的退出码。 */
@@ -42,6 +45,50 @@ const click = (selector) => evaluate(`document.querySelector(${JSON.stringify(se
 const input = (selector, value) => evaluate(`(() => { const node = document.querySelector(${JSON.stringify(selector)}); Object.getOwnPropertyDescriptor(node.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype, 'value').set.call(node, ${JSON.stringify(value)}); node.dispatchEvent(new Event('input', {bubbles:true})) })()`)
 /** @param key 快捷键。 @param modifiers 可选组合键。 @returns 键盘事件完成。 */
 const key = (key, modifiers = {}) => evaluate(`document.activeElement.dispatchEvent(new KeyboardEvent('keydown', {key:${JSON.stringify(key)}, bubbles:true, cancelable:true, ...${JSON.stringify(modifiers)}}))`)
+/**
+ * 向 Chromium 发送真实按键，覆盖原生下拉浮层的默认键盘行为。
+ * @param keyCode Electron 按键名称。
+ * @returns 按键按下与释放事件已发送。
+ */
+function nativeKey(keyCode) {
+  window.webContents.sendInputEvent({ type: "keyDown", keyCode })
+  window.webContents.sendInputEvent({ type: "keyUp", keyCode })
+}
+/** @param selector 已渲染且可见的元素。 @returns 实际鼠标按下与释放事件已发送。 */
+async function nativeClick(selector) {
+  const point = await evaluate(`(() => { const rect = document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect(); return { x: Math.round(rect.x + rect.width / 2), y: Math.round(rect.y + rect.height / 2) } })()`)
+  window.webContents.sendInputEvent({ type: "mouseDown", ...point, button: "left", clickCount: 1 })
+  window.webContents.sendInputEvent({ type: "mouseUp", ...point, button: "left", clickCount: 1 })
+}
+/**
+ * 在用户手势下打开实际 select 浮层，并核对外观、选中项对比度与屏幕边界。
+ * @param selector 当前页面的原生 select 选择器。
+ * @returns 浮层打开且实际渲染检查通过。
+ * @throws AssertionError 浮层未采用定制外观、被截断或选中项对比度不足。
+ */
+async function openSelect(selector) {
+  window.webContents.focus()
+  await evaluate(`(() => { const node = document.querySelector(${JSON.stringify(selector)}); node.scrollIntoView({ block: 'center' }); node.focus() })()`)
+  await nativeClick(selector)
+  await until(() => evaluate(`document.querySelector(${JSON.stringify(selector)}).matches(':open')`))
+  const presentation = await evaluate(`(() => {
+    const node = document.querySelector(${JSON.stringify(selector)})
+    const picker = getComputedStyle(node, '::picker(select)')
+    const selected = getComputedStyle(node.selectedOptions[0])
+    return {
+      appearance: getComputedStyle(node).appearance,
+      radius: picker.borderRadius, shadow: picker.boxShadow, border: picker.borderTopWidth,
+      selected: [selected.color, selected.backgroundColor],
+      fits: [...node.options].every(option => { const rect = option.getBoundingClientRect(); return rect.width > 0 && rect.left >= 0 && rect.right <= innerWidth && rect.top >= 0 && rect.bottom <= innerHeight })
+    }
+  })()`)
+  assert.equal(presentation.appearance, "base-select", "沿用 select 的原生选择行为并定制外观")
+  assert.equal(presentation.radius, "10px", "浮层沿用页面圆角")
+  assert.equal(presentation.border, "0px", "展开浮层无系统方框描边")
+  assert.notEqual(presentation.shadow, "none", "浮层保留柔和阴影")
+  assert.equal(presentation.fits, true, "展开选项位于屏幕范围内")
+  assert.ok(contrastRatio(...presentation.selected) >= 4.5, "选中项文字对比度达到 4.5:1")
+}
 /** @param name 输出截图名称。 @returns 等待 React 与合成器更新后的 PNG。 */
 async function screenshot(name) {
   await evaluate("document.getAnimations().forEach(animation => { if (animation.effect?.getComputedTiming().endTime !== Infinity) animation.finish() })")
@@ -112,7 +159,7 @@ async function assertPaletteContrast(state) {
       probe.style.color = 'var(' + token + ')'
       return getComputedStyle(probe).color
     }
-    const tokens = Object.fromEntries(['--canvas', '--surface', '--surface-muted', '--surface-focus', '--field', '--field-focus', '--hover', '--selected', '--accent-soft', '--text', '--secondary', '--muted', '--accent', '--accent-hover', '--on-accent', '--rail-hover', '--rail-active-text'].map(token => [token, color(token)]))
+    const tokens = Object.fromEntries(['--canvas', '--surface', '--surface-muted', '--surface-focus', '--field', '--field-focus', '--hover', '--selected', '--accent-soft', '--text', '--secondary', '--muted', '--accent', '--accent-hover', '--on-accent'].map(token => [token, color(token)]))
     probe.remove()
     const backgrounds = Object.entries(tokens).filter(([name]) => ['--canvas', '--surface', '--surface-muted', '--surface-focus', '--field', '--field-focus', '--hover', '--selected', '--accent-soft'].includes(name))
     for (const selector of ['.titlebar', '.sidebar', '.app-statusbar', '.settings-dialog', '.settings-dialog-nav', '.settings-dialog-content']) {
@@ -120,20 +167,21 @@ async function assertPaletteContrast(state) {
       if (node) (getComputedStyle(node).backgroundImage.match(/rgba?\\([^)]*\\)/g) ?? []).forEach((value, index) => backgrounds.push([selector + ' gradient stop ' + index, value]))
     }
     const placeholders = [...document.querySelectorAll('textarea, .settings-field input, .search-input-row input')].map((node, index) => [node.tagName.toLowerCase() + '::placeholder ' + index, getComputedStyle(node, '::placeholder').color])
-    const rail = document.querySelector('.activity-rail')
-    const railBackgrounds = getComputedStyle(rail).backgroundImage.match(/rgba?\\([^)]*\\)/g) ?? [getComputedStyle(rail).backgroundColor]
-    const railDefault = getComputedStyle(document.querySelector('.rail-button:not(.rail-button-active)'))
-    const railActive = getComputedStyle(document.querySelector('.rail-button-active'))
+    const sidebar = getComputedStyle(document.querySelector('.sidebar'))
+    const navigationBackgrounds = sidebar.backgroundImage.match(/rgba?\\([^)]*\\)/g) ?? [sidebar.backgroundColor]
+    const navigationDefault = getComputedStyle(document.querySelector('.sidebar-settings'))
     const enabledButton = document.querySelector('.send-button:not(:disabled), .settings-primary-button:not(:disabled)')
     const primary = enabledButton ? getComputedStyle(enabledButton) : null
-    const selectedText = [...document.querySelectorAll('.settings-nav-option-active, .provider-list-item-active, .selector-menu button[aria-checked="true"]')].map(node => {
+    let primaryBackground = primary?.backgroundColor
+    for (let parent = enabledButton?.parentElement; parent && primaryBackground === 'rgba(0, 0, 0, 0)'; parent = parent.parentElement) primaryBackground = getComputedStyle(parent).backgroundColor
+    const selectedText = [...document.querySelectorAll('.session-name[aria-current="page"], .settings-nav-option-active, .provider-list-item-active, .selector-menu button[aria-checked="true"]')].map(node => {
       const style = getComputedStyle(node)
       return [node.className || node.getAttribute('role'), style.color, style.backgroundColor]
     })
     return {
       theme: document.documentElement.dataset.theme, route: location.hash, tokens, backgrounds, placeholders, selectedText,
-      rail: [['default', railDefault.color, railBackgrounds], ['hover', tokens['--rail-active-text'], [tokens['--rail-hover']]], ['active', railActive.color, [railActive.backgroundColor]]],
-      primary: primary ? [primary.color, primary.backgroundColor] : [tokens['--on-accent'], tokens['--accent']],
+      navigation: [['default', navigationDefault.color, navigationBackgrounds], ['hover', tokens['--text'], [tokens['--hover']]]],
+      primary: primary ? [primary.color, primaryBackground] : [tokens['--secondary'], tokens['--canvas']],
       primaryEnabled: Boolean(enabledButton),
     }
   })()`)
@@ -143,10 +191,10 @@ async function assertPaletteContrast(state) {
     const candidates = palette.backgrounds.map(([backgroundRole, background]) => ({ role, foreground, backgroundRole, background, ratio: contrastRatio(foreground, background), minimum: 4.5 }))
     checks.push(candidates.reduce((worst, candidate) => candidate.ratio < worst.ratio ? candidate : worst))
   }
-  for (const [role, foreground, backgrounds] of palette.rail) {
-    checks.push(backgrounds.map(background => ({ role: 'rail ' + role, foreground, background, ratio: contrastRatio(foreground, background), minimum: 3 })).reduce((worst, candidate) => candidate.ratio < worst.ratio ? candidate : worst))
+  for (const [role, foreground, backgrounds] of palette.navigation) {
+    checks.push(backgrounds.map(background => ({ role: 'navigation ' + role, foreground, background, ratio: contrastRatio(foreground, background), minimum: 3 })).reduce((worst, candidate) => candidate.ratio < worst.ratio ? candidate : worst))
   }
-  for (const [role, foreground, background] of [['primary', ...palette.primary], ['primary hover', palette.tokens['--on-accent'], palette.tokens['--accent-hover']], ...palette.selectedText]) {
+  for (const [role, foreground, background] of [['primary', ...palette.primary], ['primary hover', palette.tokens['--text'], palette.tokens['--hover']], ...palette.selectedText]) {
     checks.push({ role, foreground, background, ratio: contrastRatio(foreground, background), minimum: 4.5 })
   }
   paletteReports.push({ theme: palette.theme, route: palette.route, state, primaryEnabled: palette.primaryEnabled, checks })
@@ -166,7 +214,7 @@ async function assertWorkspacePalette(expectedColor, contentSelectors) {
   const palette = await evaluate(`(() => {
     const panel = document.querySelector('.main-panel')
     const expected = ${JSON.stringify(expectedColor)}
-    const shellGradients = ['.titlebar', '.sidebar', '.activity-rail', '.app-statusbar'].map(selector => [selector, getComputedStyle(document.querySelector(selector)).backgroundImage])
+    const shellGradients = ['.titlebar', '.sidebar', '.app-statusbar'].map(selector => [selector, getComputedStyle(document.querySelector(selector)).backgroundImage])
     const surfaceChannels = [getComputedStyle(panel).backgroundColor, ...shellGradients.flatMap(([, gradient]) => gradient.match(/rgba?\\([^)]*\\)/g) ?? [])].map(color => color.match(/[\\d.]+/g).slice(0, 3).map(Number))
     return {
       theme: document.documentElement.dataset.theme,
@@ -200,9 +248,9 @@ async function main() {
   ipcMain.handle(startup.listProjects, () => projects)
   ipcMain.handle(startup.listDefaultSessions, () => sessions)
   ipcMain.handle(startup.listProviders, () => providers)
-  ipcMain.handle(skill.listSkills, () => {
+  ipcMain.handle(skill.listSkills, (_event, target) => {
     skillReads++
-    return ["code-review", "project-conventions"].map((name, index) => ({ name, path: join(profile, "skills", name), scope: "global", enabled: index === 0, description: index === 0 ? "从代码结构、边界条件与可维护性出发，检查改动并给出清晰的建议。" : "记录项目约定，让每次协作都沿用熟悉的工作方式。" }))
+    return ["code-review", "project-conventions"].map((name, index) => ({ name, path: join(profile, target.scope === "global" ? "global" : target.projectId, "skills", name), scope: target.scope, enabled: index === 0, description: index === 0 ? "从代码结构、边界条件与可维护性出发，检查改动并给出清晰的建议。" : "记录项目约定，让每次协作都沿用熟悉的工作方式。" }))
   })
   ipcMain.handle(mcp.listMcpServers, () => {
     mcpReads++
@@ -248,8 +296,38 @@ async function main() {
   assert.equal(skillReads + mcpReads, 0, "启动不读取技能或 MCP")
   await fits()
   await evaluate("document.activeElement.blur()")
+  window.webContents.sendInputEvent({ type: "mouseMove", x: 800, y: 300 })
   await screenshot("workspace-light")
   await assertWorkspacePalette("rgb(255, 255, 255)", [".welcome-scroll", ".welcome"])
+  assert.equal(await evaluate("Boolean(document.querySelector('.activity-rail, .workspace-identity, .sidebar-search, .session-name svg, .workspace-badge'))"), false, "单侧栏移除重复身份、搜索、图标和空间标记")
+  assert.equal(await evaluate("getComputedStyle(document.querySelector('.project-action-button')).opacity"), "0", "项目添加按钮默认隐去")
+  assert.equal(await evaluate("getComputedStyle(document.querySelector('.section-action-button')).opacity"), "0", "分组操作默认隐去")
+  assert.equal(await evaluate("getComputedStyle(document.querySelector('.composer-caption')).opacity"), "0", "输入提示在输入前保持安静")
+  const projectRow = await evaluate("(() => { const rect = document.querySelector('.project-row').getBoundingClientRect(); return { x: Math.round(rect.x + rect.width / 2), y: Math.round(rect.y + rect.height / 2), width: rect.width } })()")
+  window.webContents.sendInputEvent({ type: "mouseMove", x: projectRow.x, y: projectRow.y })
+  await until(() => evaluate("getComputedStyle(document.querySelector('.project-action-button')).opacity === '1'"))
+  assert.equal(await evaluate("getComputedStyle(document.querySelector('.chats-section .section-action-button')).opacity"), "0", "悬停项目只披露当前行操作")
+  assert.equal(await evaluate("getComputedStyle(document.querySelectorAll('.project-action-button')[1]).opacity"), "0", "其它项目的操作保持隐藏")
+  assert.equal(await evaluate("(() => { const node = document.querySelectorAll('.project-name > span')[1]; return node.scrollWidth > node.clientWidth && getComputedStyle(node).textOverflow === 'ellipsis' })()"), true, "长项目名称省略显示，完整名称仍可通过 title 读取")
+  assert.equal(await evaluate("document.querySelector('.project-row').getBoundingClientRect().width"), projectRow.width, "披露操作不挤动列表")
+  await screenshot("workspace-sidebar-hover")
+  window.webContents.sendInputEvent({ type: "mouseMove", x: 800, y: 300 })
+  await until(() => evaluate("getComputedStyle(document.querySelector('.project-action-button')).opacity === '0'"))
+  await evaluate("document.querySelector('.project-name').focus()")
+  await until(() => evaluate("getComputedStyle(document.querySelector('.project-action-button')).opacity === '1'"))
+  window.webContents.sendInputEvent({ type: "keyDown", keyCode: "Tab" })
+  window.webContents.sendInputEvent({ type: "keyUp", keyCode: "Tab" })
+  await until(() => evaluate("document.activeElement.matches('.project-action-button')"))
+  await screenshot("workspace-sidebar-focus")
+  await click(".project-action-button")
+  await until(() => evaluate("location.hash.includes('/projects/') && document.activeElement.matches('textarea')"))
+  assert.equal(await evaluate("document.querySelector('.breadcrumb > span').title"), projects[0].directories.join(" · "), "关联目录仍可从项目名称的悬停提示读取")
+  assert.equal(historyReads, 0, "渐进披露入口打开项目新聊天，不读取历史")
+  await click(".new-chat")
+  await until(() => evaluate("location.hash.includes('/default/new-chat')"))
+  await evaluate("document.activeElement.blur(); document.querySelector('.project-section .section-heading').focus()")
+  await until(() => evaluate("getComputedStyle(document.querySelector('.section-action-button')).opacity === '1'"))
+  await evaluate("document.activeElement.blur()")
   assert.equal(await evaluate("document.querySelectorAll('.sidebar-model-card').length"), 0, "移除侧栏模型就绪卡片")
   assert.equal(await evaluate("document.querySelector('.model-trigger').textContent.includes('GPT-5.4')"), true, "输入区保留当前模型选择入口")
   assert.equal(await evaluate(`(() => {
@@ -261,8 +339,22 @@ async function main() {
     return ['Top', 'Right', 'Bottom', 'Left'].every(side => style['border' + side + 'Width'] === '0px')
   })`), true, "标题栏、侧栏、面包屑与输入容器通过色阶区分，无区域描边")
   const restingComposerShadow = await evaluate("getComputedStyle(document.querySelector('.composer')).boxShadow")
+  const newChatSelectorAppearance = `Array.from(document.querySelectorAll('.new-chat-composer .selector-trigger')).map(node => {
+    const style = getComputedStyle(node)
+    return { text: node.textContent, color: style.color, background: style.backgroundColor, shadow: style.boxShadow, font: style.font, weight: style.fontWeight }
+  })`
+  const restingNewChatSelectors = await evaluate(newChatSelectorAppearance)
+  assert.equal(restingNewChatSelectors.every(control => control.background === "rgba(0, 0, 0, 0)"), true, "新聊天的权限与模型没有独立底色")
+  assert.equal(await evaluate("[...document.querySelectorAll('.new-chat-composer button, .composer-toolbar, .composer-controls')].every(node => { const style = getComputedStyle(node); return style.backgroundColor === 'rgba(0, 0, 0, 0)' && style.boxShadow === 'none' && style.borderTopWidth === '0px' })"), true, "输入框内部按钮和工具栏不形成第二层框")
+  assert.equal(await evaluate("document.querySelectorAll('.new-chat-composer [aria-label=\"权限\"] svg').length === 1 && document.querySelectorAll('.model-trigger svg').length === 0"), true, "权限只保留绑定的图标，模型与两个入口均无箭头")
+  const newComposerPoint = await evaluate("(() => { const rect = document.querySelector('.new-chat-composer textarea').getBoundingClientRect(); return { x: Math.round(rect.x + rect.width / 2), y: Math.round(rect.y + rect.height / 2) } })()")
+  window.webContents.sendInputEvent({ type: "mouseMove", ...newComposerPoint })
+  await screenshot("workspace-composer-hover")
+  assert.deepEqual(await evaluate(newChatSelectorAppearance), restingNewChatSelectors, "悬停新聊天输入框不改变权限与模型外观")
   await evaluate("document.querySelector('textarea').focus()")
   await screenshot("workspace-composer-focus")
+  assert.deepEqual(await evaluate(newChatSelectorAppearance), restingNewChatSelectors, "聚焦新聊天输入框不改变权限与模型外观")
+  assert.equal(await evaluate("getComputedStyle(document.querySelector('.composer-caption')).opacity"), "1", "输入聚焦后披露快捷键提示")
   const focusedComposer = await evaluate(`(() => {
     const composer = getComputedStyle(document.querySelector('.composer'))
     const textarea = getComputedStyle(document.querySelector('textarea'))
@@ -282,6 +374,14 @@ async function main() {
   await input('[aria-label="任务描述"]', "")
   await until(() => evaluate(`document.querySelector('textarea').clientHeight === ${initialHeight}`))
   assert.equal(await evaluate("getComputedStyle(document.querySelector('textarea')).resize"), "none")
+  await nativeClick('[aria-label="权限"] svg')
+  await until(() => evaluate("Boolean(document.querySelector('.permission-menu'))"))
+  await nativeClick(".permission-menu button:last-of-type")
+  await until(() => evaluate("document.querySelector('[aria-label=\"权限\"]').textContent === '完全访问'"))
+  await nativeClick('[aria-label="权限"]')
+  await until(() => evaluate("Boolean(document.querySelector('.permission-menu'))"))
+  await nativeClick(".permission-menu button:nth-of-type(2)")
+  await until(() => evaluate("document.querySelector('[aria-label=\"权限\"]').textContent === '工作区读写'"))
   await input('[aria-label="任务描述"]', "我的草稿")
   await evaluate("document.querySelector('textarea').focus()")
   await until(() => evaluate("!document.querySelector('.send-button').disabled"))
@@ -325,6 +425,8 @@ async function main() {
   ]) window.webContents.send(session.update, { kind: "event", projectId: "default", sessionId: "review", event: { ...event, seq, eventId: "approval-" + seq, sessionId: "review", createdAt: updatedAt } })
   window.webContents.send(session.update, { kind: "state", projectId: "default", sessionId: "review", control: { revision: 2, throughSeq: 7, phase: "running", currentTurn: 2, currentModel: model, sandboxMode: "sandbox-full-access", pendingMessages: [{ messageId: "queued", status: "queued", content: [{ type: "text", text: "之后再整理一份简短的改进清单。" }] }], discardedMessages: [] } })
   await until(() => evaluate("Boolean(document.querySelector('.approval-actions button:not(:disabled)')) && Boolean(document.querySelector('.queue-list'))"))
+  assert.equal(await evaluate("document.querySelectorAll('.chat-messages .approval-actions, .chat-messages .approval-card').length"), 0, "审批请求只在输入区浮窗中显示")
+  assert.equal(await evaluate("document.querySelector('.approval-popover')?.getAttribute('role')"), "dialog")
   await screenshot("workspace-approval-queue")
   await screenshotVisionDeficiencies()
   await click(".approval-actions .settings-primary-button")
@@ -369,6 +471,13 @@ async function main() {
   await until(() => evaluate("Boolean(document.querySelector('.provider-detail'))"))
   await screenshot("workspace-settings-dark")
   await assertPaletteContrast("settings")
+  await click('[aria-label="新增供应商"]')
+  await until(() => evaluate("Boolean(document.querySelector('.provider-create-form select'))"))
+  await openSelect(".provider-create-form select")
+  await screenshot("workspace-select-protocol-dark")
+  nativeKey("Escape")
+  await until(() => evaluate("!document.querySelector('select:open')"))
+  assert.equal(await evaluate("Boolean(document.querySelector('.settings-dialog'))"), true, "Escape 先关闭下拉浮层，保留设置弹窗")
   await key("Escape")
   await until(() => evaluate("!document.querySelector('.settings-dialog')"))
   await click('[aria-label="切换浅色外观"]')
@@ -380,6 +489,7 @@ async function main() {
     const style = getComputedStyle(document.querySelector(selector))
     return ['Top', 'Right', 'Bottom', 'Left'].every(side => style['border' + side + 'Width'] === '0px')
   })`), true, "设置弹窗、分区与字段移除描边")
+  assert.equal(await evaluate("[...document.querySelectorAll('.provider-model-editor, .settings-primary-button, .settings-secondary-button')].every(node => { const style = getComputedStyle(node); return style.backgroundColor === 'rgba(0, 0, 0, 0)' && style.backgroundImage === 'none' && style.borderTopWidth === '0px' })"), true, "模型编辑区不再用卡片包字段，设置操作默认透明")
   window.webContents.focus()
   await evaluate("document.querySelector('.settings-field input').focus()")
   await screenshot("workspace-field-focus")
@@ -398,14 +508,44 @@ async function main() {
   await screenshot("workspace-settings-compact")
   window.setSize(1440, 1000)
   await until(() => evaluate("innerWidth === 1440"))
+  await click('[aria-label="新增供应商"]')
+  await until(() => evaluate("Boolean(document.querySelector('.provider-create-form select'))"))
+  await openSelect(".provider-create-form select")
+  await screenshot("workspace-select-protocol")
+  nativeKey("End")
+  nativeKey("Enter")
+  await until(() => evaluate("!document.querySelector('select:open') && document.querySelector('.provider-create-form select').value !== ''"))
   await evaluate("[...document.querySelectorAll('.settings-nav-option')].find(node => node.textContent === 'MCP').click()")
   await until(() => evaluate("document.querySelector('.mcp-settings')?.getAttribute('aria-busy') === 'false'"))
   assert.equal(mcpReads, 1)
   await screenshot("workspace-mcp")
+  await openSelect('[aria-label="MCP 传输类型"]')
+  await screenshot("workspace-select-mcp")
+  await nativeClick('[aria-label="MCP 传输类型"] option[value="streamable-http"]')
+  await until(() => evaluate("Boolean(document.querySelector('[aria-label=\"MCP URL\"]'))"))
+  await openSelect('[aria-label="MCP 传输类型"]')
+  nativeKey("Home")
+  nativeKey("Enter")
+  await until(() => evaluate("Boolean(document.querySelector('[aria-label=\"MCP 启动命令\"]'))"))
   await evaluate("[...document.querySelectorAll('.settings-nav-option')].find(node => node.textContent === '技能').click()")
   await until(() => evaluate("document.querySelectorAll('.skill-entry').length === 2"))
   assert.equal(skillReads, 1)
   await screenshot("workspace-skills")
+  await openSelect('[aria-label="技能作用域"]')
+  await screenshot("workspace-select-scope")
+  nativeKey("End")
+  nativeKey("Enter")
+  await until(() => evaluate(`document.querySelector('[aria-label="技能作用域"]').value === ${JSON.stringify('project:' + projects[1].projectId)} && document.querySelectorAll('.skill-entry').length === 2`))
+  await fits()
+  await screenshot("workspace-select-scope-long")
+  await openSelect('[aria-label="技能作用域"]')
+  nativeKey("Home")
+  nativeKey("Enter")
+  await until(() => evaluate("document.querySelector('[aria-label=\"技能作用域\"]').value === 'global' && !document.querySelector('select:open')"))
+  await openSelect('[aria-label="技能作用域"]')
+  await nativeClick(".skill-toolbar h3")
+  await until(() => evaluate("!document.querySelector('select:open')"))
+  assert.equal(await evaluate("Boolean(document.querySelector('.settings-dialog'))"), true, "点击浮层外只收起选项")
   await key("Escape")
   await until(() => evaluate("!document.querySelector('.settings-dialog')"))
   await click('[aria-label="创建项目"]')
@@ -414,21 +554,40 @@ async function main() {
   await key("Escape")
   await key("b", { ctrlKey: true })
   await until(() => evaluate("!document.querySelector('.sidebar')"))
-  await key("b", { ctrlKey: true })
+  assert.equal(await evaluate("Boolean(document.querySelector('.panel-header [aria-label=\"设置\"]') && document.querySelector('.panel-header [aria-label=\"切换深色外观\"]') && document.querySelector('.panel-header [aria-label=\"在当前空间新建聊天\"]'))"), true, "收起侧栏后仍可访问设置、外观与新聊天")
+  await click('[aria-label="展开侧栏"]')
   await until(() => evaluate("Boolean(document.querySelector('.sidebar'))"))
   window.setSize(640, 760)
   await screenshot("workspace-narrow")
+  assert.equal(await evaluate("getComputedStyle(document.querySelector('.new-chat-composer [aria-label=\"权限\"] svg')).display !== 'none'"), true, "窄窗口仍保留绑定的权限图标")
   await fits()
-  await evaluate("document.querySelector('[aria-label=\"技能设置\"]').focus()")
-  await click('[aria-label="技能设置"]')
+  await evaluate("document.querySelector('.sidebar-settings').focus()")
+  await click(".sidebar-settings")
+  await until(() => evaluate("Boolean(document.querySelector('.settings-dialog'))"))
+  await evaluate("[...document.querySelectorAll('.settings-nav-option')].find(node => node.textContent === '技能').click()")
   await until(() => evaluate("document.querySelectorAll('.skill-entry').length === 2"))
   await fits()
   await screenshot("workspace-settings-narrow")
+  await openSelect('[aria-label="技能作用域"]')
+  await screenshot("workspace-select-scope-narrow")
+  nativeKey("Escape")
+  await until(() => evaluate("!document.querySelector('select:open')"))
   await evaluate("(() => { const nodes = [...document.querySelector('.settings-dialog').querySelectorAll('button, input, select')].filter(node => !node.disabled && node.getClientRects().length); nodes.at(-1).focus() })()")
   await key("Tab")
   assert.equal(await evaluate("document.querySelector('.settings-dialog').contains(document.activeElement)"), true, "Tab 焦点保留在弹窗内")
   await key("Escape")
-  await until(() => evaluate("document.activeElement.getAttribute('aria-label') === '技能设置'"))
+  await until(() => evaluate("document.activeElement.matches('.sidebar-settings')"))
+  window.webContents.debugger.attach("1.3")
+  try {
+    await window.webContents.debugger.sendCommand("Emulation.setTouchEmulationEnabled", { enabled: true })
+    await until(() => evaluate("matchMedia('(pointer: coarse)').matches"))
+    await evaluate("document.activeElement.blur()")
+    await until(() => evaluate("[...document.querySelectorAll('.section-action-button, .project-action-button')].every(node => getComputedStyle(node).opacity === '1')"))
+    await screenshot("workspace-touch")
+  } finally {
+    await window.webContents.debugger.sendCommand("Emulation.setTouchEmulationEnabled", { enabled: false })
+    window.webContents.debugger.detach()
+  }
   window.setOpacity(0)
   window.setSkipTaskbar(true)
   await click('[aria-label="最大化窗口"]')
@@ -449,7 +608,7 @@ async function main() {
   await until(() => window.isMinimized())
   assert.equal(window.isDestroyed(), false)
   assert.deepEqual(errors, [])
-  console.log("electron-workspace-design: 纯白/炭灰工作区、低明度差壳层、主题角色与正文/占位符/主操作/导航图标对比度、渐变壳层、移除模型就绪卡片、摘要搜索与空结果、键盘导航、历史按需加载与缓存、可发送草稿、模型菜单、项目入口、主题恢复、浅深色设置、单行输入自适应、焦点、窄窗口及自绘窗口按钮均通过；截图保存在 dist/workspace-*.png，对比度报告保存在 dist/workspace-contrast.json")
+  console.log("electron-workspace-design: 主题下拉浮层、鼠标与键盘选择、Escape 分层关闭、外部点击收起、浮层边界与选中项对比度、单侧栏与渐进披露、触屏、摘要搜索、历史缓存、草稿、模型菜单、项目入口、主题恢复、设置、输入自适应、窄窗口及窗口按钮均通过；截图保存在 dist/workspace-*.png，对比度报告保存在 dist/workspace-contrast.json")
 }
 void main().catch(async (error) => {
   failed = true
