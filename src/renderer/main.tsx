@@ -131,7 +131,8 @@ function Workspace() {
   const groupId = workspaceRoute.group === "project" ? workspaceRoute.projectId : "default"
   const newDraftKey = sessionKey(groupId, "$new-chat")
   const newChatView = sessionsState.view(newDraftKey)
-  const [selectedModelKey, setSelectedModelKey] = useState<string | undefined>()
+  const [savingDefaultModel, setSavingDefaultModel] = useState(false)
+  const [defaultModelError, setDefaultModelError] = useState<string | undefined>()
   const [permission, setPermission] = useState<Permission>("default")
   const [openMenu, setOpenMenu] = useState<"permission" | "model" | null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(true)
@@ -433,8 +434,7 @@ function Workspace() {
         })
       })
     : []
-  const defaultModel = modelOptions.find((model) => model.isDefault)
-  const selectedModel = modelOptions.find((model) => model.selectionKey === selectedModelKey) ?? defaultModel
+  const selectedModel = modelOptions.find((model) => model.isDefault)
   const activeProject = workspaceRoute.group === "project" && projects.status === "ready"
     ? projects.value.find((project) => project.projectId === workspaceRoute.projectId)
     : undefined
@@ -444,10 +444,41 @@ function Workspace() {
   const currentSession = workspaceRoute.page === "session" ? currentSessions.find((session) => session.sessionId === workspaceRoute.sessionId) : undefined
   const runningCount = Object.values(sessionsState.sessionViewsByKey).filter((view) => view.control?.phase === "running" || view.control?.phase === "stopping").length
 
+  /**
+   * 保存新聊天选择的全局默认模型，成功后同步本地默认标记；失败时保留原选择并显示错误。
+   * @param selectionKey Provider 与模型身份组成的页面选项键。
+   * @returns 本次保存尝试结束；异常已转换为页面错误状态。
+   */
+  async function selectDefaultModel(selectionKey: string): Promise<void> {
+    if (savingDefaultModel) return
+    const model = modelOptions.find((option) => option.selectionKey === selectionKey)
+    if (model === undefined) return
+    setOpenMenu(null)
+    setSavingDefaultModel(true)
+    setDefaultModelError(undefined)
+    try {
+      await window.nicode.setDefaultModel({ providerId: model.providerId, modelId: model.modelId })
+      setProviders((current) => current.status !== "ready" ? current : {
+        status: "ready",
+        value: current.value.map((provider) => ({
+          ...provider,
+          models: provider.models.map((entry) => ({
+            ...entry,
+            isDefault: provider.providerId === model.providerId && entry.modelId === model.modelId,
+          })),
+        })),
+      })
+    } catch (error) {
+      setDefaultModelError("默认模型保存失败：" + errorMessage(error))
+    } finally {
+      setSavingDefaultModel(false)
+    }
+  }
+
   /** @returns 新对话首批事件提交后清理当前分组草稿并导航；失败保留草稿。 */
   async function sendNewChat(): Promise<void> {
     const text = sessionsState.draftsByKey[newDraftKey] ?? ""
-    if (!text.trim() || !selectedModel || sessionsState.view(newDraftKey).busy) return
+    if (!text.trim() || !selectedModel || savingDefaultModel || sessionsState.view(newDraftKey).busy) return
     sessionsState.setView(newDraftKey, { busy: true, operationError: undefined })
     try {
       const { providerId, protocol, modelId, name } = selectedModel
@@ -521,6 +552,7 @@ function Workspace() {
         {workspaceRoute.page === "session" ? <Outlet context={{ state: sessionsState, providers: providers.status === "ready" ? providers.value : [] }} /> : <div className="welcome-scroll"><div className="welcome">
           <div className="welcome-intro"><h1>有什么想一起完成？</h1></div>
           {newChatView.operationError && <p className="chat-error" role="alert">{newChatView.operationError}</p>}
+          {defaultModelError && <p className="chat-error" role="alert">{defaultModelError}</p>}
           <div className="composer new-chat-composer">
             <ComposerInput inputRef={composerRef} aria-label="任务描述" placeholder="描述你想做的事，剩下的一起完成…" value={sessionsState.draftsByKey[newDraftKey] ?? ""} onChange={(event) => sessionsState.setDraft(newDraftKey, event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void sendNewChat() } }} />
             <div className="composer-toolbar">
@@ -533,9 +565,9 @@ function Workspace() {
                 {providers.status === "loading" && <span className="model-status" role="status">模型加载中…</span>}
                 {providers.status === "error" && <span className="model-status" role="alert">模型加载失败 <button className="retry-button" type="button" onClick={() => { void loadProviders() }}>重试</button></span>}
                 {providers.status === "ready" && (modelOptions.length === 0 ? <button className="selector-trigger setup-model-trigger" type="button" onClick={() => openSettingsDialog()}>配置模型</button>
-                  : <div className="selector-anchor model-anchor"><button className="selector-trigger model-trigger" type="button" aria-label="模型" aria-haspopup="menu" aria-expanded={openMenu === "model"} title={`${selectedModel?.providerName} / ${selectedModel?.name}`} onClick={() => setOpenMenu((current) => current === "model" ? null : "model")}><span>{selectedModel?.name}</span></button>
-                    {openMenu === "model" && <div className="selector-menu model-menu" role="menu" aria-label="模型选项"><p className="menu-label">选择模型</p>{modelOptions.map((model) => <button type="button" role="menuitemradio" aria-checked={model.selectionKey === selectedModel?.selectionKey} key={model.selectionKey} title={`${model.providerName} / ${model.name}`} onClick={() => { setSelectedModelKey(model.selectionKey); setOpenMenu(null) }}><span><strong>{model.name}</strong><small>{model.providerName}</small></span>{model.selectionKey === selectedModel?.selectionKey && <span aria-hidden="true">✓</span>}</button>)}</div>}</div>)}
-                <button className="send-button" type="button" disabled={!selectedModel || newChatView.busy || !(sessionsState.draftsByKey[newDraftKey] ?? "").trim()} onClick={() => void sendNewChat()} aria-label="发送消息"><IconArrowUp size={18} stroke={2} /></button>
+                  : <div className="selector-anchor model-anchor"><button className="selector-trigger model-trigger" type="button" aria-label="模型" aria-haspopup="menu" aria-expanded={openMenu === "model"} aria-busy={savingDefaultModel} disabled={savingDefaultModel} title={`${selectedModel?.providerName} / ${selectedModel?.name}`} onClick={() => setOpenMenu((current) => current === "model" ? null : "model")}><span>{savingDefaultModel ? "正在保存…" : selectedModel?.name}</span></button>
+                    {openMenu === "model" && <div className="selector-menu model-menu" role="menu" aria-label="模型选项"><p className="menu-label">选择模型</p>{modelOptions.map((model) => <button type="button" role="menuitemradio" aria-checked={model.selectionKey === selectedModel?.selectionKey} disabled={savingDefaultModel} key={model.selectionKey} title={`${model.providerName} / ${model.name}`} onClick={() => { void selectDefaultModel(model.selectionKey) }}><span><strong>{model.name}</strong><small>{model.providerName}</small></span>{model.selectionKey === selectedModel?.selectionKey && <span aria-hidden="true">✓</span>}</button>)}</div>}</div>)}
+                <button className="send-button" type="button" disabled={!selectedModel || savingDefaultModel || newChatView.busy || !(sessionsState.draftsByKey[newDraftKey] ?? "").trim()} onClick={() => void sendNewChat()} aria-label="发送消息"><IconArrowUp size={18} stroke={2} /></button>
               </div>
             </div>
           </div>

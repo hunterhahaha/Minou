@@ -641,7 +641,8 @@ Continue、工具事件关联和模型结果回填，并检查记忆未默认注
 `test/main/provider-store.test.ts` 验证 Provider、模型、密钥、默认模型的读写顺序、
 重复初始化、模型名称更新、关联删除、事务回滚和损坏数据库错误。
 `test/main/provider-ipc.test.ts` 验证 Provider 与模型创建时生成全局唯一模型身份、模型名称规范化、
-新增模型的 IPC 返回值、名称更新与无效模型输入。
+新增模型的 IPC 返回值、名称更新与无效模型输入；同时验证默认模型 IPC 的持久化、
+非法或不匹配引用拒绝、失败保留原值，以及清空选择后的顺序回退。
 `test/main/workspace-store.test.ts` 验证 Project/default 配置顺序、重复初始化、更新和事务回滚。
 Project 配置新增 `updatedAt`，已有数据库在启动时为旧 Project 记录补入升级时间；
 对话索引沿用现有 `updatedAt` 字段。首批事件、用户消息与 Turn 结束后从已提交日志核对索引，
@@ -694,6 +695,11 @@ Get-Content dist/electron-session.stdout.log
 Get-Content dist/electron-session.stderr.log
 $testProcess.ExitCode
 ```
+
+同样的隐藏窗口启动方式可运行 `test/renderer/electron-default-model.test.cjs`。
+该测试使用临时数据库与真实 preload / IPC，验证新聊天切换模型后自动保存全局默认值、
+保存期间阻止重复切换和按钮 / Enter 发送、失败保留原模型并允许重试、页面重载恢复，
+以及首条消息携带成功保存的模型；不访问真实模型网络。
 
 同样的隐藏窗口启动方式可运行 `test/renderer/electron-skill-settings.test.cjs`。
 该测试使用临时用户目录、真实 SkillManager 与 IPC，通过请求次数验证按需加载、空列表缓存、
