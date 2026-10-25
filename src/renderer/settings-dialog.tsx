@@ -5,6 +5,7 @@ import { IconCpu, IconPlugConnected, IconPlus, IconSettings, IconSparkles, IconX
 import { useDialogFocus } from "./dialog-focus.tsx"
 
 import type {
+  CompatibleProviderOption,
   ModelAppend,
   ModelSummary,
   ProviderModelInput,
@@ -427,7 +428,7 @@ function CreateProviderForm({
   onCreatingChange: (creating: boolean) => void
 }) {
   const [providerType, setProviderType] = useState<"compatible" | "custom">("custom")
-  const [compatibleNames, setCompatibleNames] = useState<string[]>([])
+  const [compatibleProviders, setCompatibleProviders] = useState<CompatibleProviderOption[]>([])
   const [compatibleName, setCompatibleName] = useState("")
   const [compatibleLoadError, setCompatibleLoadError] = useState(false)
   const [name, setName] = useState("")
@@ -442,16 +443,20 @@ function CreateProviderForm({
 
   useEffect(() => {
     let active = true
-    void window.nicode.listCompatibleProviderNames().then((names) => {
-      if (active) { setCompatibleNames(names); setCompatibleLoadError(false) }
+    void window.nicode.listCompatibleProviders().then((entries) => {
+      if (active) { setCompatibleProviders(entries); setCompatibleLoadError(false) }
     }).catch(() => { if (active) setCompatibleLoadError(true) })
     return () => { active = false }
   }, [])
 
+  const compatibleNames = compatibleProviders.map((entry) => entry.name)
+  const availableProtocols = providerType === "compatible"
+    ? compatibleProviders.find((entry) => entry.name === compatibleName)?.protocol ?? []
+    : PROTOCOLS
   const parsedModels = protocol === "" ? [] : models.map((model) => parseModelDraft(model, protocol))
   const urlValid = isHttpURL(url)
   const formValid = apiKey.trim() !== "" && protocol !== "" && (providerType === "compatible"
-    ? compatibleNames.includes(compatibleName)
+    ? compatibleProviders.some((entry) => entry.name === compatibleName && entry.protocol.some((supported) => supported === protocol))
     : name.trim() !== "" && urlValid && parsedModels.every((model) => model !== null))
 
   /**
@@ -510,7 +515,12 @@ function CreateProviderForm({
         <label className="settings-field settings-field-wide">
           <span>供应商类型</span>
           <select aria-label="供应商类型" value={providerType} disabled={creating}
-            onChange={(event) => setProviderType(event.target.value as "compatible" | "custom")}>
+            onChange={(event) => {
+              const nextType = event.target.value as "compatible" | "custom"
+              setProviderType(nextType)
+              if (nextType === "compatible" && !compatibleProviders.some((entry) =>
+                entry.name === compatibleName && entry.protocol.some((supported) => supported === protocol))) setProtocol("")
+            }}>
             <option value="custom">自定义</option>
             <option value="compatible">已兼容</option>
           </select>
@@ -518,7 +528,12 @@ function CreateProviderForm({
         {providerType === "compatible" ? <label className="settings-field">
           <span>已兼容供应商</span>
           <select aria-label="已兼容供应商" value={compatibleName} disabled={creating || compatibleNames.length === 0}
-            onChange={(event) => setCompatibleName(event.target.value)}>
+            onChange={(event) => {
+              const nextName = event.target.value
+              setCompatibleName(nextName)
+              setProtocol((current) => compatibleProviders.some((entry) =>
+                entry.name === nextName && entry.protocol.some((supported) => supported === current)) ? current : "")
+            }}>
             <option value="">请选择供应商</option>
             {compatibleNames.map((entry) => <option value={entry} key={entry}>{entry}</option>)}
           </select>
@@ -538,9 +553,10 @@ function CreateProviderForm({
         </label>}
         <label className="settings-field">
           <span>协议</span>
-          <select value={protocol} disabled={creating} onChange={(event) => setProtocol(event.target.value as Protocol | "")}>
+          <select aria-label="供应商协议" value={protocol} disabled={creating || availableProtocols.length === 0}
+            onChange={(event) => setProtocol(event.target.value as Protocol | "")}>
             <option value="">请选择协议</option>
-            {PROTOCOLS.map((entry) => <option key={entry} value={entry}>{protocolLabels[entry]}</option>)}
+            {availableProtocols.map((entry) => <option key={entry} value={entry}>{protocolLabels[entry]}</option>)}
           </select>
         </label>
         {providerType === "custom" && <label className="settings-field settings-field-wide">

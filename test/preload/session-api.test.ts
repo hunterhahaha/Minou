@@ -28,6 +28,10 @@ const PROJECT_ID = "00000000-0000-4000-8000-000000000017"
 const PROVIDER_MODEL = { name: "claude-test", contextWindow: 256000, maxOutputTokens: 4096 }
 const REASONING = { reasoningLevels: ["low", "medium", "high"], reasoningField: { path: ["reasoning", "effort"] } }
 const PROVIDER_REFERENCE = { providerId: "provider-1", modelId: "model-1" }
+const COMPATIBLE_OPTIONS = [
+  { name: "Sample", protocol: ["responses", "chat_completions"] },
+  { name: "Other", protocol: ["anthropic_messages"] },
+]
 const MODEL_APPEND = {
   providerId: "provider-1", modelId: "model-2", name: "new-model", contextWindow: 128000, maxOutputTokens: 4096,
   ...REASONING,
@@ -54,7 +58,7 @@ async function testCallsFixedChannels(): Promise<void> {
           }],
         }]
       }
-      if (channel === PROVIDER_IPC_CHANNELS.listCompatibleProviderNames) return ["Sample"]
+      if (channel === PROVIDER_IPC_CHANNELS.listCompatibleProviders) return COMPATIBLE_OPTIONS
       if (channel === PROVIDER_IPC_CHANNELS.createCustomProvider || channel === PROVIDER_IPC_CHANNELS.createCompatibleProvider) {
         return {
           providerId: "created-provider", name: "Created", type: channel === PROVIDER_IPC_CHANNELS.createCustomProvider ? "custom" : "compatible", protocol: "responses",
@@ -109,7 +113,7 @@ async function testCallsFixedChannels(): Promise<void> {
       ...REASONING,
     }],
   }])
-  assert.deepEqual(await api.listCompatibleProviderNames(), ["Sample"])
+  assert.deepEqual(await api.listCompatibleProviders(), COMPATIBLE_OPTIONS)
   const customInput = { type: "custom" as const, name: "Created", apiKey: "api-key", protocol: "responses" as const, url: "https://example.com", models: [PROVIDER_MODEL] }
   assert.deepEqual(await api.createCustomProvider(customInput), {
     providerId: "created-provider", name: "Created", type: "custom", protocol: "responses",
@@ -152,7 +156,7 @@ async function testCallsFixedChannels(): Promise<void> {
     { channel: STARTUP_DATA_IPC_CHANNELS.listProjects, args: [] },
     { channel: STARTUP_DATA_IPC_CHANNELS.listDefaultSessions, args: [] },
     { channel: STARTUP_DATA_IPC_CHANNELS.listProviders, args: [] },
-    { channel: PROVIDER_IPC_CHANNELS.listCompatibleProviderNames, args: [] },
+    { channel: PROVIDER_IPC_CHANNELS.listCompatibleProviders, args: [] },
     {
       channel: PROVIDER_IPC_CHANNELS.createCustomProvider,
       args: [customInput],
@@ -203,12 +207,24 @@ async function testExposesOnlyNiCodeApi(): Promise<void> {
   assert.equal(exposedApi, api)
   assert.deepEqual(
     Object.keys(exposedApi as NiCodePreloadApi).sort(),
-    ["getSessionData", "onSessionUpdate", "updateSessionSettings", "decideSessionApproval", "addProjectDirectory", "continueSession", "createModel", "createProject", "createCompatibleProvider", "createCustomProvider", "listCompatibleProviderNames", "deleteModel", "deleteProvider", "enqueueSessionMessage", "listDefaultSessions", "listProjects", "listProviders", "removeProjectDirectory", "selectDirectory", "setDefaultModel", "startNewSession", "stopSession", "updateApiKey", "updateModel", "updateProvider",
+    ["getSessionData", "onSessionUpdate", "updateSessionSettings", "decideSessionApproval", "addProjectDirectory", "continueSession", "createModel", "createProject", "createCompatibleProvider", "createCustomProvider", "listCompatibleProviders", "deleteModel", "deleteProvider", "enqueueSessionMessage", "listDefaultSessions", "listProjects", "listProviders", "removeProjectDirectory", "selectDirectory", "setDefaultModel", "startNewSession", "stopSession", "updateApiKey", "updateModel", "updateProvider",
       "listMcpServers", "createMcpServer", "updateMcpServer", "deleteMcpServer", "reloadMcpServers", "listSkills", "setSkillEnabled"].sort(),
   )
 }
 
 async function testRejectsInvalidMainResponse(): Promise<void> {
+  assert.deepEqual(await createSessionApi({ invoke: async () => [] }).listCompatibleProviders(), [])
+  for (const result of [
+    ["Sample"], [{ name: "Sample" }], [{ name: "Sample", protocol: "responses" }],
+    [{ name: "Sample", protocol: [] }], [{ name: "Sample", protocol: ["invalid"] }],
+    [{ name: "Sample", protocol: ["responses", "responses"] }],
+    [{ name: " ", protocol: ["responses"] }],
+    [{ name: "Sample", protocol: ["responses"] }, { name: "Sample", protocol: ["chat_completions"] }],
+    [{ name: "Sample", protocol: ["responses"], apiKey: "must-not-be-returned" }],
+  ]) {
+    const invalidCatalog = createSessionApi({ invoke: async () => result })
+    await assert.rejects(invalidCatalog.listCompatibleProviders(), /已兼容供应商/)
+  }
   const invalidDirectory = createSessionApi({ invoke: async () => ({ path: "" }) })
   await assert.rejects(invalidDirectory.selectDirectory(), /无效的目录选择结果/)
   const canceled = createSessionApi({ invoke: async () => null })

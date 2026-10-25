@@ -31,7 +31,10 @@ Provider 数据库当前为 V2，旧版本启动时拒绝且保留原文件。Pr
 创建模型可省略这两项，默认等级是 `low`、`medium`、`high`，Anthropic Messages 默认路径为
 `output_config.effort`，Chat Completions 为 `reasoning_effort`，Responses 为 `reasoning.effort`。
 供应商创建 IPC 分为已兼容和自定义两种；已兼容目录本次为空，可在
-`src/main/compatible-providers.ts` 中加入经过确认的资料，页面会读取其名称列表。
+`src/main/compatible-providers.ts` 中加入经过确认的资料。`listCompatibleProviders()` 返回
+`{ name: string, protocol: Protocol[] }[]`，每个名称一项，同名资料的协议合并为去重数组；
+创建时仍按名称与选中的单个协议联合匹配。页面按名称展示供应商，
+协议选项仅包含该名称兼容的协议，切换供应商时清除不受支持的旧协议。
 自定义模型创建和编辑采用逗号分隔等级、点分字段路径与 JSON 预览，不引入 YAML 或 CEL。
 
 **Electron 可执行入口和 `startElectronApp` 参数装配**已完成：package 的 `main` 指向

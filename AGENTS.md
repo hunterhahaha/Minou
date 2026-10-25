@@ -62,6 +62,9 @@ Runtime 中分别是非空字符串数组和 `{ path: string[] }`。创建模型
 Chat Completions 为 `reasoning_effort`，Responses 为 `reasoning.effort`。会话的
 `session_meta.current_model_json` 中的模型引用包含必填 `reasoningLevel`；每个 Turn 启动时读取，
 并验证该值仍属于模型可选等级。已兼容供应商目录目前为空，目录资料只参与创建。
+已兼容供应商按名称与协议联合匹配；列表 IPC `listCompatibleProviders()` 返回
+`{ name: string, protocol: Protocol[] }[]`，每个名称只返回一项，协议数组非空且去重；
+页面仅展示所选名称兼容的协议。
 Sandbox Mode 以对话为作用域，不属于全局 `config.json`。同一 Provider 配置多种协议时的
 模型绑定规则尚未确定，不得自行选取协议。
 

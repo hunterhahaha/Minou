@@ -262,7 +262,7 @@ async function testRegistersIpcAndWindowLifecycle(): Promise<void> {
       STARTUP_DATA_IPC_CHANNELS.listProjects,
       STARTUP_DATA_IPC_CHANNELS.listDefaultSessions,
       STARTUP_DATA_IPC_CHANNELS.listProviders,
-      PROVIDER_IPC_CHANNELS.listCompatibleProviderNames,
+      PROVIDER_IPC_CHANNELS.listCompatibleProviders,
       PROVIDER_IPC_CHANNELS.createCompatibleProvider,
       PROVIDER_IPC_CHANNELS.createCustomProvider,
       PROVIDER_IPC_CHANNELS.updateProvider,

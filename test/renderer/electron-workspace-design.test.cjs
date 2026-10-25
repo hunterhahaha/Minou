@@ -249,7 +249,7 @@ async function main() {
   ipcMain.handle(startup.listProjects, () => projects)
   ipcMain.handle(startup.listDefaultSessions, () => sessions)
   ipcMain.handle(startup.listProviders, () => providers)
-  ipcMain.handle(provider.listCompatibleProviderNames, () => [])
+  ipcMain.handle(provider.listCompatibleProviders, () => [])
   ipcMain.handle(skill.listSkills, (_event, target) => {
     skillReads++
     return ["code-review", "project-conventions"].map((name, index) => ({ name, path: join(profile, target.scope === "global" ? "global" : target.projectId, "skills", name), scope: target.scope, enabled: index === 0, description: index === 0 ? "从代码结构、边界条件与可维护性出发，检查改动并给出清晰的建议。" : "记录项目约定，让每次协作都沿用熟悉的工作方式。" }))

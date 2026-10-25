@@ -92,7 +92,7 @@ export const PROJECT_IPC_CHANNELS = {
 
 /** 供应商创建和修改的固定 IPC channel。 */
 export const PROVIDER_IPC_CHANNELS = {
-  listCompatibleProviderNames: "nicode:provider:compatible-names",
+  listCompatibleProviders: "nicode:provider:compatible-list",
   createCompatibleProvider: "nicode:provider:create-compatible",
   createCustomProvider: "nicode:provider:create-custom",
   updateProvider: "nicode:provider:update",
@@ -214,7 +214,15 @@ export interface ProviderModelUpdate {
   reasoningField?: ReasoningField
 }
 
-/** 已兼容供应商创建输入；连接地址及模型由内置目录决定。 */
+/** 一个已兼容供应商的名称与协议数组；每个名称只返回一项。 */
+export interface CompatibleProviderOption {
+  /** 已兼容供应商的确切名称。 */
+  name: string
+  /** 该名称兼容的非空、去重协议数组；创建时选择其中一个与名称联合匹配。 */
+  protocol: Protocol[]
+}
+
+/** 已兼容供应商创建输入；连接地址及模型由名称和协议联合决定。 */
 export interface CompatibleProviderCreateInput {
   type: "compatible"
   name: string
@@ -379,8 +387,8 @@ export interface NiCodePreloadApi {
   deleteMcpServer(name: string): Promise<MCPServerSummary[]>
   /** @returns 重读配置并重新连接全部启用项后的列表。 @throws Error 配置无效或旧资源清理失败。 */
   reloadMcpServers(): Promise<MCPServerSummary[]>
-  /** @returns 内置目录中的已兼容供应商名称；目录为空时返回空数组。 */
-  listCompatibleProviderNames(): Promise<string[]>
+  /** @returns 按名称汇总的供应商及其协议数组；目录为空时返回空数组。 @throws TypeError 主进程返回的目录项无效。 */
+  listCompatibleProviders(): Promise<CompatibleProviderOption[]>
   /** @param input 已兼容供应商名称、协议与凭据。 @returns 内置模型已保存后的无凭据摘要。 */
   createCompatibleProvider(input: CompatibleProviderCreateInput): Promise<ProviderSummary>
   /** @param input 自定义连接和模型配置。 @returns 已保存的无凭据摘要。 */
@@ -582,10 +590,19 @@ export function createSessionApi(ipcRenderer: IpcRendererInvokePort): NiCodePrel
       return requireMcpSummaries(await ipcRenderer.invoke(MCP_IPC_CHANNELS.reloadMcpServers))
     },
 
-    async listCompatibleProviderNames(): Promise<string[]> {
-      const value = await ipcRenderer.invoke(PROVIDER_IPC_CHANNELS.listCompatibleProviderNames)
-      if (!Array.isArray(value) || !value.every((name) => typeof name === "string" && name.trim() !== "") ||
-          new Set(value).size !== value.length) throw new TypeError("主进程返回了无效的已兼容供应商名称")
+    async listCompatibleProviders(): Promise<CompatibleProviderOption[]> {
+      const value = await ipcRenderer.invoke(PROVIDER_IPC_CHANNELS.listCompatibleProviders)
+      if (!Array.isArray(value) || !value.every((entry: unknown): entry is CompatibleProviderOption =>
+        isRecord(entry) && Object.keys(entry).length === 2 &&
+        typeof entry.name === "string" && entry.name.trim() !== "" &&
+        Array.isArray(entry.protocol) && entry.protocol.length > 0 &&
+        entry.protocol.every((protocol: unknown) => PROTOCOLS.some((supported) => supported === protocol)) &&
+        new Set(entry.protocol).size === entry.protocol.length)) {
+        throw new TypeError("主进程返回了无效的已兼容供应商列表")
+      }
+      if (new Set(value.map((entry) => entry.name)).size !== value.length) {
+        throw new TypeError("主进程返回了重复的已兼容供应商名称")
+      }
       return value
     },
 

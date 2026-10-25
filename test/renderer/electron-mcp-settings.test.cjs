@@ -16,6 +16,17 @@ let window, profile, paths, http, releaseList, listGate
 let starts = 0, lists = 0
 const headers = [], rendererErrors = []
 const manager = new MCPManager(() => 1)
+const compatibleDefinitions = [
+  { name: "Protocol fixture", protocol: "responses", url: "https://fixture.example/responses",
+    models: [{ name: "responses-fixture", contextWindow: 64000, maxOutputTokens: 8192,
+      reasoningLevels: ["medium"], reasoningField: { path: ["reasoning", "effort"] } }] },
+  { name: "Protocol fixture", protocol: "chat_completions", url: "https://fixture.example/chat",
+    models: [{ name: "chat-fixture", contextWindow: 32000, maxOutputTokens: 4096,
+      reasoningLevels: ["medium"], reasoningField: { path: ["reasoning_effort"] } }] },
+  { name: "Messages fixture", protocol: "anthropic_messages", url: "https://fixture.example/messages",
+    models: [{ name: "messages-fixture", contextWindow: 64000, maxOutputTokens: 8192,
+      reasoningLevels: ["medium"], reasoningField: { path: ["output_config", "effort"] } }] },
+]
 app.disableHardwareAcceleration()
 
 /** @param condition 异步观察条件。 @returns 十秒内满足条件。 @throws Error 观察超时。 */
@@ -100,7 +111,7 @@ async function main() {
   await app.whenReady()
   registerMcpIpcHandlers(ipcMain, paths, manager)
   registerStartupDataIpcHandlers(ipcMain, paths)
-  registerModelIpcHandlers(ipcMain, paths)
+  registerModelIpcHandlers(ipcMain, paths, compatibleDefinitions)
   window = new BrowserWindow({ show: false, width: 1200, height: 900, webPreferences: {
     preload: join(process.cwd(), "dist/src/preload/index.js"), contextIsolation: true, nodeIntegration: false, sandbox: false, backgroundThrottling: false,
   } })
@@ -230,6 +241,39 @@ async function main() {
   await clickText("保存推理配置")
   await until(() => listProviders(paths.providerDatabasePath)[0].models[0].reasoningLevels.includes("medium"))
   assert.deepEqual(listProviders(paths.providerDatabasePath)[0].models[0].reasoningField, { path: ["reasoning", "effort"] })
+  await click('[aria-label="新增供应商"]')
+  await until(() => evaluate("Boolean(document.querySelector('.provider-create-form'))"))
+  assert.deepEqual(await evaluate("window.nicode.listCompatibleProviders()"), [
+    { name: "Protocol fixture", protocol: ["responses", "chat_completions"] },
+    { name: "Messages fixture", protocol: ["anthropic_messages"] },
+  ], "列表中每个供应商名称只返回一项，协议使用数组")
+  await type("供应商类型", "compatible")
+  assert.equal(await evaluate("document.querySelector('[aria-label=\"供应商协议\"]').disabled"), true)
+  await type("已兼容供应商", "Protocol fixture")
+  assert.deepEqual(await evaluate("[...document.querySelector('[aria-label=\"已兼容供应商\"]').options].map(option => option.value).filter(Boolean)"),
+    ["Protocol fixture", "Messages fixture"], "同名的多个协议只生成一个供应商名称选项")
+  assert.deepEqual(await evaluate("[...document.querySelector('[aria-label=\"供应商协议\"]').options].map(option => option.value).filter(Boolean)"),
+    ["responses", "chat_completions"], "只展示选定供应商兼容的协议")
+  await type("供应商协议", "responses")
+  await type("已兼容供应商", "Messages fixture")
+  await until(() => evaluate("document.querySelector('[aria-label=\"供应商协议\"]').value === '' && document.querySelector('.provider-create-form button[type=\"submit\"]').disabled"))
+  assert.deepEqual(await evaluate("[...document.querySelector('[aria-label=\"供应商协议\"]').options].map(option => option.value).filter(Boolean)"),
+    ["anthropic_messages"], "切换供应商会清除不兼容的旧协议")
+  await type("供应商协议", "anthropic_messages")
+  await type("供应商类型", "custom")
+  assert.equal(await evaluate("document.querySelector('[aria-label=\"供应商协议\"]').options.length"), 4, "自定义供应商保留三种协议")
+  await type("供应商类型", "compatible")
+  assert.equal(await evaluate("document.querySelector('[aria-label=\"供应商协议\"]').value"), "anthropic_messages", "切换回来时保留仍受支持的协议")
+  await type("已兼容供应商", "Protocol fixture")
+  await type("供应商协议", "chat_completions")
+  await input('.provider-create-form input[type="password"]', "fixture-only")
+  await click('.provider-create-form button[type="submit"]')
+  await until(() => evaluate("document.querySelector('.provider-detail h3')?.textContent === 'Protocol fixture'"))
+  const compatible = listProviders(paths.providerDatabasePath).find(entry => entry.name === "Protocol fixture")
+  assert.equal(compatible.type, "compatible")
+  assert.equal(compatible.protocol, "chat_completions")
+  assert.equal(compatible.baseURL, "https://fixture.example/chat")
+  assert.equal(compatible.models[0].name, "chat-fixture")
   await clickText("MCP"); await idle()
   await evaluate(`(() => { [...document.querySelectorAll('.mcp-sidebar button')].find(node => node.querySelector('.provider-list-name')?.textContent === 'remote').click() })()`)
   await click('[aria-label="删除 MCP"]'); await idle()

@@ -261,7 +261,7 @@ async function testCompatibleCatalogAndReasoning(): Promise<void> {
   await withDatabase((providerDatabasePath) => {
     const empty = new FakeIpcMain()
     registerModelIpcHandlers(empty as unknown as Electron.IpcMain, { providerDatabasePath })
-    assert.deepEqual(empty.invoke(PROVIDER_IPC_CHANNELS.listCompatibleProviderNames), [])
+    assert.deepEqual(empty.invoke(PROVIDER_IPC_CHANNELS.listCompatibleProviders), [])
     assert.throws(() => empty.invoke(PROVIDER_IPC_CHANNELS.createCompatibleProvider,
       { type: "compatible", name: "Sample", protocol: "responses", apiKey: "secret" }), /不在已兼容目录/)
 
@@ -269,14 +269,21 @@ async function testCompatibleCatalogAndReasoning(): Promise<void> {
       name: "Sample", protocol: "responses", url: "https://sample.example/v1",
       models: [{ name: "sample-model", contextWindow: 64000, maxOutputTokens: 8192,
         reasoningLevels: ["minimal", "medium"], reasoningField: { path: ["reasoning", "effort"] } }],
+    }, {
+      name: "Sample", protocol: "chat_completions", url: "https://sample.example/chat",
+      models: [{ name: "sample-chat-model", contextWindow: 32000, maxOutputTokens: 4096,
+        reasoningLevels: ["low", "high"], reasoningField: { path: ["reasoning_effort"] } }],
     }]
+    definitions.push({ ...definitions[0]! })
     const ipc = new FakeIpcMain()
     registerModelIpcHandlers(ipc as unknown as Electron.IpcMain, { providerDatabasePath }, definitions)
-    assert.deepEqual(ipc.invoke(PROVIDER_IPC_CHANNELS.listCompatibleProviderNames), ["Sample"])
+    assert.deepEqual(ipc.invoke(PROVIDER_IPC_CHANNELS.listCompatibleProviders), [
+      { name: "Sample", protocol: ["responses", "chat_completions"] },
+    ])
     assert.throws(() => ipc.invoke(PROVIDER_IPC_CHANNELS.createCompatibleProvider,
       { type: "compatible", name: "Unknown", protocol: "responses", apiKey: "secret" }), /不在已兼容目录/)
     assert.throws(() => ipc.invoke(PROVIDER_IPC_CHANNELS.createCompatibleProvider,
-      { type: "compatible", name: "Sample", protocol: "chat_completions", apiKey: "secret" }), /不在已兼容目录/)
+      { type: "compatible", name: "Sample", protocol: "anthropic_messages", apiKey: "secret" }), /不在已兼容目录/)
     assert.throws(() => ipc.invoke(PROVIDER_IPC_CHANNELS.createCompatibleProvider,
       { type: "custom", name: "Sample", protocol: "responses", apiKey: "secret" }), /创建输入无效/)
     const created = ipc.invoke(PROVIDER_IPC_CHANNELS.createCompatibleProvider,
@@ -290,6 +297,11 @@ async function testCompatibleCatalogAndReasoning(): Promise<void> {
       { providerId: created.providerId, modelId: created.models[0]?.modelId }, { reasoningLevels: ["light", "strong"] })
     assert.equal(listProviders(providerDatabasePath)[0]?.type, "compatible")
     assert.deepEqual(listProviders(providerDatabasePath)[0]?.models[0]?.reasoningLevels, ["light", "strong"])
+    const sampleChat = ipc.invoke(PROVIDER_IPC_CHANNELS.createCompatibleProvider,
+      { type: "compatible", name: "Sample", protocol: "chat_completions", apiKey: "secret" }) as ProviderSummary
+    assert.equal(sampleChat.baseURL, "https://sample.example/chat")
+    assert.equal(sampleChat.models[0]?.name, "sample-chat-model")
+    assert.deepEqual(sampleChat.models[0]?.reasoningField, { path: ["reasoning_effort"] })
 
     const anthropic = ipc.invoke(PROVIDER_IPC_CHANNELS.createCustomProvider,
       { type: "custom", name: "Anthropic", protocol: "anthropic_messages", apiKey: "secret",

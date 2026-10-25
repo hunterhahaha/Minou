@@ -3,7 +3,7 @@
 import { randomUUID } from "node:crypto"
 
 import type { ConfigFilePaths } from "./config-files.ts"
-import { listCompatibleProviderNames, resolveCompatibleProvider } from "./compatible-providers.ts"
+import { listCompatibleProviders, resolveCompatibleProvider } from "./compatible-providers.ts"
 import type { CompatibleProviderDefinition } from "./compatible-providers.ts"
 import {
   deleteModel,
@@ -21,6 +21,7 @@ import type {
   ModelAppend,
   ModelSummary,
   CompatibleProviderCreateInput,
+  CompatibleProviderOption,
   CustomProviderCreateInput,
   ProviderModelInput,
   ProviderModelReference,
@@ -195,8 +196,8 @@ export function registerModelIpcHandlers(
     }
   }
 
-  ipcMain.handle(PROVIDER_IPC_CHANNELS.listCompatibleProviderNames, (): string[] =>
-    listCompatibleProviderNames(compatibleProviders))
+  ipcMain.handle(PROVIDER_IPC_CHANNELS.listCompatibleProviders, (): CompatibleProviderOption[] =>
+    listCompatibleProviders(compatibleProviders))
 
   ipcMain.handle(PROVIDER_IPC_CHANNELS.createCompatibleProvider, (_event, rawInput: unknown): ProviderSummary => {
     if (!isRecord(rawInput) || rawInput.type !== "compatible" || !isProtocol(rawInput.protocol) ||
