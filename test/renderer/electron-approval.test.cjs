@@ -10,7 +10,7 @@ const { registerSessionIpcHandlers } = require("../../dist/src/main/session-ipc.
 const { registerStartupDataIpcHandlers } = require("../../dist/src/main/startup-data-ipc.js")
 const { SessionRuntime } = require("../../dist/runtime/agent/src/session-runtime.js")
 const { SESSION_IPC_CHANNELS: channels, STARTUP_DATA_IPC_CHANNELS } = require("../../dist/src/preload/session-api.js")
-const model = { providerId: "approval-provider", protocol: "responses", modelId: "approval-model", name: "离线审批模型" }
+const model = { providerId: "approval-provider", protocol: "responses", modelId: "approval-model", name: "离线审批模型", reasoningLevel: "medium" }
 let window, profile, failed = false, toolCount = 2, failDecision = false, decisionCalls = 0
 let holdUpdates = false
 const heldUpdates = []
@@ -114,8 +114,9 @@ async function main() {
   } }, paths)
   registerStartupDataIpcHandlers(port, paths)
   ipcMain.removeHandler(STARTUP_DATA_IPC_CHANNELS.listProviders)
-  ipcMain.handle(STARTUP_DATA_IPC_CHANNELS.listProviders, () => [{ providerId: model.providerId, name: "离线测试", protocol: model.protocol,
-    models: [{ modelId: model.modelId, name: model.name, isDefault: true, contextWindow: 256000, maxOutputTokens: 32000 }] }])
+  ipcMain.handle(STARTUP_DATA_IPC_CHANNELS.listProviders, () => [{ providerId: model.providerId, name: "离线测试", type: "custom", protocol: model.protocol,
+    models: [{ modelId: model.modelId, name: model.name, isDefault: true, contextWindow: 256000, maxOutputTokens: 32000,
+      reasoningLevels: ["low", "medium", "high"], reasoningField: { path: ["reasoning", "effort"] } }] }])
   window = new BrowserWindow({ show: false, width: 1200, height: 800, minWidth: 480, minHeight: 400, webPreferences: {
     preload: join(process.cwd(), "dist/src/preload/index.js"), contextIsolation: true, nodeIntegration: false, sandbox: false, backgroundThrottling: false,
   } })

@@ -52,7 +52,7 @@ async function main(): Promise<void> {
       }
     } }
   }
-  const model: ModelRef = { providerId: "offline", modelId: "offline", name: "Offline", protocol: "responses" }
+  const model: ModelRef = { providerId: "offline", modelId: "offline", name: "Offline", protocol: "responses", reasoningLevel: "medium" }
   const input = { content: [{ type: "text" as const, text: "check" }], model }
   try {
     const started = await runtime.startNewSession(input)

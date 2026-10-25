@@ -17,7 +17,7 @@ import { registerStartupDataIpcHandlers } from "../../src/main/startup-data-ipc.
 import type { SessionRuntimeGlobal } from "../../src/main/session-runtime-global.ts"
 import { SESSION_IPC_CHANNELS as channels, STARTUP_DATA_IPC_CHANNELS } from "../../src/preload/session-api.ts"
 import type { SessionControl, SessionData, SessionSummary, SessionUpdate, StartedSessionResponse } from "../../src/preload/session-api.ts"
-const model: ModelRef = { providerId: "p", protocol: "responses", modelId: "first", name: "First" }
+const model: ModelRef = { providerId: "p", protocol: "responses", modelId: "first", name: "First", reasoningLevel: "medium" }
 const nextModel: ModelRef = { ...model, modelId: "second", name: "Second" }
 const content = [{ type: "text" as const, text: "相同内容" }]
 /** 无 Electron 依赖的真实 handler 调用入口。 */

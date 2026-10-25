@@ -36,41 +36,53 @@ async function testCatalogAndDefaults(): Promise<void> {
     initializeProviderDatabase(path)
     assert.deepEqual(listProviders(path), [])
     assert.equal(readDefaultModel(path), undefined)
-    saveProvider(path, { id: "first", name: "First", protocol: "responses" })
+    saveProvider(path, { id: "first", name: "First", protocol: "responses", type: "custom" })
     saveProvider(path, {
-      id: "second", name: "Second", protocol: "chat_completions",
+      id: "second", name: "Second", protocol: "chat_completions", type: "custom",
       baseURL: "https://example.com/v1", defaultHeaders: { "X-Mode": "test" },
     })
     saveModel(path, {
       modelId: "model-b", name: "Model B", providerId: "first", contextWindow: 256000,
       maxOutputTokens: 32000,
+          reasoningLevels: ["low", "medium", "high"],
+      reasoningField: { path: ["reasoning", "effort"] },
     })
     saveModel(path, {
       modelId: "model-a", name: "Model A", providerId: "first", contextWindow: 128000, maxOutputTokens: 32000,
+          reasoningLevels: ["low", "medium", "high"],
+      reasoningField: { path: ["reasoning", "effort"] },
     })
     saveModel(path, {
       modelId: "model-c", name: "Model C", providerId: "second", contextWindow: 256000, maxOutputTokens: 32000,
+          reasoningLevels: ["low", "medium", "high"],
+      reasoningField: { path: ["reasoning_effort"] },
     })
     setProviderApiKey(path, "first", "hidden-secret")
     assert.deepEqual(listProviders(path), [
       {
-        id: "first", name: "First", protocol: "responses",
+        id: "first", name: "First", protocol: "responses", type: "custom",
         models: [
           {
             modelId: "model-b", name: "Model B", providerId: "first", contextWindow: 256000,
             maxOutputTokens: 32000,
+                      reasoningLevels: ["low", "medium", "high"],
+            reasoningField: { path: ["reasoning", "effort"] },
           },
           {
             modelId: "model-a", name: "Model A", providerId: "first", contextWindow: 128000,
             maxOutputTokens: 32000,
+                      reasoningLevels: ["low", "medium", "high"],
+            reasoningField: { path: ["reasoning", "effort"] },
           },
         ],
       },
       {
-        id: "second", name: "Second", protocol: "chat_completions",
+        id: "second", name: "Second", protocol: "chat_completions", type: "custom",
         baseURL: "https://example.com/v1", defaultHeaders: { "X-Mode": "test" },
         models: [{
           modelId: "model-c", name: "Model C", providerId: "second", contextWindow: 256000, maxOutputTokens: 32000,
+                  reasoningLevels: ["low", "medium", "high"],
+          reasoningField: { path: ["reasoning_effort"] },
         }],
       },
     ])
@@ -80,7 +92,7 @@ async function testCatalogAndDefaults(): Promise<void> {
     assert.deepEqual(readDefaultModel(path), { providerId: "second", modelId: "model-c" })
     initializeProviderDatabase(path)
     assert.deepEqual(readDefaultModel(path), { providerId: "second", modelId: "model-c" })
-    saveProvider(path, { id: "first", name: "Renamed", protocol: "responses" })
+    saveProvider(path, { id: "first", name: "Renamed", protocol: "responses", type: "custom" })
     assert.equal(listProviders(path)[0].name, "Renamed")
     assert.deepEqual(readDefaultModel(path), { providerId: "second", modelId: "model-c" })
     deleteModel(path, "second", "model-c")
@@ -95,9 +107,17 @@ async function testCatalogAndDefaults(): Promise<void> {
       const columns = db.prepare("PRAGMA table_info(models)").all() as Array<{ name: string; notnull: number }>
       assert.deepEqual(columns.map(({ name }) => name), [
         "id", "name", "provider_id", "position", "context_window", "max_output_tokens",
+        "reasoning_levels_json", "reasoning_field_json",
       ])
       assert.equal(columns.find(({ name }) => name === "context_window")?.notnull, 1)
       assert.equal(columns.find(({ name }) => name === "max_output_tokens")?.notnull, 1)
+      assert.equal(columns.find(({ name }) => name === "reasoning_levels_json")?.notnull, 1)
+      assert.equal(columns.find(({ name }) => name === "reasoning_field_json")?.notnull, 1)
+      const providerColumns = db.prepare("PRAGMA table_info(providers)").all() as Array<{ name: string; notnull: number; dflt_value: unknown }>
+      assert.equal(providerColumns.find(({ name }) => name === "type")?.notnull, 1)
+      assert.equal(providerColumns.find(({ name }) => name === "type")?.dflt_value, null)
+      assert.throws(() => db.prepare("INSERT INTO providers (id, position, name, protocol) VALUES ('missing-type', 10, 'Missing', 'responses')").run(), /NOT NULL constraint failed/)
+      assert.throws(() => db.prepare("INSERT INTO providers (id, position, name, type, protocol) VALUES ('bad-type', 10, 'Bad', 'other', 'responses')").run(), /CHECK constraint failed/)
       const insertModel = db.prepare(`INSERT INTO models
         (id, name, provider_id, position, context_window, max_output_tokens)
         VALUES (?, ?, ?, 99, ?, ?)`)
@@ -114,7 +134,10 @@ async function testCatalogAndDefaults(): Promise<void> {
     } finally {
       nullableSchemaDb.close()
     }
-    assert.throws(() => initializeProviderDatabase(nullableSchemaPath), /models\.context_window 必须定义为 NOT NULL/)
+    assert.throws(() => initializeProviderDatabase(nullableSchemaPath), /不支持 Provider 数据库版本 1/)
+    const oldDb = new DatabaseSync(nullableSchemaPath, { readOnly: true })
+    try { assert.equal((oldDb.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, 1) }
+    finally { oldDb.close() }
     setDefaultModel(path, null)
   })
 }
@@ -123,18 +146,22 @@ async function testCatalogAndDefaults(): Promise<void> {
 async function testReadAndRollback(): Promise<void> {
   await withDatabase((path) => {
     initializeProviderDatabase(path)
-    saveProvider(path, { id: "configured", name: "Configured", protocol: "anthropic_messages" })
+    saveProvider(path, { id: "configured", name: "Configured", protocol: "anthropic_messages", type: "custom" })
     saveModel(path, {
       modelId: "model-a", name: "claude-test", providerId: "configured", contextWindow: 256000,
       maxOutputTokens: 4096,
+          reasoningLevels: ["low", "medium", "high"],
+      reasoningField: { path: ["output_config", "effort"] },
     })
     setProviderApiKey(path, "configured", "first-secret")
-    const reference = { providerId: "configured", protocol: "anthropic_messages" as const, modelId: "model-a", name: "claude-test" }
+    const reference = { providerId: "configured", protocol: "anthropic_messages" as const, modelId: "model-a", name: "claude-test", reasoningLevel: "medium" }
     assert.deepEqual(readTurnProviderSnapshot(path, reference), {
-      provider: { id: "configured", name: "Configured", protocol: "anthropic_messages" },
+      provider: { id: "configured", name: "Configured", protocol: "anthropic_messages", type: "custom" },
       model: {
         modelId: "model-a", name: "claude-test", providerId: "configured", protocol: "anthropic_messages",
         contextWindow: 256000, maxOutputTokens: 4096,
+              reasoningLevels: ["low", "medium", "high"],
+        reasoningField: { path: ["output_config", "effort"] },
       },
       credential: { providerId: "configured", apiKey: "first-secret" },
     })
@@ -142,10 +169,14 @@ async function testReadAndRollback(): Promise<void> {
     assert.equal(readTurnProviderSnapshot(path, reference).credential?.apiKey, "second-secret")
     assert.throws(() => saveModel(path, {
       modelId: "model-missing", name: "Model", providerId: "missing", contextWindow: 256000, maxOutputTokens: 32000,
+          reasoningLevels: ["low", "medium", "high"],
+      reasoningField: { path: ["reasoning", "effort"] },
     }), /Provider missing 不存在/)
-    saveProvider(path, { id: "other", name: "Other", protocol: "responses" })
+    saveProvider(path, { id: "other", name: "Other", protocol: "responses", type: "custom" })
     assert.throws(() => saveModel(path, {
       modelId: "model-a", name: "Duplicate", providerId: "other", contextWindow: 256000, maxOutputTokens: 32000,
+          reasoningLevels: ["low", "medium", "high"],
+      reasoningField: { path: ["reasoning", "effort"] },
     }), /UNIQUE constraint failed/)
     updateModel(path, { providerId: "configured", modelId: "model-a" }, {
       name: "updated-claude-test", maxOutputTokens: 2048,
@@ -158,9 +189,13 @@ async function testReadAndRollback(): Promise<void> {
     assert.equal(listProviders(path)[0].models[0].name, "updated-claude-test")
     assert.throws(() => saveModel(path, {
       modelId: "invalid-context", name: "Invalid", providerId: "configured", contextWindow: 0, maxOutputTokens: 32000,
+          reasoningLevels: ["low", "medium", "high"],
+      reasoningField: { path: ["output_config", "effort"] },
     }), /contextWindow/)
     assert.throws(() => saveModel(path, {
       modelId: "invalid-output", name: "Invalid", providerId: "configured", contextWindow: 256000, maxOutputTokens: 0,
+          reasoningLevels: ["low", "medium", "high"],
+      reasoningField: { path: ["output_config", "effort"] },
     }), /maxOutputTokens/)
     assert.throws(() => setDefaultModel(path, { providerId: "other", modelId: "missing" }), /默认模型 missing 不存在/)
     assert.throws(() => setProviderApiKey(path, "missing", "secret-that-must-not-leak"), (error: unknown) => {
@@ -169,14 +204,14 @@ async function testReadAndRollback(): Promise<void> {
       return true
     })
     assert.throws(() => saveProvider(path, {
-      id: "invalid", name: "Invalid", protocol: "responses", defaultHeaders: { X: 1 } as unknown as Record<string, string>,
+      id: "invalid", name: "Invalid", protocol: "responses", type: "custom", defaultHeaders: { X: 1 } as unknown as Record<string, string>,
     }), /defaultHeaders/)
     assert.deepEqual(listProviders(path).map((entry) => entry.id), ["configured", "other"])
     assert.equal(readTurnProviderSnapshot(path, reference).credential?.apiKey, "second-secret")
     setProviderApiKey(path, "configured", null)
     assert.equal(readTurnProviderSnapshot(path, reference).credential, undefined)
     deleteProvider(path, "configured")
-    assert.deepEqual(listProviders(path), [{ id: "other", name: "Other", protocol: "responses", models: [] }])
+    assert.deepEqual(listProviders(path), [{ id: "other", name: "Other", protocol: "responses", type: "custom", models: [] }])
   })
 }
 

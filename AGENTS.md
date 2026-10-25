@@ -2,7 +2,8 @@
 
 `.git/技术文档/开发备忘录1.0.17.md` 是当前项目的架构事实源。
 `config.json` 的当前持久化结构见 `.git/技术文档/配置文件结构V2.md`；
-Provider、Model、协议参数和 API Key 的结构见 `.git/技术文档/Provider数据库结构V1.md`。
+Provider、Model、协议参数和 API Key 的原始结构见 `.git/技术文档/Provider数据库结构V1.md`；
+本文件下述 Provider 数据库 V2 增量为当前实现依据，V1 文档未同步修改。
 `.git/技术文档/配置与凭据文件结构V1.md` 只记录旧格式，不作为当前写入依据。
 `workspace.sqlite` 的已确认持久化结构见
 `.git/技术文档/工作区配置文件结构V1.md`；该数据库的结构以此文档为准。
@@ -54,6 +55,16 @@ Project / default 的 `workspace.sqlite` 保存分组配置与 `sessions` 对话
 Provider 数据库中每个 Provider 恰好保存一个协议，模型通过 `provider_id` 归属
 Provider，不单独保存协议。默认模型记录保存模型 `id`；未设置时选 Provider 与模型
 顺序中的第一个模型。API Key 在独立凭据表中按 Provider 保存，不进入普通列表接口。
+当前 Provider 数据库版本为 2，不迁移旧库。Provider 的 `type` 必填且仅为 `compatible` 或
+`custom`，无默认值。Model 的 `reasoning_levels_json` 与 `reasoning_field_json` 均非空；
+Runtime 中分别是非空字符串数组和 `{ path: string[] }`。创建模型时可省略两项，主进程按协议
+补入 `low`、`medium`、`high` 和请求路径：Anthropic Messages 为 `output_config.effort`，
+Chat Completions 为 `reasoning_effort`，Responses 为 `reasoning.effort`。会话的
+`session_meta.current_model_json` 中的模型引用包含必填 `reasoningLevel`；每个 Turn 启动时读取，
+并验证该值仍属于模型可选等级。已兼容供应商目录目前为空，目录资料只参与创建。
+已兼容供应商按名称与协议联合匹配；列表 IPC `listCompatibleProviders()` 返回
+`{ name: string, protocol: Protocol[] }[]`，每个名称只返回一项，协议数组非空且去重；
+页面仅展示所选名称兼容的协议。
 Sandbox Mode 以对话为作用域，不属于全局 `config.json`。同一 Provider 配置多种协议时的
 模型绑定规则尚未确定，不得自行选取协议。
 

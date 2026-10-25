@@ -19,7 +19,7 @@ import { insertProjectWorkspace } from "../../../src/main/workspace-store.ts"
 import { SessionRuntimeGlobal } from "../../../src/main/session-runtime-global.ts"
 
 const PROJECT = "00000000-0000-4000-8000-000000000001"
-const MODEL: ModelRef = { providerId: "offline", protocol: "responses", modelId: "offline", name: "Offline" }
+const MODEL: ModelRef = { providerId: "offline", protocol: "responses", modelId: "offline", name: "Offline", reasoningLevel: "medium" }
 const MESSAGE = [{ type: "text" as const, text: "使用 Skill" }]
 
 /**
@@ -99,7 +99,7 @@ async function main(): Promise<void> {
      * @returns Turn 完成后兑现的 Promise。
      * @throws SessionRuntime 的继续或 Turn 执行失败时抛出。
      */
-    const next = async () => { const turn = await runtime.continueSession({ model: MODEL, content: MESSAGE }); await turn.completion }
+    const next = async () => { const turn = await runtime.continueSession({ content: MESSAGE }); await turn.completion }
     try {
       const started = await runtime.startNewSession({ model: MODEL, content: MESSAGE })
       runtime.enqueueSessionMessage({ content: MESSAGE })

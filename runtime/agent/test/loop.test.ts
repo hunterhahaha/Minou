@@ -52,7 +52,7 @@ import type { ExecuteToolCall } from "../src/loop.ts"
 // ---------------------------------------------------------------------------
 
 /** 本测试使用的模型引用；假 Adapter 不做一致性校验，与真实 Adapter 无关。 */
-const MODEL: ModelRef = { providerId: "provider-1", protocol: "anthropic_messages", modelId: "model-1", name: "claude-test" }
+const MODEL: ModelRef = { providerId: "provider-1", protocol: "anthropic_messages", modelId: "model-1", name: "claude-test", reasoningLevel: "medium" }
 
 const SESSION_ID = "session-1"
 

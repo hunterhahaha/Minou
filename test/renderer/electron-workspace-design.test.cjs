@@ -5,7 +5,7 @@ const { tmpdir } = require("node:os")
 const { join, resolve, sep } = require("node:path")
 const { app, BrowserWindow, ipcMain } = require("electron")
 const { registerWindowIpcHandlers } = require("../../dist/src/main/window-ipc.js")
-const { STARTUP_DATA_IPC_CHANNELS: startup, SESSION_IPC_CHANNELS: session, SKILL_IPC_CHANNELS: skill, MCP_IPC_CHANNELS: mcp } = require("../../dist/src/preload/session-api.js")
+const { STARTUP_DATA_IPC_CHANNELS: startup, SESSION_IPC_CHANNELS: session, SKILL_IPC_CHANNELS: skill, MCP_IPC_CHANNELS: mcp, PROVIDER_IPC_CHANNELS: provider } = require("../../dist/src/preload/session-api.js")
 const { createElectronWindowManager } = require("../../dist/src/main/electron-windows.js")
 let window, profile, failed = false, historyReads = 0, skillReads = 0, mcpReads = 0
 const errors = []
@@ -14,8 +14,9 @@ const decisions = []
 const paletteReports = []
 const PROJECT = "a0000000-0000-4000-8000-000000000001"
 const updatedAt = "2026-10-22T03:00:00.000Z"
-const model = { providerId: "local-fixture", protocol: "responses", modelId: "model-fixture", name: "GPT-5.4" }
-const providers = [{ providerId: model.providerId, name: "OpenAI", protocol: model.protocol, models: [{ modelId: model.modelId, name: model.name, isDefault: true, contextWindow: 128000, maxOutputTokens: 16000 }] }]
+const model = { providerId: "local-fixture", protocol: "responses", modelId: "model-fixture", name: "GPT-5.4", reasoningLevel: "medium" }
+const providers = [{ providerId: model.providerId, name: "OpenAI", type: "custom", protocol: model.protocol, models: [{ modelId: model.modelId, name: model.name, isDefault: true, contextWindow: 128000, maxOutputTokens: 16000,
+  reasoningLevels: ["low", "medium", "high"], reasoningField: { path: ["reasoning", "effort"] } }] }]
 const sessions = [
   { sessionId: "design", name: "梳理项目结构与核心工作流", updatedAt },
   { sessionId: "review", name: "完善工具调用的错误处理", updatedAt },
@@ -248,6 +249,7 @@ async function main() {
   ipcMain.handle(startup.listProjects, () => projects)
   ipcMain.handle(startup.listDefaultSessions, () => sessions)
   ipcMain.handle(startup.listProviders, () => providers)
+  ipcMain.handle(provider.listCompatibleProviders, () => [])
   ipcMain.handle(skill.listSkills, (_event, target) => {
     skillReads++
     return ["code-review", "project-conventions"].map((name, index) => ({ name, path: join(profile, target.scope === "global" ? "global" : target.projectId, "skills", name), scope: target.scope, enabled: index === 0, description: index === 0 ? "从代码结构、边界条件与可维护性出发，检查改动并给出清晰的建议。" : "记录项目约定，让每次协作都沿用熟悉的工作方式。" }))
@@ -472,8 +474,11 @@ async function main() {
   await screenshot("workspace-settings-dark")
   await assertPaletteContrast("settings")
   await click('[aria-label="新增供应商"]')
-  await until(() => evaluate("Boolean(document.querySelector('.provider-create-form select'))"))
-  await openSelect(".provider-create-form select")
+  await until(() => evaluate("Boolean(document.querySelector('.provider-create-form select:not([aria-label=\"供应商类型\"])'))"))
+  await evaluate("(() => { const node = document.querySelector('[aria-label=\"供应商类型\"]'); Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set.call(node, 'compatible'); node.dispatchEvent(new Event('change', { bubbles: true })) })()")
+  await until(() => evaluate("document.querySelector('.provider-create-form')?.textContent.includes('暂无已兼容供应商')"))
+  await evaluate("(() => { const node = document.querySelector('[aria-label=\"供应商类型\"]'); Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set.call(node, 'custom'); node.dispatchEvent(new Event('change', { bubbles: true })) })()")
+  await openSelect(".provider-create-form select:not([aria-label=\"供应商类型\"])")
   await screenshot("workspace-select-protocol-dark")
   nativeKey("Escape")
   await until(() => evaluate("!document.querySelector('select:open')"))
@@ -509,12 +514,12 @@ async function main() {
   window.setSize(1440, 1000)
   await until(() => evaluate("innerWidth === 1440"))
   await click('[aria-label="新增供应商"]')
-  await until(() => evaluate("Boolean(document.querySelector('.provider-create-form select'))"))
-  await openSelect(".provider-create-form select")
+  await until(() => evaluate("Boolean(document.querySelector('.provider-create-form select:not([aria-label=\"供应商类型\"])'))"))
+  await openSelect(".provider-create-form select:not([aria-label=\"供应商类型\"])")
   await screenshot("workspace-select-protocol")
   nativeKey("End")
   nativeKey("Enter")
-  await until(() => evaluate("!document.querySelector('select:open') && document.querySelector('.provider-create-form select').value !== ''"))
+  await until(() => evaluate("!document.querySelector('select:open') && document.querySelector('.provider-create-form select:not([aria-label=\"供应商类型\"])').value !== ''"))
   await evaluate("[...document.querySelectorAll('.settings-nav-option')].find(node => node.textContent === 'MCP').click()")
   await until(() => evaluate("document.querySelector('.mcp-settings')?.getAttribute('aria-busy') === 'false'"))
   assert.equal(mcpReads, 1)

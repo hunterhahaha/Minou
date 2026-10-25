@@ -19,8 +19,8 @@ import {
 import type { SessionRepairPorts } from "../src/session-runtime.ts"
 import type { SessionRuntimeGlobal } from "../../../src/main/session-runtime-global.ts"
 
-const MODEL: ModelRef = { providerId: "provider-1", protocol: "anthropic_messages", modelId: "model-1", name: "claude-test" }
-const OTHER_MODEL: ModelRef = { providerId: "provider-2", protocol: "responses", modelId: "model-2", name: "gpt-test" }
+const MODEL: ModelRef = { providerId: "provider-1", protocol: "anthropic_messages", modelId: "model-1", name: "claude-test", reasoningLevel: "medium" }
+const OTHER_MODEL: ModelRef = { providerId: "provider-2", protocol: "responses", modelId: "model-2", name: "gpt-test", reasoningLevel: "high" }
 const MESSAGE = [{ type: "text" as const, text: "你好" }]
 
 function fixture(
@@ -282,22 +282,21 @@ async function testContinueSession(): Promise<void> {
     completedSessionEvents("session-existing"),
   )
   state.queueReadModels(OTHER_MODEL)
-  const started = await state.ports.continueSession({ content: MESSAGE, model: MODEL })
+  const started = await state.ports.continueSession({ content: MESSAGE })
   assert.equal(started.sessionId, "session-existing")
   assert.equal(started.turn, 2)
   await started.completion
-  assert.deepEqual(state.calls.slice(0, 9), [
+  assert.deepEqual(state.calls.slice(0, 8), [
     "readEvents",
     "initialize",
     "repairDerivedState",
     "prepare",
-    "writeCurrentModel",
     "readCurrentModel",
     "createLoopOptions",
     "appendBatch",
     "buildContent",
   ])
-  assert.deepEqual(state.writtenModels, [MODEL])
+  assert.deepEqual(state.writtenModels, [])
   assert.deepEqual(state.batches[0]?.[0], {
     type: "turn/start",
     turn: 2,
@@ -393,7 +392,7 @@ async function testFailureBoundaries(): Promise<void> {
   const failedRepair = fixture("session-existing", completedSessionEvents("session-existing"))
   failedRepair.repairPorts.readEvents = async () => { throw new Error("repair failed") }
   await assert.rejects(
-    failedRepair.ports.continueSession({ content: MESSAGE, model: MODEL }),
+    failedRepair.ports.continueSession({ content: MESSAGE }),
     /repair failed/,
   )
   assert.deepEqual(failedRepair.calls, [])
@@ -428,10 +427,10 @@ async function testFailureBoundaries(): Promise<void> {
     throw new Error("adapter failed")
   }
   await assert.rejects(
-    failedAdapter.ports.continueSession({ content: MESSAGE, model: OTHER_MODEL }),
+    failedAdapter.ports.continueSession({ content: MESSAGE }),
     /adapter failed/,
   )
-  assert.deepEqual(failedAdapter.writtenModels, [OTHER_MODEL])
+  assert.deepEqual(failedAdapter.writtenModels, [])
   assert.equal(failedAdapter.batches.length, 0, "Adapter 失败前不得提交新 Turn")
 }
 
@@ -938,7 +937,7 @@ async function testStoppedThinkingCanContinue(): Promise<void> {
     assert.deepEqual(await active.repairSession(), { lastTurn: 1 })
     assert.deepEqual(await active.repairSession(), { lastTurn: 1 })
     assert.deepEqual(await active.readEvents(), stoppedEvents, "停止后的恢复不得再补写块或消息")
-    const second = await active.continueSession({ model: MODEL, content: [{ type: "text", text: "继续" }] })
+    const second = await active.continueSession({ content: [{ type: "text", text: "继续" }] })
     assert.equal(second.turn, 2)
     assert.equal((await second.completion).stopped, false)
     assert.equal(requests, 2)

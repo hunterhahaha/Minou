@@ -21,6 +21,7 @@ const MODEL: ModelRef = {
   protocol: "chat_completions",
   modelId: "model-a",
   name: "gpt-test",
+  reasoningLevel: "medium",
 }
 
 /** 在隔离配置目录运行 Turn Adapter 断言。 */
@@ -38,30 +39,39 @@ async function testResolvesCurrentDatabaseConfiguration(): Promise<void> {
   await withPaths(async (paths) => {
     const database = paths.providerDatabasePath
     saveProvider(database, {
-      id: "configured", name: "Configured Provider", protocol: "chat_completions",
+      id: "configured", name: "Configured Provider", protocol: "chat_completions", type: "custom",
       baseURL: "https://api.example.com/v1", defaultHeaders: { "X-Test": "value" },
     })
     saveModel(database, {
       providerId: "configured", modelId: "model-a", name: "gpt-test", contextWindow: 128000,
       maxOutputTokens: 4096,
+          reasoningLevels: ["low", "medium", "high"],
+      reasoningField: { path: ["reasoning_effort"] },
     })
     setProviderApiKey(database, "configured", "first-secret")
     const first = await resolveTurnModelAdapterSpecification(paths, MODEL)
     assert.deepEqual(first.modelConfig, {
       modelId: "model-a", name: "gpt-test", providerId: "configured", protocol: "chat_completions",
       contextWindow: 128000, maxOutputTokens: 4096,
+          reasoningLevels: ["low", "medium", "high"],
+      reasoningField: { path: ["reasoning_effort"] },
     })
     assert.deepEqual(first.clientOptions, {
       apiKey: "first-secret", baseURL: "https://api.example.com/v1",
       defaultHeaders: { "X-Test": "value" },
     })
+    await assert.rejects(resolveTurnModelAdapterSpecification(paths, { ...MODEL, reasoningLevel: "unsupported" }),
+      /推理等级 unsupported 不在模型支持列表中/)
+    updateModel(database, { providerId: "configured", modelId: "model-a" }, { reasoningLevels: ["high"] })
+    await assert.rejects(resolveTurnModelAdapterSpecification(paths, MODEL), /推理等级 medium 不在模型支持列表中/)
+    updateModel(database, { providerId: "configured", modelId: "model-a" }, { reasoningLevels: ["low", "medium", "high"] })
 
     assert.throws(() => updateModel(database, { providerId: "configured", modelId: "model-a" }, {
       maxOutputTokens: null,
     } as unknown as ProviderModelUpdate), /maxOutputTokens/)
 
     saveProvider(database, {
-      id: "configured", name: "Updated Provider", protocol: "chat_completions",
+      id: "configured", name: "Updated Provider", protocol: "chat_completions", type: "custom",
       baseURL: "https://updated.example.com/v2", defaultHeaders: { "X-Updated": "yes" },
     })
     updateModel(database, { providerId: "configured", modelId: "model-a" }, {
@@ -73,6 +83,8 @@ async function testResolvesCurrentDatabaseConfiguration(): Promise<void> {
     assert.deepEqual(second.modelConfig, {
       modelId: "model-a", name: "gpt-updated", providerId: "configured", protocol: "chat_completions",
       contextWindow: 64000, maxOutputTokens: 4096,
+          reasoningLevels: ["low", "medium", "high"],
+      reasoningField: { path: ["reasoning_effort"] },
     })
     assert.deepEqual(second.clientOptions, {
       apiKey: "second-secret", baseURL: "https://updated.example.com/v2",
@@ -97,10 +109,12 @@ async function testResolvesCurrentDatabaseConfiguration(): Promise<void> {
 async function testRejectsInvalidBindingsWithoutSecrets(): Promise<void> {
   await withPaths(async (paths) => {
     const database = paths.providerDatabasePath
-    saveProvider(database, { id: "configured", name: "Configured", protocol: "chat_completions" })
+    saveProvider(database, { id: "configured", name: "Configured", protocol: "chat_completions", type: "custom" })
     saveModel(database, {
       providerId: "configured", modelId: "model-a", name: "gpt-test", contextWindow: 256000,
       maxOutputTokens: 32000,
+          reasoningLevels: ["low", "medium", "high"],
+      reasoningField: { path: ["reasoning_effort"] },
     })
     setProviderApiKey(database, "configured", "must-not-leak")
     for (const model of [

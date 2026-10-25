@@ -53,18 +53,20 @@ type Expect<T extends true> = T
 type _ProtocolValues = Expect<Equals<Protocol, "anthropic_messages" | "chat_completions" | "responses">>
 
 // 模型引用与配置的必备字段（第 6 节）。
-type _ModelRefShape = Expect<Equals<keyof ModelRef, "providerId" | "protocol" | "modelId" | "name">>
+type _ModelRefShape = Expect<Equals<keyof ModelRef, "providerId" | "protocol" | "modelId" | "name" | "reasoningLevel">>
 type _ModelConfigRequired = Expect<Equals<ModelConfig["modelId"] | ModelConfig["name"] | ModelConfig["providerId"], string>>
 type _ModelConfigContextWindowRequired = Expect<Equals<ModelConfig["contextWindow"], number>>
 type _ModelConfigMaxOutputTokensRequired = Expect<Equals<ModelConfig["maxOutputTokens"], number>>
 // @ts-expect-error 运行时模型配置必须提供已经解析的上下文窗口。
 const _missingContextWindow: ModelConfig = {
   modelId: "model-id", name: "model", providerId: "provider", protocol: "responses", maxOutputTokens: 32000,
+  reasoningLevels: ["low", "medium", "high"], reasoningField: { path: ["reasoning", "effort"] },
 }
 void _missingContextWindow
 // @ts-expect-error 运行时模型配置必须提供最大输出 Token 数。
 const _missingMaxOutputTokens: ModelConfig = {
   modelId: "model-id", name: "model", providerId: "provider", protocol: "responses", contextWindow: 256000,
+  reasoningLevels: ["low", "medium", "high"], reasoningField: { path: ["reasoning", "effort"] },
 }
 void _missingMaxOutputTokens
 
@@ -295,7 +297,7 @@ assert.equal(
 async function checkAdapterStream(): Promise<void> {
   const collected: ModelStreamEvent[] = []
   for await (const event of _adapterImpl.stream(
-    { context: { messages: [_systemMessage] }, tools: [], model: { providerId: "p", protocol: "anthropic_messages", modelId: "m", name: "model" } },
+    { context: { messages: [_systemMessage] }, tools: [], model: { providerId: "p", protocol: "anthropic_messages", modelId: "m", name: "model", reasoningLevel: "medium" } },
     new AbortController().signal,
   )) {
     collected.push(event)

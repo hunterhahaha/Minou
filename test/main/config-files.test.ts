@@ -83,7 +83,7 @@ async function main(): Promise<void> {
 
     const configContent = `${JSON.stringify(validConfig)}\n`
     await writeFile(paths.configPath, configContent)
-    saveProvider(paths.providerDatabasePath, { id: "example", name: "Example", protocol: "responses" })
+    saveProvider(paths.providerDatabasePath, { id: "example", name: "Example", protocol: "responses", type: "custom" })
     const defaultWorkspace = { version: 1 as const, sessions: [{
       id: "session_1", name: "配置讨论",
       createdAt: "2026-09-18T01:00:00.000Z", updatedAt: "2026-09-18T10:00:00+08:00",

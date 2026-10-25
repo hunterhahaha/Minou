@@ -38,6 +38,8 @@ const MODEL: ModelConfig = {
   protocol: "anthropic_messages",
   contextWindow: 256000,
   maxOutputTokens: 8192,
+  reasoningLevels: ["low", "medium", "high"],
+  reasoningField: { path: ["output_config", "effort"] },
 }
 
 /** 离线转换入口：协议事件数组 → 统一事件流（真实 SDK 的流本身就是异步可迭代的）。 */
@@ -53,7 +55,7 @@ function event(value: Record<string, unknown>): RawMessageStreamEvent {
 /** 一条含工具调用与工具结果的统一上下文（对照协议示例文档第 1 节）。 */
 function agentRequest(): UnifiedModelRequest {
   return {
-    model: { providerId: "anthropic", protocol: "anthropic_messages", modelId: "model-record-1", name: "claude-test" },
+    model: { providerId: "anthropic", protocol: "anthropic_messages", modelId: "model-record-1", name: "claude-test", reasoningLevel: "medium" },
     tools: [
       {
         name: "read_file",
@@ -149,8 +151,8 @@ async function main(): Promise<void> {
   // -------------------------------------------------------------------------
 
   {
-    const params = buildAnthropicRequest(agentRequest(), MODEL.maxOutputTokens)
-    const compact = buildAnthropicRequest({ ...agentRequest(), toolChoice: "none" }, MODEL.maxOutputTokens)
+    const params = buildAnthropicRequest(agentRequest(), MODEL)
+    const compact = buildAnthropicRequest({ ...agentRequest(), toolChoice: "none" }, MODEL)
     assert.deepEqual(compact.tool_choice, { type: "none" })
     assert.deepEqual(compact.tools, params.tools)
     assert.deepEqual(compact.messages, params.messages)
@@ -158,6 +160,7 @@ async function main(): Promise<void> {
 
     assert.equal(params.model, "claude-test")
     assert.equal(params.max_tokens, MODEL.maxOutputTokens)
+    assert.deepEqual(params.output_config, { effort: "medium" })
     assert.equal(params.stream, true)
     // messages[0] 对应协议的 system 位置。
     assert.equal(params.system, "You are a coding agent.")
@@ -202,7 +205,7 @@ async function main(): Promise<void> {
   {
     const bare = agentRequest()
     bare.tools = []
-    assert.equal(buildAnthropicRequest(bare, 100).tools, undefined)
+    assert.equal(buildAnthropicRequest(bare, MODEL).tools, undefined)
   }
 
   // 连续的工具结果合并进同一个 user 消息：该协议不允许 tool_result 单独成条。
@@ -221,7 +224,7 @@ async function main(): Promise<void> {
       { role: "tool", toolCallId: "b", content: [{ type: "text", text: "rb" }], isError: true },
     ]
 
-    const params = buildAnthropicRequest(multi, 100)
+    const params = buildAnthropicRequest(multi, MODEL)
     assert.equal(params.messages.length, 2, "两条 tool 结果合并为一个 user 消息")
     assert.deepEqual(params.messages[1], {
       role: "user",
@@ -239,7 +242,7 @@ async function main(): Promise<void> {
       { role: "system", content: "s" },
       { role: "user", content: [{ type: "text", text: "PORT=" }, { type: "text", text: "3000" }] },
     ]
-    const params = buildAnthropicRequest(multi, 100)
+    const params = buildAnthropicRequest(multi, MODEL)
     assert.deepEqual(params.messages[0], {
       role: "user",
       content: [
@@ -771,6 +774,7 @@ async function main(): Promise<void> {
         protocol: "anthropic_messages",
         modelId: "别的模型",
         name: "别的模型",
+        reasoningLevel: "medium",
       }
       const error = await collectError(adapter.stream(mismatched, new AbortController().signal))
       assert.equal((error as { code?: string }).code, "INVALID_MODEL_REQUEST")

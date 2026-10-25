@@ -3,7 +3,7 @@ import assert from "node:assert/strict"
 import { createSessionApi, SESSION_IPC_CHANNELS } from "../../src/preload/session-api.ts"
 import type { SessionControl, SessionData, SessionUpdate } from "../../src/preload/session-api.ts"
 import type { SummaryEndEvent } from "../../runtime/session/src/events.ts"
-const control: SessionControl = { revision: 1, throughSeq: 0, currentModel: { providerId: "p", protocol: "responses", modelId: "m", name: "test" },
+const control: SessionControl = { revision: 1, throughSeq: 0, currentModel: { providerId: "p", protocol: "responses", modelId: "m", name: "test", reasoningLevel: "medium" },
   phase: "idle", sandboxMode: "sandbox-full-access", pendingMessages: [], discardedMessages: [] }
 const history: SessionData = { projectId: "default", sessionId: "s", events: [], latestSeq: 0, control,
   summary: { sessionId: "s", name: "新对话", updatedAt: "2026-09-30T00:00:00.000Z" } }

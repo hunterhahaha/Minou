@@ -4,7 +4,7 @@ import { WorkspaceSessionState, mergeSessionEvents, projectSessionEvents, sessio
 import type { SessionControl, SessionData } from "../../src/preload/session-api.ts"
 import type { SessionEvent, SessionEventInput } from "../../runtime/session/src/events.ts"
 import type { ModelRef } from "../../runtime/model/src/types.ts"
-const model: ModelRef = { providerId: "p", protocol: "responses", modelId: "m", name: "test" }
+const model: ModelRef = { providerId: "p", protocol: "responses", modelId: "m", name: "test", reasoningLevel: "medium" }
 /**
  * @param seq 事件序号。
  * @param input 内容。

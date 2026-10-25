@@ -31,6 +31,7 @@ import {
   assertRequestMatchesModel,
   joinTextBlocks,
   parseToolCallArguments,
+  reasoningRequestFragment,
   runModelStream,
   serializeToolCallArguments,
   splitSystemMessage,
@@ -176,11 +177,13 @@ function toChatCompletionsTools(tools: UnifiedToolDefinition[]): ChatCompletionT
  * 而权威 Usage 是 Adapter 的输出契约之一（第 8.5、27.1 节）。
  *
  * @param request 待转换的统一模型请求。
+ * @param config 当前 Adapter 绑定的完整模型配置，包含推理字段路径。
  * @returns SDK 可接受的流式 Chat Completions 请求参数。
- * @throws `AppError` 当统一上下文缺少首个 System Message 或包含多个 System Message 时抛出。
+ * @throws `AppError` 当统一上下文或推理等级配置无效时抛出。
  */
 export function buildChatCompletionsRequest(
   request: UnifiedModelRequest,
+  config: ModelConfig,
 ): ChatCompletionCreateParamsStreaming {
   const { system, rest } = splitSystemMessage(request)
 
@@ -195,6 +198,8 @@ export function buildChatCompletionsRequest(
     params.tools = toChatCompletionsTools(request.tools)
   }
   if (request.toolChoice === "none") params.tool_choice = "none"
+
+  Object.assign(params, reasoningRequestFragment(request, config))
 
   return params
 }
@@ -523,7 +528,7 @@ export function createChatCompletionsAdapter(
   ): AsyncGenerator<ModelStreamEvent> {
     // 校验与请求构建在迭代时抛出：AgentLoop 只需在一处处理 Adapter 的错误。
     assertRequestMatchesModel(request, config)
-    const params = buildChatCompletionsRequest(request)
+    const params = buildChatCompletionsRequest(request, config)
 
     yield* runModelStream((attemptSignal) => {
       return mapChatCompletionsStream(requestChatCompletionsStream(client, params, attemptSignal))

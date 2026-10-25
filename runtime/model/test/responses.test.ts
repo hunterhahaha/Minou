@@ -37,6 +37,8 @@ const MODEL: ModelConfig = {
   protocol: "responses",
   contextWindow: 256000,
   maxOutputTokens: 32000,
+  reasoningLevels: ["low", "medium", "high"],
+  reasoningField: { path: ["reasoning", "effort"] },
 }
 
 /** 离线转换入口：协议事件数组 → 统一事件流。 */
@@ -87,7 +89,7 @@ function terminalEvent(
 /** 一条含工具调用与工具结果的统一上下文（对照协议示例文档第 3 节）。 */
 function agentRequest(): UnifiedModelRequest {
   return {
-    model: { providerId: "openai", protocol: "responses", modelId: "model-record-3", name: "gpt-responses-test" },
+    model: { providerId: "openai", protocol: "responses", modelId: "model-record-3", name: "gpt-responses-test", reasoningLevel: "medium" },
     tools: [
       {
         name: "read_file",
@@ -169,14 +171,21 @@ async function main(): Promise<void> {
   // -------------------------------------------------------------------------
 
   {
-    const params = buildResponsesRequest(agentRequest())
-    const compact = buildResponsesRequest({ ...agentRequest(), toolChoice: "none" })
+    const params = buildResponsesRequest(agentRequest(), MODEL)
+    const compact = buildResponsesRequest({ ...agentRequest(), toolChoice: "none" }, MODEL)
     assert.equal(compact.tool_choice, "none")
     assert.deepEqual(compact.tools, params.tools)
     assert.deepEqual(compact.input, params.input)
     assert.equal(params.tool_choice, undefined)
 
     assert.equal(params.model, "gpt-responses-test")
+    assert.deepEqual(params.reasoning, { effort: "medium" })
+    const nested = buildResponsesRequest(agentRequest(), { ...MODEL, reasoningField: { path: ["vendor", "effort"] } })
+    assert.deepEqual((nested as unknown as Record<string, unknown>).vendor, { effort: "medium" })
+    assert.throws(() => buildResponsesRequest(agentRequest(), { ...MODEL, reasoningField: { path: ["model"] } }),
+      (error: unknown) => typeof error === "object" && error !== null && "message" in error && error.message === "模型的推理等级请求字段无效")
+    assert.throws(() => buildResponsesRequest({ ...agentRequest(), model: { ...agentRequest().model, reasoningLevel: "unsupported" } }, MODEL),
+      (error: unknown) => typeof error === "object" && error !== null && "code" in error && error.code === "INVALID_MODEL_REQUEST")
     assert.equal(params.stream, true)
     // 自己维护 Session 与上下文，不依赖服务端保存。
     assert.equal(params.store, false)
@@ -224,7 +233,7 @@ async function main(): Promise<void> {
   {
     const bare = agentRequest()
     bare.tools = []
-    assert.equal(buildResponsesRequest(bare).tools, undefined)
+    assert.equal(buildResponsesRequest(bare, MODEL).tools, undefined)
   }
 
   // 多块文本拼接；thinking 不回放；工具结果只取 text。

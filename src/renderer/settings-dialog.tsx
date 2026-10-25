@@ -5,6 +5,7 @@ import { IconCpu, IconPlugConnected, IconPlus, IconSettings, IconSparkles, IconX
 import { useDialogFocus } from "./dialog-focus.tsx"
 
 import type {
+  CompatibleProviderOption,
   ModelAppend,
   ModelSummary,
   ProviderModelInput,
@@ -12,7 +13,8 @@ import type {
   ProviderSummary,
 } from "../preload/session-api.ts"
 import { PROTOCOLS } from "../../runtime/model/src/types.ts"
-import type { Protocol } from "../../runtime/model/src/types.ts"
+import type { Protocol, ReasoningField } from "../../runtime/model/src/types.ts"
+import { defaultReasoningConfig, isReasoningField, isReasoningLevels, renderReasoningField } from "../../runtime/model/src/reasoning.ts"
 import { McpSettings } from "./mcp-settings.tsx"
 import { SkillSettings } from "./skill-settings.tsx"
 import type { SkillSettingsProps } from "./skill-settings.tsx"
@@ -37,6 +39,10 @@ interface ModelDraft {
   contextWindow: string
   /** 单次请求允许的最大输出 Token 数。 */
   maxOutputTokens: string
+  /** 逗号分隔的推理等级；留空时由主进程补齐协议默认值。 */
+  reasoningLevels: string
+  /** 点分请求字段路径；留空时由主进程补齐协议默认值。 */
+  reasoningFieldPath: string
 }
 
 /** 供应商创建表单中的协议显示名称。 */
@@ -60,6 +66,8 @@ function createModelDraft(): ModelDraft {
     name: "",
     contextWindow: "256000",
     maxOutputTokens: "32000",
+    reasoningLevels: "",
+    reasoningFieldPath: "",
   }
 }
 
@@ -76,14 +84,78 @@ function parsePositiveInteger(value: string): number | null {
 /**
  * 验证并整理单条模型创建草稿。
  * @param draft 等待提交的模型输入框内容。
+ * @param protocol 模型所属 Provider 的协议，用于校验字段路径。
  * @returns 符合 Provider 创建接口的模型配置；任一必填字段无效时为 null。
  */
-function parseModelDraft(draft: Pick<ModelDraft, "name" | "contextWindow" | "maxOutputTokens">): ProviderModelInput | null {
+function parseModelDraft(draft: Pick<ModelDraft, "name" | "contextWindow" | "maxOutputTokens" | "reasoningLevels" | "reasoningFieldPath">, protocol: Protocol): ProviderModelInput | null {
   const name = draft.name.trim()
   const contextWindow = parsePositiveInteger(draft.contextWindow)
   const maxOutputTokens = parsePositiveInteger(draft.maxOutputTokens)
-  if (name === "" || contextWindow === null || maxOutputTokens === null) return null
-  return { name, contextWindow, maxOutputTokens }
+  const reasoningLevels = parseReasoningLevelsDraft(draft.reasoningLevels)
+  const reasoningField = parseReasoningFieldDraft(draft.reasoningFieldPath, protocol)
+  if (name === "" || contextWindow === null || maxOutputTokens === null ||
+      reasoningLevels === null || reasoningField === null) return null
+  return { name, contextWindow, maxOutputTokens,
+    ...(reasoningLevels === undefined ? {} : { reasoningLevels }),
+    ...(reasoningField === undefined ? {} : { reasoningField }) }
+}
+
+/**
+ * 解析逗号分隔的等级输入，空白表示使用协议默认值。
+ * @param value 页面输入框原文。
+ * @returns 有效列表、缺省时 undefined、无效时 null。
+ */
+function parseReasoningLevelsDraft(value: string): string[] | undefined | null {
+  if (value.trim() === "") return undefined
+  const levels = value.split(",").map((part) => part.trim())
+  return isReasoningLevels(levels) ? levels : null
+}
+
+/**
+ * 解析点分路径为模型数据库保存的 JSON 结构。
+ * @param value 页面输入框原文。
+ * @param protocol 用于拒绝覆盖协议固定请求字段。
+ * @returns 有效路径、缺省时 undefined、无效时 null。
+ */
+function parseReasoningFieldDraft(value: string, protocol: Protocol): ReasoningField | undefined | null {
+  if (value.trim() === "") return undefined
+  const field = { path: value.trim().split(".") }
+  return isReasoningField(field, protocol) ? field : null
+}
+
+/**
+ * 展示创建模型时的两个可选推理字段与将发送的 JSON 片段。
+ * @param props 当前协议、草稿值和输入回调。
+ * @returns 共用的输入框与请求预览。
+ */
+function ReasoningDraftInputs({ protocol, levels, fieldPath, disabled, onLevelsChange, onFieldPathChange }: {
+  protocol: Protocol
+  levels: string
+  fieldPath: string
+  disabled: boolean
+  onLevelsChange: (value: string) => void
+  onFieldPathChange: (value: string) => void
+}) {
+  const parsedLevels = parseReasoningLevelsDraft(levels)
+  const parsedField = parseReasoningFieldDraft(fieldPath, protocol)
+  const defaults = defaultReasoningConfig(protocol)
+  const field = parsedField === undefined ? defaults.reasoningField : parsedField
+  const effectiveLevels = parsedLevels === undefined ? defaults.reasoningLevels : parsedLevels
+  const preview = field === null || effectiveLevels === null ? "字段或等级格式无效"
+    : JSON.stringify(renderReasoningField(field, effectiveLevels.includes("medium") ? "medium" : effectiveLevels[0], protocol))
+  return <>
+    <label className="settings-field">
+      <span>推理等级 <small>逗号分隔，留空用协议默认值</small></span>
+      <input type="text" aria-label="推理等级" placeholder="low, medium, high" value={levels} disabled={disabled}
+        onChange={(event) => onLevelsChange(event.target.value)} />
+    </label>
+    <label className="settings-field">
+      <span>推理字段路径 <small>留空用协议默认值</small></span>
+      <input type="text" aria-label="推理字段路径" placeholder={defaults.reasoningField.path.join(".")} value={fieldPath} disabled={disabled}
+        onChange={(event) => onFieldPathChange(event.target.value)} />
+    </label>
+    <p className="reasoning-preview settings-field-wide">请求预览：<code>{preview}</code></p>
+  </>
 }
 
 /**
@@ -225,6 +297,8 @@ export function SettingsDialog({ initialSection = "models", onClose, onProviders
       name: appended.name,
       contextWindow: appended.contextWindow,
       maxOutputTokens: appended.maxOutputTokens,
+      reasoningLevels: appended.reasoningLevels,
+      reasoningField: appended.reasoningField,
       isDefault: !hasDefault,
     }
     patchProvider(providerId, { models: [...provider.models, model] })
@@ -353,6 +427,10 @@ function CreateProviderForm({
   onCreated: (provider: ProviderSummary) => void
   onCreatingChange: (creating: boolean) => void
 }) {
+  const [providerType, setProviderType] = useState<"compatible" | "custom">("custom")
+  const [compatibleProviders, setCompatibleProviders] = useState<CompatibleProviderOption[]>([])
+  const [compatibleName, setCompatibleName] = useState("")
+  const [compatibleLoadError, setCompatibleLoadError] = useState(false)
   const [name, setName] = useState("")
   const [url, setUrl] = useState("")
   const [apiKey, setApiKey] = useState("")
@@ -363,10 +441,23 @@ function CreateProviderForm({
   const creatingRef = useRef(false)
   const [error, setError] = useState<string | null>(null)
 
-  const parsedModels = models.map(parseModelDraft)
+  useEffect(() => {
+    let active = true
+    void window.nicode.listCompatibleProviders().then((entries) => {
+      if (active) { setCompatibleProviders(entries); setCompatibleLoadError(false) }
+    }).catch(() => { if (active) setCompatibleLoadError(true) })
+    return () => { active = false }
+  }, [])
+
+  const compatibleNames = compatibleProviders.map((entry) => entry.name)
+  const availableProtocols = providerType === "compatible"
+    ? compatibleProviders.find((entry) => entry.name === compatibleName)?.protocol ?? []
+    : PROTOCOLS
+  const parsedModels = protocol === "" ? [] : models.map((model) => parseModelDraft(model, protocol))
   const urlValid = isHttpURL(url)
-  const formValid = name.trim() !== "" && urlValid && apiKey.trim() !== "" &&
-    protocol !== "" && parsedModels.every((model) => model !== null)
+  const formValid = apiKey.trim() !== "" && protocol !== "" && (providerType === "compatible"
+    ? compatibleProviders.some((entry) => entry.name === compatibleName && entry.protocol.some((supported) => supported === protocol))
+    : name.trim() !== "" && urlValid && parsedModels.every((model) => model !== null))
 
   /**
    * 更新一条未提交模型行的输入。
@@ -393,13 +484,11 @@ function CreateProviderForm({
     onCreatingChange(true)
     setError(null)
     try {
-      const provider = await window.nicode.createProvider(
-        name.trim(),
-        apiKey,
-        protocol,
-        url.trim(),
-        parsedModels as ProviderModelInput[],
-      )
+      const provider = providerType === "compatible"
+        ? await window.nicode.createCompatibleProvider({ type: "compatible", name: compatibleName, protocol, apiKey })
+        : await window.nicode.createCustomProvider({
+          type: "custom", name: name.trim(), protocol, apiKey, url: url.trim(), models: parsedModels as ProviderModelInput[],
+        })
       onCreated(provider)
     } catch (cause) {
       console.error("创建供应商失败", cause)
@@ -423,7 +512,34 @@ function CreateProviderForm({
     </div>
     <form className="provider-create-form" onSubmit={(event) => { void submit(event) }}>
       <div className="provider-form-grid">
-        <label className="settings-field">
+        <label className="settings-field settings-field-wide">
+          <span>供应商类型</span>
+          <select aria-label="供应商类型" value={providerType} disabled={creating}
+            onChange={(event) => {
+              const nextType = event.target.value as "compatible" | "custom"
+              setProviderType(nextType)
+              if (nextType === "compatible" && !compatibleProviders.some((entry) =>
+                entry.name === compatibleName && entry.protocol.some((supported) => supported === protocol))) setProtocol("")
+            }}>
+            <option value="custom">自定义</option>
+            <option value="compatible">已兼容</option>
+          </select>
+        </label>
+        {providerType === "compatible" ? <label className="settings-field">
+          <span>已兼容供应商</span>
+          <select aria-label="已兼容供应商" value={compatibleName} disabled={creating || compatibleNames.length === 0}
+            onChange={(event) => {
+              const nextName = event.target.value
+              setCompatibleName(nextName)
+              setProtocol((current) => compatibleProviders.some((entry) =>
+                entry.name === nextName && entry.protocol.some((supported) => supported === current)) ? current : "")
+            }}>
+            <option value="">请选择供应商</option>
+            {compatibleNames.map((entry) => <option value={entry} key={entry}>{entry}</option>)}
+          </select>
+          {compatibleLoadError && <span className="settings-inline-error">已兼容供应商列表读取失败，请重新打开设置后重试。</span>}
+          {!compatibleLoadError && compatibleNames.length === 0 && <span className="settings-empty-note">暂无已兼容供应商，可选择自定义。</span>}
+        </label> : <label className="settings-field">
           <span>供应商名称</span>
           <input
             type="text"
@@ -434,15 +550,16 @@ function CreateProviderForm({
             disabled={creating}
             onChange={(event) => setName(event.target.value)}
           />
-        </label>
+        </label>}
         <label className="settings-field">
           <span>协议</span>
-          <select value={protocol} disabled={creating} onChange={(event) => setProtocol(event.target.value as Protocol | "")}>
+          <select aria-label="供应商协议" value={protocol} disabled={creating || availableProtocols.length === 0}
+            onChange={(event) => setProtocol(event.target.value as Protocol | "")}>
             <option value="">请选择协议</option>
-            {PROTOCOLS.map((entry) => <option key={entry} value={entry}>{protocolLabels[entry]}</option>)}
+            {availableProtocols.map((entry) => <option key={entry} value={entry}>{protocolLabels[entry]}</option>)}
           </select>
         </label>
-        <label className="settings-field settings-field-wide">
+        {providerType === "custom" && <label className="settings-field settings-field-wide">
           <span>URL</span>
           <input
             type="url"
@@ -453,7 +570,7 @@ function CreateProviderForm({
             onChange={(event) => setUrl(event.target.value)}
           />
           {url.trim() !== "" && !urlValid && <span className="settings-inline-error">请输入有效的 HTTP 或 HTTPS 绝对地址。</span>}
-        </label>
+        </label>}
         <label className="settings-field settings-field-wide">
           <span>API Key</span>
           <input
@@ -467,7 +584,7 @@ function CreateProviderForm({
         </label>
       </div>
 
-      <section className="create-models-section" aria-labelledby="create-models-title">
+      {providerType === "custom" && <section className="create-models-section" aria-labelledby="create-models-title">
         <div className="settings-section-heading">
           <div>
             <h4 id="create-models-title">模型</h4>
@@ -533,9 +650,13 @@ function CreateProviderForm({
                     onChange={(event) => updateModelDraft(model.draftId, { maxOutputTokens: event.target.value })}
                   />
                 </label>
+                {protocol !== "" && <ReasoningDraftInputs protocol={protocol} levels={model.reasoningLevels}
+                  fieldPath={model.reasoningFieldPath} disabled={creating}
+                  onLevelsChange={(value) => updateModelDraft(model.draftId, { reasoningLevels: value })}
+                  onFieldPathChange={(value) => updateModelDraft(model.draftId, { reasoningFieldPath: value })} />}
               </div>
             </div>)}</div>}
-      </section>
+      </section>}
 
       {error !== null && <p className="settings-inline-error" role="alert">{error}</p>}
       <footer className="settings-form-footer">
@@ -741,6 +862,7 @@ function ProviderDetail({
         : <div className="provider-model-list">{provider.models.map((model) => <ModelEditor
             key={model.modelId}
             providerId={provider.providerId}
+            protocol={provider.protocol}
             model={model}
             onModelSaved={onModelSaved}
             onDeleted={onModelDeleted}
@@ -765,11 +887,13 @@ function ProviderDetail({
  */
 function ModelEditor({
   providerId,
+  protocol,
   model,
   onModelSaved,
   onDeleted,
 }: {
   providerId: string
+  protocol: Protocol
   model: ModelSummary
   onModelSaved: (modelId: string, update: ProviderModelUpdate) => void
   onDeleted: () => Promise<void>
@@ -777,6 +901,8 @@ function ModelEditor({
   const [name, setName] = useState(model.name)
   const [contextWindow, setContextWindow] = useState(String(model.contextWindow))
   const [maxOutputTokens, setMaxOutputTokens] = useState(String(model.maxOutputTokens))
+  const [reasoningLevels, setReasoningLevels] = useState(model.reasoningLevels.join(", "))
+  const [reasoningFieldPath, setReasoningFieldPath] = useState(model.reasoningField.path.join("."))
   const [saveState, setSaveState] = useState<"saved" | "saving" | "error">("saved")
   const [savingField, setSavingField] = useState<"name" | "contextWindow" | "maxOutputTokens" | null>(null)
   const [deleting, setDeleting] = useState(false)
@@ -784,10 +910,18 @@ function ModelEditor({
     name: model.name,
     contextWindow: model.contextWindow,
     maxOutputTokens: model.maxOutputTokens,
+    reasoningLevels: model.reasoningLevels.join(", "),
+    reasoningFieldPath: model.reasoningField.path.join("."),
   })
   const nameDirty = name !== lastSaved.current.name
   const contextDirty = contextWindow !== String(lastSaved.current.contextWindow)
   const outputDirty = maxOutputTokens !== String(lastSaved.current.maxOutputTokens)
+  const reasoningDirty = reasoningLevels !== lastSaved.current.reasoningLevels ||
+    reasoningFieldPath !== lastSaved.current.reasoningFieldPath
+  const parsedReasoningLevels = parseReasoningLevelsDraft(reasoningLevels)
+  const parsedReasoningField = parseReasoningFieldDraft(reasoningFieldPath, protocol)
+  const reasoningValid = parsedReasoningLevels !== null && parsedReasoningLevels !== undefined &&
+    parsedReasoningField !== null && parsedReasoningField !== undefined
   const contextValid = parsePositiveInteger(contextWindow) !== null
   const outputValid = parsePositiveInteger(maxOutputTokens) !== null
   const busy = saveState === "saving" || deleting
@@ -808,10 +942,9 @@ function ModelEditor({
     setSavingField(field)
     try {
       await window.nicode.updateModel({ providerId, modelId: model.modelId }, update)
-      lastSaved.current = { ...lastSaved.current, ...update }
-      if (field === "name") setName(String(value))
-      else if (field === "contextWindow") setContextWindow(String(value))
-      else setMaxOutputTokens(String(value))
+      if (field === "name") { lastSaved.current.name = String(value); setName(String(value)) }
+      else if (field === "contextWindow") { lastSaved.current.contextWindow = Number(value); setContextWindow(String(value)) }
+      else { lastSaved.current.maxOutputTokens = Number(value); setMaxOutputTokens(String(value)) }
       onModelSaved(model.modelId, update)
       setSaveState("saved")
     } catch (error) {
@@ -819,6 +952,26 @@ function ModelEditor({
       setSaveState("error")
     } finally {
       setSavingField(null)
+    }
+  }
+
+  /**
+   * 同时保存模型完整的推理等级列表与字段路径。
+   * @returns 保存尝试结束；失败时保留两个草稿值。
+   */
+  async function saveReasoning(): Promise<void> {
+    if (busy || !reasoningValid) return
+    const update = { reasoningLevels: parsedReasoningLevels, reasoningField: parsedReasoningField }
+    setSaveState("saving")
+    try {
+      await window.nicode.updateModel({ providerId, modelId: model.modelId }, update)
+      lastSaved.current.reasoningLevels = reasoningLevels
+      lastSaved.current.reasoningFieldPath = reasoningFieldPath
+      onModelSaved(model.modelId, update)
+      setSaveState("saved")
+    } catch (error) {
+      console.error("更新模型推理配置失败", error)
+      setSaveState("error")
     }
   }
 
@@ -920,11 +1073,36 @@ function ModelEditor({
         </div>}
         {outputDirty && !outputValid && <span className="settings-inline-error">最大输出必须为正整数。</span>}
       </label>
+      <label className="settings-field">
+        <span>推理等级</span>
+        <input type="text" aria-label="编辑推理等级" disabled={busy} value={reasoningLevels}
+          onChange={(event) => setReasoningLevels(event.target.value)} />
+      </label>
+      <label className="settings-field">
+        <span>推理字段路径</span>
+        <input type="text" aria-label="编辑推理字段路径" disabled={busy} value={reasoningFieldPath}
+          onChange={(event) => setReasoningFieldPath(event.target.value)} />
+      </label>
+      <div className="settings-field settings-field-wide">
+        <p className="reasoning-preview">请求预览：<code>{reasoningValid
+          ? JSON.stringify(renderReasoningField(parsedReasoningField!, parsedReasoningLevels!.includes("medium") ? "medium" : parsedReasoningLevels![0], protocol))
+          : "字段或等级格式无效"}</code></p>
+        {reasoningDirty && <div className="settings-field-actions">
+          <button className="settings-primary-button" type="button" disabled={busy || !reasoningValid}
+            onClick={() => { void saveReasoning() }}>保存推理配置</button>
+          <button className="settings-secondary-button" type="button" disabled={busy} onClick={() => {
+            setReasoningLevels(lastSaved.current.reasoningLevels)
+            setReasoningFieldPath(lastSaved.current.reasoningFieldPath)
+            setSaveState("saved")
+          }}>取消</button>
+        </div>}
+        {reasoningDirty && !reasoningValid && <span className="settings-inline-error">推理等级和字段路径均不能为空，且必须是有效格式。</span>}
+      </div>
     </div>
     <p className={saveState === "error" ? "model-save-status model-save-status-error" : "model-save-status"} role={saveState === "error" ? "alert" : "status"}>
       {saveState === "saving" ? "正在保存…" :
         saveState === "error" ? "模型操作失败，请重试。" :
-          nameDirty || contextDirty || outputDirty ? "有未保存的修改。" : "已保存"}
+          nameDirty || contextDirty || outputDirty || reasoningDirty ? "有未保存的修改。" : "已保存"}
     </p>
   </article>
 }
@@ -950,11 +1128,13 @@ function CreateModelDialog({
   const [name, setName] = useState("")
   const [contextWindow, setContextWindow] = useState("256000")
   const [maxOutputTokens, setMaxOutputTokens] = useState("32000")
+  const [reasoningLevels, setReasoningLevels] = useState("")
+  const [reasoningFieldPath, setReasoningFieldPath] = useState("")
   const [creating, setCreating] = useState(false)
   /** 请求发出前同步上锁，保证 Escape 和重复提交使用同一个进行中状态。 */
   const creatingRef = useRef(false)
   const [error, setError] = useState<string | null>(null)
-  const parsed = parseModelDraft({ name, contextWindow, maxOutputTokens })
+  const parsed = parseModelDraft({ name, contextWindow, maxOutputTokens, reasoningLevels, reasoningFieldPath }, provider.protocol)
 
   /**
    * 创建模型后由 Provider 详情页追加并展示新模型。
@@ -1046,6 +1226,8 @@ function CreateModelDialog({
               onChange={(event) => setMaxOutputTokens(event.target.value)}
             />
           </label>
+          <ReasoningDraftInputs protocol={provider.protocol} levels={reasoningLevels} fieldPath={reasoningFieldPath}
+            disabled={creating} onLevelsChange={setReasoningLevels} onFieldPathChange={setReasoningFieldPath} />
         </div>
         {error !== null && <p className="settings-inline-error" role="alert">{error}</p>}
         <footer className="settings-form-footer">

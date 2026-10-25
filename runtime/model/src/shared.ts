@@ -15,6 +15,7 @@ import { createAbortError } from "../../error/src/abort.ts"
 import { normalizeModelError } from "../../error/src/normalizer.ts"
 import type { AppError } from "../../error/src/types.ts"
 import { streamWithRetry } from "../../network/src/retry.ts"
+import { isReasoningLevels, renderReasoningField } from "./reasoning.ts"
 import type {
   ModelConfig,
   ModelStreamEvent,
@@ -57,8 +58,11 @@ export function invalidRequest(message: string, details?: Record<string, unknown
  * @throws `AppError` 当 Provider、协议或模型 ID 任一不匹配时抛出。
  */
 export function assertRequestMatchesModel(request: UnifiedModelRequest, config: ModelConfig): void {
-  const { providerId, protocol, modelId, name } = request.model
+  const { providerId, protocol, modelId, name, reasoningLevel } = request.model
   if (providerId === config.providerId && protocol === config.protocol && modelId === config.modelId && name === config.name) {
+    if (!isReasoningLevels(config.reasoningLevels) || !config.reasoningLevels.includes(reasoningLevel)) {
+      throw invalidRequest("当前推理等级不在模型支持的等级列表中", { reasoningLevel, modelId })
+    }
     return
   }
 
@@ -66,6 +70,26 @@ export function assertRequestMatchesModel(request: UnifiedModelRequest, config: 
     request: { providerId, protocol, modelId, name },
     adapter: { providerId: config.providerId, protocol: config.protocol, modelId: config.modelId, name: config.name },
   })
+}
+
+/**
+ * 将模型配置中的字段路径与当前 Turn 的等级组合成请求片段。
+ * @param request 当前模型请求，其选择已从 Session Meta 固定到 Turn。
+ * @param config Adapter 绑定的完整模型配置。
+ * @returns 只包含推理等级字段的嵌套请求对象。
+ * @throws AppError 当等级或字段路径无效时拒绝发送请求。
+ */
+export function reasoningRequestFragment(request: UnifiedModelRequest, config: ModelConfig): Record<string, unknown> {
+  if (!isReasoningLevels(config.reasoningLevels) || !config.reasoningLevels.includes(request.model.reasoningLevel)) {
+    throw invalidRequest("当前推理等级不在模型支持的等级列表中", {
+      reasoningLevel: request.model.reasoningLevel, modelId: request.model.modelId,
+    })
+  }
+  try {
+    return renderReasoningField(config.reasoningField, request.model.reasoningLevel, config.protocol)
+  } catch {
+    throw invalidRequest("模型的推理等级请求字段无效", { modelId: request.model.modelId })
+  }
 }
 
 /** 拆分后的统一上下文：`system` 对应协议的系统位置，`rest` 是其余消息。 */
