@@ -12,6 +12,8 @@ const errors = []
 const decisions = []
 /** 各主题与页面实际计算色的对比度记录；每次检查写入 dist 供人工核对。 */
 const paletteReports = []
+/** 实际页面在各缩放级别下的文字与布局记录，不替代既有业务断言。 */
+const typographyReports = []
 const PROJECT = "a0000000-0000-4000-8000-000000000001"
 const updatedAt = "2026-10-22T03:00:00.000Z"
 const model = { providerId: "local-fixture", protocol: "responses", modelId: "model-fixture", name: "GPT-5.4", reasoningLevel: "medium" }
@@ -96,6 +98,46 @@ async function screenshot(name) {
   await evaluate("new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done)))")
   await new Promise((done) => setTimeout(done, 100))
   await writeFile(join(process.cwd(), "dist", name + ".png"), (await window.webContents.capturePage()).toPNG())
+  if (["workspace-light", "workspace-dark", "workspace-conversation", "workspace-conversation-dark", "workspace-models", "workspace-settings-dark", "workspace-skills", "workspace-settings-narrow", "workspace-approval-queue"].includes(name)) await assertTypographyAtZoom(name)
+}
+/**
+ * 在当前真实页面核对缩放后的文字下限、代码字体、横向边界和 Composer 操作区域。
+ * @param state 截图场景名称，用于报告与截图定位。
+ * @returns 100%、125%、150% 的检查与截图完成，原缩放级别恢复。
+ * @throws AssertionError 关键文字过小、代码字体错误、页面溢出或 Composer 操作被挤出视口；调用方报告失败。
+ */
+async function assertTypographyAtZoom(state) {
+  const originalZoom = window.webContents.getZoomFactor()
+  try {
+    for (const zoom of [1, 1.25, 1.5]) {
+      window.webContents.setZoomFactor(zoom)
+      await evaluate("new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done)))")
+      await new Promise(done => setTimeout(done, 100))
+      const presentation = await evaluate(`(() => {
+        const visible = node => node.getClientRects().length && getComputedStyle(node).visibility !== 'hidden'
+        const controls = [...document.querySelectorAll('.selector-trigger, .chat-select-label select, .stop-button, .settings-primary-button, .settings-secondary-button, .settings-nav-option, .settings-field input, .settings-field select')].filter(visible)
+        const code = [...document.querySelectorAll('.skill-path, .process-content, .markdown-content pre code')].filter(visible)
+        const composer = [...document.querySelectorAll('.composer-toolbar button, .composer-toolbar select')].filter(visible)
+        return {
+          theme: document.documentElement.dataset.theme, width: innerWidth, height: innerHeight,
+          controls: controls.map(node => ({ name: node.getAttribute('aria-label') || node.textContent.trim(), size: parseFloat(getComputedStyle(node).fontSize) })),
+          code: code.map(node => ({ size: parseFloat(getComputedStyle(node).fontSize), family: getComputedStyle(node).fontFamily })),
+          overflow: document.documentElement.scrollWidth > innerWidth || [...document.querySelectorAll('.main-panel, .settings-dialog-content, .mcp-detail, .chat-scroll')].some(node => node.scrollWidth > node.clientWidth + 1),
+          composerFits: composer.every(node => { const rect = node.getBoundingClientRect(); return rect.width > 0 && rect.left >= -1 && rect.right <= innerWidth + 1 })
+        }
+      })()`)
+      typographyReports.push({ state, zoom, ...presentation })
+      await writeFile(join(process.cwd(), 'dist/ui02-typography.json'), JSON.stringify(typographyReports, null, 2) + '\n')
+      assert.equal(presentation.controls.every(control => control.size >= 13), true, state + ' / ' + zoom + ': 关键控件文字不随窄窗缩小')
+      assert.equal(presentation.code.every(code => code.size >= 13 && /Cascadia Code.*Consolas.*monospace/.test(code.family)), true, state + ' / ' + zoom + ': 代码与路径使用可读的等宽字体')
+      assert.equal(presentation.overflow, false, state + ' / ' + zoom + ': 页面没有意外横向溢出')
+      assert.equal(presentation.composerFits, true, state + ' / ' + zoom + ': Composer 操作位于视口内')
+      if (zoom !== 1) await writeFile(join(process.cwd(), 'dist', 'ui02-' + state + '-' + zoom * 100 + '.png'), (await window.webContents.capturePage()).toPNG())
+    }
+  } finally {
+    window.webContents.setZoomFactor(originalZoom)
+    await evaluate("new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done)))")
+  }
 }
 /**
  * 通过 Chromium 调试协议捕获当前审批与队列状态的三种常见色觉缺陷模拟。
@@ -146,10 +188,10 @@ function contrastRatio(foreground, background) {
   return (Math.max(a, b) + .05) / (Math.min(a, b) + .05)
 }
 /**
- * 验证正文、次级文案、弱化文案、占位符、主操作与导航图标的主题配色。
+ * 验证正文、浮层、占位符、主操作、导航图标与焦点标记的主题配色。
  * @param state 当前页面或交互状态，用于报告定位；读取现有页面但不改变其交互状态。
  * @returns 记录实际颜色与最不利背景对应比值后的断言完成。
- * @throws AssertionError 任何正文角色未达到 4.5，或导航图标未达到 3。
+ * @throws AssertionError 任何正文角色未达到 4.5，或导航图标、焦点标记未达到 3。
  */
 async function assertPaletteContrast(state) {
   const palette = await evaluate(`(() => {
@@ -160,9 +202,9 @@ async function assertPaletteContrast(state) {
       probe.style.color = 'var(' + token + ')'
       return getComputedStyle(probe).color
     }
-    const tokens = Object.fromEntries(['--canvas', '--surface', '--surface-muted', '--surface-focus', '--field', '--field-focus', '--hover', '--selected', '--accent-soft', '--text', '--secondary', '--muted', '--accent', '--accent-hover', '--on-accent'].map(token => [token, color(token)]))
+    const tokens = Object.fromEntries(['--canvas', '--surface', '--surface-muted', '--popover', '--focus-ring', '--surface-focus', '--field', '--field-focus', '--hover', '--selected', '--accent-soft', '--text', '--secondary', '--muted', '--accent', '--accent-hover', '--on-accent'].map(token => [token, color(token)]))
     probe.remove()
-    const backgrounds = Object.entries(tokens).filter(([name]) => ['--canvas', '--surface', '--surface-muted', '--surface-focus', '--field', '--field-focus', '--hover', '--selected', '--accent-soft'].includes(name))
+    const backgrounds = Object.entries(tokens).filter(([name]) => ['--canvas', '--surface', '--surface-muted', '--popover', '--surface-focus', '--field', '--field-focus', '--hover', '--selected', '--accent-soft'].includes(name))
     for (const selector of ['.titlebar', '.sidebar', '.app-statusbar', '.settings-dialog', '.settings-dialog-nav', '.settings-dialog-content']) {
       const node = document.querySelector(selector)
       if (node) (getComputedStyle(node).backgroundImage.match(/rgba?\\([^)]*\\)/g) ?? []).forEach((value, index) => backgrounds.push([selector + ' gradient stop ' + index, value]))
@@ -197,6 +239,10 @@ async function assertPaletteContrast(state) {
   }
   for (const [role, foreground, background] of [['primary', ...palette.primary], ['primary hover', palette.tokens['--text'], palette.tokens['--hover']], ...palette.selectedText]) {
     checks.push({ role, foreground, background, ratio: contrastRatio(foreground, background), minimum: 4.5 })
+  }
+  for (const [backgroundRole, background] of palette.backgrounds) {
+    const foreground = palette.tokens['--focus-ring']
+    checks.push({ role: 'focus ring', foreground, backgroundRole, background, ratio: contrastRatio(foreground, background), minimum: 3 })
   }
   paletteReports.push({ theme: palette.theme, route: palette.route, state, primaryEnabled: palette.primaryEnabled, checks })
   await writeFile(join(process.cwd(), "dist/workspace-contrast.json"), JSON.stringify(paletteReports, null, 2) + "\n")
@@ -640,6 +686,8 @@ async function main() {
   await until(() => evaluate("Boolean(document.querySelector('.project-sessions .session-name[aria-current=\"page\"]') && document.querySelector('.final-answer'))"))
   window.webContents.sendInputEvent({ type: "mouseMove", x: 500, y: 100 })
   await evaluate("document.activeElement.blur()")
+  /** aria-current 更新后，等待现有背景过渡产生可见帧，再检查选中外观。 */
+  await until(() => evaluate("getComputedStyle(document.querySelector('.project-sessions .session-name[aria-current=\"page\"]')).backgroundColor !== 'rgba(0, 0, 0, 0)'"))
   assert.equal(await evaluate("getComputedStyle(document.querySelector('.project-row')).backgroundColor"), "rgba(0, 0, 0, 0)", "选中项目对话时项目行保留原底色")
   assert.notEqual(await evaluate("getComputedStyle(document.querySelector('.project-sessions .session-name[aria-current=\"page\"]')).backgroundColor"), "rgba(0, 0, 0, 0)", "只为选中的对话保留高亮")
   assert.equal(await evaluate("document.querySelector('.project-name').hasAttribute('aria-current')"), false, "项目分组不同时标记为当前页面")
