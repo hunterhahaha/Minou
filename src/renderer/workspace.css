@@ -154,6 +154,28 @@ kbd { font: 10px "Segoe UI", sans-serif; white-space: nowrap; }
 .selector-trigger > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .selector-anchor { position: relative; min-width: 0; }
 .model-trigger { max-width: 240px; }
+.composer-model-picker .model-trigger { align-items: center; gap: 4px; height: 29px; line-height: 1.4; }
+.composer-model-name { max-width: 100%; font-size: 11px; }
+.composer-model-picker .composer-model-reasoning { flex: none; max-width: 80px; color: var(--muted); font-size: 11px; }
+.composer-model-chevron { flex: none; color: var(--muted); transition: transform .18s; }
+.model-trigger[aria-expanded="true"] > .composer-model-chevron { transform: rotate(180deg); }
+.composer-model-panel { position: fixed; inset: auto; width: min(310px, calc(100vw - 24px)); max-height: calc(100dvh - 24px); margin: 0; padding: 6px; overflow: auto; border: 0; border-radius: 13px; color: var(--text); background: var(--surface); box-shadow: var(--shadow); }
+.model-settings-menu { display: flex; flex-direction: column; }
+.model-setting-row { display: flex; align-items: center; gap: 7px; width: 100%; min-height: 42px; padding: 8px 10px; border: 0; border-radius: 8px; color: var(--text); background: transparent; text-align: left; font-size: 12px; }
+.model-setting-label { flex: none; }
+.model-setting-value { min-width: 0; margin-left: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--secondary); }
+.model-setting-row > svg { flex: none; color: var(--secondary); }
+.model-setting-row:hover { background: var(--hover); }
+.model-panel-back { display: inline-flex; align-items: center; gap: 7px; max-width: 100%; min-height: 34px; margin-bottom: 4px; padding: 4px 10px; border: 0; border-radius: 7px; color: var(--secondary); background: transparent; font-size: 12px; }
+.model-panel-back:hover { color: var(--text); background: var(--hover); }
+.model-option-list { display: flex; flex-direction: column; gap: 3px; }
+.model-option-list > button { display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%; min-height: 40px; padding: 9px 10px; border: 0; border-radius: 7px; color: var(--secondary); background: transparent; font-size: 12px; text-align: left; }
+.model-option-list > button:hover, .model-option-list > button[aria-checked="true"] { color: var(--accent); background: var(--accent-soft); }
+.model-option-list > button > span { min-width: 0; overflow-wrap: anywhere; }
+.composer-model-panel .model-menu strong, .composer-model-panel .model-menu small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.composer-model-panel .model-menu strong { font-size: 12px; font-weight: 550; }
+.composer-model-panel .model-menu small { margin-top: 4px; color: var(--muted); font-size: 10px; }
+.model-panel-note { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.7; }
 .setup-model-trigger { color: var(--accent); }
 .model-status { font-size: 10px; color: var(--muted); }
 .send-button { display: grid; place-items: center; flex: 0 0 32px; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 6px; color: var(--secondary); background: transparent; }

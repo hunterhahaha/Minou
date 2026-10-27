@@ -79,7 +79,29 @@
 .settings-section-heading h4 { margin: 0 0 5px; color: var(--text); font-size: 12px; font-weight: 600; }
 .settings-section-heading p { margin: 0; color: var(--muted); font-size: 10px; line-height: 1.6; }
 .create-model-list, .provider-model-list { display: flex; flex-direction: column; gap: 12px; }
-.create-model-row, .provider-model-editor { padding: 18px 0; border: 0; background: transparent; }
+.create-model-row, .provider-model-editor { position: relative; padding: 0; border: 0; background: transparent; }
+.model-disclosure > summary { display: flex; align-items: center; gap: 8px; min-height: 46px; padding: 10px 65px 10px 2px; border-radius: 6px; color: var(--text); font-size: 12px; cursor: pointer; list-style: none; }
+.model-disclosure > summary::-webkit-details-marker { display: none; }
+.model-disclosure > summary:hover { background: var(--hover); }
+.model-disclosure > summary > span:first-of-type { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-disclosure > summary > svg { flex: none; color: var(--muted); transition: transform .18s; }
+.model-disclosure[open] > summary > svg { transform: rotate(90deg); }
+.model-disclosure > .model-input-grid { padding: 16px 0 20px 24px; }
+.model-row-action { position: absolute; top: 12px; right: 3px; }
+.settings-field-label { display: flex; align-items: center; gap: 5px; }
+.field-help { display: inline-flex; vertical-align: middle; }
+.field-help-button { display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; padding: 0; border: 0; border-radius: 5px; color: var(--muted); background: transparent; }
+.field-help-button:hover { color: var(--text); background: var(--hover); }
+.field-help-tooltip { position: fixed; inset: auto; width: min(300px, calc(100vw - 24px)); margin: 0; padding: 12px 14px; border: 0; border-radius: 9px; color: var(--text); background: var(--surface); box-shadow: var(--shadow); font-size: 12px; font-weight: 400; line-height: 1.7; overflow-wrap: anywhere; pointer-events: none; }
+.reasoning-level-list { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; }
+.reasoning-level-item { display: flex; align-items: center; width: 112px; max-width: 100%; border-radius: 7px; background: var(--field); }
+.reasoning-level-item input { width: 0; flex: 1; padding-right: 2px; background: transparent; }
+.reasoning-level-item > button, .reasoning-level-add { display: grid; place-items: center; flex: none; width: 30px; height: 30px; margin-right: 3px; padding: 0; border: 0; border-radius: 5px; color: var(--muted); background: transparent; }
+.reasoning-level-item > button:hover:not(:disabled), .reasoning-level-add:hover:not(:disabled) { color: var(--text); background: var(--hover); }
+.reasoning-level-add { width: 36px; height: 39px; margin: 0; background: var(--field); }
+.reasoning-defaults { padding: 0 10px; color: var(--muted); font-size: 12px; }
+.reasoning-preview > summary { width: fit-content; padding: 4px 0; cursor: pointer; }
+.reasoning-preview > code { display: block; margin-top: 8px; padding: 10px 12px; border-radius: 6px; background: var(--field); }
 .create-model-row-heading, .provider-model-editor-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 15px; color: var(--secondary); font-size: 10px; font-weight: 550; }
 .provider-model-editor-heading { align-items: flex-start; }
 .provider-model-editor-heading h5 { display: inline; margin: 0 8px 0 0; color: var(--text); font-size: 12px; font-weight: 600; }
@@ -180,7 +202,7 @@
   .settings-page-heading h3, .provider-detail-heading h3, .mcp-toolbar h3, .skill-toolbar h3 { font-size: 21px; }
   .provider-create-form { padding: 0 18px 22px; } .provider-form-grid, .model-input-grid, .mcp-timeouts { grid-template-columns: minmax(0, 1fr); }
   .settings-field-wide { grid-column: auto; } .settings-section-heading { gap: 8px; }
-  .create-model-row, .provider-model-editor { padding: 13px; } .mcp-toolbar { align-items: flex-start; flex-wrap: wrap; padding: 22px 18px 17px; }
+  .model-disclosure > .model-input-grid { padding-left: 0; } .mcp-toolbar { align-items: flex-start; flex-wrap: wrap; padding: 22px 18px 17px; }
   .mcp-toolbar > .settings-field-actions { margin-left: auto; } .mcp-toolbar .settings-page-description { font-size: 10px; }
   .skill-settings { padding: 22px 18px; } .skill-entry { gap: 9px; flex-wrap: wrap; padding: 13px; }
   .skill-entry-icon { display: none; } .skill-entry-content { flex: 1 1 130px; } .skill-enabled { margin-left: auto; } .skill-path { font-size: 8px; }

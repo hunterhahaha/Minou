@@ -27,6 +27,7 @@ import { SessionPage } from "./session-page.tsx"
 import { WorkspaceSearch } from "./workspace-search.tsx"
 import { useDialogFocus } from "./dialog-focus.tsx"
 import { ComposerInput } from "./composer-input.tsx"
+import { ComposerModelPicker } from "./composer-model-picker.tsx"
 import { WindowControls } from "./window-controls.tsx"
 import "./workspace.css"
 
@@ -136,7 +137,7 @@ function Workspace() {
   const [defaultModelError, setDefaultModelError] = useState<string | undefined>()
   const [permission, setPermission] = useState<Permission>("default")
   const [newChatReasoningLevel, setNewChatReasoningLevel] = useState("medium")
-  const [openMenu, setOpenMenu] = useState<"permission" | "model" | "reasoning" | null>(null)
+  const [openMenu, setOpenMenu] = useState<"permission" | null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [projectsOpen, setProjectsOpen] = useState(true)
   const [chatsOpen, setChatsOpen] = useState(true)
@@ -570,10 +571,10 @@ function Workspace() {
                 {providers.status === "loading" && <span className="model-status" role="status">模型加载中…</span>}
                 {providers.status === "error" && <span className="model-status" role="alert">模型加载失败 <button className="retry-button" type="button" onClick={() => { void loadProviders() }}>重试</button></span>}
                 {providers.status === "ready" && (modelOptions.length === 0 ? <button className="selector-trigger setup-model-trigger" type="button" onClick={() => openSettingsDialog()}>配置模型</button>
-                  : <div className="selector-anchor model-anchor"><button className="selector-trigger model-trigger" type="button" aria-label="模型" aria-haspopup="menu" aria-expanded={openMenu === "model"} aria-busy={savingDefaultModel} disabled={savingDefaultModel} title={`${selectedModel?.providerName} / ${selectedModel?.name}`} onClick={() => setOpenMenu((current) => current === "model" ? null : "model")}><span>{savingDefaultModel ? "正在保存…" : selectedModel?.name}</span></button>
-                    {openMenu === "model" && <div className="selector-menu model-menu" role="menu" aria-label="模型选项"><p className="menu-label">选择模型</p>{modelOptions.map((model) => <button type="button" role="menuitemradio" aria-checked={model.selectionKey === selectedModel?.selectionKey} disabled={savingDefaultModel} key={model.selectionKey} title={`${model.providerName} / ${model.name}`} onClick={() => { void selectDefaultModel(model.selectionKey) }}><span><strong>{model.name}</strong><small>{model.providerName}</small></span>{model.selectionKey === selectedModel?.selectionKey && <span aria-hidden="true">✓</span>}</button>)}</div>}</div>)}
-                {selectedModel && <div className="selector-anchor reasoning-anchor"><button className="selector-trigger" type="button" aria-label="推理等级" aria-haspopup="menu" aria-expanded={openMenu === "reasoning"} onClick={() => setOpenMenu((current) => current === "reasoning" ? null : "reasoning")}>推理 {selectedReasoningLevel}</button>
-                  {openMenu === "reasoning" && <div className="selector-menu" role="menu" aria-label="推理等级选项"><p className="menu-label">推理等级</p>{selectedModel.reasoningLevels.map((level) => <button type="button" role="menuitemradio" aria-checked={level === selectedReasoningLevel} key={level} onClick={() => { setNewChatReasoningLevel(level); setOpenMenu(null) }}>{level}{level === selectedReasoningLevel && <span aria-hidden="true">✓</span>}</button>)}</div>}</div>}
+                  : <ComposerModelPicker label="模型" options={modelOptions.map((model) => ({ key: model.selectionKey, name: model.name, providerName: model.providerName }))}
+                      selectedKey={selectedModel?.selectionKey ?? ""} modelName={selectedModel?.name ?? "选择模型"}
+                      reasoningLevel={selectedReasoningLevel ?? ""} reasoningLevels={selectedModel?.reasoningLevels ?? []}
+                      disabled={savingDefaultModel || Boolean(newChatView.busy)} onModelChange={(key) => { void selectDefaultModel(key) }} onReasoningChange={setNewChatReasoningLevel} />)}
                 <button className="send-button" type="button" disabled={!selectedModel || !selectedReasoningLevel || savingDefaultModel || newChatView.busy || !(sessionsState.draftsByKey[newDraftKey] ?? "").trim()} onClick={() => void sendNewChat()} aria-label="发送消息"><IconArrowUp size={18} stroke={2} /></button>
               </div>
             </div>

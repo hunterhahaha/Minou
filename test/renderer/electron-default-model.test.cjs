@@ -35,13 +35,15 @@ async function until(predicate) {
 /** @param name 需要点击的模型名称。 @returns 真实页面的模型选择事件已触发。 */
 async function selectModel(name) {
   await evaluate("document.querySelector('.model-trigger').click()")
+  await until(() => evaluate("Boolean(document.querySelector('.composer-model-panel:popover-open'))"))
+  await evaluate("document.querySelector('[aria-label=\"切换模型\"]').click()")
   await until(() => evaluate("Boolean(document.querySelector('.model-menu'))"))
   await evaluate(`Array.from(document.querySelectorAll('.model-menu button')).find(node => node.querySelector('strong').textContent === ${JSON.stringify(name)}).click()`)
 }
 
 /** @param name 预期默认模型名称。 @returns 页面完成保存并显示该模型。 */
 async function selected(name) {
-  await until(() => evaluate(`document.querySelector('.model-trigger')?.textContent === ${JSON.stringify(name)} && !document.querySelector('.model-trigger').disabled`))
+  await until(() => evaluate(`document.querySelector('.composer-model-name')?.textContent === ${JSON.stringify(name)} && !document.querySelector('.model-trigger').disabled`))
 }
 
 /** @returns 页面切换、保存保护、失败重试、重载和首条消息模型传递断言完成。 */
@@ -51,7 +53,7 @@ async function main() {
   const paths = await initializeConfigFiles(profile)
   for (const model of [first, second]) {
     saveProvider(paths.providerDatabasePath, { id: model.providerId, name: model.providerId, type: "custom", protocol: model.protocol })
-    saveModel(paths.providerDatabasePath, { ...model, ...reasoning, contextWindow: 256000, maxOutputTokens: 32000 })
+    saveModel(paths.providerDatabasePath, { ...model, ...reasoning, reasoningLevels: model === second ? ["max"] : reasoning.reasoningLevels, contextWindow: 256000, maxOutputTokens: 32000 })
   }
   const port = { handle(channel, listener) {
     ipcMain.handle(channel, async (event, ...args) => {
@@ -102,6 +104,13 @@ async function main() {
   releaseSave()
   releaseSave = undefined
   await selected(second.name)
+  assert.equal(await evaluate("document.querySelector('.composer-model-reasoning').textContent"), "max", "切换模型时回退到新模型有效等级")
+  await evaluate("document.querySelector('.model-trigger').click()")
+  await until(() => evaluate("Boolean(document.querySelector('.composer-model-panel:popover-open'))"))
+  await evaluate("document.querySelector('[aria-label=\"设置推理等级\"]').click()")
+  await until(() => evaluate("Boolean(document.querySelector('.reasoning-menu'))"))
+  assert.deepEqual(await evaluate("[...document.querySelectorAll('.reasoning-menu button')].map(node => [node.querySelector('span').textContent, node.getAttribute('aria-checked')])"), [["max", "true"]], "只有一个等级时展示唯一已选项")
+  await evaluate("document.querySelector('.composer-model-panel').hidePopover()")
   assert.deepEqual(readDefaultModel(paths.providerDatabasePath), { providerId: second.providerId, modelId: second.modelId })
   assert.equal(await evaluate("document.querySelectorAll('.chat-error').length"), 0)
 
@@ -120,10 +129,13 @@ async function main() {
   assert.deepEqual(await evaluate("window.nicode.listProviders().then(providers => providers.flatMap(provider => provider.models.filter(model => model.isDefault).map(model => ({ providerId: provider.providerId, modelId: model.modelId }))))"), [
     { providerId: first.providerId, modelId: first.modelId },
   ], "Provider 列表返回唯一已保存的默认模型")
-  await evaluate("document.querySelector('[aria-label=\"推理等级\"]').click()")
-  await until(() => evaluate("Boolean(document.querySelector('[aria-label=\"推理等级选项\"]'))"))
-  await evaluate("[...document.querySelectorAll('[aria-label=\"推理等级选项\"] button')].find(node => node.textContent.includes('high')).click()")
-  assert.equal(await evaluate("document.querySelector('[aria-label=\"推理等级\"]').textContent.includes('high')"), true)
+  await evaluate("document.querySelector('.model-trigger').click()")
+  await until(() => evaluate("Boolean(document.querySelector('.composer-model-panel:popover-open'))"))
+  await evaluate("document.querySelector('[aria-label=\"设置推理等级\"]').click()")
+  await until(() => evaluate("Boolean(document.querySelector('.reasoning-menu'))"))
+  await evaluate("[...document.querySelectorAll('.reasoning-menu button')].find(node => node.querySelector('span').textContent === 'high').click()")
+  assert.equal(await evaluate("document.querySelector('.composer-model-reasoning').textContent"), "high")
+  await until(() => evaluate("!document.querySelector('.composer-model-panel:popover-open')"))
   await evaluate(`(() => {
     const input = document.querySelector('textarea[aria-label="任务描述"]')
     Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(input, '首条消息')

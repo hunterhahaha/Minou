@@ -8,6 +8,7 @@ import type { ProviderSummary, SandboxMode, SessionSettingsPatch } from "../prel
 import { errorMessage, projectSessionEvents, sessionKey, WorkspaceSessionState, type ChatItem } from "./session-state.ts"
 import { MarkdownContent } from "./markdown-content.tsx"
 import { ComposerInput } from "./composer-input.tsx"
+import { ComposerModelPicker } from "./composer-model-picker.tsx"
 
 /** 已确定的 Session 权限展示。 */
 export const sandboxLabels: Record<SandboxMode, string> = {
@@ -107,11 +108,11 @@ export function SessionPage({ projectId, sessionId, state, providers }: SessionP
   const modelOptions = providers.flatMap((provider) => provider.models.map((model) => ({
     providerId: provider.providerId, protocol: provider.protocol, modelId: model.modelId, name: model.name,
     reasoningLevels: model.reasoningLevels,
-    label: provider.name + " / " + model.name,
+    providerName: provider.name,
   })))
   const selectedKey = control ? JSON.stringify([control.currentModel.providerId, control.currentModel.modelId]) : ""
   const currentModelOption = modelOptions.find((model) => JSON.stringify([model.providerId, model.modelId]) === selectedKey)
-  const reasoningOptions = currentModelOption?.reasoningLevels ?? (control ? [control.currentModel.reasoningLevel] : [])
+  const reasoningOptions = currentModelOption?.reasoningLevels ?? []
   useEffect(() => { followsRef.current = true; setShowScrollToBottom(false); endRef.current?.scrollIntoView() }, [key])
   useEffect(() => { if (followsRef.current) endRef.current?.scrollIntoView({ block: "end" }) }, [events.length, key])
   useLayoutEffect(() => {
@@ -268,25 +269,17 @@ export function SessionPage({ projectId, sessionId, state, providers }: SessionP
             <label className="chat-select-label chat-permission-select"><IconShieldCheck size={15} aria-hidden="true" /><select aria-label="对话权限" disabled={!control || view.busy} value={control?.sandboxMode ?? "sandbox-full-access"} onChange={(event) => void settings({ sandboxMode: event.target.value as SandboxMode })}>
               {Object.entries(sandboxLabels).map(([mode, label]) => <option value={mode} key={mode}>{label}</option>)}
             </select></label>
-            <label className="chat-select-label"><select aria-label="对话模型" disabled={!control || view.busy} value={selectedKey} onChange={(event) => {
-              const model = modelOptions.find((item) => JSON.stringify([item.providerId, item.modelId]) === event.target.value)
-              if (model) { const { label: _label, reasoningLevels, ...reference } = model; void settings({ model: {
-                ...reference, reasoningLevel: preferredReasoningLevel(reasoningLevels, control?.currentModel.reasoningLevel),
-              } }) }
-            }}>
-              {control && !modelOptions.some((model) => JSON.stringify([model.providerId, model.modelId]) === selectedKey) && <option value={selectedKey}>{control.currentModel.name}</option>}
-              {modelOptions.map((model) => <option value={JSON.stringify([model.providerId, model.modelId])} key={JSON.stringify([model.providerId, model.modelId])}>{model.label}</option>)}
-            </select></label>
-            <label className="chat-select-label"><select aria-label="对话推理等级" disabled={!control || view.busy || !currentModelOption}
-              value={control?.currentModel.reasoningLevel ?? ""} onChange={(event) => {
-                if (control) void settings({ model: { ...control.currentModel, reasoningLevel: event.target.value } })
-              }}>
-              {control && !reasoningOptions.includes(control.currentModel.reasoningLevel) &&
-                <option value={control.currentModel.reasoningLevel}>{control.currentModel.reasoningLevel}（已失效）</option>}
-              {reasoningOptions.map((level) => <option key={level} value={level}>{level}</option>)}
-            </select></label>
           </div>
           <div className="composer-controls">
+            <ComposerModelPicker key={key} label="对话模型" options={modelOptions.map((model) => ({ key: JSON.stringify([model.providerId, model.modelId]), name: model.name, providerName: model.providerName }))}
+              selectedKey={selectedKey} modelName={control?.currentModel.name ?? "选择模型"} reasoningLevel={control?.currentModel.reasoningLevel ?? ""}
+              reasoningLevels={reasoningOptions} disabled={!control || Boolean(view.busy)}
+              onModelChange={(selection) => {
+                const model = modelOptions.find((item) => JSON.stringify([item.providerId, item.modelId]) === selection)
+                if (model) { const { providerName: _provider, reasoningLevels, ...reference } = model; void settings({ model: {
+                  ...reference, reasoningLevel: preferredReasoningLevel(reasoningLevels, control?.currentModel.reasoningLevel),
+                } }) }
+              }} onReasoningChange={(reasoningLevel) => { if (control) void settings({ model: { ...control.currentModel, reasoningLevel } }) }} />
             {control && control.phase !== "idle" && <button className="stop-button" disabled={view.busy || control.phase === "stopping"} onClick={() => void operate(() => window.nicode.stopSession(projectId, sessionId))}><IconPlayerStop size={13} />{control.phase === "stopping" ? "正在停止" : "停止"}</button>}
             <button className="send-button" aria-label={control?.phase === "running" ? "加入队列" : "发送消息"} disabled={!control || view.busy || control.phase === "stopping" || !(state.draftsByKey[key] ?? "").trim()} onClick={() => void send()}><IconArrowUp size={18} stroke={2} /></button>
           </div>

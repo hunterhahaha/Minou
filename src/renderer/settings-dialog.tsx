@@ -1,7 +1,7 @@
 /** 设置弹窗：维护模型、MCP 配置与按来源管理的技能。 */
 
-import { type FormEvent, useEffect, useRef, useState } from "react"
-import { IconCpu, IconPlugConnected, IconPlus, IconSettings, IconSparkles, IconX } from "@tabler/icons-react"
+import { type FormEvent, useEffect, useId, useRef, useState } from "react"
+import { IconChevronRight, IconCpu, IconHelpCircle, IconPlugConnected, IconPlus, IconSettings, IconSparkles, IconX } from "@tabler/icons-react"
 import { useDialogFocus } from "./dialog-focus.tsx"
 
 import type {
@@ -39,8 +39,8 @@ interface ModelDraft {
   contextWindow: string
   /** 单次请求允许的最大输出 Token 数。 */
   maxOutputTokens: string
-  /** 逗号分隔的推理等级；留空时由主进程补齐协议默认值。 */
-  reasoningLevels: string
+  /** 按用户填写顺序保存的独立推理等级；空数组使用协议默认值。 */
+  reasoningLevels: string[]
   /** 点分请求字段路径；留空时由主进程补齐协议默认值。 */
   reasoningFieldPath: string
 }
@@ -66,7 +66,7 @@ function createModelDraft(): ModelDraft {
     name: "",
     contextWindow: "256000",
     maxOutputTokens: "32000",
-    reasoningLevels: "",
+    reasoningLevels: defaultReasoningConfig("responses").reasoningLevels,
     reasoningFieldPath: "",
   }
 }
@@ -101,14 +101,101 @@ function parseModelDraft(draft: Pick<ModelDraft, "name" | "contextWindow" | "max
 }
 
 /**
- * 解析逗号分隔的等级输入，空白表示使用协议默认值。
- * @param value 页面输入框原文。
+ * 整理逐项填写的等级，空列表表示使用协议默认值。
+ * @param value 按显示顺序排列的输入框原文。
  * @returns 有效列表、缺省时 undefined、无效时 null。
  */
-function parseReasoningLevelsDraft(value: string): string[] | undefined | null {
-  if (value.trim() === "") return undefined
-  const levels = value.split(",").map((part) => part.trim())
+function parseReasoningLevelsDraft(value: string[]): string[] | undefined | null {
+  if (value.length === 0) return undefined
+  const levels = value.map((part) => part.trim())
   return isReasoningLevels(levels) ? levels : null
+}
+
+/**
+ * 在悬浮或键盘聚焦帮助图标时显示说明；使用顶层浮层避免被滚动表单裁切。
+ * @param props 字段名称和需要按需展示的说明。
+ * @returns 带可访问说明关系的帮助图标与提示。
+ */
+function FieldHelp({ label, children }: { label: string; children: string }) {
+  const id = useId()
+  const tipRef = useRef<HTMLSpanElement>(null)
+  const buttonRef = useRef<HTMLButtonElement>(null)
+  /** 关闭提示；滚动或改变窗口尺寸时不保留脱离字段的浮层。 */
+  function hide(): void { tipRef.current?.hidePopover() }
+  /**
+   * 将帮助说明放在图标附近的可见窗口区域。
+   * @param button 当前获得悬浮或焦点的帮助按钮。
+   */
+  function show(button: HTMLButtonElement): void {
+    const tip = tipRef.current
+    if (!tip) return
+    const rect = button.getBoundingClientRect()
+    tip.style.left = Math.max(12, Math.min(rect.left, window.innerWidth - Math.min(300, window.innerWidth - 24) - 12)) + "px"
+    tip.style.top = (rect.bottom + 100 < window.innerHeight ? rect.bottom + 8 : rect.top - 8) + "px"
+    tip.style.transform = rect.bottom + 100 < window.innerHeight ? "none" : "translateY(-100%)"
+    tip.showPopover()
+  }
+  useEffect(() => {
+    /** 聚焦说明随字段滚动定位；鼠标悬浮说明在滚动后关闭。 */
+    function followField(): void {
+      const button = buttonRef.current
+      if (button && document.activeElement === button && tipRef.current?.matches(":popover-open")) show(button)
+      else hide()
+    }
+    window.addEventListener("scroll", followField, true)
+    window.addEventListener("resize", followField)
+    return () => { window.removeEventListener("scroll", followField, true); window.removeEventListener("resize", followField) }
+  }, [])
+  return <span className="field-help">
+    <button ref={buttonRef} type="button" className="field-help-button" aria-label={label + "说明"} aria-describedby={id}
+      onMouseEnter={(event) => show(event.currentTarget)} onFocus={(event) => {
+        const button = event.currentTarget
+        requestAnimationFrame(() => { if (document.activeElement === button) show(button) })
+      }}
+      onMouseLeave={() => { if (document.activeElement !== buttonRef.current) hide() }} onBlur={hide} onClick={(event) => event.preventDefault()}
+      onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); hide() } }}>
+      <IconHelpCircle size={14} stroke={1.6} aria-hidden="true" />
+    </button>
+    <span ref={tipRef} id={id} role="tooltip" popover="manual" className="field-help-tooltip">{children}</span>
+  </span>
+}
+
+/**
+ * 逐项编辑模型支持的推理等级；增删保留输入顺序，空项或重复项交给提交校验拒绝。
+ * @param props 草稿数组、协议默认等级、禁用状态与完整数组更新出口。
+ * @returns 独立等级输入框、移除操作和添加按钮。
+ */
+function ReasoningLevelInputs({ levels, defaults, disabled, onChange }: {
+  levels: string[]; defaults: string[]; disabled: boolean; onChange: (value: string[]) => void
+}) {
+  const container = useRef<HTMLDivElement>(null)
+  /** 添加一个空项，并在 React 更新后聚焦新输入框。 */
+  function addLevel(): void {
+    onChange([...levels, ""])
+    requestAnimationFrame(() => container.current?.querySelector<HTMLInputElement>(".reasoning-level-item:last-of-type input")?.focus())
+  }
+  return <div className="settings-field settings-field-wide">
+    <span className="settings-field-label">推理等级<FieldHelp label="推理等级">逐项填写，按从低到高排列，等级不能为空或重复。新建模型时移除全部等级可使用协议默认值。</FieldHelp></span>
+    <div className="reasoning-level-list" ref={container}>
+      {levels.map((level, index) => <div className="reasoning-level-item" key={index}>
+        <input type="text" aria-label={"推理等级 " + (index + 1)} value={level} disabled={disabled} placeholder={defaults[index] ?? "等级"}
+          onChange={(event) => onChange(levels.map((entry, position) => position === index ? event.target.value : entry))}
+          onKeyDown={(event) => { if (event.key === "Enter" && !event.nativeEvent.isComposing) { event.preventDefault(); addLevel() } }} />
+        <button type="button" aria-label={"移除推理等级 " + (index + 1)} disabled={disabled}
+          onClick={() => {
+            onChange(levels.filter((_, position) => position !== index))
+            requestAnimationFrame(() => {
+              const inputs = container.current?.querySelectorAll<HTMLInputElement>("input")
+              if (inputs?.length) inputs[Math.min(index, inputs.length - 1)].focus()
+              else container.current?.querySelector<HTMLButtonElement>(".reasoning-level-add")?.focus()
+            })
+          }}><IconX size={12} aria-hidden="true" /></button>
+      </div>)}
+      {levels.length === 0 && <span className="reasoning-defaults">{defaults.join(" · ")}</span>}
+      <button className="reasoning-level-add" type="button" aria-label="添加推理等级" disabled={disabled} onClick={addLevel}><IconPlus size={16} aria-hidden="true" /></button>
+    </div>
+    {levels.length > 0 && !isReasoningLevels(levels.map((level) => level.trim())) && <span className="settings-inline-error">推理等级不能为空或重复。</span>}
+  </div>
 }
 
 /**
@@ -130,10 +217,10 @@ function parseReasoningFieldDraft(value: string, protocol: Protocol): ReasoningF
  */
 function ReasoningDraftInputs({ protocol, levels, fieldPath, disabled, onLevelsChange, onFieldPathChange }: {
   protocol: Protocol
-  levels: string
+  levels: string[]
   fieldPath: string
   disabled: boolean
-  onLevelsChange: (value: string) => void
+  onLevelsChange: (value: string[]) => void
   onFieldPathChange: (value: string) => void
 }) {
   const parsedLevels = parseReasoningLevelsDraft(levels)
@@ -144,17 +231,13 @@ function ReasoningDraftInputs({ protocol, levels, fieldPath, disabled, onLevelsC
   const preview = field === null || effectiveLevels === null ? "字段或等级格式无效"
     : JSON.stringify(renderReasoningField(field, effectiveLevels.includes("medium") ? "medium" : effectiveLevels[0], protocol))
   return <>
-    <label className="settings-field">
-      <span>推理等级 <small>逗号分隔，留空用协议默认值</small></span>
-      <input type="text" aria-label="推理等级" placeholder="low, medium, high" value={levels} disabled={disabled}
-        onChange={(event) => onLevelsChange(event.target.value)} />
-    </label>
-    <label className="settings-field">
-      <span>推理字段路径 <small>留空用协议默认值</small></span>
+    <ReasoningLevelInputs levels={levels} defaults={defaults.reasoningLevels} disabled={disabled} onChange={onLevelsChange} />
+    <label className="settings-field settings-field-wide">
+      <span className="settings-field-label">推理字段路径<FieldHelp label="推理字段路径">使用点号分隔请求字段路径，留空使用当前协议默认值。</FieldHelp></span>
       <input type="text" aria-label="推理字段路径" placeholder={defaults.reasoningField.path.join(".")} value={fieldPath} disabled={disabled}
         onChange={(event) => onFieldPathChange(event.target.value)} />
     </label>
-    <p className="reasoning-preview settings-field-wide">请求预览：<code>{preview}</code></p>
+    <details className="reasoning-preview settings-field-wide"><summary>请求预览</summary><code>{preview}</code></details>
   </>
 }
 
@@ -449,7 +532,6 @@ function CreateProviderForm({
     return () => { active = false }
   }, [])
 
-  const compatibleNames = compatibleProviders.map((entry) => entry.name)
   const availableProtocols = providerType === "compatible"
     ? compatibleProviders.find((entry) => entry.name === compatibleName)?.protocol ?? []
     : PROTOCOLS
@@ -503,9 +585,7 @@ function CreateProviderForm({
   return <div className="provider-create-page">
     <div className="settings-page-heading">
       <div>
-        <p className="settings-eyebrow">模型</p>
         <h3>创建供应商</h3>
-        <p>填写连接信息，并添加要使用的模型。</p>
       </div>
       {hasProviders && <button className="settings-secondary-button" type="button" disabled={creating}
         onClick={() => { if (!creatingRef.current) onCancel() }}>返回供应商列表</button>}
@@ -513,33 +593,21 @@ function CreateProviderForm({
     <form className="provider-create-form" onSubmit={(event) => { void submit(event) }}>
       <div className="provider-form-grid">
         <label className="settings-field settings-field-wide">
-          <span>供应商类型</span>
-          <select aria-label="供应商类型" value={providerType} disabled={creating}
+          <span>供应商</span>
+          <select aria-label="供应商" value={providerType === "custom" ? "custom" : "compatible:" + compatibleName} disabled={creating}
             onChange={(event) => {
-              const nextType = event.target.value as "compatible" | "custom"
-              setProviderType(nextType)
-              if (nextType === "compatible" && !compatibleProviders.some((entry) =>
-                entry.name === compatibleName && entry.protocol.some((supported) => supported === protocol))) setProtocol("")
-            }}>
-            <option value="custom">自定义</option>
-            <option value="compatible">已兼容</option>
-          </select>
-        </label>
-        {providerType === "compatible" ? <label className="settings-field">
-          <span>已兼容供应商</span>
-          <select aria-label="已兼容供应商" value={compatibleName} disabled={creating || compatibleNames.length === 0}
-            onChange={(event) => {
-              const nextName = event.target.value
-              setCompatibleName(nextName)
-              setProtocol((current) => compatibleProviders.some((entry) =>
+              const nextName = event.target.value === "custom" ? null : event.target.value.slice("compatible:".length)
+              setProviderType(nextName === null ? "custom" : "compatible")
+              setCompatibleName(nextName ?? "")
+              if (nextName !== null) setProtocol((current) => compatibleProviders.some((entry) =>
                 entry.name === nextName && entry.protocol.some((supported) => supported === current)) ? current : "")
             }}>
-            <option value="">请选择供应商</option>
-            {compatibleNames.map((entry) => <option value={entry} key={entry}>{entry}</option>)}
+            <option value="custom">自定义</option>
+            {compatibleProviders.map((entry) => <option value={"compatible:" + entry.name} key={entry.name}>{entry.name}</option>)}
           </select>
-          {compatibleLoadError && <span className="settings-inline-error">已兼容供应商列表读取失败，请重新打开设置后重试。</span>}
-          {!compatibleLoadError && compatibleNames.length === 0 && <span className="settings-empty-note">暂无已兼容供应商，可选择自定义。</span>}
-        </label> : <label className="settings-field">
+          {compatibleLoadError && <span className="settings-inline-error">供应商目录读取失败，请重新打开设置后重试；仍可创建自定义供应商。</span>}
+        </label>
+        {providerType === "custom" && <label className="settings-field">
           <span>供应商名称</span>
           <input
             type="text"
@@ -551,7 +619,7 @@ function CreateProviderForm({
             onChange={(event) => setName(event.target.value)}
           />
         </label>}
-        <label className="settings-field">
+        <label className={providerType === "compatible" ? "settings-field settings-field-wide" : "settings-field"}>
           <span>协议</span>
           <select aria-label="供应商协议" value={protocol} disabled={creating || availableProtocols.length === 0}
             onChange={(event) => setProtocol(event.target.value as Protocol | "")}>
@@ -588,7 +656,6 @@ function CreateProviderForm({
         <div className="settings-section-heading">
           <div>
             <h4 id="create-models-title">模型</h4>
-            <p>上下文窗口和最大输出使用 Token 数。</p>
           </div>
           <button
             className="settings-secondary-button"
@@ -603,18 +670,8 @@ function CreateProviderForm({
         {models.length === 0
           ? <p className="settings-empty-note">还没有添加模型。</p>
           : <div className="create-model-list">{models.map((model, index) => <div className="create-model-row" key={model.draftId}>
-              <div className="create-model-row-heading">
-                <span>模型 {index + 1}</span>
-                <button
-                  className="settings-text-button"
-                  type="button"
-                  disabled={creating}
-                  aria-label={"移除模型 " + (index + 1)}
-                  onClick={() => setModels((current) => current.filter((entry) => entry.draftId !== model.draftId))}
-                >
-                  移除
-                </button>
-              </div>
+              <details className="model-disclosure" open>
+                <summary><IconChevronRight size={16} aria-hidden="true" /><span>{model.name.trim() || "模型 " + (index + 1)}</span></summary>
               <div className="model-input-grid">
                 <label className="settings-field settings-field-wide">
                   <span>模型名称</span>
@@ -627,34 +684,30 @@ function CreateProviderForm({
                   />
                 </label>
                 <label className="settings-field">
-                  <span>最大上下文</span>
-                  <input
-                    type="number"
-                    min={1}
-                    step={1}
-                    inputMode="numeric"
-                    value={model.contextWindow}
-                    disabled={creating}
-                    onChange={(event) => updateModelDraft(model.draftId, { contextWindow: event.target.value })}
-                  />
+                  <span>最大上下文 (Token)</span>
+                  <input type="number" min={1} step={1} inputMode="numeric" value={model.contextWindow} disabled={creating}
+                    onChange={(event) => updateModelDraft(model.draftId, { contextWindow: event.target.value })} />
                 </label>
                 <label className="settings-field">
-                  <span>最大输出</span>
-                  <input
-                    type="number"
-                    min={1}
-                    step={1}
-                    inputMode="numeric"
-                    value={model.maxOutputTokens}
-                    disabled={creating}
-                    onChange={(event) => updateModelDraft(model.draftId, { maxOutputTokens: event.target.value })}
-                  />
+                  <span>最大输出 (Token)</span>
+                  <input type="number" min={1} step={1} inputMode="numeric" value={model.maxOutputTokens} disabled={creating}
+                    onChange={(event) => updateModelDraft(model.draftId, { maxOutputTokens: event.target.value })} />
                 </label>
                 {protocol !== "" && <ReasoningDraftInputs protocol={protocol} levels={model.reasoningLevels}
                   fieldPath={model.reasoningFieldPath} disabled={creating}
                   onLevelsChange={(value) => updateModelDraft(model.draftId, { reasoningLevels: value })}
                   onFieldPathChange={(value) => updateModelDraft(model.draftId, { reasoningFieldPath: value })} />}
               </div>
+              </details>
+                <button
+                  className="settings-text-button model-row-action"
+                  type="button"
+                  disabled={creating}
+                  aria-label={"移除模型 " + (index + 1)}
+                  onClick={() => setModels((current) => current.filter((entry) => entry.draftId !== model.draftId))}
+                >
+                  移除
+                </button>
             </div>)}</div>}
       </section>}
 
@@ -753,10 +806,7 @@ function ProviderDetail({
 
   return <div className="provider-detail">
     <div className="provider-detail-heading" inert={newModelDialogOpen}>
-      <div>
-        <p className="settings-eyebrow">供应商详情</p>
-        <h3>{provider.name}</h3>
-      </div>
+      <h3>{provider.name}</h3>
       <span className="provider-protocol-badge">{protocolLabels[provider.protocol]}</span>
     </div>
 
@@ -811,7 +861,7 @@ function ProviderDetail({
         {urlDirty && !urlValid && <span className="settings-inline-error">请输入有效的 HTTP 或 HTTPS 绝对地址。</span>}
       </label>
       <label className="settings-field">
-        <span>API Key</span>
+        <span className="settings-field-label">API Key<FieldHelp label="API Key">此处不会显示已保存的 Key，填写新 Key 后点击保存即可更新。</FieldHelp></span>
         <input
           type="password"
           aria-label="供应商 API Key"
@@ -833,24 +883,23 @@ function ProviderDetail({
             取消
           </button>
         </div>}
-        <span className="settings-field-hint" role={apiKeyState === "error" ? "alert" : "status"}>
+        {apiKeyState !== "idle" && <span className="settings-field-hint" role={apiKeyState === "error" ? "alert" : "status"}>
           {apiKeyState === "saving" ? "正在保存 API Key…" :
             apiKeyState === "saved" ? "API Key 已更新。" :
               apiKeyState === "error" ? "API Key 保存失败，请重试。" :
-                "输入新 Key 后点击保存；此处不会显示已保存的 Key。"}
-        </span>
+                ""}
+        </span>}
       </label>
-      <div className="provider-profile-status" role={profileError === null ? "status" : "alert"}>
+      {(profileError !== null || profileState === "saving" || profileState === "error") && <div className="provider-profile-status" role={profileError === null ? "status" : "alert"}>
         {profileError ?? (profileState === "saving" ? "正在保存供应商信息…" :
-          profileState === "error" ? "供应商信息保存失败。" : "修改后点击字段旁的保存按钮，取消可恢复已保存的值。")}
-      </div>
+          profileState === "error" ? "供应商信息保存失败。" : "")}
+      </div>}
     </div>
 
     <section className="provider-models-section" aria-labelledby="provider-models-title" inert={newModelDialogOpen}>
       <div className="settings-section-heading">
         <div>
           <h4 id="provider-models-title">关联模型</h4>
-          <p>修改后点击保存；取消仅恢复对应字段。</p>
         </div>
         <button className="settings-secondary-button" type="button" onClick={() => setNewModelDialogOpen(true)}>
           <IconPlus size={16} stroke={1.7} aria-hidden="true" />
@@ -901,7 +950,7 @@ function ModelEditor({
   const [name, setName] = useState(model.name)
   const [contextWindow, setContextWindow] = useState(String(model.contextWindow))
   const [maxOutputTokens, setMaxOutputTokens] = useState(String(model.maxOutputTokens))
-  const [reasoningLevels, setReasoningLevels] = useState(model.reasoningLevels.join(", "))
+  const [reasoningLevels, setReasoningLevels] = useState(model.reasoningLevels)
   const [reasoningFieldPath, setReasoningFieldPath] = useState(model.reasoningField.path.join("."))
   const [saveState, setSaveState] = useState<"saved" | "saving" | "error">("saved")
   const [savingField, setSavingField] = useState<"name" | "contextWindow" | "maxOutputTokens" | null>(null)
@@ -910,13 +959,13 @@ function ModelEditor({
     name: model.name,
     contextWindow: model.contextWindow,
     maxOutputTokens: model.maxOutputTokens,
-    reasoningLevels: model.reasoningLevels.join(", "),
+    reasoningLevels: model.reasoningLevels,
     reasoningFieldPath: model.reasoningField.path.join("."),
   })
   const nameDirty = name !== lastSaved.current.name
   const contextDirty = contextWindow !== String(lastSaved.current.contextWindow)
   const outputDirty = maxOutputTokens !== String(lastSaved.current.maxOutputTokens)
-  const reasoningDirty = reasoningLevels !== lastSaved.current.reasoningLevels ||
+  const reasoningDirty = JSON.stringify(reasoningLevels) !== JSON.stringify(lastSaved.current.reasoningLevels) ||
     reasoningFieldPath !== lastSaved.current.reasoningFieldPath
   const parsedReasoningLevels = parseReasoningLevelsDraft(reasoningLevels)
   const parsedReasoningField = parseReasoningFieldDraft(reasoningFieldPath, protocol)
@@ -995,20 +1044,10 @@ function ModelEditor({
   }
 
   return <article className="provider-model-editor">
-    <div className="provider-model-editor-heading">
-      <div>
-        <h5>{model.name}</h5>
+    <details className="model-disclosure">
+      <summary><IconChevronRight size={16} aria-hidden="true" /><span>{model.name}</span>
         {model.isDefault && <span className="default-model-badge">默认模型</span>}
-      </div>
-      <button
-        className="settings-text-button settings-danger-button"
-        type="button"
-        disabled={busy}
-        onClick={() => { void deleteCurrentModel() }}
-      >
-        {deleting ? "正在删除…" : "删除"}
-      </button>
-    </div>
+      </summary>
     <div className="model-input-grid">
       <label className="settings-field settings-field-wide">
         <span>模型名称</span>
@@ -1026,7 +1065,7 @@ function ModelEditor({
         {nameDirty && name.trim() === "" && <span className="settings-inline-error">模型名称不能为空。</span>}
       </label>
       <label className="settings-field">
-        <span>最大上下文</span>
+        <span>最大上下文 (Token)</span>
         <input
           type="number"
           aria-label="最大上下文"
@@ -1050,7 +1089,7 @@ function ModelEditor({
         {contextDirty && !contextValid && <span className="settings-inline-error">最大上下文必须为正整数。</span>}
       </label>
       <label className="settings-field">
-        <span>最大输出</span>
+        <span>最大输出 (Token)</span>
         <input
           type="number"
           aria-label="最大输出"
@@ -1073,20 +1112,16 @@ function ModelEditor({
         </div>}
         {outputDirty && !outputValid && <span className="settings-inline-error">最大输出必须为正整数。</span>}
       </label>
-      <label className="settings-field">
-        <span>推理等级</span>
-        <input type="text" aria-label="编辑推理等级" disabled={busy} value={reasoningLevels}
-          onChange={(event) => setReasoningLevels(event.target.value)} />
-      </label>
-      <label className="settings-field">
-        <span>推理字段路径</span>
+      <ReasoningLevelInputs levels={reasoningLevels} defaults={defaultReasoningConfig(protocol).reasoningLevels} disabled={busy} onChange={setReasoningLevels} />
+      <label className="settings-field settings-field-wide">
+        <span className="settings-field-label">推理字段路径<FieldHelp label="推理字段路径">使用点号分隔请求字段路径；保存时不能为空，也不能覆盖协议固定字段。</FieldHelp></span>
         <input type="text" aria-label="编辑推理字段路径" disabled={busy} value={reasoningFieldPath}
           onChange={(event) => setReasoningFieldPath(event.target.value)} />
       </label>
       <div className="settings-field settings-field-wide">
-        <p className="reasoning-preview">请求预览：<code>{reasoningValid
+        <details className="reasoning-preview"><summary>请求预览</summary><code>{reasoningValid
           ? JSON.stringify(renderReasoningField(parsedReasoningField!, parsedReasoningLevels!.includes("medium") ? "medium" : parsedReasoningLevels![0], protocol))
-          : "字段或等级格式无效"}</code></p>
+          : "字段或等级格式无效"}</code></details>
         {reasoningDirty && <div className="settings-field-actions">
           <button className="settings-primary-button" type="button" disabled={busy || !reasoningValid}
             onClick={() => { void saveReasoning() }}>保存推理配置</button>
@@ -1099,11 +1134,14 @@ function ModelEditor({
         {reasoningDirty && !reasoningValid && <span className="settings-inline-error">推理等级和字段路径均不能为空，且必须是有效格式。</span>}
       </div>
     </div>
-    <p className={saveState === "error" ? "model-save-status model-save-status-error" : "model-save-status"} role={saveState === "error" ? "alert" : "status"}>
+    {(saveState !== "saved" || nameDirty || contextDirty || outputDirty || reasoningDirty) && <p className={saveState === "error" ? "model-save-status model-save-status-error" : "model-save-status"} role={saveState === "error" ? "alert" : "status"}>
       {saveState === "saving" ? "正在保存…" :
         saveState === "error" ? "模型操作失败，请重试。" :
           nameDirty || contextDirty || outputDirty || reasoningDirty ? "有未保存的修改。" : "已保存"}
-    </p>
+    </p>}
+    </details>
+    <button className="settings-text-button settings-danger-button model-row-action" type="button" disabled={busy}
+      aria-label={"删除模型 " + model.name} onClick={() => { void deleteCurrentModel() }}>{deleting ? "正在删除…" : "删除"}</button>
   </article>
 }
 
@@ -1128,7 +1166,7 @@ function CreateModelDialog({
   const [name, setName] = useState("")
   const [contextWindow, setContextWindow] = useState("256000")
   const [maxOutputTokens, setMaxOutputTokens] = useState("32000")
-  const [reasoningLevels, setReasoningLevels] = useState("")
+  const [reasoningLevels, setReasoningLevels] = useState<string[]>(defaultReasoningConfig(provider.protocol).reasoningLevels)
   const [reasoningFieldPath, setReasoningFieldPath] = useState("")
   const [creating, setCreating] = useState(false)
   /** 请求发出前同步上锁，保证 Escape 和重复提交使用同一个进行中状态。 */
@@ -1182,7 +1220,6 @@ function CreateModelDialog({
     <section ref={dialogRef} tabIndex={-1} className="new-model-dialog" role="dialog" aria-modal="true" aria-labelledby="new-model-title" aria-busy={creating}>
       <header className="new-model-dialog-header">
         <div>
-          <p className="settings-eyebrow">{provider.name}</p>
           <h3 id="new-model-title">新建模型</h3>
         </div>
         <button className="settings-dialog-close" type="button" aria-label="关闭" disabled={creating} onClick={onClose}>
@@ -1203,7 +1240,7 @@ function CreateModelDialog({
         </label>
         <div className="model-input-grid">
           <label className="settings-field">
-            <span>最大上下文</span>
+            <span>最大上下文 (Token)</span>
             <input
               type="number"
               min={1}
@@ -1215,7 +1252,7 @@ function CreateModelDialog({
             />
           </label>
           <label className="settings-field">
-            <span>最大输出</span>
+            <span>最大输出 (Token)</span>
             <input
               type="number"
               min={1}
