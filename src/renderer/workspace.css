@@ -77,23 +77,39 @@ kbd { font: 10px "Segoe UI", sans-serif; white-space: nowrap; }
 .titlebar-search kbd { margin-left: auto; }
 .titlebar-search:hover { color: var(--secondary); background: var(--surface-focus); }
 .workspace-shell { display: flex; flex: 1; min-height: 0; min-width: 0; overflow: hidden; background: var(--shell-gradient); }
-.sidebar { display: flex; flex-direction: column; flex: 0 0 248px; min-width: 0; min-height: 0; padding: 20px 14px 12px; border: 0; background: var(--sidebar-gradient); }
-.sidebar-toolbar { display: flex; align-items: center; gap: 6px; flex: none; margin-bottom: 32px; }
+/** 侧栏使用 4px 间距步进；局部尺寸变量同时约束列表、工具栏与底部入口。 */
+.sidebar {
+  --sidebar-inset: 12px; --sidebar-space-1: 4px; --sidebar-space-2: 8px;
+  --sidebar-space-3: 12px; --sidebar-space-4: 16px; --sidebar-section-gap: 24px;
+  --sidebar-radius: 8px; --sidebar-row-height: 36px; --sidebar-font-size: 13px;
+  --sidebar-label-size: 12px; --sidebar-icon-size: 12px; --sidebar-row-padding: 24px;
+  display: flex; flex-direction: column; flex: 0 0 248px; min-width: 0; min-height: 0;
+  padding: var(--sidebar-space-4) var(--sidebar-inset) var(--sidebar-space-3); border: 0;
+  background: var(--sidebar-gradient); font-size: var(--sidebar-font-size); line-height: 20px;
+}
+.sidebar svg { width: var(--sidebar-icon-size); height: var(--sidebar-icon-size); }
+.sidebar-toolbar { display: flex; align-items: center; gap: var(--sidebar-space-1); flex: none; margin-bottom: var(--sidebar-section-gap); }
 .status-dot { display: inline-block; width: 5px; height: 5px; flex: none; border-radius: 50%; background: var(--accent); }
-.sidebar-toggle { display: grid; place-items: center; flex: 0 0 30px; height: 34px; padding: 0; border: 0; border-radius: 6px; color: var(--muted); background: transparent; app-region: no-drag; }
+.sidebar-toggle { display: grid; place-items: center; flex: 0 0 var(--sidebar-row-height); min-height: var(--sidebar-row-height); padding: 0; border: 0; border-radius: var(--sidebar-radius); color: var(--muted); background: transparent; app-region: no-drag; }
 .sidebar-toggle:hover { color: var(--text); background: var(--hover); }
-.new-chat { display: flex; align-items: center; gap: 9px; flex: 1; min-width: 0; height: 36px; padding: 0 10px; border: 0; border-radius: 7px; color: var(--text); background: transparent; font-size: 13px; font-weight: 500; text-align: left; }
+.new-chat { display: flex; align-items: center; gap: var(--sidebar-space-2); flex: 1; min-width: 0; min-height: var(--sidebar-row-height); padding: var(--sidebar-space-2); border: 0; border-radius: var(--sidebar-radius); color: var(--text); background: transparent; font-size: var(--sidebar-font-size); font-weight: 500; line-height: 20px; text-align: left; }
+.new-chat > span { flex-shrink: 0; }
 .new-chat:hover { background: var(--hover); }
 .new-chat kbd { margin-left: auto; color: var(--muted); font-size: 9px; font-weight: 400; opacity: 0; transition: opacity .15s; }
 .new-chat:hover kbd, .new-chat:focus-visible kbd { opacity: 1; }
-.sidebar-scroll { flex: 1; min-height: 0; margin: 0 -5px; padding: 0 5px; overflow: auto; }
-.sidebar-section { margin-bottom: 24px; }
-.section-heading-row { display: flex; align-items: center; height: 29px; margin-bottom: 7px; padding: 0 2px; }
-.section-heading { display: flex; align-items: center; gap: 7px; flex: 1; height: 28px; min-width: 0; padding: 0 7px; border: 0; color: var(--muted); background: transparent; text-align: left; font-size: 11px; font-weight: 600; letter-spacing: .5px; }
-.section-count { min-width: 12px; font-size: 10px; font-weight: 400; letter-spacing: 0; font-variant-numeric: tabular-nums; }
-.chevron { display: flex; margin-left: 1px; transition: transform .15s, opacity .15s; }
+/** 两侧各预留同宽滚动条槽，向外抵消槽宽与焦点留白，使列表与工具栏的左右边缘一致。 */
+.sidebar-scroll { flex: 1; min-height: 0; margin: 0 calc(-1 * var(--sidebar-space-3)); padding: var(--sidebar-space-1); overflow: auto; scrollbar-gutter: stable both-edges; scrollbar-width: auto; scrollbar-color: auto; }
+.sidebar-scroll::-webkit-scrollbar { width: var(--sidebar-space-2); height: var(--sidebar-space-2); }
+.sidebar-scroll::-webkit-scrollbar-thumb { border-radius: var(--sidebar-radius); background: var(--border-strong); }
+.sidebar-section + .sidebar-section { margin-top: var(--sidebar-section-gap); }
+.section-heading-row { display: flex; align-items: center; gap: var(--sidebar-space-1); min-height: var(--sidebar-row-height); margin-bottom: var(--sidebar-space-1); }
+.section-heading { display: flex; align-items: center; gap: var(--sidebar-space-2); flex: 1; min-height: var(--sidebar-row-height); min-width: 0; padding: var(--sidebar-space-2); border: 0; border-radius: var(--sidebar-radius); color: var(--muted); background: transparent; text-align: left; font-size: var(--sidebar-label-size); font-weight: 600; line-height: 20px; }
+.section-heading > span:first-child { flex-shrink: 0; }
+.section-count { min-width: 12px; font-size: var(--sidebar-label-size); font-weight: 400; font-variant-numeric: tabular-nums; }
+.chevron { display: flex; transition: transform .15s, opacity .15s; }
+.sidebar .chevron svg { width: 10px; height: 10px; }
 .chevron.collapsed, .project-chevron.collapsed { transform: rotate(-90deg); }
-.section-action-button, .project-action-button { display: grid; place-items: center; flex: none; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 5px; color: var(--muted); background: transparent; }
+.section-action-button, .project-action-button { display: grid; place-items: center; flex: none; width: var(--sidebar-row-height); min-height: var(--sidebar-row-height); padding: 0; border: 0; border-radius: var(--sidebar-radius); color: var(--muted); background: transparent; }
 .section-action-button:hover, .project-action-button:hover { background: var(--hover); color: var(--text); }
 /* 仅淡出次要操作；保留命中区域与 Tab 顺序，聚焦和触屏时恢复可见。 */
 .section-action-button, .project-action-button, .section-count, .chevron, .project-chevron { opacity: 0; transition: opacity .15s, transform .15s, background .18s, color .18s; }
@@ -103,30 +119,33 @@ kbd { font: 10px "Segoe UI", sans-serif; white-space: nowrap; }
 .project-row:hover .project-action-button, .project-row:focus-within .project-action-button,
 .project-row:hover .project-chevron, .project-row:focus-within .project-chevron { opacity: 1; }
 .project-list, .session-list { list-style: none; margin: 0; padding: 0; }
-.project-list > li + li { margin-top: 5px; }
-.project-row { display: flex; align-items: center; gap: 2px; padding-right: 3px; border-radius: 7px; }
+.project-list > li + li, .session-list > li + li { margin-top: var(--sidebar-space-1); }
+.project-row { display: flex; align-items: center; gap: var(--sidebar-space-1); border-radius: var(--sidebar-radius); }
 .project-row:hover { background: var(--hover); }
 .project-row-active { background: var(--selected); }
-.project-name { display: flex; align-items: center; flex: 1; gap: 7px; min-width: 0; height: 36px; padding: 0 9px; border: 0; border-radius: 7px; color: var(--text); background: transparent; text-align: left; font-size: 13px; font-weight: 550; }
+/** 展开箭头占用行内留白的一部分，使项目文字与对话文字都从左边缘内缩 24px。 */
+.project-name { display: flex; align-items: center; flex: 1; gap: var(--sidebar-space-2); min-width: 0; min-height: var(--sidebar-row-height); padding: var(--sidebar-space-2) var(--sidebar-space-1); border: 0; border-radius: var(--sidebar-radius); color: var(--text); background: transparent; text-align: left; font-size: var(--sidebar-font-size); font-weight: 550; line-height: 20px; }
 .project-name > span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .project-chevron { color: var(--muted); }
-.project-sessions { margin: 2px 0 8px 32px; padding-left: 0; border: 0; }
-.session-name { display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; height: 33px; padding: 0 9px; border: 0; border-radius: 6px; background: transparent; color: var(--secondary); text-align: left; font-size: 12px; }
+.project-sessions { margin: var(--sidebar-space-1) 0 var(--sidebar-space-2) calc(var(--sidebar-icon-size) + var(--sidebar-space-2)); padding-left: 0; border: 0; }
+.session-name { display: flex; align-items: center; gap: var(--sidebar-space-2); width: 100%; min-width: 0; min-height: var(--sidebar-row-height); padding: var(--sidebar-space-2) var(--sidebar-row-padding); border: 0; border-radius: var(--sidebar-radius); background: transparent; color: var(--secondary); text-align: left; font-size: var(--sidebar-font-size); line-height: 20px; }
 .session-name > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .session-name:hover { color: var(--text); background: var(--hover); }
 .session-name[aria-current="page"] { color: var(--accent); background: var(--selected); font-weight: 600; }
-.project-first-chat { display: flex; align-items: center; gap: 8px; height: 30px; padding: 0 9px; border: 0; border-radius: 5px; background: transparent; color: var(--muted); font-size: 10px; }
+.project-first-chat { display: flex; align-items: center; gap: var(--sidebar-space-2); width: 100%; min-height: var(--sidebar-row-height); padding: var(--sidebar-space-2) var(--sidebar-row-padding); border: 0; border-radius: var(--sidebar-radius); background: transparent; color: var(--muted); font-size: var(--sidebar-font-size); line-height: 20px; text-align: left; }
 .project-first-chat:hover { color: var(--accent); }
-.sidebar-empty { display: flex; flex-direction: column; align-items: flex-start; gap: 7px; width: 100%; padding: 15px 12px; border: 0; border-radius: 8px; color: var(--muted); background: transparent; text-align: left; }
-.sidebar-empty strong { margin-top: 3px; color: var(--secondary); font-size: 11px; font-weight: 500; }
-.sidebar-empty > span { font-size: 10px; }
+.sidebar-empty { display: flex; flex-direction: column; align-items: flex-start; gap: var(--sidebar-space-2); width: 100%; padding: var(--sidebar-space-3) var(--sidebar-space-2); border: 0; border-radius: var(--sidebar-radius); color: var(--muted); background: transparent; line-height: 20px; text-align: left; }
+.sidebar-empty strong { color: var(--secondary); font-size: var(--sidebar-font-size); font-weight: 500; }
+.sidebar-empty > span { font-size: var(--sidebar-label-size); }
 .sidebar-empty:hover { background: var(--accent-soft); }
 .empty-list, .data-status { margin: 10px 9px; color: var(--muted); font-size: 11px; line-height: 1.7; }
+.sidebar :is(.empty-list, .data-status) { margin: var(--sidebar-space-2); font-size: var(--sidebar-label-size); line-height: 20px; }
 .retry-button { padding: 0 3px; border: 0; color: var(--accent); background: transparent; text-decoration: underline; text-underline-offset: 3px; }
-.sidebar-footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex: none; padding-top: 16px; }
-.sidebar-settings, .sidebar-theme { display: flex; align-items: center; justify-content: center; gap: 9px; height: 34px; padding: 0 10px; border: 0; border-radius: 6px; color: var(--muted); background: transparent; }
-.sidebar-settings { justify-content: flex-start; font-size: 12px; }
-.sidebar-theme { width: 34px; padding: 0; }
+.sidebar .retry-button { min-width: var(--sidebar-row-height); min-height: var(--sidebar-row-height); padding: var(--sidebar-space-2); border-radius: var(--sidebar-radius); }
+.sidebar-footer { display: flex; align-items: center; justify-content: space-between; gap: var(--sidebar-space-2); flex: none; padding-top: var(--sidebar-space-4); }
+.sidebar-settings, .sidebar-theme { display: flex; align-items: center; justify-content: center; gap: var(--sidebar-space-2); min-height: var(--sidebar-row-height); padding: var(--sidebar-space-2); border: 0; border-radius: var(--sidebar-radius); color: var(--muted); background: transparent; font-size: var(--sidebar-font-size); line-height: 20px; }
+.sidebar-settings { justify-content: flex-start; }
+.sidebar-theme { width: var(--sidebar-row-height); padding: 0; }
 .sidebar-settings:hover, .sidebar-theme:hover { color: var(--text); background: var(--hover); }
 .main-panel { position: relative; display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; border: 1px solid var(--border); border-radius: 18px 0 0 18px; background: var(--canvas); }
 .panel-header { display: flex; align-items: center; gap: 12px; flex: 0 0 54px; min-width: 0; padding: 0 27px; border: 0; background: var(--canvas); }
@@ -186,6 +205,7 @@ kbd { font: 10px "Segoe UI", sans-serif; white-space: nowrap; }
 .welcome > .composer-caption { opacity: 0; transition: opacity .15s; }
 .welcome:has(.new-chat-composer:focus-within) > .composer-caption { opacity: 1; }
 @media (hover: none), (pointer: coarse) {
+  .sidebar { --sidebar-row-height: 44px; }
   .section-action-button, .project-action-button, .section-count, .chevron, .project-chevron, .welcome > .composer-caption { opacity: 1; }
 }
 
@@ -224,7 +244,7 @@ kbd { font: 10px "Segoe UI", sans-serif; white-space: nowrap; }
 .search-footer { display: flex; align-items: center; justify-content: space-between; padding: 11px 18px; border: 0; color: var(--muted); background: var(--surface-muted); font-size: 9px; }
 .search-footer kbd { display: inline-block; padding: 1px 4px; margin-right: 3px; border: 0; border-radius: 3px; background: var(--surface); font-size: 9px; }
 @media (min-width: 1600px) { .welcome { width: min(800px, calc(100% - 160px)); padding-top: 50px; } .sidebar { flex-basis: 265px; } }
-@media (max-width: 1100px) { .sidebar { flex-basis: 220px; padding-right: 10px; padding-left: 10px; } .welcome { width: calc(100% - 64px); } }
+@media (max-width: 1100px) { .sidebar { flex-basis: 220px; } .welcome { width: calc(100% - 64px); } }
 @media (max-width: 850px) {
   .titlebar-search { width: 230px; } .sidebar { flex-basis: 205px; } .new-chat kbd { display: none; }
   .panel-header { padding: 0 20px; } .welcome { width: calc(100% - 44px); padding-top: 40px; }
@@ -235,7 +255,7 @@ kbd { font: 10px "Segoe UI", sans-serif; white-space: nowrap; }
 @media (max-width: 680px) {
   .titlebar-search { width: 26px; justify-content: center; padding: 0; border: 0; background: transparent; }
   .titlebar-search > span, .titlebar-search kbd { display: none; }
-  .sidebar { flex-basis: 178px; padding-left: 8px; padding-right: 8px; }
+  .sidebar { --sidebar-inset: 8px; flex-basis: 178px; }
   .panel-header { flex-basis: 46px; padding: 0 15px; }
   .breadcrumb { gap: 7px; font-size: 10px; } .breadcrumb > span:first-child { max-width: 95px; }
   .welcome { width: calc(100% - 30px); padding-top: 30px; } .welcome h1 { font-size: 23px; letter-spacing: -.5px; }
