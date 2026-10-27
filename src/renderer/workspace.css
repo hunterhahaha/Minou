@@ -3,6 +3,9 @@
 
 /* 所有页面共享语义色阶；主题只影响 Renderer 外观。 */
 :root {
+  --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px; --space-6: 24px; --space-8: 32px;
+  --size-control: 32px; --size-field: 40px;
+  --radius-xs: 4px; --radius-sm: 6px; --radius-control: 8px; --radius-panel: 12px; --radius-dialog: 16px; --radius-shell: 18px;
   --font-ui: "MiSans", "HarmonyOS Sans SC", "Segoe UI", system-ui, "Microsoft YaHei", "PingFang SC", sans-serif;
   --font-code: "Cascadia Code", Consolas, ui-monospace, monospace;
   --font-size-caption: 11px; --line-height-caption: 16px;
@@ -68,7 +71,7 @@ select:disabled { cursor: default; }
 select::picker-icon { content: ""; flex: none; width: 6px; height: 6px; margin: -3px 2px 0 auto; border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor; color: var(--muted); transform: rotate(45deg); transition: transform .15s; }
 select:open::picker-icon { transform: translateY(3px) rotate(225deg); }
 select::picker(select) { min-width: anchor-size(self-inline); max-width: calc(100vw - 32px); max-height: min(320px, 50vh); margin: 6px 0; padding: 5px; overflow: auto; border: 0; border-radius: 10px; color: var(--text); background: var(--popover); box-shadow: var(--shadow-popover); font: inherit; }
-select option { display: flex; align-items: center; gap: 12px; min-height: 34px; padding: 8px 10px; border: 0; border-radius: 6px; color: var(--secondary); background: transparent; font-size: var(--font-size-ui); line-height: var(--line-height-ui); white-space: normal; overflow-wrap: anywhere; cursor: pointer; }
+select option { display: flex; align-items: center; gap: var(--space-3); min-height: 34px; padding: 8px 10px; border: 0; border-radius: 6px; color: var(--secondary); background: transparent; font-size: var(--font-size-ui); line-height: var(--line-height-ui); white-space: normal; overflow-wrap: anywhere; cursor: pointer; }
 select option:checked { color: var(--text); background: var(--selected); font-weight: 500; }
 select option:hover, select option:focus-visible { outline: 0; color: var(--text); background: var(--hover); }
 select option::checkmark { order: 1; flex: none; margin-left: auto; color: var(--accent); }
@@ -84,18 +87,18 @@ input, textarea { caret-color: var(--accent); }
 svg { flex-shrink: 0; vertical-align: middle; }
 kbd { font: var(--font-size-caption)/var(--line-height-caption) var(--font-ui); white-space: nowrap; }
 .app-shell { display: flex; flex-direction: column; width: 100%; height: 100%; overflow: hidden; background: var(--shell-gradient); }
-.titlebar { position: relative; z-index: 60; display: flex; align-items: center; gap: 12px; flex: 0 0 42px; min-width: 0; padding: 0 0 0 15px; background: var(--chrome-gradient); border: 0; app-region: drag; user-select: none; }
+.titlebar { position: relative; z-index: 60; display: flex; align-items: center; gap: var(--space-3); flex: 0 0 42px; min-width: 0; padding: 0 0 0 15px; background: var(--chrome-gradient); border: 0; app-region: drag; user-select: none; }
 .titlebar-brand { display: flex; align-items: center; gap: 9px; }
 .brand-mark { display: grid; place-items: center; width: 22px; height: 22px; border-radius: 6px; background: var(--accent-soft); color: var(--accent); }
 .brand-name { color: var(--text-strong); font-size: var(--font-size-ui); line-height: var(--line-height-ui); letter-spacing: -.25px; font-weight: 700; }
-.titlebar-search { display: flex; align-items: center; gap: 8px; width: min(260px, 30vw); height: 26px; margin-left: auto; margin-right: 7px; padding: 0 9px; border: 0; border-radius: 6px; color: var(--muted); background: transparent; app-region: no-drag; font-size: var(--font-size-ui); line-height: var(--line-height-ui); }
+.titlebar-search { display: flex; align-items: center; gap: var(--space-2); width: min(260px, 30vw); height: 26px; margin-left: auto; margin-right: 7px; padding: 0 9px; border: 0; border-radius: 6px; color: var(--muted); background: transparent; app-region: no-drag; font-size: var(--font-size-ui); line-height: var(--line-height-ui); }
 .titlebar-search kbd { margin-left: auto; }
 .titlebar-search:hover { color: var(--secondary); background: var(--surface-focus); }
 .workspace-shell { display: flex; flex: 1; min-height: 0; min-width: 0; overflow: hidden; background: var(--shell-gradient); }
 /** 侧栏使用 4px 间距步进；局部尺寸变量同时约束列表、工具栏与底部入口。 */
 .sidebar {
   --sidebar-inset: 12px; --sidebar-space-1: 4px; --sidebar-space-2: 8px;
-  --sidebar-space-3: 12px; --sidebar-space-4: 16px; --sidebar-section-gap: 24px;
+  --sidebar-space-3: 12px; --sidebar-space-4: 16px; --sidebar-section-gap: var(--space-6);
   --sidebar-radius: 8px; --sidebar-row-height: 36px; --sidebar-font-size: var(--font-size-ui);
   --sidebar-label-size: var(--font-size-note); --sidebar-icon-size: 12px; --sidebar-row-padding: 24px;
   display: flex; flex-direction: column; flex: 0 0 248px; min-width: 0; min-height: 0;
@@ -162,13 +165,13 @@ kbd { font: var(--font-size-caption)/var(--line-height-caption) var(--font-ui); 
 .sidebar-settings { justify-content: flex-start; }
 .sidebar-theme { width: var(--sidebar-row-height); padding: 0; }
 .sidebar-settings:hover, .sidebar-theme:hover { color: var(--text); background: var(--hover); }
-.main-panel { position: relative; display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; border: 1px solid var(--border); border-radius: 18px 0 0 18px; background: var(--canvas); }
-.panel-header { display: flex; align-items: center; gap: 12px; flex: 0 0 54px; min-width: 0; padding: 0 27px; border: 0; background: var(--canvas); }
+.main-panel { position: relative; display: flex; flex: 1; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; border: 1px solid var(--border); border-radius: var(--radius-shell) 0 0 var(--radius-shell); background: var(--canvas); }
+.panel-header { display: flex; align-items: center; gap: var(--space-3); flex: 0 0 54px; min-width: 0; padding: 0 27px; border: 0; background: var(--canvas); }
 .breadcrumb { display: flex; align-items: center; gap: 10px; min-width: 0; font-size: var(--font-size-ui); line-height: var(--line-height-ui); color: var(--muted); }
 .breadcrumb > span:first-child { max-width: 160px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; flex-shrink: 0; }
 .breadcrumb-divider { opacity: .5; }
 .breadcrumb strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-weight: 500; }
-.panel-header-actions { display: flex; align-items: center; gap: 12px; flex-shrink: 0; margin-left: auto; }
+.panel-header-actions { display: flex; align-items: center; gap: var(--space-3); flex-shrink: 0; margin-left: auto; }
 .welcome-scroll { flex: 1; min-height: 0; overflow: auto; }
 .welcome { display: flex; flex-direction: column; justify-content: center; width: min(720px, calc(100% - 80px)); min-height: 100%; margin: 0 auto; padding: 50px 0 100px; }
 .welcome-intro { margin-bottom: 26px; text-align: center; }
@@ -179,8 +182,8 @@ kbd { font: var(--font-size-caption)/var(--line-height-caption) var(--font-ui); 
 .composer textarea { display: block; width: 100%; min-height: 0; max-height: 200px; padding: 13px 16px 8px; border: 0; border-radius: 13px 13px 0 0; outline: 0; resize: none; color: var(--text); background: transparent; font-size: var(--font-size-input); line-height: var(--line-height-input); }
 .composer textarea:focus-visible { outline: 0; box-shadow: none; }
 .composer textarea::placeholder { color: var(--muted); }
-.composer-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 40px; padding: 0 10px 9px; }
-.composer-controls { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.composer-toolbar { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); min-height: 40px; padding: 0 10px 9px; }
+.composer-controls { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
 .composer-controls-right { margin-left: auto; justify-content: flex-end; }
 .selector-trigger { display: inline-flex; align-items: center; gap: 6px; min-width: 0; height: 29px; padding: 0 7px; border: 0; border-radius: 6px; color: var(--secondary); background: transparent; font-size: var(--font-size-ui); line-height: var(--line-height-ui); white-space: nowrap; }
 .selector-trigger:hover:not(:focus-visible), .selector-trigger:active:not(:focus-visible) { box-shadow: none; }
@@ -188,7 +191,7 @@ kbd { font: var(--font-size-caption)/var(--line-height-caption) var(--font-ui); 
 .selector-trigger > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .selector-anchor { position: relative; min-width: 0; }
 .model-trigger { max-width: 240px; }
-.composer-model-picker .model-trigger { align-items: center; gap: 4px; height: 29px; line-height: var(--line-height-ui); }
+.composer-model-picker .model-trigger { align-items: center; gap: var(--space-1); height: 29px; line-height: var(--line-height-ui); }
 .composer-model-name { max-width: 100%; font-size: var(--font-size-ui); line-height: var(--line-height-ui); }
 .composer-model-picker .composer-model-reasoning { flex: none; max-width: 80px; color: var(--muted); font-size: var(--font-size-note); line-height: var(--line-height-note); }
 .composer-model-chevron { flex: none; color: var(--muted); transition: transform .18s; }
@@ -212,11 +215,11 @@ kbd { font: var(--font-size-caption)/var(--line-height-caption) var(--font-ui); 
 .model-panel-note { margin: 0; color: var(--muted); font-size: var(--font-size-note); line-height: var(--line-height-note); }
 .setup-model-trigger { color: var(--accent); }
 .model-status { font-size: var(--font-size-note); line-height: var(--line-height-note); color: var(--muted); }
-.send-button { display: grid; place-items: center; flex: 0 0 32px; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 6px; color: var(--secondary); background: transparent; }
+.send-button { display: grid; place-items: center; flex: 0 0 32px; width: var(--size-control); height: var(--size-control); padding: 0; border: 0; border-radius: var(--radius-sm); color: var(--secondary); background: transparent; }
 .send-button:hover:not(:disabled) { color: var(--text); background: var(--hover); }
 .send-button:disabled { opacity: .35; }
 .composer-caption { display: flex; align-items: center; justify-content: center; gap: 10px; margin: 12px 2px 0; color: var(--muted); font-size: var(--font-size-note); line-height: var(--line-height-note); }
-.composer-caption > span:first-child { display: flex; align-items: center; gap: 4px; }
+.composer-caption > span:first-child { display: flex; align-items: center; gap: var(--space-1); }
 .welcome > .composer-caption { opacity: 0; transition: opacity .15s; }
 .welcome:has(.new-chat-composer:focus-within) > .composer-caption { opacity: 1; }
 @media (hover: none), (pointer: coarse) {
@@ -240,8 +243,8 @@ kbd { font: var(--font-size-caption)/var(--line-height-caption) var(--font-ui); 
 .selector-menu small { margin-top: 4px; color: var(--muted); font-size: var(--font-size-note); line-height: var(--line-height-note); }
 /* 搜索消费摘要，不读取消息正文。 */
 .search-backdrop { z-index: 40; align-items: flex-start; padding-top: min(18vh, 150px); }
-.search-dialog { display: flex; flex-direction: column; width: min(610px, 100%); max-height: min(580px, 75vh); overflow: hidden; border-radius: 13px; }
-.search-input-row { display: flex; align-items: center; gap: 12px; margin: 12px; padding: 10px 12px; border: 0; border-radius: 9px; color: var(--accent); background: var(--field); transition: background .18s, box-shadow .18s; }
+.search-dialog { display: flex; flex-direction: column; width: min(610px, 100%); max-height: min(580px, 75vh); overflow: hidden; border-radius: var(--radius-dialog); }
+.search-input-row { display: flex; align-items: center; gap: var(--space-3); margin: 12px; padding: 10px 12px; border: 0; border-radius: 9px; color: var(--accent); background: var(--field); transition: background .18s, box-shadow .18s; }
 .search-input-row:focus-within { background: var(--field-focus); box-shadow: var(--shadow-focus), var(--shadow-pressed); }
 .search-input-row input { flex: 1; min-width: 0; height: 30px; padding: 0; border: 0; outline: 0; color: var(--text); background: transparent; font-size: var(--font-size-ui); line-height: var(--line-height-ui); }
 .search-input-row input:focus-visible { outline: 0; box-shadow: none; }
