@@ -215,9 +215,10 @@ kbd { font: var(--font-size-caption)/var(--line-height-caption) var(--font-ui); 
 .model-panel-note { margin: 0; color: var(--muted); font-size: var(--font-size-note); line-height: var(--line-height-note); }
 .setup-model-trigger { color: var(--accent); }
 .model-status { font-size: var(--font-size-note); line-height: var(--line-height-note); color: var(--muted); }
-.send-button { display: grid; place-items: center; flex: 0 0 32px; width: var(--size-control); height: var(--size-control); padding: 0; border: 0; border-radius: var(--radius-sm); color: var(--secondary); background: transparent; }
-.send-button:hover:not(:disabled) { color: var(--text); background: var(--hover); }
-.send-button:disabled { opacity: .35; }
+.send-button { display: grid; place-items: center; flex: 0 0 32px; width: var(--size-control); height: var(--size-control); padding: 0; border: 0; border-radius: var(--radius-sm); color: var(--on-accent); background: var(--accent); }
+.send-button:hover:not(:disabled) { background: var(--accent-hover); }
+.send-button:active:not(:disabled) { background: var(--accent-hover); filter: brightness(.92); }
+.send-button:disabled { color: var(--muted); background: var(--surface-muted); opacity: 1; }
 .composer-caption { display: flex; align-items: center; justify-content: center; gap: 10px; margin: 12px 2px 0; color: var(--muted); font-size: var(--font-size-note); line-height: var(--line-height-note); }
 .composer-caption > span:first-child { display: flex; align-items: center; gap: var(--space-1); }
 .welcome > .composer-caption { opacity: 0; transition: opacity .15s; }

@@ -109,8 +109,28 @@ async function main() {
     } })
   })()`)
   await until(() => evaluate(`document.querySelector('textarea[aria-label="任务描述"]') !== null`))
+  const sendAppearance = `(() => {
+    const button = document.querySelector('.send-button'), style = getComputedStyle(button)
+    const probe = document.createElement('span')
+    document.body.appendChild(probe)
+    const color = (value) => { probe.style.color = value; return getComputedStyle(probe).color }
+    const result = { disabled: button.disabled, background: style.backgroundColor, foreground: style.color, opacity: style.opacity,
+      accent: color('var(--accent)'), onAccent: color('var(--on-accent)'), mutedSurface: color('var(--surface-muted)'), muted: color('var(--muted)') }
+    probe.remove()
+    return result
+  })()`
+  await evaluate("document.getAnimations().forEach(animation => { if (animation.effect?.getComputedTiming().endTime !== Infinity) animation.finish() })")
+  const disabledSend = await evaluate(sendAppearance)
+  assert.equal(disabledSend.disabled, true, "空草稿时发送不可用")
+  assert.equal(disabledSend.background, disabledSend.mutedSurface, "不可用发送按钮使用次级表面")
+  assert.equal(disabledSend.foreground, disabledSend.muted, "不可用发送按钮保留可读前景")
+  assert.equal(disabledSend.opacity, '1', "不可用发送按钮不整体降低透明度")
   await type("任务描述", "第一条真实页面消息")
   await until(() => evaluate(`document.querySelector('[aria-label="发送消息"]')?.disabled === false`))
+  await evaluate("document.getAnimations().forEach(animation => { if (animation.effect?.getComputedTiming().endTime !== Infinity) animation.finish() })")
+  const enabledSend = await evaluate(sendAppearance)
+  assert.equal(enabledSend.background, enabledSend.accent, "可用发送按钮使用主操作底色")
+  assert.equal(enabledSend.foreground, enabledSend.onAccent, "可用发送按钮使用主操作前景")
   await evaluate(`document.querySelector('[aria-label="发送消息"]').click()`)
   await until(() => evaluate(`document.querySelector('.user-bubble')?.textContent === '第一条真实页面消息'`))
   assert.equal(await evaluate("document.querySelector('.user-label')"), null, "移除用户消息上方的你字")
@@ -335,8 +355,10 @@ async function main() {
     window.webContents.sendInputEvent({ type: "mouseMove", x: 5, y: 5 })
     await evaluate("document.activeElement.blur(); document.getAnimations().forEach(animation => { if (animation.effect?.getComputedTiming().endTime !== Infinity) animation.finish() })")
     const surfaces = await evaluate(flatProcessSurfaces)
-    assert.equal(surfaces.every(surface => surface.background === 'rgba(0, 0, 0, 0)' && surface.image === 'none' && surface.shadow === 'none' && surface.borders.every(width => width === '0px')), true,
-      "执行过程、内部展开入口、审批区和输入按钮不叠加框或常驻底色：" + JSON.stringify(surfaces))
+    assert.equal(surfaces.every(surface => surface.image === 'none' && surface.shadow === 'none' && surface.borders.every(width => width === '0px')), true,
+      "执行过程、内部展开入口、审批区和输入按钮不叠加边框或阴影：" + JSON.stringify(surfaces))
+    assert.equal(surfaces.filter(surface => !['send-button', 'settings-primary-button', 'settings-secondary-button'].includes(surface.name)).every(surface => surface.background === 'rgba(0, 0, 0, 0)'), true,
+      "执行过程、内部展开入口和辅助输入按钮保持透明：" + JSON.stringify(surfaces))
     assert.equal(await evaluate("[...document.querySelectorAll('.process-content')].every(node => node.children.length === 1 && node.firstElementChild.matches('code.language-text') && node.querySelectorAll('pre, button, .markdown-content').length === 0)"), true, "每项详情仅有一层纯文本代码块")
     if (index === 1) {
       assert.equal(await evaluate("document.querySelector('.approval-result > summary').textContent.includes('审批已拒绝')"), true, "执行过程按结果事件显示已拒绝")
