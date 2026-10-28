@@ -176,22 +176,23 @@ kbd { font: var(--font-size-caption)/var(--line-height-caption) var(--font-ui); 
 .welcome { display: flex; flex-direction: column; justify-content: center; width: min(720px, calc(100% - 80px)); min-height: 100%; margin: 0 auto; padding: 50px 0 100px; }
 .welcome-intro { margin-bottom: 26px; text-align: center; }
 .welcome h1 { margin: 0; color: var(--text-strong); font-size: var(--font-size-greeting); line-height: var(--line-height-greeting); font-weight: 500; letter-spacing: -.5px; }
-.composer { display: flex; flex-direction: column; width: 100%; min-width: 0; border: 0; border-radius: 13px; background: var(--surface); box-shadow: var(--shadow-small); transition: background .18s, box-shadow .18s; }
+.composer { display: flex; flex-direction: column; width: 100%; min-width: 0; border: 0; border-radius: var(--radius-panel); background: var(--surface); box-shadow: var(--shadow-small); transition: background .18s, box-shadow .18s; }
 .composer:hover { background: var(--surface-focus); }
 .composer:focus-within { background: var(--surface-focus); box-shadow: var(--shadow-focus), var(--shadow-pressed); }
-.composer textarea { display: block; width: 100%; min-height: 0; max-height: 200px; padding: 13px 16px 8px; border: 0; border-radius: 13px 13px 0 0; outline: 0; resize: none; color: var(--text); background: transparent; font-size: var(--font-size-input); line-height: var(--line-height-input); }
+.composer textarea { display: block; width: 100%; min-height: 0; max-height: 200px; padding: 13px 16px 8px; border: 0; border-radius: var(--radius-panel) var(--radius-panel) 0 0; outline: 0; resize: none; color: var(--text); background: transparent; font-size: var(--font-size-input); line-height: var(--line-height-input); }
 .composer textarea:focus-visible { outline: 0; box-shadow: none; }
 .composer textarea::placeholder { color: var(--muted); }
 .composer-toolbar { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); min-height: 40px; padding: 0 10px 9px; }
 .composer-controls { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
 .composer-controls-right { margin-left: auto; justify-content: flex-end; }
-.selector-trigger { display: inline-flex; align-items: center; gap: 6px; min-width: 0; height: 29px; padding: 0 7px; border: 0; border-radius: 6px; color: var(--secondary); background: transparent; font-size: var(--font-size-ui); line-height: var(--line-height-ui); white-space: nowrap; }
+.selector-trigger { display: inline-flex; align-items: center; gap: 6px; min-width: 0; height: var(--size-control); padding: 0 7px; border: 0; border-radius: 6px; color: var(--secondary); background: transparent; font-size: var(--font-size-ui); line-height: var(--line-height-ui); white-space: nowrap; }
 .selector-trigger:hover:not(:focus-visible), .selector-trigger:active:not(:focus-visible) { box-shadow: none; }
 .selector-trigger:hover:not(:disabled) { background: var(--hover); }
+.new-chat-composer .selector-trigger[aria-label="权限"]:focus-visible, .new-chat-composer .selector-trigger[aria-label="权限"]:focus-visible:hover { outline: 0; box-shadow: none; background: var(--hover); }
 .selector-trigger > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .selector-anchor { position: relative; min-width: 0; }
 .model-trigger { max-width: 240px; }
-.composer-model-picker .model-trigger { align-items: center; gap: var(--space-1); height: 29px; line-height: var(--line-height-ui); }
+.composer-model-picker .model-trigger { align-items: center; gap: var(--space-1); height: var(--size-control); line-height: var(--line-height-ui); }
 .composer-model-name { max-width: 100%; font-size: var(--font-size-ui); line-height: var(--line-height-ui); }
 .composer-model-picker .composer-model-reasoning { flex: none; max-width: 80px; color: var(--muted); font-size: var(--font-size-note); line-height: var(--line-height-note); }
 .composer-model-chevron { flex: none; color: var(--muted); transition: transform .18s; }
@@ -215,10 +216,11 @@ kbd { font: var(--font-size-caption)/var(--line-height-caption) var(--font-ui); 
 .model-panel-note { margin: 0; color: var(--muted); font-size: var(--font-size-note); line-height: var(--line-height-note); }
 .setup-model-trigger { color: var(--accent); }
 .model-status { font-size: var(--font-size-note); line-height: var(--line-height-note); color: var(--muted); }
-.send-button { display: grid; place-items: center; flex: 0 0 32px; width: var(--size-control); height: var(--size-control); padding: 0; border: 0; border-radius: var(--radius-sm); color: var(--on-accent); background: var(--accent); }
+.send-button { display: grid; place-items: center; flex: 0 0 32px; width: var(--size-control); height: var(--size-control); padding: 0; border: 0; border-radius: 50%; color: var(--on-accent); background: var(--accent); }
 .send-button:hover:not(:disabled) { background: var(--accent-hover); }
 .send-button:active:not(:disabled) { background: var(--accent-hover); filter: brightness(.92); }
 .send-button:disabled { color: var(--muted); background: var(--surface-muted); opacity: 1; }
+.send-button:focus-visible, .send-button:focus-visible:hover { outline: 0; box-shadow: var(--shadow-focus); }
 .composer-caption { display: flex; align-items: center; justify-content: center; gap: 10px; margin: 12px 2px 0; color: var(--muted); font-size: var(--font-size-note); line-height: var(--line-height-note); }
 .composer-caption > span:first-child { display: flex; align-items: center; gap: var(--space-1); }
 .welcome > .composer-caption { opacity: 0; transition: opacity .15s; }
@@ -238,6 +240,8 @@ kbd { font: var(--font-size-caption)/var(--line-height-caption) var(--font-ui); 
 .menu-label { margin: 5px 9px 7px; color: var(--muted); font-size: var(--font-size-note); line-height: var(--line-height-note); }
 .selector-menu button { display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%; min-height: 37px; padding: 8px 10px; border: 0; border-radius: 6px; color: var(--secondary); background: transparent; font-size: var(--font-size-ui); line-height: var(--line-height-ui); text-align: left; }
 .selector-menu button:hover, .selector-menu button[aria-checked="true"] { color: var(--accent); background: var(--accent-soft); }
+.permission-menu button + button { margin-block-start: var(--space-1); }
+.permission-menu button:focus-visible, .permission-menu button:focus-visible:hover { outline: 0; box-shadow: none; background: var(--hover); }
 .selector-menu button > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .selector-menu strong, .selector-menu small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .selector-menu strong { font-size: var(--font-size-ui); line-height: var(--line-height-ui); font-weight: 500; }

@@ -84,6 +84,7 @@ export function SessionPage({ projectId, sessionId, state, providers }: SessionP
   const events = state.sessionEventsByKey[key] ?? []
   const view = state.view(key)
   const control = view.control
+  const showStop = control?.phase === "stopping" || (control?.phase === "running" && !(state.draftsByKey[key] ?? "").trim())
   const endRef = useRef<HTMLDivElement>(null)
   const scrollingRef = useRef<HTMLDivElement>(null)
   const pageRef = useRef<HTMLElement>(null)
@@ -280,8 +281,7 @@ export function SessionPage({ projectId, sessionId, state, providers }: SessionP
                   ...reference, reasoningLevel: preferredReasoningLevel(reasoningLevels, control?.currentModel.reasoningLevel),
                 } }) }
               }} onReasoningChange={(reasoningLevel) => { if (control) void settings({ model: { ...control.currentModel, reasoningLevel } }) }} />
-            {control && control.phase !== "idle" && <button className="stop-button" disabled={view.busy || control.phase === "stopping"} onClick={() => void operate(() => window.nicode.stopSession(projectId, sessionId))}><IconPlayerStop size={13} />{control.phase === "stopping" ? "正在停止" : "停止"}</button>}
-            <button className="send-button" aria-label={control?.phase === "running" ? "加入队列" : "发送消息"} disabled={!control || view.busy || control.phase === "stopping" || !(state.draftsByKey[key] ?? "").trim()} onClick={() => void send()}><IconArrowUp size={18} stroke={2} /></button>
+            <button type="button" className="send-button" aria-label={showStop ? (control?.phase === "stopping" ? "正在停止" : "停止") : (control?.phase === "running" ? "加入队列" : "发送消息")} title={showStop ? (control?.phase === "stopping" ? "正在停止" : "停止") : (control?.phase === "running" ? "加入队列" : "发送消息")} disabled={!control || view.busy || control.phase === "stopping" || (!showStop && !(state.draftsByKey[key] ?? "").trim())} onClick={() => { if (showStop) void operate(() => window.nicode.stopSession(projectId, sessionId)); else void send() }}>{showStop ? <IconPlayerStop size={16} stroke={2} aria-hidden="true" /> : <IconArrowUp size={18} stroke={2} aria-hidden="true" />}</button>
           </div>
         </div>
       </div>

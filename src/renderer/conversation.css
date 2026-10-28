@@ -67,14 +67,13 @@
 @media (prefers-reduced-motion: reduce) { .approval-popover { animation: none; } }
 .chat-selectors { display: flex; align-items: center; gap: 7px; min-width: 0; }
 .chat-select-label { position: relative; display: flex; align-items: center; min-width: 0; color: var(--secondary); }
-.chat-select-label select { max-width: 215px; min-width: 0; height: 29px; padding: 0 6px; border: 0; border-radius: 5px; color: var(--secondary); background: transparent; font-size: var(--font-size-ui); line-height: var(--line-height-ui); }
+.chat-select-label select { max-width: 215px; min-width: 0; height: var(--size-control); padding: 0 6px; border: 0; border-radius: 5px; color: var(--secondary); background: transparent; font-size: var(--font-size-ui); line-height: var(--line-height-ui); }
 .chat-select-label select::picker-icon { display: none; }
+.chat-permission-select select option + option { margin-block-start: var(--space-1); }
 .chat-select-label select:hover:not(:disabled) { background: var(--hover); }
 /* 图标覆盖在 select 自身的左侧内边距内，点击图标也由同一个原生选择控件处理。 */
 .chat-permission-select > svg { position: absolute; z-index: 1; left: 6px; top: 50%; transform: translateY(-50%); pointer-events: none; }
 .chat-permission-select select { padding-left: 26px; }
-.stop-button { display: inline-flex; align-items: center; gap: 5px; height: 29px; padding: 0 9px; border: 0; border-radius: 7px; color: var(--secondary); background: transparent; font-size: var(--font-size-ui); line-height: var(--line-height-ui); white-space: nowrap; }
-.stop-button:hover { color: var(--error); background: var(--error-bg); }
 .queue-list { max-height: 150px; overflow: auto; margin-bottom: 9px; font-size: var(--font-size-note); line-height: var(--line-height-note); color: var(--secondary); }
 .queue-list > div { display: flex; align-items: center; gap: 9px; margin-bottom: 5px; padding: 9px 0; border: 0; background: transparent; }
 .queue-list > div > span { flex: none; padding: 3px 0; color: var(--accent); font-size: var(--font-size-note); line-height: var(--line-height-note); }

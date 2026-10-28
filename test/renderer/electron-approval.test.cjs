@@ -147,7 +147,13 @@ async function main() {
   await type("消息内容", Array(25).fill("较长的待发送草稿").join("\n"))
   await screenshot("electron-approval-narrow")
   await fits()
-  assert.equal(await evaluate("[...document.querySelectorAll('.approval-actions button')].every(node => getComputedStyle(node).backgroundColor === 'rgba(0, 0, 0, 0)')"), true, "浮窗内部按钮默认透明")
+  assert.equal(await evaluate(`(() => {
+    const probe = document.createElement('span'); document.body.appendChild(probe)
+    const color = token => { probe.style.color = 'var(' + token + ')'; return getComputedStyle(probe).color }
+    const primary = getComputedStyle(document.querySelector('.approval-actions .settings-primary-button')).backgroundColor
+    const secondary = getComputedStyle(document.querySelector('.approval-actions .settings-secondary-button')).backgroundColor
+    const valid = primary === color('--accent') && secondary === color('--surface-muted'); probe.remove(); return valid
+  })()`), true, "审批主次按钮使用已确认的操作层级")
   await evaluate("document.querySelector('.approval-actions .settings-primary-button').click(); document.querySelector('.approval-actions .settings-primary-button')?.click()")
   await until(() => evaluate(`document.querySelector('.approval-popover')?.dataset.approvalId !== ${JSON.stringify(firstId)} && Boolean(document.querySelector('.approval-popover'))`))
   assert.equal(decisionCalls, 1, "连点只提交一次决定")
@@ -180,7 +186,8 @@ async function main() {
   for (const update of heldUpdates.splice(0)) window.webContents.send(channels.update, update)
   const callsBeforeStop = decisionCalls
   await startApproval()
-  await evaluate("document.querySelector('.stop-button').click()")
+  await until(() => evaluate("document.querySelector('[aria-label=\"停止\"]')?.disabled === false"))
+  await evaluate("document.querySelector('[aria-label=\"停止\"]').click()")
   await until(() => evaluate("!document.querySelector('.approval-popover') && document.querySelector('.session-phase').textContent === '准备就绪'"))
   await evaluate("document.querySelector('.turn-process > summary').click()")
   assert.equal(await evaluate("document.querySelector('.approval-result > summary').textContent"), "审批已取消 · shell")

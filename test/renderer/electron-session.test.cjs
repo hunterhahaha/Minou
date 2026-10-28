@@ -151,12 +151,24 @@ async function main() {
   await evaluate("document.querySelector('.user-message .message-copy-button').focus()")
   await until(() => evaluate("getComputedStyle(document.querySelector('.user-message-actions')).opacity === '1'"))
   assert.equal(await evaluate("document.activeElement.matches('.message-copy-button')"), true, "键盘聚焦时用户复制操作可见")
-  await until(() => evaluate(`document.querySelector('[aria-label="加入队列"]')?.disabled === true`))
+  await until(() => evaluate(`document.querySelector('[aria-label="停止"]')?.disabled === false`))
+  assert.equal(await evaluate("document.querySelectorAll('.chat-footer .send-button').length"), 1, "运行中只显示一个发送或停止控件")
+  assert.equal(await evaluate(`(() => {
+    const button = document.querySelector('.chat-footer .send-button'), style = getComputedStyle(button), rect = button.getBoundingClientRect()
+    const radius = style.borderTopLeftRadius.endsWith('%') ? parseFloat(style.borderTopLeftRadius) * rect.width / 100 : parseFloat(style.borderTopLeftRadius)
+    button.dataset.testIdentity = 'same-button'
+    return Math.abs(rect.width - rect.height) < 1 && radius >= rect.width / 2 - 0.5
+  })()`), true, "运行中操作按钮为圆形")
+  await type("消息内容", "  \n  ")
+  assert.equal(await evaluate(`document.querySelector('[aria-label="停止"]')?.disabled === false`), true, "仅空白内容仍显示可用停止操作")
   const route = await evaluate(`location.hash`)
   await type("消息内容", "排队中的真实页面消息")
   await until(() => evaluate(`document.querySelector('[aria-label="加入队列"]')?.disabled === false`))
+  assert.equal(await evaluate(`document.querySelector('[aria-label="加入队列"]').dataset.testIdentity`), "same-button", "输入变化时保持同一操作按钮和焦点身份")
   await evaluate(`document.querySelector('[aria-label="加入队列"]').click()`)
   await until(() => evaluate(`document.querySelector('[aria-label="待处理消息"]')?.textContent.includes('排队中的真实页面消息')`))
+  await until(() => evaluate(`document.querySelector('[aria-label="停止"]')?.disabled === false`))
+  assert.equal(await evaluate(`document.querySelector('[aria-label="停止"]').dataset.testIdentity`), "same-button", "加入队列并清空输入后同一按钮恢复停止")
   await evaluate(`document.querySelector('.new-chat').click()`)
   await until(() => evaluate(`document.querySelector('textarea[aria-label="任务描述"]') !== null`))
   await type("任务描述", "切换保留的草稿")
@@ -211,6 +223,11 @@ async function main() {
   window.webContents.focus()
   for (const type of ["mouseDown", "mouseUp"]) window.webContents.sendInputEvent({ type, x: permissionIconPoint.x, y: permissionIconPoint.y, button: "left", clickCount: 1 })
   await until(() => evaluate("document.querySelector('[aria-label=\"对话权限\"]').matches(':open')"))
+  assert.equal(await evaluate(`(() => {
+    const rects = [...document.querySelector('[aria-label="对话权限"]').options].map(option => option.getBoundingClientRect())
+    return rects.every((rect, index) => rect.width > 0 && rect.left >= 0 && rect.right <= innerWidth && rect.top >= 0 && rect.bottom <= innerHeight && (index === 0 || rect.top - rects[index - 1].bottom >= 2))
+  })()`), true, "权限菜单选项之间有留白且均在窗口内")
+  await copyScreenshot("electron-permission-options")
   for (const keyCode of ["End", "Enter"]) {
     window.webContents.sendInputEvent({ type: "keyDown", keyCode })
     window.webContents.sendInputEvent({ type: "keyUp", keyCode })
