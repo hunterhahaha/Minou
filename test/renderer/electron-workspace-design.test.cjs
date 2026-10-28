@@ -100,6 +100,51 @@ async function screenshot(name) {
   await writeFile(join(process.cwd(), "dist", name + ".png"), (await window.webContents.capturePage()).toPNG())
   if (["workspace-light", "workspace-dark", "workspace-conversation", "workspace-conversation-dark", "workspace-models", "workspace-settings-dark", "workspace-skills", "workspace-settings-narrow", "workspace-approval-queue"].includes(name)) await assertTypographyAtZoom(name)
 }
+
+/** 在当前菜单临时替换显示文字以检查长失效等级，不改变应用状态。 @param variant 截图名称后缀。 @returns 布局检查完成。 */
+async function assertLongInvalidLevel(variant) {
+  await evaluate(`(() => { const node = document.querySelector('[data-model-setting="reasoning"] .model-setting-value'); node.dataset.fixtureOriginal = node.textContent; node.textContent = 'very-long-custom-reasoning-level-that-must-wrap-without-hiding-the-invalid-indicator（已失效）' })()`)
+  await until(() => evaluate(`(() => { const rect = document.querySelector('.composer-model-panel').getBoundingClientRect(); return rect.left >= 12 && rect.top >= 12 && rect.right <= innerWidth - 12 && rect.bottom <= innerHeight - 12 })()`))
+  const layout = await evaluate(`(() => {
+    const node = document.querySelector('[data-model-setting="reasoning"] .model-setting-value'), style = getComputedStyle(node), rect = node.getBoundingClientRect()
+    const end = document.createRange(); end.setStart(node.firstChild, node.textContent.length - 5); end.setEnd(node.firstChild, node.textContent.length)
+    const last = end.getBoundingClientRect()
+    return { text: node.textContent, whiteSpace: style.whiteSpace, height: rect.height, lineHeight: parseFloat(style.lineHeight), scrollWidth: node.scrollWidth, clientWidth: node.clientWidth, scrollHeight: node.scrollHeight, clientHeight: node.clientHeight, lastVisible: last.left >= rect.left - 1 && last.right <= rect.right + 1 && last.top >= rect.top - 1 && last.bottom <= rect.bottom + 1 }
+  })()`)
+  assert.ok(layout.text.endsWith('（已失效）') && layout.whiteSpace !== 'nowrap' && layout.height > layout.lineHeight && layout.scrollWidth <= layout.clientWidth && layout.scrollHeight <= layout.clientHeight && layout.lastVisible, "长等级与失效提示完整换行：" + JSON.stringify(layout))
+  await screenshot("workspace-model-invalid-long-" + variant)
+  await evaluate(`(() => { const node = document.querySelector('[data-model-setting="reasoning"] .model-setting-value'); node.textContent = node.dataset.fixtureOriginal; delete node.dataset.fixtureOriginal })()`)
+}
+
+/** 在当前已选项临时替换显示文字，检查长名称和勾选标记。 @param variant 截图名称后缀。 @returns 布局检查完成。 */
+async function assertLongModelOption(variant) {
+  await evaluate(`(() => { const row = document.querySelector('.model-menu [aria-checked="true"]'), name = row.querySelector('strong'), provider = row.querySelector('small'); name.dataset.fixtureOriginal = name.textContent; provider.dataset.fixtureOriginal = provider.textContent; name.textContent = 'very-long-model-name-that-must-wrap-to-remain-readable-in-the-menu'; provider.textContent = 'very-long-provider-name-that-must-also-wrap-without-clipping' })()`)
+  await until(() => evaluate(`(() => { const rect = document.querySelector('.composer-model-panel').getBoundingClientRect(); return rect.left >= 12 && rect.top >= 12 && rect.right <= innerWidth - 12 && rect.bottom <= innerHeight - 12 })()`))
+  const layout = await evaluate(`(() => {
+    const row = document.querySelector('.model-menu [aria-checked="true"]'), name = row.querySelector('strong'), provider = row.querySelector('small'), icon = row.querySelector('svg')
+    const text = [name, provider].map(node => { const style = getComputedStyle(node), rect = node.getBoundingClientRect(); return { whiteSpace: style.whiteSpace, height: rect.height, lineHeight: parseFloat(style.lineHeight), scrollWidth: node.scrollWidth, clientWidth: node.clientWidth, scrollHeight: node.scrollHeight, clientHeight: node.clientHeight } })
+    const labelRect = row.querySelector('span').getBoundingClientRect(), iconRect = icon.getBoundingClientRect(), rowRect = row.getBoundingClientRect()
+    return { text, iconWidth: iconRect.width, separate: labelRect.right <= iconRect.left && iconRect.right <= rowRect.right }
+  })()`)
+  assert.ok(layout.text.every(item => item.whiteSpace !== 'nowrap' && item.height > item.lineHeight && item.scrollWidth <= item.clientWidth && item.scrollHeight <= item.clientHeight) && layout.iconWidth >= 14 && layout.separate, "长模型、供应商完整换行且不挤压勾选标记：" + JSON.stringify(layout))
+  await screenshot("workspace-model-menu-long-" + variant)
+  await evaluate(`(() => { for (const node of document.querySelectorAll('.model-menu [data-fixture-original]')) { node.textContent = node.dataset.fixtureOriginal; delete node.dataset.fixtureOriginal } })()`)
+}
+
+/** 检查真实键盘焦点、鼠标悬停和当前项的视觉层级。 @param variant 截图名称后缀。 @returns 状态检查完成。 */
+async function assertModelStates(variant) {
+  window.webContents.focus()
+  await until(() => evaluate("document.activeElement === document.querySelector('.reasoning-menu [aria-checked=\"true\"]')"))
+  nativeKey("End")
+  await until(() => evaluate("document.activeElement === document.querySelector('.reasoning-menu button:last-child')"))
+  const hoverPoint = await evaluate("(() => { const rect = document.querySelector('.reasoning-menu button:first-child').getBoundingClientRect(); return { x: Math.round(rect.x + rect.width / 2), y: Math.round(rect.y + rect.height / 2) } })()")
+  window.webContents.sendInputEvent({ type: "mouseMove", ...hoverPoint })
+  await until(() => evaluate("document.querySelector('.reasoning-menu button:first-child').matches(':hover')"))
+  const states = await evaluate(`(() => { const selected = document.querySelector('.reasoning-menu [aria-checked="true"]'), hover = document.querySelector('.reasoning-menu button:first-child'), focus = document.activeElement; return { selected: getComputedStyle(selected).backgroundColor, hover: getComputedStyle(hover).backgroundColor, focusVisible: focus.matches(':focus-visible'), focusShadow: getComputedStyle(focus).boxShadow } })()`)
+  assert.ok(states.selected !== states.hover && states.focusVisible && states.focusShadow !== 'none', "焦点、选中与悬停状态可区分：" + JSON.stringify(states))
+  await screenshot("workspace-model-states-" + variant)
+  await evaluate("document.querySelector('.reasoning-menu [aria-checked=\"true\"]').focus()")
+}
 /**
  * 在当前真实页面核对缩放后的文字下限、代码字体、横向边界和 Composer 操作区域。
  * @param state 截图场景名称，用于报告与截图定位。
@@ -480,11 +525,13 @@ async function main() {
   assert.equal(await evaluate("(() => { const name = document.querySelector('.composer-model-name').getBoundingClientRect(); const level = document.querySelector('.composer-model-reasoning').getBoundingClientRect(); return Math.abs(name.top - level.top) < 2 && level.left >= name.right })()"), true, "模型名和推理等级在同一行")
   assert.equal(await evaluate("(() => { const rect = document.querySelector('.composer-model-panel').getBoundingClientRect(); return rect.left >= 12 && rect.top >= 12 && rect.right <= innerWidth - 12 && rect.bottom <= innerHeight - 12 })()"), true, "模型面板位于窗口内")
   await screenshot("workspace-model-settings")
+  await assertLongInvalidLevel("light")
   window.webContents.focus()
   await evaluate("document.querySelector('[aria-label=\"设置推理等级\"]').focus()")
   nativeKey("Right")
   await until(() => evaluate("Boolean(document.querySelector('.reasoning-menu'))"))
   await until(() => evaluate("document.activeElement === document.querySelector('.reasoning-menu [aria-checked=\"true\"]')"))
+  await assertModelStates("light")
   nativeKey("End")
   await until(() => evaluate("document.activeElement?.textContent.includes('high')"))
   for (const type of ["keyDown", "char", "keyUp"]) window.webContents.sendInputEvent({ type, keyCode: type === "char" ? "\r" : "Enter" })
@@ -505,13 +552,20 @@ async function main() {
   await until(() => evaluate("innerWidth === 640"))
   await fits()
   await screenshot("workspace-model-reasoning-narrow")
+  await assertLongInvalidLevel("narrow")
   const compactModelMenu = await evaluate("(() => { const node = document.querySelector('.composer-model-panel'); const rect = node.getBoundingClientRect(); return { open: node.matches(':popover-open'), left: rect.left, right: rect.right, top: rect.top, viewport: innerWidth } })()")
   assert.ok(compactModelMenu.open && compactModelMenu.left >= 12 && compactModelMenu.right <= compactModelMenu.viewport - 12 && compactModelMenu.top >= 12, "窄窗口菜单边界：" + JSON.stringify(compactModelMenu))
+  await click('[aria-label="切换模型"]')
+  await until(() => evaluate("Boolean(document.querySelector('.model-menu'))"))
+  await assertLongModelOption("narrow")
+  await click('.model-panel-back')
+  await until(() => evaluate("Boolean(document.querySelector('.model-settings-menu'))"))
   window.setSize(1440, 1000)
   await until(() => evaluate("innerWidth === 1440"))
   await click('[aria-label="切换模型"]')
   await until(() => evaluate("Boolean(document.querySelector('.model-menu'))"))
   await screenshot("workspace-model-menu")
+  await assertLongModelOption("light")
   await assertPaletteContrast("model menu")
   await key("Escape")
   await until(() => evaluate("!document.querySelector('.composer-model-panel:popover-open')"))
@@ -539,9 +593,18 @@ async function main() {
   await nativeClick('[aria-label="对话模型"]')
   await until(() => evaluate("Boolean(document.querySelector('.composer-model-panel:popover-open'))"))
   await screenshot("workspace-model-reasoning-dark")
+  await assertLongInvalidLevel("dark")
   /** 截取已渲染的菜单和入口，供直接对照本次参考图。 */
   const modelMenuBounds = await evaluate("(() => { const panel = document.querySelector('.composer-model-panel').getBoundingClientRect(); const trigger = document.querySelector('.model-trigger').getBoundingClientRect(); const x = Math.floor(Math.max(0, panel.left - 12)); const y = Math.floor(Math.max(0, panel.top - 12)); return { x, y, width: Math.ceil(Math.min(innerWidth, Math.max(panel.right, trigger.right) + 12)) - x, height: Math.ceil(Math.min(innerHeight, trigger.bottom + 8)) - y } })()")
   await writeFile(join(process.cwd(), "dist/workspace-model-settings-detail-dark.png"), (await window.webContents.capturePage(modelMenuBounds)).toPNG())
+  await click('[aria-label="切换模型"]')
+  await until(() => evaluate("Boolean(document.querySelector('.model-menu'))"))
+  await assertLongModelOption("dark")
+  await click('.model-panel-back')
+  await until(() => evaluate("Boolean(document.querySelector('.model-settings-menu'))"))
+  await click('[aria-label="设置推理等级"]')
+  await until(() => evaluate("Boolean(document.querySelector('.reasoning-menu'))"))
+  await assertModelStates("dark")
   await key("Escape")
   await assertWorkspacePalette("rgb(35, 35, 35)", [".chat-page", ".chat-scroll", ".chat-messages", ".final-answer"])
   assert.equal(historyReads, 1, "切换深色外观不重新读取对话历史")

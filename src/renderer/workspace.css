@@ -197,20 +197,23 @@ kbd { font: var(--font-size-caption)/var(--line-height-caption) var(--font-ui); 
 .composer-model-picker .composer-model-reasoning { flex: none; max-width: 80px; color: var(--muted); font-size: var(--font-size-note); line-height: var(--line-height-note); }
 .composer-model-chevron { flex: none; color: var(--muted); transition: transform .18s; }
 .model-trigger[aria-expanded="true"] > .composer-model-chevron { transform: rotate(180deg); }
-.composer-model-panel { position: fixed; inset: auto; width: min(310px, calc(100vw - 24px)); max-height: calc(100dvh - 24px); margin: 0; padding: 6px; overflow: auto; border: 0; border-radius: 13px; color: var(--text); background: var(--popover); box-shadow: var(--shadow-popover); }
+.composer-model-panel { position: fixed; inset: auto; width: min(310px, calc(100vw - 24px)); max-height: calc(100dvh - 24px); margin: 0; padding: 6px; overflow: auto; border: 0; border-radius: var(--radius-panel); color: var(--text); background: var(--popover); box-shadow: var(--shadow-popover); }
 .model-settings-menu { display: flex; flex-direction: column; }
 .model-setting-row { display: flex; align-items: center; gap: 7px; width: 100%; min-height: 42px; padding: 8px 10px; border: 0; border-radius: 8px; color: var(--text); background: transparent; text-align: left; font-size: var(--font-size-ui); line-height: var(--line-height-ui); }
 .model-setting-label { flex: none; }
-.model-setting-value { min-width: 0; margin-left: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--secondary); }
+.model-setting-value { min-width: 0; margin-left: auto; overflow-wrap: anywhere; color: var(--secondary); text-align: right; }
 .model-setting-row > svg { flex: none; color: var(--secondary); }
 .model-setting-row:hover { background: var(--hover); }
 .model-panel-back { display: inline-flex; align-items: center; gap: 7px; max-width: 100%; min-height: 34px; margin-bottom: 4px; padding: 4px 10px; border: 0; border-radius: 7px; color: var(--secondary); background: transparent; font-size: var(--font-size-ui); line-height: var(--line-height-ui); }
 .model-panel-back:hover { color: var(--text); background: var(--hover); }
 .model-option-list { display: flex; flex-direction: column; gap: 3px; }
 .model-option-list > button { display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%; min-height: 40px; padding: 9px 10px; border: 0; border-radius: 7px; color: var(--secondary); background: transparent; font-size: var(--font-size-ui); line-height: var(--line-height-ui); text-align: left; }
-.model-option-list > button:hover, .model-option-list > button[aria-checked="true"] { color: var(--accent); background: var(--accent-soft); }
+.model-option-list > button:hover:not([aria-checked="true"]) { color: var(--text); background: var(--hover); }
+.model-option-list > button[aria-checked="true"] { color: var(--text); background: var(--selected); }
+.composer-model-panel button:focus-visible, .composer-model-panel button:focus-visible:hover { outline: 0; box-shadow: var(--shadow-focus), var(--shadow-pressed); }
 .model-option-list > button > span { min-width: 0; overflow-wrap: anywhere; }
-.composer-model-panel .model-menu strong, .composer-model-panel .model-menu small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-option-list > button > svg { flex: none; color: var(--accent); }
+.composer-model-panel .model-menu strong, .composer-model-panel .model-menu small { display: block; overflow-wrap: anywhere; }
 .composer-model-panel .model-menu strong { font-size: var(--font-size-ui); line-height: var(--line-height-ui); font-weight: 500; }
 .composer-model-panel .model-menu small { margin-top: 4px; color: var(--muted); font-size: var(--font-size-note); line-height: var(--line-height-note); }
 .model-panel-note { margin: 0; color: var(--muted); font-size: var(--font-size-note); line-height: var(--line-height-note); }
