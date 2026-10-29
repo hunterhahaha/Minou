@@ -52,6 +52,12 @@ export interface InitializedConfigFilesSnapshot {
   config: ValidatedStartupConfig
 }
 
+/** 独立启动入口可选择跳过的模块初始化；省略时保持桌面启动行为。 */
+export interface ConfigInitializationOptions {
+  /** 为 true 时不创建、扫描或同步任何 Skill 来源目录与 registry。 */
+  skipSkills?: boolean
+}
+
 function isFileExistsError(error: unknown): boolean {
   return error !== null && typeof error === "object" && "code" in error && error.code === "EEXIST"
 }
@@ -161,11 +167,13 @@ export async function initializeConfigFiles(
  * 保持调用方只接触不含凭据的全局配置。
  *
  * @param userProfile 用户目录；省略时读取当前进程的 USERPROFILE。
+ * @param options 可选的模块初始化控制；默认仍初始化全部 Skill 来源。
  * @returns 固定配置路径，以及本次初始化中读取并通过 V2 检查的普通配置。
  * @throws Error 当用户目录无效、文件或数据库无法创建读取，或全局配置未通过 V2 检查时抛出。
  */
 export async function initializeConfigFilesSnapshot(
   userProfile: string | undefined = process.env.USERPROFILE,
+  options: ConfigInitializationOptions = {},
 ): Promise<InitializedConfigFilesSnapshot> {
   if (!userProfile || !isAbsolute(userProfile)) {
     throw new Error("USERPROFILE 必须是非空的绝对路径。")
@@ -183,7 +191,7 @@ export async function initializeConfigFilesSnapshot(
   const config = await ensureJsonObjectFile(configPath, INITIAL_CONFIG)
   checkFile(configPath, () => checkConfig(config))
 
-  await mkdir(join(rootDir, "skills"), { recursive: true })
+  if (!options.skipSkills) await mkdir(join(rootDir, "skills"), { recursive: true })
   await mkdir(sessionsDir, { recursive: true })
   await mkdir(join(rootDir, "logs"), { recursive: true })
 
@@ -191,7 +199,7 @@ export async function initializeConfigFilesSnapshot(
   await mkdir(join(defaultDir, "workspace"), { recursive: true })
   initializeProviderDatabase(providerDatabasePath)
   initializeWorkspaceDatabase(workspaceDatabasePath)
-  const sources = [
+  const sources = options.skipSkills ? [] : [
     { directory: join(rootDir, "skills"), scope: "global" as const },
     ...listProjectWorkspaces(workspaceDatabasePath).map((project) => ({ directory: join(sessionsDir, project.id, "skills"), scope: "project" as const })),
   ]

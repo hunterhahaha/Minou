@@ -13,6 +13,121 @@ NiCode V1 是一个本地运行的 Coding Agent Runtime：浏览器 UI 与本机
 
 ## 当前状态
 
+### 通用 CLI：Headless Agent Execution Protocol V1
+
+CLI 使用独立 Node 启动入口，直接装配现有配置、模型 Adapter、工具注册、MCP、Skill、Memory 和
+EventLog，调用同一个 `runAgentLoop`。每次执行创建一个全新 Run，不接入桌面 IPC、Project 绑定、
+历史恢复或消息队列；不改变桌面入口。没有新增依赖。
+
+先构建 CLI，再调用编译入口；包清单的 `bin.nicode` 也指向这个入口：
+
+```powershell
+npm run build:cli
+node dist/src/cli/main.js run --prompt-file ./task.txt --workspace . --output ./result.json
+node dist/src/cli/main.js run --request ./request.json --output ./result.json --format jsonl
+node dist/src/cli/main.js run --help
+```
+
+安装或链接本地包后可以使用 `nicode run ...`。`npm run cli -- run ...` 也可用于手动调用；
+程序需要严格解析 stdout 时直接执行 `nicode` 或 `node`，避免 npm 自己的脚本提示混入输出。
+`build:cli` 只运行现有 TypeScript 编译器，不启动 Electron 或 Vite。
+
+两种输入互斥；`--output` 必填，输出父目录必须存在。`--format` 默认 `json`（stdout 一份最终 JSON），
+`jsonl` 则输出连续公共事件；两种格式都会原子写入最终结果文件。日志和 Node 诊断使用 stderr。
+简单输入中的路径相对启动目录，Request 中的路径相对 Request 文件目录；未指定 workspace 时均使用启动目录。
+未知参数、重复参数、未知 JSON 字段、非法版本和显式 null 字段会被拒绝。
+
+Request 示例（MCP 配置路径可省略）：
+
+```json
+{
+  "version": 1,
+  "run_id": "external-task-151",
+  "prompt": "检查当前工作区并完成任务",
+  "model": "configured-model-id",
+  "reasoning_level": "medium",
+  "workspace": ".",
+  "isolated": { "skill": false, "memory": false, "mcp": false },
+  "permissions": {
+    "sandbox_mode": "sandbox-full-access",
+    "auto_approve": { "groups": ["mcp"], "tools": ["write"] }
+  },
+  "limits": { "max_steps": 100, "timeout_seconds": 1800 }
+}
+```
+
+`model` 使用数据库中的稳定 `modelId`，省略时使用有效默认模型；不按展示名匹配。
+推理等级省略时取该模型的第一个等级，显式等级必须仍受模型支持。请求不会保存默认模型。
+默认最多 100 个 AgentLoop Step、1800 秒；一次 Step 算一步，工具调用不额外计步。
+超时覆盖初始化和执行；取消后资源清理宽限为 5 秒。CLI 不额外接入 Session 级上下文压缩。
+
+简单参数对应 `--run-id`、`--model`、`--reasoning-level`、`--workspace`、`--max-steps`、`--timeout`、
+`--mcp-config`、`--isolate`、`--sandbox-mode`、`--auto-approve-groups`、`--auto-approve-tools`。
+列表使用逗号分隔，例如 `--isolate skill,memory --auto-approve-groups shell,mcp`。
+
+隔离字段 true 表示禁用模块，省略或 false 表示沿用现有配置：
+
+- Skill 禁用时跳过 Global/Project registry 启动扫描，不创建 SkillManager、不注册工具、不加载描述。
+- Memory 禁用时不注册记忆工具、不访问记忆文件；启用时复用 default 分组，按工具调用访问正文。
+- MCP 禁用时不创建 Manager、不连接服务、不注册发现或远端工具。
+- 启用的 Skill 使用 Global 来源；workspace 的 `AGENTS.md` 单独进入固定上下文。
+
+可选 `mcp_config` 指向 `{ "mcpServers": [...] }` JSON 文件，条目使用当前 NiCode MCP 配置结构；
+它只替换本次连接配置，不写回全局配置。与 `isolated.mcp=true` 同用时报错，不支持 TOML。
+MCP 继续使用现有发现、载入预算和 Catalog 校验；不会启动就向模型暴露全部远端 Schema。
+单个 MCP 服务连接失败沿用现有处理：stderr 诊断，其余服务和任务仍可继续。
+
+权限仍使用 `full-access`、`sandbox-full-access`、`sandbox-read-only`，默认 `sandbox-full-access`。
+文件允许根为 workspace 和本次 `tool_output`；Shell/Terminal 的初始 cwd 为 workspace。
+自动批准**只在现有规则触发审批后生效**：命中组或精确工具名立即批准，未命中立即拒绝，取消后为 cancelled。
+它不隐藏工具，也不阻止原本无需审批的调用。工具组为 `file`、`shell`、`terminal`、`mcp`、`skill`、`memory`；
+远端 MCP 身份依注册元数据判断，不用名称前缀。`full-access` 不触发的审批也不会被名单额外拦截。
+现有 Shell/Terminal 使用 PowerShell 7，需要本机 `pwsh`；没有增加 Bash 后端或操作系统沙箱。
+
+每次 Run 使用内部 UUID，在 `.nicode/logs/cli/<session_id>/` 保存独立 `events.sqlite` 和工具输出。
+外部 `run_id` 仅关联结果，不作为目录，也不创建桌面对话索引。内部日志可以包含模型思考与完整工具内容，
+仅供本地诊断；公共事件采用白名单，排除 thinking、工具参数/结果正文、SDK 错误载荷和凭据配置。
+`answer` 是模型生成的公开文本，不能保证它不会复述输入或工具内容中的敏感信息。
+
+公共 JSONL 信封为：
+
+```json
+{"version":1,"seq":1,"type":"run.started","run_id":"external-task-151","session_id":"uuid","data":{}}
+```
+
+事件包括 `run.started`、`step.started`、`message.delta`、`message.completed`、`tool.started`、
+`tool.completed`、`approval.resolved`、`step.completed`、`run.finished`。
+`tool.started` 表示调度到执行入口（包含参数/权限检查阶段），不表示已经发起业务副作用。
+公共 seq 独立连续递增；`run.finished.data.result` 与结果文件相同。
+stdout 写入会等待回调以处理背压；写入失败或 5 秒内无法处理将停止运行，不无限缓存事件。
+
+Result 包含 `version`、`run_id`、`session_id`、`status`、`stop_reason`、`model`、`answer`、
+`answer_complete`、`record_directory`、`metrics` 和可选的稳定 `error`。
+回答取最后一条 Assistant Message 的文本；停止时保留已有文本，但 `answer_complete=false`。
+工具失败/拒绝仍通过既有 ToolResult 返回模型，不直接让 Run 失败。
+
+指标依据已提交事件汇总：`steps` 为已开始 Step 数，`tool_calls` 包括被拒绝或失败的完整工具调用。
+`metrics.usage` 使用 snake_case 的统一桶（`input_tokens` 是未缓存输入），可选字段未报告时不补零。
+`usage_complete` 表示是否所有已开始 Step 都报告了权威 Usage；`usage_reported_steps` 给出报告数量，
+`usage_scope=reported_agent_requests` 表明不覆盖不可观测的失败重试账单用量。完全未报告时 usage 为 null。
+
+| 情况 | status / stop_reason | 退出码 |
+| --- | --- | ---: |
+| 模型正常结束 | completed / finished | 0 |
+| 输入或模型选择无效 | failed / invalid_request | 2 |
+| Step 耗尽 | stopped / max_steps | 10 |
+| 总超时 | stopped / timeout | 124 |
+| SIGINT / SIGTERM | stopped / interrupted | 130 |
+| 模型未完成或完成状态未知 | stopped / model_incomplete | 1 |
+| 初始化、运行、输出异常 | failed / error | 1 |
+
+结果先写同目录独占临时文件再重命名，失败保留已有文件并返回 1。
+SIGINT/SIGTERM 通过现有取消信号和资源释放处理；Windows 外部强制终止或不可捕获的终止无法保证结果写入。
+
+CLI 验证命令 `npm run test:cli` 会先编译，再运行协议测试和真实 Node 子进程集成测试；
+测试使用临时用户目录、本机假模型和 MCP 服务，不访问用户配置或真实模型网络。
+集成验证覆盖权限、隔离、MCP、输出、超时以及真实 PowerShell / PTY，需允许创建本机进程。
+
 **阶段 0（工程骨架）**已完成：工程配置与目录占位。
 
 **启动配置文件初始化**已完成：`src/main/config-files.ts` 导出

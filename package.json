@@ -4,11 +4,17 @@
   "private": true,
   "description": "NiCode V1 — 本地运行的 Coding Agent Runtime",
   "main": "dist/src/main/electron-main.js",
+  "bin": {
+    "nicode": "dist/src/cli/main.js"
+  },
   "scripts": {
     "dev": "tsc && node scripts/dev-electron.mjs",
     "typecheck": "tsc -p tsconfig.test.json && tsc -p tsconfig.renderer.json",
     "build": "tsc && vite build",
-    "start": "npm run build && electron ."
+    "start": "npm run build && electron .",
+    "build:cli": "tsc",
+    "cli": "node dist/src/cli/main.js",
+    "test:cli": "npm run build:cli && node --experimental-strip-types test/cli/protocol.test.ts && node --experimental-strip-types test/cli/run.test.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.126.0",
