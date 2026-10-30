@@ -1,21 +1,19 @@
 /**
- * 取消（Abort）错误的统一识别与构造。
+ * 按错误形状识别取消，并构造 name 为 AbortError 的错误。
  *
- * 单独成文件是因为有两个使用方：重试逻辑要据此排除取消类错误，
- * 错误归一化要据此产出 `CANCELLED`。
- *
- * 架构依据：.git/技术文档/开发备忘录1.0.17.md 第 7 节（网络层）、第 14 节（用户停止 Agent）、
- *          第 25 节（工具错误与取消处理）
+ * 取消识别供网络重试、模型错误转换和运行循环共同使用；
+ * 检查当前对象及最多八层 cause，不区分取消的发起来源。
  */
 
 /**
- * 从未知值中安全读取一个对象属性。
+ * 从非空对象读取指定属性；不捕获 getter 或 Proxy 访问异常。
  *
  * 非对象值和 `null` 没有可读取的属性，统一返回 `undefined`。
  *
  * @param source 待检查的未知值。
  * @param key 要读取的属性名。
- * @returns 属性当前值；值不是对象或对象不含该属性时返回 `undefined`。
+ * @returns 属性当前值；非对象、null 或缺失属性返回 undefined。
+ * @throws Error 属性访问器或 Proxy 抛出的异常原样传播，调用方需自行处理。
  */
 function readProperty(source: unknown, key: string): unknown {
   if (typeof source !== "object" || source === null) return undefined
@@ -35,6 +33,7 @@ function readProperty(source: unknown, key: string): unknown {
  *
  * @param error 待识别的未知抛出物。
  * @returns 如果错误本身或其有限深度的 `cause` 链符合取消错误形状则返回 `true`，否则返回 `false`。
+ * @throws Error 错误对象的属性访问器或 Proxy 抛出异常时传播，调用方需自行处理。
  */
 export function isAbortError(error: unknown): boolean {
   return inspectAbort(error, 0)
@@ -54,6 +53,7 @@ const MAX_CAUSE_DEPTH = 8
  * @param error 当前待检查的值。
  * @param depth 当前已追溯的 `cause` 层数。
  * @returns 当前值或其有限深度的 `cause` 链是否符合取消错误形状。
+ * @throws Error 错误对象的属性访问器或 Proxy 抛出异常时传播，调用方需自行处理。
  */
 function inspectAbort(error: unknown, depth: number): boolean {
   if (typeof error !== "object" || error === null) return false
@@ -64,7 +64,9 @@ function inspectAbort(error: unknown, depth: number): boolean {
   const code = readProperty(error, "code")
   if (code === "UND_ERR_ABORT" || code === "UND_ERR_ABORTED") return true
 
-  // 部分实现把取消信息放在 cause 上。
+  /**
+   * 部分实现把取消信息放在 cause 上。
+   */
   if (depth >= MAX_CAUSE_DEPTH) return false
   return inspectAbort(readProperty(error, "cause"), depth + 1)
 }

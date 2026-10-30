@@ -1,8 +1,8 @@
 /**
- * 统一工具调用入口（第 16.4 节）。
+ * 工具查表、参数校验、调用说明分离、取消检查、业务执行与结果整理的统一入口。
  *
- * 本文件只负责编排查表、参数检查、取消、业务调用与结果整理；工具调度仍由 ToolScheduler 负责，
- * Session 事件关联仍由 AgentLoop 负责，路径、权限和审批属于后续实现。
+ * 普通业务失败转换为错误 ToolResult；专属整理器失败时使用公共错误结果。
+ * 调度由 ToolScheduler 处理，事件关联由运行层处理，具体权限与审批由各工具实现和注入资源完成。
  */
 
 import { isAbortError } from "../../error/src/abort.ts"
@@ -34,14 +34,18 @@ export const TOOL_EXECUTION_FAILED = "TOOL_EXECUTION_FAILED"
 /** 工具专属结果整理器抛出了异常。 */
 export const TOOL_RENDER_FAILED = "TOOL_RENDER_FAILED"
 
+/**
+ * 分离后的业务参数与 Runtime 调用说明，避免调用说明进入业务参数校验。
+ */
 interface SeparatedArguments {
+  /** 去除 Runtime 调用说明后的业务参数。 */
   businessArguments: Record<string, unknown>
+  /** 从模型参数中分离的 Runtime 调用元数据。 */
   meta: ToolCallMeta
 }
 
 /**
  * 使用指定注册表创建可直接注入 AgentLoop 的统一工具执行函数。
- *
  * @param toolRegistry 保存工具定义、参数检查器和业务函数的注册表。
  * @param renderRegistry 保存同名结果整理器的注册表。
  * @returns 与 AgentLoop `ExecuteToolCall` 契约一致的异步函数。
@@ -92,7 +96,7 @@ export function createExecuteToolCall(
       })
     }
 
-    // callDescription 是 Runtime 元数据，即使某个检查器错误地补回同名字段，也不能传给业务函数。
+    /** callDescription 是 Runtime 元数据，即使某个检查器错误地补回同名字段，也不能传给业务函数。 */
     const businessArguments = { ...validation.data }
     delete businessArguments.callDescription
     const validatedArguments = {
@@ -100,7 +104,7 @@ export function createExecuteToolCall(
       ...separated.meta,
     }
 
-    // 参数错误比取消更早进入对应 render；但取消后绝不调用业务函数。
+    /** 参数错误比取消更早进入对应 render；但取消后绝不调用业务函数。 */
     if (context.signal.aborted) {
       return renderWithFallback(toolName, render, cancellationError())
     }
@@ -123,7 +127,6 @@ export function createExecuteToolCall(
  * 将公共注册表或结果整理失败转换为统一错误结果。
  *
  * 该函数只输出稳定错误码与说明，不读取未知异常的堆栈或附加字段。
- *
  * @param error 要保留在 ToolResult 中的统一错误。
  * @returns 模型可见文本为 `错误码: 错误说明` 的错误 ToolResult。
  */
@@ -137,7 +140,6 @@ export function renderCommonError(error: AppError): ToolResult {
 
 /**
  * 分离 Runtime 调用说明与工具业务参数。
- *
  * @param input 模型提供的原始工具参数。
  * @returns 分离后的普通业务参数和调用元数据，或统一参数错误。
  */
@@ -180,7 +182,6 @@ function separateArguments(
 
 /**
  * 调用工具专属结果整理器；整理器自身失败时改用公共错误结果，且不重复调用失败整理器。
- *
  * @param toolName 当前工具名称，用于稳定错误说明。
  * @param render 当前工具的结果整理器。
  * @param result 工具专属结果或 AppError。
@@ -204,7 +205,6 @@ function renderWithFallback(
 
 /**
  * 将工具业务函数抛出的异常归一为工具错误。
- *
  * @param error 工具业务函数抛出的未知值。
  * @param context 当前调用上下文；其信号可能在业务函数运行期间变为已取消。
  * @returns 取消错误或普通工具执行错误。
@@ -217,7 +217,10 @@ function normalizeToolExecutionError(
   return normalizeError(error, "tool", TOOL_EXECUTION_FAILED)
 }
 
-/** @returns 不包含底层异常细节的标准工具取消错误。 */
+/**
+ * 构造标准工具取消错误，不携带底层异常细节。
+ * @returns 不包含底层异常细节的标准工具取消错误。
+ */
 function cancellationError(): AppError {
   return { source: "tool", code: CANCELLED, message: "工具调用已取消" }
 }

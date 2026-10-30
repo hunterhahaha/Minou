@@ -268,6 +268,7 @@ export function readDefaultWorkspace(databasePath: string): DefaultWorkspace {
  * @param directories 关联目录有序列表。
  * @param sessions 对话索引有序列表。
  * @throws Error 当数据库写入失败时回滚本次改动。
+ * @param insertOnly 为 true 时仅插入，已有分组触发数据库冲突；默认允许更新。
  */
 function saveGroup(
   databasePath: string,

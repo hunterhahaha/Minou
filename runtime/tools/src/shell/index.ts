@@ -7,7 +7,6 @@ export * from "./backend.ts"
 
 /**
  * 将 shell 的模型定义、参数检查、执行函数与专属 render 成对登记；进程创建前通过 Session 上下文完成权限检查和审批。
- *
  * @param tools - 保存工具定义和业务执行函数的注册表。
  * @param renders - 保存同名结果整理器的注册表。
  * @param router - 应用启动时创建并共用的一次性 Shell 路由。

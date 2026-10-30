@@ -10,12 +10,24 @@ import { renderMemoryList, renderMemoryRead, renderMemoryWrite } from "../src/re
 import { SessionRuntimeGlobal } from "../../../src/main/session-runtime-global.ts"
 import type { ConfigFilePaths } from "../../../src/main/config-files.ts"
 
-/** @param result 工具结果。 @returns 模型可见文本。 */
+/**
+ * 按内容块顺序拼接模型可见文本。
+ * @param result 工具结果。
+ * @returns 模型可见文本。
+ */
 function text(result: ToolResult): string { return result.content.filter((block) => block.type === "text").map((block) => block.text).join("\n") }
-/** @param result 工具结果。 @returns 失败错误码，成功时为 undefined。 */
+/**
+ * 读取错误结果的稳定错误码，成功结果不返回错误码。
+ * @param result 工具结果。
+ * @returns 失败错误码，成功时为 undefined。
+ */
 function code(result: ToolResult): string | undefined { return result.status === "error" ? result.error.code : undefined }
 
-/** @returns 工具契约验证完成。 @throws AssertionError 参数或 render 偏离文档。 */
+/**
+ * 按顺序执行当前文件的断言和已有资源清理流程。
+ * @returns 工具契约验证完成。
+ * @throws AssertionError 参数检查或结果整理不符合断言预期。
+ */
 async function main(): Promise<void> {
   const root = await mkdtemp(join(tmpdir(), "nicode-memory-tools-"))
   try {

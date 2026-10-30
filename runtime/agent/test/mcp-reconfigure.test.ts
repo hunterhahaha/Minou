@@ -1,4 +1,9 @@
-/** 真实 Session 在配置删除、重连和改名后的模型工具定义同步。 */
+/**
+ * 通过本地 MCP 测试服务验证配置变化后的 Session 工具定义同步。
+ *
+ * 在服务删除、重新连接和改名后继续同一 Session，检查请求使用当前 Catalog，
+ * 并验证 Schema 更新、工具名称隔离和 contextstate 同步。
+ */
 import assert from "node:assert/strict"
 import { mkdtemp, readFile, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
@@ -12,7 +17,12 @@ import { testTool } from "../../mcp/test/helpers.ts"
 import type { MCPConfig } from "../../mcp/src/types.ts"
 import type { ModelRef, UnifiedToolDefinition } from "../../model/src/types.ts"
 
-/** @returns 下一模型请求使用当前 Catalog、contextstate 修复及改名隔离验证完成。 */
+/**
+ * 启动本地 MCP 测试服务，验证删除、重连及改名后的工具定义并释放临时资源。
+ *
+ * @returns 下一模型请求使用当前 Catalog、contextstate 修复及改名隔离验证完成。
+ * @throws Error 断言或场景执行失败时向上传播，测试入口记录错误并设置失败退出码。
+ */
 async function main(): Promise<void> {
   const root = await mkdtemp(join(tmpdir(), "nicode-mcp-reconfigure-"))
   const fixture = await createReloadableServer([testTool("sample")])
@@ -22,7 +32,11 @@ async function main(): Promise<void> {
   await global.mcpManager.initialize([config])
   const name = global.mcpManager.listTools()[0].name
   const directory = join(paths.rootDir, "sessions", "default", "reconfigure")
-  /** @returns 同一持久化 Session 的新活动实例；每个活动期结束后 Runtime 自动关闭。 */
+  /**
+   * 为同一持久化 Session 创建新的活动实例，模型脚本与全局能力由当前场景共用。
+   * @returns 绑定测试 Session 目录和数据库的新 Runtime。
+   * @throws Error Runtime 构造失败时抛出，调用方负责释放场景资源。
+   */
   const createRuntime = () => new SessionRuntime({ projectGroupId: "default", sessionId: "reconfigure", sessionDirectory: directory,
     databasePath: join(paths.rootDir, "events.sqlite"), metaDatabasePath: paths.metaDatabasePath, systemPrompt: "offline", global })
   let runtime = createRuntime()
@@ -60,6 +74,11 @@ async function main(): Promise<void> {
     await global.mcpManager.applyConfigurations([])
     runtime = createRuntime()
     await (await runtime.continueSession(input)).completion
+    /**
+     * 从派生文件重新读取当前 Session 的 MCP 定义，不使用内存缓存。
+     * @returns 已写入 contextstate 的 MCP 定义。
+     * @throws Error 文件读取或 JSON 解析失败时拒绝，由当前场景报告。
+     */
     const context = async () => (JSON.parse(await readFile(join(directory, "contextstate.json"), "utf8")) as { mcp: UnifiedToolDefinition[] }).mcp
     assert.deepEqual(await context(), [])
     fixture.state.tools = [{ ...testTool("sample"), inputSchema: { type: "object", properties: { value: { type: "integer" } }, required: ["value"] } }]

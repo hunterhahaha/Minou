@@ -6,7 +6,6 @@ import type { ShellResult } from "./types.ts"
 
 /**
  * 请求终止仍在运行的子进程；Windows 使用隐藏的 taskkill 辅助进程请求结束进程树，启动错误时回退到 child.kill。此处不检查 taskkill 退出码，最终流关闭由执行方法等待。
- *
  * @param child - 本次 Shell 调用创建的子进程对象。
  * @returns 终止请求处理完成时兑现的 Promise；没有 PID 或已取得退出码时直接完成。
  * @throws Error - 创建辅助进程或发出终止请求时出现同步异常；调用方负责处理终止失败。
@@ -26,14 +25,12 @@ export class PwshShellBackend {
   private readonly processes = new Map<ChildProcess, { cancel: () => void; done: Promise<void> }>()
   /**
    * 绑定一次性 Shell 使用的可执行文件，构造时不创建进程。
-   *
    * @param executable - PowerShell 7 可执行文件名或路径，默认使用 pwsh。
    */
   constructor(executable = "pwsh") { this.executable = executable }
 
   /**
    * 以一次性 PowerShell 进程运行命令，按接收顺序合并 stdout/stderr，等待流关闭后发布本次输出。取消时请求终止进程树；无论成功或失败均释放本次缓冲资源。
-   *
    * @param command - 原始 PowerShell 命令，通过 UTF-16LE EncodedCommand 参数传递。
    * @param cwd - Runtime 为本次新进程解析的工作目录。
    * @param directory - 已初始化的 Session 工具输出绝对目录。
@@ -77,7 +74,6 @@ export class PwshShellBackend {
   }
   /**
    * 主动取消此后端仍在执行的全部命令，等待其进程退出和输出资源释放，不依赖用户取消信号。
-   *
    * @returns 所有被取消命令的资源释放完成时兑现的 Promise。
    */
   async dispose(): Promise<void> {

@@ -1,4 +1,9 @@
-/** Summary 的真实日志、派生文件、Step 接线与故障恢复测试；模型和工具只使用离线脚本。 */
+/**
+ * 使用脚本模型响应和真实临时 SQLite、派生文件验证上下文压缩。
+ *
+ * 覆盖 Usage 同步、连续压缩、基线更新、队列与继续入口、压缩失败和取消，
+ * 以及 Summary 配对、覆盖范围与中断后的恢复边界。
+ */
 import assert from "node:assert/strict"
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
@@ -17,7 +22,14 @@ const HIGH = 102400
 const MCP: UnifiedToolDefinition = { name: "mcp_remote_read", description: "remote", inputSchema: { type: "object" } }
 const LOADED = [{ name: MCP.name, serverId: "remote", originalToolName: "read", estimatedTokens: 37, lastCalledAt: 123 }]
 
-/** @param text 文本或工具响应。 @param tokens 正常请求的完整输入。 @param tool 是否请求工具。 @returns 合法完整流。 */
+/**
+ * 构造完整文本或工具调用响应，并用普通输入与缓存桶组合指定的完整输入量。
+ *
+ * @param text 文本响应内容；工具场景中同时作为调用 ID 和路径。
+ * @param tokens 普通输入与缓存读取、写入相加后的完整输入量；有效 Usage 场景应至少为 3。
+ * @param tool 是否改为产生完整工具调用，而非普通文本块。
+ * @returns 合法完整流。
+ */
 function response(text: string, tokens = 10, tool = false): ModelStreamEvent[] {
   return [
     { type: "block_start", index: 0, blockType: tool ? "tool_call" : "text" },
@@ -26,7 +38,13 @@ function response(text: string, tokens = 10, tool = false): ModelStreamEvent[] {
   ]
 }
 
-/** @param root 隔离目录。 @param version 来源版本。 @returns 可同步、提交的 AGENTS.md 与 Skill 基线。 */
+/**
+ * 根据来源版本构造可提交的 AGENTS.md、Skill 及 MCP 测试基线。
+ *
+ * @param root 隔离目录。
+ * @param version 决定 Skill 名称、来源组合和内容的测试版本。
+ * @returns 可同步、提交的 AGENTS.md 与 Skill 基线。
+ */
 function baseline(root: string, version: string): CurrentSessionBaseline {
   const name = version === "v2" ? "beta" : "alpha"
   const entries: CurrentSessionBaseline["skills"]["entries"] = [{ name, path: join(root, "skills", name), scope: "global", enabled: true, estimatedTokens: 8 }]
@@ -46,6 +64,7 @@ function baseline(root: string, version: string): CurrentSessionBaseline {
  * @param respond 每次模型请求的脚本。
  * @param contextWindow 当前模型窗口；小窗口用于首步触发测试。
  * @returns Runtime、故障注入入口、快照读取器和当前来源控制器。
+ * @throws Error 临时数据库初始化或 Runtime 构造失败时抛出，调用方负责清理测试目录。
  */
 function harness(root: string, name: string, respond: (request: UnifiedModelRequest, signal: AbortSignal) => AsyncIterable<ModelStreamEvent>, contextWindow = 128000) {
   const directory = join(root, name), databasePath = join(root, `${name}-events.sqlite`), metaDatabasePath = join(root, `${name}-meta.sqlite`)
@@ -69,25 +88,52 @@ function harness(root: string, name: string, respond: (request: UnifiedModelRequ
     estimateSkillTokens: (value: string) => value.length,
     interruptTerminals: () => [],
   } as unknown as SessionRuntimeGlobal
-  /** @returns 同一持久化 Session 的新实例。 */
+  /**
+   * 为同一持久化 Session 创建新的活动实例，模型脚本与全局能力由当前场景共用。
+   * @returns 绑定测试 Session 目录和数据库的新 Runtime。
+   * @throws Error Runtime 构造失败时抛出，调用方负责释放场景资源。
+   */
   const create = () => new SessionRuntime({ sessionId: name, sessionDirectory: directory, projectGroupId: "default", databasePath, metaDatabasePath, systemPrompt: "original system", global })
   const runtime = create()
   return {
     runtime, create, requests, directory,
-    /** @param version 下一次同步来源的版本。 */
+    /**
+     * 切换夹具当前基线，下次来源解析时使用新版本。
+     * @param version 下一次同步来源的版本。
+     */
     setBaseline(version: string) { current = baseline(root, version) },
-    /** @returns 当前元数据。 */
+    /**
+     * 读取当前 Session 的持久化元数据，不使用 Runtime 内存快照。
+     * @returns 数据库中的当前 Session Meta。
+     * @throws Error 元数据读取失败时抛出，由当前场景报告。
+     */
     meta: () => readSessionMeta(metaDatabasePath, "default", name) as SessionMeta,
-    /** @returns 已写入的上下文状态。 */
+    /**
+     * 读取并解析磁盘中的派生上下文状态。
+     * @returns 已提交到 contextstate 文件的状态。
+     * @throws Error 文件读取或 JSON 解析失败时拒绝，由当前场景报告。
+     */
     context: async () => JSON.parse(await readFile(join(directory, "contextstate.json"), "utf8")) as SessionContextState,
-    /** @param target 要注入状态故障的实例。 @returns 真实状态访问器。 */
+    /**
+     * 取得实例内部的真实状态访问器，供测试注入读写故障。
+     * @param target 要注入状态故障的实例，省略时使用夹具初始实例。
+     * @returns 该实例持有的 FileSessionState。
+     */
     state: (target = runtime) => (target as unknown as { sessionState: FileSessionState }).sessionState,
-    /** @returns 工厂与工具执行次数。 */
+    /**
+     * 读取当前夹具累计的模型工厂与工具调用次数。
+     * @returns 两种调用次数的独立对象快照。
+     */
     counts: () => ({ factoryCalls, executions }),
   }
 }
 
-/** @param root 隔离目录。 @returns 每个 Step 结束时 Meta Usage 已同步，重复同步不会重复累计。 */
+/**
+ * 验证每个 Step 结束时 Meta Usage 已同步，重复同步不会重复累计。
+ * @param root 隔离目录。
+ * @returns 当前场景的断言及异步操作完成后解析。
+ * @throws Error 断言或场景执行失败时向上传播，测试入口记录错误并设置失败退出码。
+ */
 async function testImmediateUsage(root: string): Promise<void> {
   let normal = 0
   const h = harness(root, "immediate-usage", async function* (request) {
@@ -112,7 +158,12 @@ async function testImmediateUsage(root: string): Promise<void> {
   assert.equal(ended, 2)
 }
 
-/** @param root 隔离目录。 @returns 同 Turn 连续压缩、最新基线与 MCP 保留验证完成。 */
+/**
+ * 验证同 Turn 连续压缩、最新基线与 MCP 保留。
+ * @param root 隔离目录。
+ * @returns 同 Turn 连续压缩、最新基线与 MCP 保留验证完成。
+ * @throws Error 断言或场景执行失败时向上传播，测试入口记录错误并设置失败退出码。
+ */
 async function testRepeatedCompression(root: string): Promise<void> {
   let normals = 0, summaries = 0
   const h = harness(root, "repeated", async function* (request) {
@@ -175,7 +226,12 @@ async function testRepeatedCompression(root: string): Promise<void> {
   assert.equal(h.meta().usage.inputTokens, 10, "压缩 Usage 不得污染正常 Agent Usage")
 }
 
-/** @param root 隔离目录。 @returns 首步覆盖用户消息、重新打开与截止点后增量恢复验证完成。 */
+/**
+ * 验证首步覆盖用户消息、重新打开与截止点后增量恢复。
+ * @param root 隔离目录。
+ * @returns 首步覆盖用户消息、重新打开与截止点后增量恢复验证完成。
+ * @throws Error 断言或场景执行失败时向上传播，测试入口记录错误并设置失败退出码。
+ */
 async function testNewTurnAndRecovery(root: string): Promise<void> {
   let normals = 0
   const h = harness(root, "reopen", async function* (request) {
@@ -215,7 +271,12 @@ async function testNewTurnAndRecovery(root: string): Promise<void> {
   assert.notEqual(h.meta().skills.id, summary.eventId, "覆盖终点后的新 Skill 增量推进比较游标")
 }
 
-/** @param root 隔离目录。 @returns 压缩期间排队的消息保留并在下一 Turn 正常处理。 */
+/**
+ * 验证压缩期间排队的消息保留并在下一 Turn 正常处理。
+ * @param root 隔离目录。
+ * @returns 当前场景的断言及异步操作完成后解析。
+ * @throws Error 断言或场景执行失败时向上传播，测试入口记录错误并设置失败退出码。
+ */
 async function testQueueDuringCompression(root: string): Promise<void> {
   let summaries = 0
   const h = harness(root, "queue", async function* (request) {
@@ -236,7 +297,12 @@ async function testQueueDuringCompression(root: string): Promise<void> {
   assert.deepEqual(h.counts(), { factoryCalls: 2, executions: 0 })
 }
 
-/** @param root 隔离目录。 @returns 压缩失败、取消与跨文件故障的提交边界验证完成。 */
+/**
+ * 验证压缩失败、取消与跨文件故障的提交边界。
+ * @param root 隔离目录。
+ * @returns 压缩失败、取消与跨文件故障的提交边界验证完成。
+ * @throws Error 断言或场景执行失败时向上传播，测试入口记录错误并设置失败退出码。
+ */
 async function testFailures(root: string): Promise<void> {
   for (const mode of ["tool", "empty", "incomplete", "network", "cancel", "start", "persist", "derived", "spec"] as const) {
     const h = harness(root, mode, async function* (request) {
@@ -283,7 +349,12 @@ async function testFailures(root: string): Promise<void> {
   }
 }
 
-/** @param root 隔离目录。 @returns 损坏覆盖端点和截断 Step 的日志在任何修复写入前被拒绝。 */
+/**
+ * 验证损坏覆盖端点和截断 Step 的日志在任何修复写入前被拒绝。
+ * @param root 隔离目录。
+ * @returns 损坏覆盖端点和截断 Step 的日志在任何修复写入前被拒绝。
+ * @throws Error 断言或场景执行失败时向上传播，测试入口记录错误并设置失败退出码。
+ */
 async function testInvalidCoverage(root: string): Promise<void> {
   for (const [name, fromEventSeq, throughEventSeq] of [["missing", 2, 99], ["backward", 4, 2], ["partial", 3, 3]] as const) {
     const h = harness(root, name, async function* () { throw new Error("unexpected model") })
@@ -304,7 +375,12 @@ async function testInvalidCoverage(root: string): Promise<void> {
   }
 }
 
-/** @param root 隔离目录。 @returns 缺失、重复及不匹配的 Summary 配对在修复前被拒绝。 */
+/**
+ * 验证缺失、重复及不匹配的 Summary 配对在修复前被拒绝。
+ * @param root 隔离目录。
+ * @returns 缺失、重复及不匹配的 Summary 配对在修复前被拒绝。
+ * @throws Error 断言或场景执行失败时向上传播，测试入口记录错误并设置失败退出码。
+ */
 async function testInvalidPairing(root: string): Promise<void> {
   for (const mode of ["orphan", "duplicate-start", "duplicate-end", "mismatch"] as const) {
     const h = harness(root, `pair-${mode}`, async function* () { throw new Error("unexpected model") })
@@ -329,7 +405,12 @@ async function testInvalidPairing(root: string): Promise<void> {
   }
 }
 
-/** @param root 隔离目录。 @returns 权威消息已提交但 Meta 同步失败时，从日志幂等恢复 Usage。 */
+/**
+ * 验证权威消息已提交但 Meta 同步失败时，从日志幂等恢复 Usage。
+ * @param root 隔离目录。
+ * @returns 当前场景的断言及异步操作完成后解析。
+ * @throws Error 断言或场景执行失败时向上传播，测试入口记录错误并设置失败退出码。
+ */
 async function testUsageFailureRecovery(root: string): Promise<void> {
   const h = harness(root, "usage-failure", async function* () { yield* response("answer", 20) })
   h.state().synchronizeUsage = async () => { throw new Error("injected usage failure") }
@@ -345,7 +426,12 @@ async function testUsageFailureRecovery(root: string): Promise<void> {
   assert.deepEqual(h.meta().usage, expected)
 }
 
-/** @param root 隔离目录。 @returns 后续未完成尝试保留最近完成 Summary 与未压缩的消息。 */
+/**
+ * 验证后续未完成尝试保留最近完成 Summary 与未压缩的消息。
+ * @param root 隔离目录。
+ * @returns 当前场景的断言及异步操作完成后解析。
+ * @throws Error 断言或场景执行失败时向上传播，测试入口记录错误并设置失败退出码。
+ */
 async function testUnfinishedAttemptKeepsCommittedSummary(root: string): Promise<void> {
   let summaries = 0
   const h = harness(root, "unfinished-after-commit", async function* (request) {
@@ -374,7 +460,12 @@ async function testUnfinishedAttemptKeepsCommittedSummary(root: string): Promise
   assert.ok(content.some((message) => JSON.stringify(message.content).includes("uncompressed second user")))
 }
 
-/** @param root 隔离目录。 @returns 取消 Step 与未报告 Usage 的 Step 都保留正确的实时 Meta。 */
+/**
+ * 验证取消 Step 与未报告 Usage 的 Step 都保留正确的实时 Meta。
+ * @param root 隔离目录。
+ * @returns 当前场景的断言及异步操作完成后解析。
+ * @throws Error 断言或场景执行失败时向上传播，测试入口记录错误并设置失败退出码。
+ */
 async function testUsageAtOtherStepOutcomes(root: string): Promise<void> {
   const stopped = harness(root, "usage-stopped", async function* () {
     yield* response("complete text before cancellation", 30)
@@ -398,7 +489,12 @@ async function testUsageAtOtherStepOutcomes(root: string): Promise<void> {
   assert.equal(missing.meta().usage.cacheMissTokens, 17)
 }
 
-/** @returns 所有真实持久化场景完成；临时目录在成功或失败后均清理。 @throws AssertionError 验证失败。 */
+/**
+ * 依次执行真实持久化的 Usage、压缩、队列与恢复场景，完成后清理临时目录。
+ *
+ * @returns 所有真实持久化场景完成；临时目录在成功或失败后均清理。
+ * @throws AssertionError 验证失败。
+ */
 async function main(): Promise<void> {
   const root = await mkdtemp(join(tmpdir(), "nicode-summary-"))
   try {

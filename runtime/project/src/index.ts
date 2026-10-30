@@ -1,10 +1,7 @@
 /**
- * 目录占位，阶段 0 无实现。
+ * Project Runtime 的目录占位入口，当前不导出类型、函数或类。
  *
- * 模块职责：Project、ProjectManager、ProjectRules（AGENTS.md 发现与内容增量）、
- * 内置 workspace 与 sessions\<project-id> 分组对应。
- *
- * 架构依据：.git/技术文档/开发备忘录1.0.17.md 第 5 节、第 12.1 节、第 29 节、第 30 节
- * 实施阶段：不在 TODOList 阶段 1–6 范围内
+ * 项目管理、工作区持久化与项目上下文解析当前由主进程模块承担。
+ * 本入口不执行初始化、不读取 AGENTS.md，也不创建工作区或会话目录。
  */
 export {}

@@ -1,29 +1,19 @@
 /**
- * 统一错误结构（第 25 节，已定义）。
+ * 定义各 Runtime 子系统共用的错误来源和结构化错误数据。
  *
- * 底层异常 / Provider Error / Tool Error → Error Normalizer → AppError，
- * 之后由 Session Event Log 的 `app/error`、SSE 错误消息与前端错误状态统一消费。
- *
- * 架构依据：.git/技术文档/开发备忘录1.0.17.md 第 25 节（工具错误与取消处理）
- * 实施阶段：.git/技术文档/开发TODOList.md 阶段 1（AppError 类型）、阶段 2（Error Normalizer）
+ * 类型描述来源、稳定错误码、说明及可选上下文，不执行校验、重试、持久化或展示。
  */
 
 /**
- * 统一错误结构中的错误来源。
- *
- * 来源用于区分 Runtime、模型、工具、MCP、存储和系统边界，供事件日志、SSE
- * 以及 UI 选择对应的错误处理路径。
+ * 错误所属的 Runtime 子系统边界，供调用方分类处理与记录。
  */
 export type AppErrorSource = "runtime" | "model" | "tool" | "mcp" | "storage" | "system"
 
 /**
- * Runtime / Event Log / SSE / UI 的统一错误结构（第 25 节，已定义）。
+ * 统一错误数据，供 Runtime、事件记录与界面传递错误信息。
  *
- * 使用约定：
- *   - 模型请求的 Provider 原始报错在自动重试耗尽后包装为 `source = "model"`，
- *     并在 `details` 中保留可获得的状态码、Provider 错误码、requestId；
- *   - Tool / MCP 的内部执行异常同样先转为本结构，但不把内部细节原样塞给模型；
- *     `ToolResult.content` 由该工具的 render 生成模型可见内容。
+ * 模型归一化函数可在 details 中携带状态码、Provider 错误码与请求 ID。
+ * 工具的模型可见结果由工具结果整理流程另行生成；此结构本身不执行脱敏或字段过滤。
  */
 export interface AppError {
   /** 产生该错误的 Runtime 子系统边界。 */

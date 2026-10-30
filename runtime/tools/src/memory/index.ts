@@ -85,7 +85,11 @@ export function registerMemoryTools(tools: ToolRegistry, renders: RenderRegistry
   })
 }
 
-/** @param input 已分离 callDescription 的业务参数。 @returns 已复制的读取请求或参数错误。 */
+/**
+ * 校验 read 的路径、起始行与行数限制，返回读取请求或参数错误。
+ * @param input 已分离 callDescription 的业务参数。
+ * @returns 已复制的读取请求或参数错误。
+ */
 function validateRead(input: unknown): ToolArgumentValidation<ReadMemoryInput> {
   if (!isPlainRecord(input) || !hasOnly(input, ["sections", "limitPerSection"]) || !Array.isArray(input.sections)) return invalid("memory_read 需要 sections 数组")
   if (input.limitPerSection !== undefined && (typeof input.limitPerSection !== "number" || !Number.isSafeInteger(input.limitPerSection) || input.limitPerSection <= 0)) return invalid("limitPerSection 必须是正安全整数")
@@ -102,7 +106,11 @@ function validateRead(input: unknown): ToolArgumentValidation<ReadMemoryInput> {
   return { success: true, data: { sections, ...(input.limitPerSection === undefined ? {} : { limitPerSection: input.limitPerSection }) } }
 }
 
-/** @param input 已分离 callDescription 的业务参数。 @returns 整批检查并复制的新增记忆或参数错误。 */
+/**
+ * 校验写入路径与完整文本，复制业务字段以排除额外参数。
+ * @param input 已分离 callDescription 的业务参数。
+ * @returns 整批检查并复制的新增记忆或参数错误。
+ */
 function validateWrite(input: unknown): ToolArgumentValidation<WriteMemoryInput> {
   if (!isPlainRecord(input) || !hasOnly(input, ["memories"]) || !Array.isArray(input.memories)) return invalid("memory_write 需要 memories 数组")
   const memories: NewMemory[] = []
@@ -118,9 +126,18 @@ function validateWrite(input: unknown): ToolArgumentValidation<WriteMemoryInput>
   return { success: true, data: { memories } }
 }
 
-/** @param input 参数对象。 @param keys 允许的字段。 @returns 是否没有 Schema 之外的字段。 */
+/**
+ * 检查参数对象是否仅包含允许的业务字段。
+ * @param input 参数对象。
+ * @param keys 允许的字段。
+ * @returns 是否没有 Schema 之外的字段。
+ */
 function hasOnly(input: Record<string, unknown>, keys: string[]): boolean { return Object.keys(input).every((key) => keys.includes(key)) }
-/** @param message 参数错误说明。 @returns 统一参数错误。 */
+/**
+ * 构造参数校验失败结果，供统一执行入口交给结果整理器。
+ * @param message 参数错误说明。
+ * @returns 统一参数错误。
+ */
 function invalid<T extends object>(message: string): ToolArgumentValidation<T> { return { success: false, error: { source: "tool", code: "INVALID_TOOL_ARGUMENTS", message } } }
 
 /**

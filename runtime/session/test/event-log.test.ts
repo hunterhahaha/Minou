@@ -13,7 +13,15 @@ const FIRST_PROJECT_ID = "00000000-0000-4000-8000-000000000001"
 const SECOND_PROJECT_ID = "00000000-0000-4000-8000-000000000002"
 const MODEL = { providerId: "provider-1", protocol: "responses" as const, modelId: "model-1", name: "Model 1", reasoningLevel: "medium" }
 
-/** 为每个测试 Session 建立目录并指向同一个测试数据库。 */
+/**
+ * 为每个测试 Session 建立目录并指向同一个测试数据库。
+ * @param root 当前测试使用的隔离临时目录。
+ * @param sessionId 要创建或访问的 Session 身份。
+ * @param group 事件所属的 Project 分组，默认使用首个测试 Project。
+ * @param overrides 覆盖默认时间、事件 ID 等日志构造参数。
+ * @returns 已创建目录对应的日志构造参数，指向当前测试的共享数据库。
+ * @throws Error 断言或临时存储操作失败时传播，由测试入口报告失败。
+ */
 async function fixture(root: string, sessionId: string, group = FIRST_PROJECT_ID, overrides = {}): Promise<FileSessionEventLogOptions> {
   const sessionDirectory = join(root, group, sessionId)
   await mkdir(sessionDirectory, { recursive: true })
@@ -23,7 +31,12 @@ async function fixture(root: string, sessionId: string, group = FIRST_PROJECT_ID
   }
 }
 
-/** 新 Turn 的两个待持久化事件。 */
+/**
+ * 新 Turn 的两个待持久化事件。
+ * @param turn 待提交的新 Turn 编号。
+ * @param messageId 用户消息的稳定身份，默认按 Turn 编号生成。
+ * @returns 按 turn/start、user/message 顺序排列的首批事件。
+ */
 function turnBatch(
   turn: number, messageId = `message-${turn}`,
 ): [TurnStartEventInput, UserMessageEventInput] {
@@ -36,7 +49,12 @@ function turnBatch(
   ]
 }
 
-/** 验证首次事务提交、顺序读取和单条追加。 */
+/**
+ * 验证首次事务提交、顺序读取和单条追加。
+ * @param root 当前测试使用的隔离临时目录。
+ * @returns 当前场景的断言及异步操作完成后解析。
+ * @throws Error 断言或临时存储操作失败时传播，由测试入口报告失败。
+ */
 async function testCreateReadAppend(root: string): Promise<void> {
   let nextId = 1
   const options = await fixture(root, "normal", FIRST_PROJECT_ID, { createEventId: () => `event-${nextId++}` })
@@ -52,7 +70,12 @@ async function testCreateReadAppend(root: string): Promise<void> {
   assert.equal((await lstat(options.databasePath)).isFile(), true)
 }
 
-/** 验证同一 Session 跨访问器并发写入仍按调用顺序分配 seq。 */
+/**
+ * 验证同一 Session 跨访问器并发写入仍按调用顺序分配 seq。
+ * @param root 当前测试使用的隔离临时目录。
+ * @returns 当前场景的断言及异步操作完成后解析。
+ * @throws Error 断言或临时存储操作失败时传播，由测试入口报告失败。
+ */
 async function testConcurrentAppend(root: string): Promise<void> {
   const options = await fixture(root, "concurrent")
   const log = createFileSessionEventLog(options)
@@ -66,7 +89,12 @@ async function testConcurrentAppend(root: string): Promise<void> {
   assert.deepEqual((await log.readEvents() as SessionEvent[]).map((event) => event.seq), [1, 2, 3, 4])
 }
 
-/** 验证一个数据库内同名 Session 在不同分组中隔离。 */
+/**
+ * 验证一个数据库内同名 Session 在不同分组中隔离。
+ * @param root 当前测试使用的隔离临时目录。
+ * @returns 当前场景的断言及异步操作完成后解析。
+ * @throws Error 断言或临时存储操作失败时传播，由测试入口报告失败。
+ */
 async function testIsolation(root: string): Promise<void> {
   const left = createFileSessionEventLog(await fixture(root, "same-id", FIRST_PROJECT_ID))
   const right = createFileSessionEventLog(await fixture(root, "same-id", SECOND_PROJECT_ID))
@@ -80,7 +108,12 @@ async function testIsolation(root: string): Promise<void> {
   assert.notDeepEqual(await left.readEvents(), await sibling.readEvents())
 }
 
-/** 验证下一 Turn 编号和首批事件的事务原子性。 */
+/**
+ * 验证下一 Turn 编号和首批事件的事务原子性。
+ * @param root 当前测试使用的隔离临时目录。
+ * @returns 当前场景的断言及异步操作完成后解析。
+ * @throws Error 断言或临时存储操作失败时传播，由测试入口报告失败。
+ */
 async function testTurnBatch(root: string): Promise<void> {
   const options = await fixture(root, "batch")
   const log = createFileSessionEventLog(options)
@@ -100,7 +133,12 @@ async function testTurnBatch(root: string): Promise<void> {
   await assert.rejects(duplicate.readEvents(), /不存在或无法访问/)
 }
 
-/** 验证数据库缺失、损坏和事件内容损坏会明确报错。 */
+/**
+ * 验证数据库缺失、损坏和事件内容损坏会明确报错。
+ * @param root 当前测试使用的隔离临时目录。
+ * @returns 当前场景的断言及异步操作完成后解析。
+ * @throws Error 断言或临时存储操作失败时传播，由测试入口报告失败。
+ */
 async function testReadFailures(root: string): Promise<void> {
   const missingDirectory = createFileSessionEventLog({
     sessionId: "missing", projectGroupId: FIRST_PROJECT_ID,
@@ -123,7 +161,12 @@ async function testReadFailures(root: string): Promise<void> {
   await assert.rejects(normal.readEvents(), /不是有效 JSON/)
 }
 
-/** 验证非法身份、序号边界和单事件写入失败不改变日志。 */
+/**
+ * 验证非法身份、序号边界和单事件写入失败不改变日志。
+ * @param root 当前测试使用的隔离临时目录。
+ * @returns 当前场景的断言及异步操作完成后解析。
+ * @throws Error 断言或临时存储操作失败时传播，由测试入口报告失败。
+ */
 async function testAppendFailures(root: string): Promise<void> {
   assert.throws(() => createFileSessionEventLog({
     sessionId: "session", projectGroupId: "0", sessionDirectory: root,
@@ -150,7 +193,12 @@ async function testAppendFailures(root: string): Promise<void> {
   assert.deepEqual(await good.readEvents(), before)
 }
 
-/** 验证末尾 seq 无效或耗尽时不能继续追加。 */
+/**
+ * 验证末尾 seq 无效或耗尽时不能继续追加。
+ * @param root 当前测试使用的隔离临时目录。
+ * @returns 当前场景的断言及异步操作完成后解析。
+ * @throws Error 断言或临时存储操作失败时传播，由测试入口报告失败。
+ */
 async function testSequenceFailures(root: string): Promise<void> {
   for (const [sessionId, seq, expected] of [
     ["invalid-seq", 0, /末尾事件缺少有效 seq/],
@@ -175,6 +223,11 @@ async function testSequenceFailures(root: string): Promise<void> {
   }
 }
 
+/**
+ * 依次执行当前文件的持久化与恢复场景，并按现有清理流程释放临时资源。
+ * @returns 当前场景的断言及异步操作完成后解析。
+ * @throws Error 断言或临时存储操作失败时传播，由测试入口报告失败。
+ */
 async function main(): Promise<void> {
   const root = await mkdtemp(join(tmpdir(), "nicode-session-event-log-"))
   try {

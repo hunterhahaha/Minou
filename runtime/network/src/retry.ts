@@ -1,34 +1,18 @@
 /**
- * 模型请求的自动重试与流式重试边界（第 7 节）。
+ * 流式请求的错误分类、指数退避与自动重试。
  *
- * 允许自动重试的情形（第 7 节）：
- *   连接失败、连接超时、429、临时 5xx、Provider 临时不可用
- *
- * 流式请求的重试边界（第 7 节）：
- *   尚未产生有效模型输出 → 可以重新请求
- *   已经产生有效事件     → 当前请求状态进入错误处理
- *
- * 识别到 Abort / 取消类错误，或调用方的取消信号已触发时，不进入自动重试（第 7、14 节）。
- *
- * 本文件只负责「重试与否」；重试耗尽后的错误包装由调用方用
- * `runtime/error/` 的 `normalizeModelError` 完成（第 25 节）。
- *
- * 架构依据：.git/技术文档/开发备忘录1.0.17.md 第 7 节
+ * 默认最多尝试三次；仅在尚无有效输出且错误可重试时重新请求。
+ * 有效输出之前的事件先缓冲，失败重试时丢弃；最终错误归一化由调用方负责。
  */
 
 import { createAbortError, isAbortError } from "../../error/src/abort.ts"
 
 /**
- * 最大尝试次数（含首次请求）。
- *
- * 备忘录与《NiCode_Usage统一设计.md》都未规定重试次数与退避策略。
- * 这里取「总 3 次（首次 + 2 次重试）」，实现为常量而非配置项：config.json 的
- * Provider / Protocol 配置结构本身尚未定义（TODOList 缺口 3），现在做成可配置
- * 等于先定义那套结构。等配置结构确定后再改为可配置。
+ * 默认最大尝试次数，包含首次请求；调用方可通过 maxAttempts 覆盖。
  */
 export const RETRY_MAX_ATTEMPTS = 3
 
-/** 退避基数。实际等待为 500ms、1000ms、2000ms…（叠加抖动后）。 */
+/** 退避基数。指数基数依次为 500ms、1000ms、2000ms，实际等待需再乘以抖动因子。 */
 export const RETRY_BASE_DELAY_MS = 500
 
 /**
@@ -69,11 +53,12 @@ const RETRYABLE_ERROR_NAMES = new Set(["APIConnectionError", "APIConnectionTimeo
 const RETRYABLE_PROVIDER_TYPES = new Set(["overloaded_error", "server_error", "unavailable"])
 
 /**
- * 从未知值中安全读取一个对象属性。
+ * 从非空对象读取属性，不捕获 getter 或 Proxy 抛出的异常。
  *
  * @param source 待读取的未知值；非对象值按属性缺失处理。
  * @param key 要读取的属性名。
  * @returns 属性当前值；源值不是非空对象或属性不存在时返回 `undefined`。
+ * @throws Error 属性或 cause 访问失败时传播，调用方需自行处理。
  */
 function readProperty(source: unknown, key: string): unknown {
   if (typeof source !== "object" || source === null) return undefined
@@ -81,11 +66,12 @@ function readProperty(source: unknown, key: string): unknown {
 }
 
 /**
- * 从未知值中安全读取非空字符串属性。
+ * 读取长度大于零的字符串属性，不裁剪空白。
  *
  * @param source 待读取的未知值。
  * @param key 要读取的属性名。
  * @returns 非空字符串属性值；属性不是非空字符串时返回 `undefined`。
+ * @throws Error 属性或 cause 访问失败时传播，调用方需自行处理。
  */
 function readString(source: unknown, key: string): string | undefined {
   const value = readProperty(source, key)
@@ -93,13 +79,14 @@ function readString(source: unknown, key: string): string | undefined {
 }
 
 /**
- * 判定一个错误是否属于第 7 节允许自动重试的情形。
+ * 判定一个错误是否属于网络层支持自动重试的错误形状。
  *
  * 取消类错误一律返回 false —— 即便它同时带着连接中断的错误码，
- * 也不能在请求已被终止后继续重试（第 7、14 节）。
+ * 也不能在请求已被终止后继续重试。
  *
  * @param error 待判断的未知错误值。
  * @returns 错误属于可重试情形且不是取消错误时返回 `true`，否则返回 `false`。
+ * @throws Error 属性或 cause 访问失败时传播，调用方需自行处理。
  */
 export function isRetryableError(error: unknown): boolean {
   return classifyRetryable(error, 0)
@@ -118,10 +105,13 @@ const MAX_CAUSE_DEPTH = 8
  * @param error 当前待判断的未知错误值。
  * @param depth 当前已经追溯的 `cause` 深度，用于限制循环引用的影响范围。
  * @returns 错误自身或有限深度内的底层原因满足可重试条件时返回 `true`，否则返回 `false`。
+ * @throws Error 属性或 cause 访问失败时传播，调用方需自行处理。
  */
 function classifyRetryable(error: unknown, depth: number): boolean {
-  // 非对象输入直接结束。缺了这一条会退化成无限递归：readProperty 对非对象返回
-  // undefined，而 undefined 又不是可重试错误，于是再次进入本函数。
+  /**
+   * 非对象输入直接结束。缺了这一条会退化成无限递归：readProperty 对非对象返回
+   * undefined，而 undefined 又不是可重试错误，于是再次进入本函数。
+   */
   if (typeof error !== "object" || error === null) return false
 
   if (isAbortError(error)) return false
@@ -138,12 +128,16 @@ function classifyRetryable(error: unknown, depth: number): boolean {
   const code = readString(error, "code")
   if (code !== undefined && RETRYABLE_ERROR_CODES.has(code)) return true
 
-  // Provider 可能把「临时不可用」放在错误体或顶层的 type 上。
+  /**
+   * Provider 可能把「临时不可用」放在错误体或顶层的 type 上。
+   */
   const body = readProperty(error, "error")
   const providerType = readString(body, "type") ?? readString(error, "type")
   if (providerType !== undefined && RETRYABLE_PROVIDER_TYPES.has(providerType)) return true
 
-  // 部分包装错误把底层原因放在 cause。
+  /**
+   * 部分包装错误把底层原因放在 cause。
+   */
   if (depth >= MAX_CAUSE_DEPTH) return false
   return classifyRetryable(readProperty(error, "cause"), depth + 1)
 }
@@ -206,7 +200,7 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
  */
 export interface StreamRetryOptions<T> {
   /**
-   * 判定一个事件是否构成「有效模型输出」（第 7 节的重试边界）。
+   * 判定一个事件是否构成「有效模型输出」。
    *
    * 该事件一旦出现，本次请求就不再允许重试：已产生有效输出后重试会造成重复输出。
    *
@@ -219,7 +213,7 @@ export interface StreamRetryOptions<T> {
    */
   isValidOutput?: (event: T) => boolean
 
-  /** 当前请求的取消信号（第 6 节由 AgentLoop 持有）。 */
+  /** 当前请求的取消信号。 */
   signal: AbortSignal
 
   /** 最大尝试次数，默认 `RETRY_MAX_ATTEMPTS`。测试可调小。 */
@@ -240,17 +234,19 @@ export interface StreamRetryOptions<T> {
  * 带自动重试的流式请求。
  *
  * 重试时机：
- *   - 仅在**尚未产出有效输出**时，且错误属于第 7 节列出的可重试情形；
- *   - 已经产出有效输出后再出错，原样抛出，交给错误处理（第 7 节）；
- *   - 识别到取消类错误，或调用方取消信号已触发时，不重试（第 7、14 节）；
- *   - 重试次数耗尽后原样抛出最后一个错误，由调用方包装成 `AppError`（第 25 节）。
+ *   - 仅在**尚未产出有效输出**时，且错误属于可重试情形；
+ *   - 已经产出有效输出后再出错，原样抛出，交给错误处理；
+ *   - 识别到取消类错误，或调用方取消信号已触发时，不重试；
+ *   - 重试次数耗尽后原样抛出最后一个错误，由调用方包装成 `AppError`。
  *
  * **重试对消费方透明**：首个有效输出之前的事件先缓冲、不向下游吐出。若该次尝试随后失败并
  * 触发重试，被丢弃的正是这些缓冲区事件 —— 消费方不会看到上一次尝试留下的痕迹。
  * 否则按「首个内容增量」的判定边界，一次失败的尝试会先漏出一个 `block_start`，
  * 重试后再漏一个，消费方（AgentLoop）就会为同一次请求写出两个 `assistant/block_start`。
  *
- * 缓冲区只保存「有效输出之前」的事件，通常就是个别的 `block_start`，不会随响应长度增长。
+ * 缓冲区保存有效输出之前的全部事件；判定始终为 false 时会缓存整次尝试。
+ * 正常结束后不额外检查取消信号，运行中的取消需要 attempt 自行响应。
+ * maxAttempts 不做范围校验，小于等于零时不执行请求。
  *
  * @typeParam T 流式模型事件的类型。
  * @param attempt 创建一次模型流式请求的函数；收到重试信号时会用同一个取消信号重新调用。
@@ -277,7 +273,9 @@ export async function* streamWithRetry<T>(
         if (producedValidOutput) {
           yield event
         } else if (isValidOutput(event)) {
-          // 首个有效输出：先补发缓冲的事件，再按顺序产出后续事件。
+          /**
+           * 首个有效输出：先补发缓冲的事件，再按顺序产出后续事件。
+           */
           producedValidOutput = true
           for (const pending of buffered) yield pending
           buffered.length = 0
@@ -287,20 +285,32 @@ export async function* streamWithRetry<T>(
         }
       }
 
-      // 正常结束：把缓冲中尚未构成「有效输出」的事件一并吐出，它们同样是本次请求的合法产出。
+      /**
+       * 正常结束：把缓冲中尚未构成「有效输出」的事件一并吐出，它们同样是本次请求的合法产出。
+       */
       for (const pending of buffered) yield pending
       return
     } catch (error) {
-      // 已产生有效输出 → 进入错误处理，不再重试（第 7 节）。缓冲此时已空。
+      /**
+       * 已产生有效输出 → 进入错误处理，不再重试。缓冲此时已空。
+       */
       if (producedValidOutput) throw error
-      // 取消类错误或已触发的调用方取消信号，不进入自动重试（第 7、14 节）。
+      /**
+       * 取消类错误或已触发的调用方取消信号，不进入自动重试。
+       */
       if (isAbortError(error) || signal.aborted) throw error
-      // 不属于允许重试的情形。
+      /**
+       * 不属于允许重试的情形。
+       */
       if (!isRetryableError(error)) throw error
-      // 已是最后一次尝试。
+      /**
+       * 已是最后一次尝试。
+       */
       if (attemptIndex === maxAttempts - 1) throw error
 
-      // 尚未产生有效输出 → 丢弃缓冲、重新请求，消费方看不到这次失败的痕迹。
+      /**
+       * 尚未产生有效输出 → 丢弃缓冲、重新请求，消费方看不到这次失败的痕迹。
+       */
       const delayMs = computeBackoffDelay(attemptIndex, baseDelayMs)
       onRetry?.({ attempt: attemptIndex + 1, delayMs, error })
       await sleep(delayMs, signal)

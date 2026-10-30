@@ -1,14 +1,7 @@
 /**
- * Chat Completions Adapter 测试（第 6、7、8.4、8.5、11、16.2、25 节）。
+ * 通过离线 chunk 脚本与本地假 Provider 验证 Chat Completions Adapter。
  *
- * 不依赖测试框架；直接运行：
- *   node --experimental-strip-types runtime/model/test/chat-completions.test.ts
- *
- * 四类覆盖（对齐 TODOList 阶段 4 的验证要求）：
- *   1. 请求转换：统一上下文 → system + messages（tool_calls 与 role:tool 配对）；
- *   2. 正常流：thinking（厂商扩展字段）/ text 增量 → 统一事件，finishReason 与完成状态；
- *   3. 工具调用流：按调用序号拼装出完整 toolCallId / name / arguments；
- *   4. 取消：请求挂起时 abort → CANCELLED，且不重试；另附 Usage 转换与错误归一化。
+ * 覆盖消息与工具转换、扩展思考流、调用完整性、完成状态、Usage、重试与取消。
  */
 
 import assert from "node:assert/strict"
@@ -40,14 +33,22 @@ const MODEL: ModelConfig = {
   reasoningField: { path: ["reasoning_effort"] },
 }
 
-/** 离线转换入口：协议 chunk 数组 → 统一事件流。 */
+/**
+ * 离线转换入口：协议 chunk 数组 → 统一事件流。
+ * @param chunks 按接收顺序排列的协议 chunk 数组。
+ * @returns 转换后的统一事件异步生成器；消费时执行协议校验。
+ */
 function mapChatCompletionsStream(
   chunks: ChatCompletionChunk[],
 ): AsyncGenerator<ModelStreamEvent> {
   return mapChatCompletionsStreamOf(streamOf(chunks))
 }
 
-/** 构造一个 chunk；只填被测字段。 */
+/**
+ * 构造一个 chunk；只填被测字段。
+ * @param choice 当前 chunk 的 choice 字段。
+ * @returns 当前场景的转换结果。
+ */
 function chunk(choice: {
   delta?: Record<string, unknown>
   finish_reason?: string | null
@@ -64,7 +65,11 @@ function chunk(choice: {
   } as unknown as ChatCompletionChunk
 }
 
-/** 末尾的 Usage chunk：choices 为空。 */
+/**
+ * 末尾的 Usage chunk：choices 为空。
+ * @param usage 末尾 chunk 携带的协议 Usage 字段。
+ * @returns 当前场景的转换结果。
+ */
 function usageChunk(usage: Record<string, unknown>): ChatCompletionChunk {
   return {
     id: "chatcmpl-1",
@@ -76,7 +81,10 @@ function usageChunk(usage: Record<string, unknown>): ChatCompletionChunk {
   } as unknown as ChatCompletionChunk
 }
 
-/** 一条含工具调用与工具结果的统一上下文（对照协议示例文档第 2 节）。 */
+/**
+ * 一条含工具调用与工具结果的统一上下文。
+ * @returns 包含 System、用户、Assistant 工具调用及工具结果的统一请求。
+ */
 function agentRequest(): UnifiedModelRequest {
   return {
     model: { providerId: "openai", protocol: "chat_completions", modelId: "model-record-2", name: "gpt-test", reasoningLevel: "medium" },
@@ -120,6 +128,10 @@ function agentRequest(): UnifiedModelRequest {
   }
 }
 
+/**
+ * 构造普通文本响应的完整 Chat Completions chunk 脚本。
+ * @returns 正常文本响应的协议 chunk 数组。
+ */
 function normalChunks(): ChatCompletionChunk[] {
   return [
     chunk({ delta: { role: "assistant" } }),
@@ -136,7 +148,11 @@ function normalChunks(): ChatCompletionChunk[] {
   ]
 }
 
-/** 事件序列的紧凑摘要，便于整体比对块结构。 */
+/**
+ * 事件序列的紧凑摘要，便于整体比对块结构。
+ * @param events 按协议或统一格式排列的测试事件数组。
+ * @returns 保留事件类型、块身份与内容的紧凑对照结构。
+ */
 function summarize(events: ModelStreamEvent[]): string[] {
   return events.map((item) => {
     if (item.type === "block_start") return `start:${item.index}:${item.blockType}`
@@ -152,13 +168,21 @@ function summarize(events: ModelStreamEvent[]): string[] {
   })
 }
 
-/** 文本块的最终内容。 */
+/**
+ * 文本块的最终内容。
+ * @param events 按协议或统一格式排列的测试事件数组。
+ * @returns 流中已结束文本块的内容。
+ */
 function endedText(events: ModelStreamEvent[]): string {
   const ended = events.find((item) => item.type === "block_end")
   return ended?.type === "block_end" && ended.block.type === "text" ? ended.block.text : ""
 }
 
-/** 工具调用块的最终内容。 */
+/**
+ * 工具调用块的最终内容。
+ * @param events 按协议或统一格式排列的测试事件数组。
+ * @returns 流中已结束工具调用的完整内容。
+ */
 function endedToolCall(events: ModelStreamEvent[]): {
   toolCallId: string
   name: string
@@ -168,16 +192,25 @@ function endedToolCall(events: ModelStreamEvent[]): {
   return ended?.type === "block_end" && ended.block.type === "tool_call" ? ended.block : undefined
 }
 
-/** stream_end 的完成状态。 */
+/**
+ * stream_end 的完成状态。
+ * @param events 按协议或统一格式排列的测试事件数组。
+ * @returns 流结束事件中的统一完成状态。
+ */
 function completionOf(events: ModelStreamEvent[]): string | undefined {
   const last = events[events.length - 1]
   return last?.type === "stream_end" ? last.completion : undefined
 }
 
+/**
+ * 依次执行当前文件的请求转换、流事件或 Usage 断言；协议集成场景使用本地假 Provider 并在场景结束后关闭服务。
+ * @returns 全部断言和异步场景完成后解析。
+ * @throws Error 断言或场景执行失败时向上传播，测试入口报告失败。
+ */
 async function main(): Promise<void> {
-  // -------------------------------------------------------------------------
-  // 1. 请求转换（第 11.1、11.3、16.2 节）
-  // -------------------------------------------------------------------------
+  /** ------------------------------------------------------------------------- */
+  /** 1. 请求转换 */
+  /** ------------------------------------------------------------------------- */
 
   {
     const params = buildChatCompletionsRequest(agentRequest(), MODEL)
@@ -190,16 +223,16 @@ async function main(): Promise<void> {
     assert.equal(params.model, "gpt-test")
     assert.equal(params.reasoning_effort, "medium")
     assert.equal(params.stream, true)
-    // 不发送 max_tokens：不同 Provider 的字段名不兼容（见 chat-completions.ts 文件头）。
+    /** 不发送 max_tokens：不同 Provider 的字段名不兼容（见 chat-completions.ts 文件头）。 */
     assert.equal((params as unknown as Record<string, unknown>).max_tokens, undefined)
-    // 必须带 include_usage，否则流里没有权威 Usage。
+    /** 必须带 include_usage，否则流里没有权威 Usage。 */
     assert.deepEqual(params.stream_options, { include_usage: true })
 
     assert.equal(params.messages.length, 6, "系统消息 + 5 条会话消息")
     assert.deepEqual(params.messages[0], { role: "system", content: "You are a coding agent." })
     assert.deepEqual(params.messages[1], { role: "user", content: "读取 config.ts" })
 
-    // 有 tools 时 content 是文本，工具调用在 tool_calls 里，arguments 是 JSON 字符串。
+    /** 有 tools 时 content 是文本，工具调用在 tool_calls 里，arguments 是 JSON 字符串。 */
     assert.deepEqual(params.messages[2], {
       role: "assistant",
       content: "我先看一下。",
@@ -212,7 +245,7 @@ async function main(): Promise<void> {
       ],
     })
 
-    // 工具结果是独立的 role:tool 消息。
+    /** 工具结果是独立的 role:tool 消息。 */
     assert.deepEqual(params.messages[3], {
       role: "tool",
       tool_call_id: "call_01",
@@ -221,7 +254,7 @@ async function main(): Promise<void> {
 
     assert.deepEqual(params.messages[5], { role: "user", content: "改成 8080" })
 
-    // 工具定义映射到 tools[].function.parameters。
+    /** 工具定义映射到 tools[].function.parameters。 */
     assert.deepEqual(params.tools, [
       {
         type: "function",
@@ -238,7 +271,7 @@ async function main(): Promise<void> {
     ])
   }
 
-  // 只有工具调用、没有文本时 content 为 null。
+  /** 只有工具调用、没有文本时 content 为 null。 */
   {
     const messages = toChatCompletionsMessages([
       {
@@ -257,7 +290,7 @@ async function main(): Promise<void> {
     ])
   }
 
-  // 多块文本按顺序拼接、不添加分隔符；thinking 不回放。
+  /** 多块文本按顺序拼接、不添加分隔符；thinking 不回放。 */
   {
     const messages = toChatCompletionsMessages([
       { role: "user", content: [{ type: "text", text: "PORT=" }, { type: "text", text: "3000" }] },
@@ -275,11 +308,11 @@ async function main(): Promise<void> {
     ])
   }
 
-  // 空消息不发送（该协议不接受空 content）。
+  /** 空消息不发送（该协议不接受空 content）。 */
   assert.deepEqual(toChatCompletionsMessages([{ role: "user", content: "" }]), [])
   assert.deepEqual(toChatCompletionsMessages([{ role: "assistant", content: [] }]), [])
 
-  // 不带参数的工具调用序列化为 {}。
+  /** 不带参数的工具调用序列化为 {}。 */
   {
     const messages = toChatCompletionsMessages([
       {
@@ -293,9 +326,9 @@ async function main(): Promise<void> {
     assert.equal(assistant.tool_calls[0]?.function.arguments, "{}")
   }
 
-  // -------------------------------------------------------------------------
-  // 2. 正常流（第 8.4、8.5 节）
-  // -------------------------------------------------------------------------
+  /** ------------------------------------------------------------------------- */
+  /** 2. 正常流 */
+  /** ------------------------------------------------------------------------- */
 
   {
     const events = await collect(mapChatCompletionsStream(normalChunks()))
@@ -308,7 +341,7 @@ async function main(): Promise<void> {
     ])
   }
 
-  // Usage：prompt_tokens 是完整输入，必须减去缓存读取；reasoning 是 output 的子集。
+  /** Usage：prompt_tokens 是完整输入，必须减去缓存读取；reasoning 是 output 的子集。 */
   {
     const events = await collect(mapChatCompletionsStream(normalChunks()))
     const last = events[events.length - 1]
@@ -323,7 +356,7 @@ async function main(): Promise<void> {
     assert.equal(last.usage?.totalTokens, 1200)
   }
 
-  // 厂商扩展字段 reasoning_content → thinking 块，且与文本块分属不同 index。
+  /** 厂商扩展字段 reasoning_content → thinking 块，且与文本块分属不同 index。 */
   {
     const events = await collect(
       mapChatCompletionsStream([
@@ -338,7 +371,7 @@ async function main(): Promise<void> {
       "start:0:thinking",
       "delta:0:先想",
       "delta:0:一下",
-      // 文本通道开始 → thinking 块先收尾，块顺序与内容顺序一致。
+      /** 文本通道开始 → thinking 块先收尾，块顺序与内容顺序一致。 */
       "end:0:先想一下",
       "start:1:text",
       "delta:1:答案",
@@ -347,7 +380,7 @@ async function main(): Promise<void> {
     ])
   }
 
-  // 兼容厂商把思考放在 reasoning 字段。
+  /** 兼容厂商把思考放在 reasoning 字段。 */
   {
     const events = await collect(
       mapChatCompletionsStream([
@@ -361,7 +394,7 @@ async function main(): Promise<void> {
     )
   }
 
-  // 非字符串的 reasoning 字段（兼容厂商可能给数组）被忽略，不产生块。
+  /** 非字符串的 reasoning 字段（兼容厂商可能给数组）被忽略，不产生块。 */
   {
     const events = await collect(
       mapChatCompletionsStream([
@@ -380,7 +413,7 @@ async function main(): Promise<void> {
     )
   }
 
-  // refusal 作为文本发出，不丢内容。
+  /** refusal 作为文本发出，不丢内容。 */
   {
     const events = await collect(
       mapChatCompletionsStream([
@@ -391,7 +424,7 @@ async function main(): Promise<void> {
     assert.equal(endedText(events), "我不能帮助这个请求。")
   }
 
-  // finish_reason 与完成状态的对应（第 8.5 节）。
+  /** finish_reason 与完成状态的对应。 */
   const finishReasons: Array<[string | undefined, string]> = [
     ["stop", "finished"],
     ["length", "incomplete"],
@@ -408,7 +441,7 @@ async function main(): Promise<void> {
     assert.equal(completionOf(events), expected, `finish_reason=${finishReason}`)
   }
 
-  // 被 length 截断的文本仍要收尾。
+  /** 被 length 截断的文本仍要收尾。 */
   {
     const events = await collect(
       mapChatCompletionsStream([
@@ -419,19 +452,19 @@ async function main(): Promise<void> {
     assert.equal(events.filter((item) => item.type === "block_end").length, 1)
   }
 
-  // 空流（一个 chunk 都没有）→ 抛中断错误，不产出 stream_end。
+  /** 空流（一个 chunk 都没有）→ 抛中断错误，不产出 stream_end。 */
   {
     const error = await collectError(mapChatCompletionsStream([]))
     assert.match(String((error as Error).message), /中断/)
   }
 
-  // 没有任何 finish_reason 就结束 → unknown，不凭文本推断 finished。
+  /** 没有任何 finish_reason 就结束 → unknown，不凭文本推断 finished。 */
   {
     const events = await collect(mapChatCompletionsStream([chunk({ delta: { content: "x" } })]))
     assert.equal(completionOf(events), "unknown")
   }
 
-  // 没有 Usage chunk → stream_end 不带 usage（未报告，不填 0）。
+  /** 没有 Usage chunk → stream_end 不带 usage（未报告，不填 0）。 */
   {
     const events = await collect(
       mapChatCompletionsStream([chunk({ delta: {}, finish_reason: "stop" })]),
@@ -440,9 +473,9 @@ async function main(): Promise<void> {
     assert.equal(last?.type === "stream_end" ? last.usage : "missing", undefined)
   }
 
-  // -------------------------------------------------------------------------
-  // 3. 工具调用流：按调用序号拼装（第 8.4 节）
-  // -------------------------------------------------------------------------
+  /** ------------------------------------------------------------------------- */
+  /** 3. 工具调用流：按调用序号拼装 */
+  /** ------------------------------------------------------------------------- */
 
   {
     const events = await collect(
@@ -474,7 +507,7 @@ async function main(): Promise<void> {
     assert.equal(completionOf(events), "tool_calls")
   }
 
-  // 工具名分片到达时按分片累积。
+  /** 工具名分片到达时按分片累积。 */
   {
     const events = await collect(
       mapChatCompletionsStream([
@@ -487,7 +520,7 @@ async function main(): Promise<void> {
     assert.equal(endedToolCall(events)?.name, "read_file")
   }
 
-  // 并行工具调用：同一 chunk 里两个 index，各自独立成块。
+  /** 并行工具调用：同一 chunk 里两个 index，各自独立成块。 */
   {
     const events = await collect(
       mapChatCompletionsStream([
@@ -515,7 +548,7 @@ async function main(): Promise<void> {
     assert.deepEqual(ids, ["c0", "c1"], "两个调用各自独立成块")
   }
 
-  // 被 length 截断的工具调用不产出 block_end（参数可能只传了一半，第 8.5 节）。
+  /** 被 length 截断的工具调用不产出 block_end。 */
   {
     const events = await collect(
       mapChatCompletionsStream([
@@ -535,7 +568,7 @@ async function main(): Promise<void> {
     assert.equal(completionOf(events), "incomplete")
   }
 
-  // 带 tool_calls 但没有完整调用（无 id）→ unknown（第 8.5 节的要求）。
+  /** 带 tool_calls 但没有完整调用（无 id）→ unknown。 */
   {
     const events = await collect(
       mapChatCompletionsStream([chunk({ delta: {}, finish_reason: "tool_calls" })]),
@@ -543,7 +576,7 @@ async function main(): Promise<void> {
     assert.equal(completionOf(events), "unknown")
   }
 
-  // 已废弃的 function_call 字段不转换为 tool_call。
+  /** 已废弃的 function_call 字段不转换为 tool_call。 */
   {
     const events = await collect(
       mapChatCompletionsStream([
@@ -555,9 +588,9 @@ async function main(): Promise<void> {
     assert.equal(completionOf(events), "unknown")
   }
 
-  // -------------------------------------------------------------------------
-  // 4. 端到端：真实 SDK + HTTP + SSE
-  // -------------------------------------------------------------------------
+  /** ------------------------------------------------------------------------- */
+  /** 4. 端到端：真实 SDK + HTTP + SSE */
+  /** ------------------------------------------------------------------------- */
 
   const provider = await startFakeProvider((request) => {
     if (request.headers["x-test-scenario"] === "cancel") return { events: [], hang: true }
@@ -596,7 +629,7 @@ async function main(): Promise<void> {
       tool_call_id: "call_01",
       content: "PORT=3000",
     })
-    // tools[].function.parameters 是协议侧字段名。
+    /** tools[].function.parameters 是协议侧字段名。 */
     const sentTools = sent?.body.tools as Array<{ function: { parameters?: unknown } }>
     assert.ok(sentTools[0]?.function.parameters !== undefined)
 
@@ -608,7 +641,7 @@ async function main(): Promise<void> {
     assert.equal(last.usage?.cacheReadTokens, 10)
     assert.equal(last.usage?.totalTokens, 37)
 
-    // 取消：不重试，归一化为 CANCELLED。
+    /** 取消：不重试，归一化为 CANCELLED。 */
     const controller = new AbortController()
     const cancelling = createChatCompletionsAdapter(MODEL, {
       apiKey: "k",
@@ -628,11 +661,11 @@ async function main(): Promise<void> {
     await provider.close()
   }
 
-  // 已产生内容增量后断流 → 不重试（第 7 节的重试边界另一半），错误归一化为 REQUEST_FAILED。
+  /** 已产生内容增量后断流 → 不重试，错误归一化为 REQUEST_FAILED。 */
   {
     const provider = await startFakeProvider(() => ({
       events: [sseData(chunk({ delta: { content: "半截回答" } }))],
-      // 留出时间让上面的内容增量真正到达客户端，否则测到的是「尚无有效输出」。
+      /** 留出时间让上面的内容增量真正到达客户端，否则测到的是「尚无有效输出」。 */
       destroy: true,
       destroyAfterMs: 60,
     }))
@@ -656,7 +689,7 @@ async function main(): Promise<void> {
     }
   }
 
-  // 400 → 不可重试，包装为 REQUEST_FAILED。
+  /** 400 → 不可重试，包装为 REQUEST_FAILED。 */
   {
     const provider = await startFakeProvider({ status: 400, events: [] })
     try {
@@ -676,7 +709,7 @@ async function main(): Promise<void> {
   console.log("chat-completions.test.ts: Chat Completions Adapter 断言通过")
 }
 
-// 不用顶层 await：测试运行时被 Node 当作 ESM，但 tsc 按 CommonJS 检查。
+/** 不用顶层 await：测试运行时被 Node 当作 ESM，但 tsc 按 CommonJS 检查。 */
 main().catch((error: unknown) => {
   console.error(error)
   process.exitCode = 1

@@ -11,7 +11,6 @@ class FakeBackend implements PtyBackend {
   readonly children: Array<{ receive: (event: PtyEvent) => void; input: string[]; disposed: boolean }> = []
   /**
    * 创建可控的测试终端句柄，异步报告首次就绪，并记录输入与清理调用。
-   *
    * @param cwd - 首次就绪事件报告的初始工作目录。
    * @param _nonce - 后端接口传入的随机身份；本测试后端不解析内部协议。
    * @param receive - 测试用于驱动路由输出、标记和退出事件的回调。
@@ -27,7 +26,6 @@ class FakeBackend implements PtyBackend {
 
 /**
  * 运行本文件的离线断言或本机临时进程验证，并在结束时释放测试资源。
- *
  * @returns 本文件全部验证和资源清理完成时兑现的 Promise。
  * @throws Error - 断言、临时存储或本机后端验证失败；顶层测试出口记录异常并设置失败退出码。
  */

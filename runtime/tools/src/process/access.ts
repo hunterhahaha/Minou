@@ -21,7 +21,6 @@ export type LoadProcessAccess = (projectId: string, sessionId: string) => Proces
 
 /**
  * 验证 Runtime 进程上下文，按当前沙箱模式等待顺序审批，并在执行前再次读取配置和取消状态。Full Access 不需要审批，其他模式需要一次明确批准。
- *
  * @param name - 当前请求执行的进程工具名称，用于审批记录和原因说明。
  * @param context - 已检查的业务参数、调用身份、取消信号和 Runtime 注入资源。
  * @param load - 从数据库读取当前权限与工作目录的端口。
@@ -45,7 +44,6 @@ export async function authorizeProcess(name: string, context: ToolExecutionConte
 }
 /**
  * 构造带稳定错误码的异常，供进程操作抛出并由工具边界转换。
- *
  * @param code - Runtime 使用的稳定错误码。
  * @param message - 可以向调用方公开的错误说明。
  * @returns 带 code 属性的 Error；本函数只构造异常，不抛出它。
@@ -53,7 +51,6 @@ export async function authorizeProcess(name: string, context: ToolExecutionConte
 export function processException(code: string, message: string): Error { return Object.assign(new Error(message), { code }) }
 /**
  * 将进程边界捕获的异常转为工具 AppError，不添加业务输出或内部堆栈。
- *
  * @param error - 捕获的未知异常或带错误码的 Error。
  * @param fallback - 异常没有字符串 code 属性时使用的默认错误码。
  * @returns source 为 tool 的错误对象，保留可用的错误码和说明。

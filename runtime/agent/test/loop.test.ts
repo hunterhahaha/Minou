@@ -1,22 +1,8 @@
 /**
- * AgentLoop 循环测试（TODOList 阶段 6.1 正常模型请求 + 6.4 Tool Call 小轮接线）。
+ * 使用脚本模型流、内存事件收集器和假工具验证 AgentLoop。
  *
- * 用「按脚本产出统一流事件的假 Adapter」与「按脚本返回 ToolResult 的假工具入口」驱动
- * `runAgentLoop`，不碰网络、不依赖测试框架，也不实现任何真实工具。运行：
- *   node --experimental-strip-types runtime/agent/test/loop.test.ts
- *
- * 断言包在 async main() 里而非顶层 await：测试被 Node 当作 ESM 运行，
- * 但 tsc 按 CommonJS 检查，顶层 await 在后者不合法。
- *
- * 覆盖：
- *   1. 正常完成：事件顺序、blockId 一致性、assistant/message 内容与 Usage、content 原地更新
- *   2. Tool Call 小轮：两个调用（一个成功、一个失败）的执行、tool/result 关联、工具结果消息、进入下一 Step
- *   3. 未结束的 tool_call 不进消息、不执行工具
- *   4. 用户取消：模型流取消、工具小轮期间取消
- *   5. Adapter 抛错
- *
- * 架构依据：.git/技术文档/开发备忘录1.0.17.md 第 8.4 / 8.5 / 8.6 / 8.9 节、第 11.3 / 11.4 节、
- *          第 13.3 节、第 14 节、第 16.4 / 16.5 节
+ * 覆盖 Step 事件与块身份、完整消息及 Usage、工具调度与结果回填、取消收尾和错误传播。
+ * 脚本 Adapter 不访问模型服务，假工具不执行真实业务；main 按顺序调用各断言场景。
  */
 
 import assert from "node:assert/strict"
@@ -47,9 +33,9 @@ import type { ToolResult } from "../../tools/src/types.ts"
 import { runAgentLoop } from "../src/loop.ts"
 import type { ExecuteToolCall } from "../src/loop.ts"
 
-// ---------------------------------------------------------------------------
-// 辅助
-// ---------------------------------------------------------------------------
+/**
+ * 辅助
+ */
 
 /** 本测试使用的模型引用；假 Adapter 不做一致性校验，与真实 Adapter 无关。 */
 const MODEL: ModelRef = { providerId: "provider-1", protocol: "anthropic_messages", modelId: "model-1", name: "claude-test", reasoningLevel: "medium" }
@@ -57,12 +43,16 @@ const MODEL: ModelRef = { providerId: "provider-1", protocol: "anthropic_message
 const SESSION_ID = "session-1"
 
 /**
- * 收集 AgentLoop 写出的待写入事件，并像 SessionEventLog 一样补上身份字段后返回。
- *
- * eventId 用 `event-N` 顺序编号，便于断言 `tool/result.toolCallEventId` 指向哪条 block_end。
+ * 创建内存事件收集器，按写入顺序补充事件身份并保存待写入事件。
+ * @returns 事件记录数组及补充身份的异步事件追加函数。
  */
 function collector(): { events: SessionEventInput[]; appendEvent: AppendSessionEvent } {
   const events: SessionEventInput[] = []
+  /**
+   * 收集待写入事件并补充确定性的身份字段，不访问磁盘。
+   * @param event Loop 交出的事件输入。
+   * @returns 带顺序事件 ID、序号和固定时间的完整事件。
+   */
   const appendEvent: AppendSessionEvent = async (event) => {
     events.push(event)
     return {
@@ -76,7 +66,11 @@ function collector(): { events: SessionEventInput[]; appendEvent: AppendSessionE
   return { events, appendEvent }
 }
 
-/** 记录收到的工具调用并返回脚本结果的假工具入口。 */
+/**
+ * 创建按脚本依次返回结果的假工具入口，并记录每次调用的名称、参数及身份。
+ * @param script 按调用顺序消耗的工具结果数组，调用会移除队首结果。
+ * @returns 调用记录数组与按脚本返回结果的工具执行函数。
+ */
 function toolSpy(script: ToolResult[]): {
   calls: { name: string; args: unknown; turn: number; step: number; blockId: string; toolCallId: string }[]
   executeTool: ExecuteToolCall
@@ -100,7 +94,11 @@ function toolSpy(script: ToolResult[]): {
   }
 }
 
-/** 按脚本产出统一流事件的假 Adapter。 */
+/**
+ * 将注入的统一事件流函数包装为假模型 Adapter，不创建网络客户端。
+ * @param stream 接收模型请求与取消信号并产出统一流事件的脚本函数。
+ * @returns 仅使用注入 stream 函数的模型 Adapter。
+ */
 function adapterFrom(
   stream: (request: UnifiedModelRequest, signal: AbortSignal) => AsyncIterable<ModelStreamEvent>,
 ): ModelAdapter {
@@ -108,10 +106,10 @@ function adapterFrom(
 }
 
 /**
- * 按请求顺序消费多个脚本的假 Adapter；调用次数超出脚本数时断言失败。
- *
- * `seen` 记录每次请求本身与**当时**的消息角色快照 —— content 是被 Loop 原地修改的同一个数组，
- * 快照才能反映「这次请求实际带上了什么」。
+ * 按请求顺序消费响应脚本，并记录请求引用及当时的消息角色快照。
+ * @param scripts 按模型请求顺序消耗的事件脚本数组。
+ * @param seen 接收请求引用与消息角色快照的可变记录数组。
+ * @returns 每次请求消费一个脚本的模型 Adapter。
  */
 function adapterFromScripts(
   scripts: ModelStreamEvent[][],
@@ -125,11 +123,20 @@ function adapterFromScripts(
   })
 }
 
+/**
+ * 按事件原顺序提取类型，供事件生命周期顺序断言使用。
+ * @param events 待提取或筛选的 Session 事件数组。
+ * @returns 与输入顺序一致的事件类型数组。
+ */
 function eventTypes(events: SessionEventInput[]): string[] {
   return events.map((event) => event.type)
 }
 
-/** 只保留块事件的 blockId，便于断言同一个块的 blockId 一致。 */
+/**
+ * 提取块起始、增量和结束事件的 blockId，保留事件顺序和重复身份。
+ * @param events 待提取或筛选的 Session 事件数组。
+ * @returns 仅包含块事件身份的数组。
+ */
 function blockIds(events: SessionEventInput[]): string[] {
   return events.flatMap((event) =>
     event.type === "assistant/block_start" ||
@@ -140,18 +147,44 @@ function blockIds(events: SessionEventInput[]): string[] {
   )
 }
 
+/**
+ * 构造指定索引与类型的模型块起始事件。
+ * @param index 当前模型响应中的块索引。
+ * @param blockType 要开始的模型内容块类型。
+ * @returns 块起始事件。
+ */
 function blockStart(index: number, blockType: BlockType): ModelStreamEvent {
   return { type: "block_start", index, blockType }
 }
 
+/**
+ * 构造指定块的思考文本增量事件。
+ * @param index 当前模型响应中的块索引。
+ * @param text 写入事件或工具结果的文本。
+ * @returns 思考文本增量事件。
+ */
 function thinkingDelta(index: number, text: string): ModelStreamEvent {
   return { type: "block_delta", index, delta: { type: "thinking", text } }
 }
 
+/**
+ * 构造指定块的普通文本增量事件。
+ * @param index 当前模型响应中的块索引。
+ * @param text 写入事件或工具结果的文本。
+ * @returns 普通文本增量事件。
+ */
 function textDelta(index: number, text: string): ModelStreamEvent {
   return { type: "block_delta", index, delta: { type: "text", text } }
 }
 
+/**
+ * 构造工具调用增量事件；未提供的名称及参数增量保持缺失。
+ * @param index 当前模型响应中的块索引。
+ * @param toolCallId 用于关联工具结果的调用 ID。
+ * @param nameDelta 可选的工具名称增量。
+ * @param argumentsDelta 可选的工具参数字符串增量。
+ * @returns 带调用 ID 及已提供增量的工具调用事件。
+ */
 function toolCallDelta(
   index: number,
   toolCallId: string,
@@ -170,10 +203,23 @@ function toolCallDelta(
   }
 }
 
+/**
+ * 构造携带完整块内容的模型块结束事件。
+ * @param index 当前模型响应中的块索引。
+ * @param block 模型已完整返回的内容块。
+ * @returns 携带完整内容的块结束事件。
+ */
 function blockEnd(index: number, block: AssistantContentBlock): ModelStreamEvent {
   return { type: "block_end", index, block }
 }
 
+/**
+ * 构造模型流结束事件；未提供的 Usage 与协议结束原因保持缺失。
+ * @param completion 本次模型流的统一完成状态。
+ * @param usage 可选的权威 Usage。
+ * @param finishReason 可选的协议原始结束原因。
+ * @returns 携带完成状态和已提供统计的流结束事件。
+ */
 function streamEnd(completion: ModelCompletion, usage?: Usage, finishReason?: string): ModelStreamEvent {
   return {
     type: "stream_end",
@@ -183,10 +229,21 @@ function streamEnd(completion: ModelCompletion, usage?: Usage, finishReason?: st
   }
 }
 
+/**
+ * 构造仅包含一个文本块的成功工具结果。
+ * @param text 写入事件或工具结果的文本。
+ * @returns 成功的文本工具结果。
+ */
 function textResult(text: string): ToolResult {
   return { status: "success", content: [{ type: "text", text }] }
 }
 
+/**
+ * 构造携带原始 AppError 与模型可见文本的失败工具结果。
+ * @param error 随失败结果保留的结构化错误。
+ * @param text 写入事件或工具结果的文本。
+ * @returns 失败的文本工具结果。
+ */
 function errorResult(error: AppError, text: string): ToolResult {
   return { status: "error", content: [{ type: "text", text }], error }
 }
@@ -196,7 +253,11 @@ type ToolCallBlockEndEvent = AssistantBlockEndEventInput & {
   block: Extract<AssistantContentBlock, { type: "tool_call" }>
 }
 
-/** 取所有 tool_call 块的 block_end 事件（type 谓词，便于按 toolCallId 查找）。 */
+/**
+ * 筛选完整工具调用的块结束事件，并将结果类型收窄为工具调用块。
+ * @param events 待提取或筛选的 Session 事件数组。
+ * @returns 按日志顺序排列的完整工具调用块结束事件。
+ */
 function toolCallBlockEnds(events: SessionEventInput[]): ToolCallBlockEndEvent[] {
   return events.filter(
     (event): event is ToolCallBlockEndEvent =>
@@ -204,7 +265,13 @@ function toolCallBlockEnds(events: SessionEventInput[]): ToolCallBlockEndEvent[]
   )
 }
 
-/** 取唯一一条指定类型的事件，顺带断言它确实存在。 */
+/**
+ * 取得唯一一条指定类型的事件，匹配数量不为一时断言失败。
+ * @param events 待提取或筛选的 Session 事件数组。
+ * @param type 期望唯一出现的事件类型。
+ * @returns 类型已收窄的唯一匹配事件。
+ * @throws AssertionError 匹配事件数量不为一时抛出。
+ */
 function only<T extends SessionEventInput["type"]>(
   events: SessionEventInput[],
   type: T,
@@ -214,10 +281,15 @@ function only<T extends SessionEventInput["type"]>(
   return matched[0] as Extract<SessionEventInput, { type: T }>
 }
 
-// ---------------------------------------------------------------------------
-// 1. 正常完成
-// ---------------------------------------------------------------------------
+/**
+ * 1. 正常完成
+ */
 
+/**
+ * 验证正常响应的事件顺序、块身份、消息内容、Usage 以及内存上下文追加。
+ * @returns 当前场景的断言及异步操作完成后解析。
+ * @throws Error 断言或场景执行失败时向上传播，测试入口记录错误并设置失败退出码。
+ */
 async function testCompletedStep(): Promise<void> {
   const content: ModelMessage[] = [
     { role: "system", content: "系统设定" },
@@ -265,12 +337,16 @@ async function testCompletedStep(): Promise<void> {
     "step/end",
   ])
 
-  // 请求构建：content / tools / model 原样交给 Adapter（第 11.4 节）
+  /**
+   * 请求构建：content / tools / model 原样交给 Adapter
+   */
   assert.equal(seen?.context.messages, content)
   assert.equal(seen?.tools, tools)
   assert.deepEqual(seen?.model, MODEL)
 
-  // Step 身份（第 8.2 节）：Turn 由调用方决定，Step 从 1 起
+  /**
+   * Step 身份：Turn 由调用方决定，Step 从 1 起
+   */
   const stepStart = events[0] as StepStartEventInput
   assert.equal(stepStart.turn, 2)
   assert.equal(stepStart.step, 1)
@@ -279,18 +355,24 @@ async function testCompletedStep(): Promise<void> {
   assert.equal(stepEnd.step, 1)
   assert.equal(stepEnd.reason, "completed")
 
-  // 同一个块的 Start / Delta / End 使用同一个 blockId，块之间的 blockId 不同（第 8.4 节）
+  /**
+   * 同一个块的 Start / Delta / End 使用同一个 blockId，块之间的 blockId 不同
+   */
   const ids = blockIds(events)
   assert.equal(ids.length, 7)
   assert.equal(new Set(ids.slice(0, 3)).size, 1)
   assert.equal(new Set(ids.slice(3, 7)).size, 1)
   assert.notEqual(ids[0], ids[3])
 
-  // 块顺序由 index 决定；block_start / block_end 带 index
+  /**
+   * 块顺序由 index 决定；block_start / block_end 带 index
+   */
   const starts = events.filter((event) => event.type === "assistant/block_start")
   assert.deepEqual(starts.map((event) => event.index), [0, 1])
 
-  // assistant/message：只收录已结束的块，按 index 排序，携带权威 Usage 与结束原因（第 8.5 节）
+  /**
+   * assistant/message：只收录已结束的块，按 index 排序，携带权威 Usage 与结束原因
+   */
   const message = only(events, "assistant/message") as AssistantMessageEventInput
   assert.equal(typeof message.message.id, "string")
   assert.equal(message.message.id.length > 0, true)
@@ -303,7 +385,9 @@ async function testCompletedStep(): Promise<void> {
   assert.equal(message.finishReason, "end_turn")
   assert.deepEqual(message.model, MODEL)
 
-  // content 原地更新（第 13.3 节）
+  /**
+   * content 原地更新
+   */
   assert.deepEqual(content[2], {
     role: "assistant",
     content: [
@@ -320,10 +404,15 @@ async function testCompletedStep(): Promise<void> {
   assert.equal(calls.length, 0)
 }
 
-// ---------------------------------------------------------------------------
-// 2. Tool Call 小轮：一个成功、一个失败，随后进入下一 Step
-// ---------------------------------------------------------------------------
+/**
+ * 2. Tool Call 小轮：一个成功、一个失败，随后进入下一 Step
+ */
 
+/**
+ * 验证成功与失败工具结果的事件关联、文本回填和后续 Step 请求。
+ * @returns 当前场景的断言及异步操作完成后解析。
+ * @throws Error 断言或场景执行失败时向上传播，测试入口记录错误并设置失败退出码。
+ */
 async function testToolRound(): Promise<void> {
   const content: ModelMessage[] = [
     { role: "system", content: "系统设定" },
@@ -374,7 +463,9 @@ async function testToolRound(): Promise<void> {
     appendEvent,
   })
 
-  // 事件顺序：Step 1 的两个调用逐个写 tool/result，小轮结束后才写 step/end（第 13.3 节）
+  /**
+   * 事件顺序：Step 1 的两个调用逐个写 tool/result，小轮结束后才写 step/end
+   */
   assert.deepEqual(eventTypes(events), [
     "step/start",
     "assistant/block_start",
@@ -400,14 +491,18 @@ async function testToolRound(): Promise<void> {
     "step/end",
   ])
 
-  // 工具执行：调用身份来自 tool_call 块，按模型给出的顺序逐个执行
+  /**
+   * 工具执行：调用身份来自 tool_call 块，按模型给出的顺序逐个执行
+   */
   assert.deepEqual(calls, [
     { name: "read_file", args: { path: "a.ts" }, turn: 1, step: 1, blockId: "b-1-1-1", toolCallId: "call-1" },
     { name: "read_file", args: { path: "b.ts" }, turn: 1, step: 1, blockId: "b-1-1-2", toolCallId: "call-2" },
   ])
 
-  // tool/result 关联 toolCallEventId（指向该块 block_end 的 eventId）/ toolCallId / blockId（第 8.6 节）
-  // collector 把第 N 条事件命名为 `event-N`，所以 eventId 的编号就是事件下标 + 1。
+  /**
+   * tool/result 关联 toolCallEventId（指向该块 block_end 的 eventId）/ toolCallId / blockId
+   * collector 把第 N 条事件命名为 `event-N`，所以 eventId 的编号就是事件下标 + 1。
+   */
   const toolResults = events.filter((event) => event.type === "tool/result")
   assert.equal(toolResults.length, 2)
   assert.deepEqual(
@@ -445,7 +540,9 @@ async function testToolRound(): Promise<void> {
     ],
   )
 
-  // 工具结果进入 content：只保留 text 内容块，isError 取 status（第 11.3、16.2 节）
+  /**
+   * 工具结果进入 content：只保留 text 内容块，isError 取 status
+   */
   assert.deepEqual(content.slice(3), [
     { role: "tool", toolCallId: "call-1", content: [{ type: "text", text: "a.ts 的内容" }], isError: false },
     {
@@ -460,7 +557,9 @@ async function testToolRound(): Promise<void> {
     },
   ])
 
-  // 第二次请求带上了工具结果（工具结果必须交还模型）
+  /**
+   * 第二次请求带上了工具结果（工具结果必须交还模型）
+   */
   assert.equal(requests.length, 2)
   assert.deepEqual(requests[0]?.roles, ["system", "user"])
   assert.deepEqual(requests[1]?.roles, ["system", "user", "assistant", "tool", "tool"])
@@ -472,10 +571,15 @@ async function testToolRound(): Promise<void> {
   assert.equal(result.stopped, false)
 }
 
-// ---------------------------------------------------------------------------
-// 2b. 整批交给调度器：共享只读调用真正并发，谁先完成谁先落盘
-// ---------------------------------------------------------------------------
+/**
+ * 2b. 整批交给调度器：共享只读调用真正并发，谁先完成谁先落盘
+ */
 
+/**
+ * 通过一慢一快的共享只读工具，验证调度并发及按完成顺序提交结果。
+ * @returns 当前场景的断言及异步操作完成后解析。
+ * @throws Error 断言或场景执行失败时向上传播，测试入口记录错误并设置失败退出码。
+ */
 async function testToolRoundDelegatesToScheduler(): Promise<void> {
   const content: ModelMessage[] = [
     { role: "system", content: "系统设定" },
@@ -505,7 +609,9 @@ async function testToolRoundDelegatesToScheduler(): Promise<void> {
     requests,
   )
 
-  // 两个调用都是共享只读工具：第一个故意慢，用来观察并发与「完成即落盘」
+  /**
+   * 两个调用都是共享只读工具：第一个故意慢，用来观察并发与「完成即落盘」
+   */
   const trace: string[] = []
   const delays: Record<string, number> = { "call-1": 30, "call-2": 5 }
   const executeTool: ExecuteToolCall = async (_name, _args, context) => {
@@ -515,7 +621,11 @@ async function testToolRoundDelegatesToScheduler(): Promise<void> {
     return textResult(`${context.toolCallId} 的内容`)
   }
 
-  // 每条 tool/result 写入时记一笔，和执行轨迹拼在一起看「完成即落盘」
+  /**
+   * 记录工具结果落盘的观测顺序，再委托内存收集器追加事件。
+   * @param event 当前要记录的 Loop 事件。
+   * @returns 收集器补充身份后的事件。
+   */
   const loggingAppend: AppendSessionEvent = async (event) => {
     if (event.type === "tool/result") trace.push(`wrote ${event.toolCallId}`)
     return appendEvent(event)
@@ -532,8 +642,10 @@ async function testToolRoundDelegatesToScheduler(): Promise<void> {
     appendEvent: loggingAppend,
   })
 
-  // 两个共享只读调用都在对方结束前启动（调度确实发生在 runToolCalls 里，不是 AgentLoop 逐个 await），
-  // 且每个调用一结束就写下了它的 tool/result —— 不必等慢的 call-1 结束（第 16.5 节）
+  /**
+   * 两个共享只读调用都在对方结束前启动（调度确实发生在 runToolCalls 里，不是 AgentLoop 逐个 await），
+   * 且每个调用一结束就写下了它的 tool/result —— 不必等慢的 call-1 结束
+   */
   assert.deepEqual(trace, [
     "start call-1",
     "start call-2",
@@ -543,7 +655,9 @@ async function testToolRoundDelegatesToScheduler(): Promise<void> {
     "wrote call-1",
   ])
 
-  // content 里工具结果消息同样按完成顺序追加，且与 toolCallId 正确配对（第 8.6、11.3 节）
+  /**
+   * content 里工具结果消息同样按完成顺序追加，且与 toolCallId 正确配对
+   */
   const toolResults = events.filter((event) => event.type === "tool/result")
   assert.deepEqual(toolResults.map((event) => event.toolCallId), ["call-2", "call-1"])
   assert.deepEqual(content.slice(2, 5), [
@@ -556,10 +670,15 @@ async function testToolRoundDelegatesToScheduler(): Promise<void> {
   ])
 }
 
-// ---------------------------------------------------------------------------
-// 3. 未结束的 tool_call 不进入消息，也不执行
-// ---------------------------------------------------------------------------
+/**
+ * 3. 未结束的 tool_call 不进入消息，也不执行
+ */
 
+/**
+ * 验证未收到块结束事件的工具调用不会进入完整消息或触发执行。
+ * @returns 当前场景的断言及异步操作完成后解析。
+ * @throws Error 断言或场景执行失败时向上传播，测试入口记录错误并设置失败退出码。
+ */
 async function testUnfinishedToolCall(): Promise<void> {
   const content: ModelMessage[] = [
     { role: "system", content: "系统设定" },
@@ -585,21 +704,30 @@ async function testUnfinishedToolCall(): Promise<void> {
     appendEvent,
   })
 
-  // 没有 block_end 的块不进 assistant/message，也不被当作待执行调用（第 8.5 节）
+  /**
+   * 没有 block_end 的块不进 assistant/message，也不被当作待执行调用
+   */
   assert.deepEqual(only(events, "assistant/message").message.content, [])
   assert.equal(eventTypes(events).includes("tool/result"), false)
   assert.equal(calls.length, 0)
   assert.equal(result.completion, "unknown")
   assert.equal(result.steps, 1)
 
-  // 空内容的消息不追加到 content
+  /**
+   * 空内容的消息不追加到 content
+   */
   assert.equal(content.length, 2)
 }
 
-// ---------------------------------------------------------------------------
-// 4. 用户取消
-// ---------------------------------------------------------------------------
+/**
+ * 4. 用户取消
+ */
 
+/**
+ * 验证模型流取消时关闭已开始的 Step，并向调用方返回停止状态。
+ * @returns 当前场景的断言及异步操作完成后解析。
+ * @throws Error 断言或场景执行失败时向上传播，测试入口记录错误并设置失败退出码。
+ */
 async function testUserStopDuringModelStream(): Promise<void> {
   const content: ModelMessage[] = [
     { role: "system", content: "系统设定" },
@@ -609,7 +737,9 @@ async function testUserStopDuringModelStream(): Promise<void> {
   const controller = new AbortController()
   const { calls, executeTool } = toolSpy([])
 
-  // 真实 Adapter 在取消时抛出的就是取消类错误（经 runModelStream 归一化）。
+  /**
+   * 真实 Adapter 在取消时抛出的就是取消类错误（经 runModelStream 归一化）。
+   */
   const adapter = adapterFrom(async function* (): AsyncGenerator<ModelStreamEvent> {
     yield blockStart(0, "text")
     yield textDelta(0, "很久")
@@ -647,7 +777,9 @@ async function testUserStopDuringModelStream(): Promise<void> {
   assert.equal(result.completion, undefined)
   assert.equal(calls.length, 0)
 
-  // 未完成的消息不进入 content
+  /**
+   * 未完成的消息不进入 content
+   */
   assert.equal(content.length, 2)
 }
 
@@ -763,6 +895,11 @@ async function testStopBeforeContentAndDuringPersistenceFailure(): Promise<void>
   assert.deepEqual(eventTypes(events), ["step/start", "assistant/block_start", "step/end"])
 }
 
+/**
+ * 验证工具小轮期间取消后，调用结果完成关联且不再发起下一 Step。
+ * @returns 当前场景的断言及异步操作完成后解析。
+ * @throws Error 断言或场景执行失败时向上传播，测试入口记录错误并设置失败退出码。
+ */
 async function testUserStopDuringToolRound(): Promise<void> {
   const content: ModelMessage[] = [
     { role: "system", content: "系统设定" },
@@ -788,7 +925,9 @@ async function testUserStopDuringToolRound(): Promise<void> {
     requests,
   )
 
-  // 第一次调用发现已被取消，第二次调用尚未启动便返回 CANCELLED（第 14、16.4 节）。
+  /**
+   * 第一次调用发现已被取消，第二次调用尚未启动便返回 CANCELLED。
+   */
   const executeTool: ExecuteToolCall = async (name, args, context) => {
     if (context.toolCallId === "call-1") controller.abort()
     return errorResult(cancelled, `工具 ${name} 未执行：已取消`)
@@ -805,7 +944,9 @@ async function testUserStopDuringToolRound(): Promise<void> {
     appendEvent,
   })
 
-  // 小轮仍然为每个调用写 tool/result，Step 以 stopped 关闭，且不再发起下一次模型请求
+  /**
+   * 小轮仍然为每个调用写 tool/result，Step 以 stopped 关闭，且不再发起下一次模型请求
+   */
   assert.deepEqual(eventTypes(events), [
     "step/start",
     "assistant/block_start",
@@ -829,10 +970,15 @@ async function testUserStopDuringToolRound(): Promise<void> {
   )
 }
 
-// ---------------------------------------------------------------------------
-// 5. Adapter 抛错
-// ---------------------------------------------------------------------------
+/**
+ * 5. Adapter 抛错
+ */
 
+/**
+ * 验证模型非取消错误在 Step 错误收尾后向调用方传播。
+ * @returns 当前场景的断言及异步操作完成后解析。
+ * @throws Error 断言或场景执行失败时向上传播，测试入口记录错误并设置失败退出码。
+ */
 async function testModelError(): Promise<void> {
   const content: ModelMessage[] = [
     { role: "system", content: "系统设定" },
@@ -861,7 +1007,9 @@ async function testModelError(): Promise<void> {
     (error: unknown) => error,
   )
 
-  // 错误原样抛出（Turn 的收尾与 app/error 由调用方负责），Step 以 error 关闭
+  /**
+   * 错误原样抛出（Turn 的收尾与 app/error 由调用方负责），Step 以 error 关闭
+   */
   assert.deepEqual(thrown, modelError)
   assert.deepEqual(eventTypes(events), ["step/start", "assistant/block_start", "step/end"])
   assert.equal(only(events, "step/end").reason, "error")
@@ -869,10 +1017,15 @@ async function testModelError(): Promise<void> {
   assert.equal(content.length, 2)
 }
 
-// ---------------------------------------------------------------------------
-// 入口
-// ---------------------------------------------------------------------------
+/**
+ * 入口
+ */
 
+/**
+ * 依次执行模型流、工具调度、取消与错误传播的断言场景。
+ * @returns 当前场景的断言及异步操作完成后解析。
+ * @throws Error 断言或场景执行失败时向上传播，测试入口记录错误并设置失败退出码。
+ */
 async function main(): Promise<void> {
   await testCompletedStep()
   await testToolRound()
@@ -887,7 +1040,9 @@ async function main(): Promise<void> {
   console.log("loop.test.ts: AgentLoop 断言通过")
 }
 
-// 不用顶层 await：测试运行时被 Node 当作 ESM，但 tsc 按 CommonJS 检查。
+/**
+ * 不用顶层 await：测试运行时被 Node 当作 ESM，但 tsc 按 CommonJS 检查。
+ */
 main().catch((error: unknown) => {
   console.error(error)
   process.exitCode = 1

@@ -5,7 +5,6 @@
  * 主进程在首批事件提交后返回可结构化克隆的 sessionId / turn，运行中追加返回入队确认，
  * Stop 返回幂等处理确认；后台事件流与 completion 均不跨 IPC。
  *
- * 架构依据：.git/技术文档/开发备忘录1.0.17.md 第 1、13、28 节。
  */
 
 import type {
@@ -318,15 +317,22 @@ export interface NiCodePreloadApi {
    * @param approvalId 审批身份。
    * @param decision 用户明确作出的决定。
    * @returns accepted 为 false 时表示请求已经结束或不存在。
+   * @throws Error IPC 调用、后端处理或返回值校验失败时拒绝，页面负责保留当前状态并报告失败。
    */
   decideSessionApproval(projectId: string, sessionId: string, approvalId: string, decision: "approved" | "denied"): Promise<{ accepted: boolean }>
-  /** @returns 选中的目录及名称；用户取消时为 null。 */
+  /**
+   * 请求主进程显示目录选择器，取消时保留 null。
+   *
+   * @returns 选中的目录及名称；用户取消时为 null。
+   * @throws Error IPC 调用、后端处理或返回值校验失败时拒绝，页面负责保留当前状态并报告失败。
+   */
   selectDirectory(): Promise<DirectorySelection | null>
   /**
    * 创建没有关联对话的新 Project。
    * @param name 非空的项目名称。
    * @param directories 可选的现存绝对目录路径列表。
    * @returns 新项目的页面摘要。
+   * @throws Error IPC 调用、后端处理或返回值校验失败时拒绝，页面负责保留当前状态并报告失败。
    */
   createProject(name: string, directories?: string[]): Promise<ProjectSummary>
   /**
@@ -334,6 +340,7 @@ export interface NiCodePreloadApi {
    * @param projectId Project UUID。
    * @param directory 现存目录的绝对路径。
    * @returns 成功确认或失败原因。
+   * @throws Error IPC 调用、后端处理或返回值校验失败时拒绝，页面负责保留当前状态并报告失败。
    */
   addProjectDirectory(projectId: string, directory: string): Promise<ProjectDirectoryResult>
   /**
@@ -341,6 +348,7 @@ export interface NiCodePreloadApi {
    * @param projectId Project UUID。
    * @param directory 现存目录的绝对路径。
    * @returns 成功确认或失败原因。
+   * @throws Error IPC 调用、后端处理或返回值校验失败时拒绝，页面负责保留当前状态并报告失败。
    */
   removeProjectDirectory(projectId: string, directory: string): Promise<ProjectDirectoryResult>
   /**
@@ -377,38 +385,90 @@ export interface NiCodePreloadApi {
    * @throws Error 输入无效、技能不存在、保存失败或返回值无效。
    */
   setSkillEnabled(target: SkillTarget, name: string, enabled: boolean): Promise<SkillRegistryEntry>
-  /** @returns 当前 MCP 配置和运行状态。 @throws Error 查询或返回值校验失败。 */
+  /**
+   * 读取已保存 MCP 配置及当前连接状态。
+   *
+   * @returns 当前 MCP 配置和运行状态。
+   * @throws Error 查询或返回值校验失败。
+   */
   listMcpServers(): Promise<MCPServerSummary[]>
-  /** @param config 完整配置。 @returns 保存及连接尝试后的列表。 @throws Error 输入、持久化或资源清理失败。 */
+  /**
+   * 请求保存新的 MCP 配置并执行对应连接尝试。
+   *
+   * @param config 完整配置。
+   * @returns 保存及连接尝试后的列表。
+   * @throws Error 输入、持久化或资源清理失败。
+   */
   createMcpServer(config: MCPConfig): Promise<MCPServerSummary[]>
-  /** @param originalName 当前名称。 @param config 完整新配置。 @returns 同步后的列表。 @throws Error 名称冲突、保存或清理失败。 */
+  /**
+   * 按原始名称更新 MCP 配置并同步连接状态。
+   *
+   * @param originalName 当前名称。
+   * @param config 完整新配置。
+   * @returns 同步后的列表。
+   * @throws Error 名称冲突、保存或清理失败。
+   */
   updateMcpServer(originalName: string, config: MCPConfig): Promise<MCPServerSummary[]>
-  /** @param name 待删除的配置身份。 @returns 删除并清理后的列表。 @throws Error 名称不存在、保存或清理失败。 */
+  /**
+   * 请求删除指定 MCP 配置并清理对应连接资源。
+   *
+   * @param name 待删除的配置身份。
+   * @returns 删除并清理后的列表。
+   * @throws Error 名称不存在、保存或清理失败。
+   */
   deleteMcpServer(name: string): Promise<MCPServerSummary[]>
-  /** @returns 重读配置并重新连接全部启用项后的列表。 @throws Error 配置无效或旧资源清理失败。 */
+  /**
+   * 请求重新读取配置并重建启用项的 MCP 连接。
+   *
+   * @returns 重读配置并重新连接全部启用项后的列表。
+   * @throws Error 配置无效或旧资源清理失败。
+   */
   reloadMcpServers(): Promise<MCPServerSummary[]>
-  /** @returns 按名称汇总的供应商及其协议数组；目录为空时返回空数组。 @throws TypeError 主进程返回的目录项无效。 */
+  /**
+   * 读取内置兼容供应商目录，并检查名称与协议组合。
+   *
+   * @returns 按名称汇总的供应商及其协议数组；目录为空时返回空数组。
+   * @throws TypeError 主进程返回的目录项无效。
+   */
   listCompatibleProviders(): Promise<CompatibleProviderOption[]>
-  /** @param input 已兼容供应商名称、协议与凭据。 @returns 内置模型已保存后的无凭据摘要。 */
+  /**
+   * 根据内置目录创建 Provider 和模型，返回不含凭据的摘要。
+   *
+   * @param input 已兼容供应商名称、协议与凭据。
+   * @returns 内置模型已保存后的无凭据摘要。
+   * @throws Error IPC 调用、后端处理或返回值校验失败时拒绝，页面负责保留当前状态并报告失败。
+   */
   createCompatibleProvider(input: CompatibleProviderCreateInput): Promise<ProviderSummary>
-  /** @param input 自定义连接和模型配置。 @returns 已保存的无凭据摘要。 */
+  /**
+   * 保存自定义连接与模型配置，返回不含凭据的摘要。
+   *
+   * @param input 自定义连接和模型配置。
+   * @returns 已保存的无凭据摘要。
+   * @throws Error IPC 调用、后端处理或返回值校验失败时拒绝，页面负责保留当前状态并报告失败。
+   */
   createCustomProvider(input: CustomProviderCreateInput): Promise<ProviderSummary>
   /**
    * 更新 Provider 显示名称与服务地址；空 URL 表示清除地址。
    * @param providerId 要更新的 Provider ID。
    * @param name 新的非空显示名称。
    * @param url 新服务地址；空字符串会清除已有地址。
+   * @returns 主进程确认当前操作完成后解析。
+   * @throws Error IPC 调用、后端处理或返回值校验失败时拒绝，页面负责保留当前状态并报告失败。
    */
   updateProvider(providerId: string, name: string, url: string): Promise<void>
   /**
    * 删除 Provider、其所有模型记录和 API Key。
    * @param providerId 要删除的 Provider ID。
+   * @returns 主进程确认当前操作完成后解析。
+   * @throws Error IPC 调用、后端处理或返回值校验失败时拒绝，页面负责保留当前状态并报告失败。
    */
   deleteProvider(providerId: string): Promise<void>
   /**
    * 替换或移除 Provider API Key。
    * @param providerId API Key 所属 Provider ID。
    * @param apiKey 新 API Key；null 表示移除。
+   * @returns 主进程确认当前操作完成后解析。
+   * @throws Error IPC 调用、后端处理或返回值校验失败时拒绝，页面负责保留当前状态并报告失败。
    */
   updateApiKey(providerId: string, apiKey: string | null): Promise<void>
   /**
@@ -416,22 +476,29 @@ export interface NiCodePreloadApi {
    * @param providerId 模型所属 Provider ID。
    * @param model 新模型配置。
    * @returns 主进程生成身份后的模型摘要。
+   * @throws Error IPC 调用、后端处理或返回值校验失败时拒绝，页面负责保留当前状态并报告失败。
    */
   createModel(providerId: string, model: ProviderModelInput): Promise<ModelAppend>
   /**
    * 更新指定模型身份的名称、Token 限制或推理配置。
    * @param reference 要更新的 Provider 与模型引用。
    * @param update 要替换的名称或 Token 限制。
+   * @returns 主进程确认当前操作完成后解析。
+   * @throws Error IPC 调用、后端处理或返回值校验失败时拒绝，页面负责保留当前状态并报告失败。
    */
   updateModel(reference: ProviderModelReference, update: ProviderModelUpdate): Promise<void>
   /**
    * 删除指定 Provider 下由 modelId 标识的模型。
    * @param reference 要删除的 Provider 与模型引用。
+   * @returns 主进程确认当前操作完成后解析。
+   * @throws Error IPC 调用、后端处理或返回值校验失败时拒绝，页面负责保留当前状态并报告失败。
    */
   deleteModel(reference: ProviderModelReference): Promise<void>
   /**
    * 设置默认模型，或传 null 回到列表顺序的第一个模型。
    * @param reference 默认模型的 Provider 与模型引用；null 表示清除显式默认值。
+   * @returns 主进程确认当前操作完成后解析。
+   * @throws Error IPC 调用、后端处理或返回值校验失败时拒绝，页面负责保留当前状态并报告失败。
    */
   setDefaultModel(reference: ProviderModelReference | null): Promise<void>
   /**
@@ -440,6 +507,7 @@ export interface NiCodePreloadApi {
    * @param projectId Session 所属 Project UUID 或 default。
    * @param input 首轮用户消息与模型选择。
    * @returns 首批 Turn 事件成功提交后的 Session 身份和 Turn 编号。
+   * @throws Error IPC 调用、后端处理或返回值校验失败时拒绝，页面负责保留当前状态并报告失败。
    */
   startNewSession(
     projectId: string,
@@ -452,6 +520,7 @@ export interface NiCodePreloadApi {
    * @param sessionId 要恢复的 Session 身份。
    * @param input 新 Turn 的用户消息；模型与推理等级从 Session Meta 读取。
    * @returns 新 Turn 首批事件成功提交后的 Session 身份和 Turn 编号。
+   * @throws Error IPC 调用、后端处理或返回值校验失败时拒绝，页面负责保留当前状态并报告失败。
    */
   continueSession(
     projectId: string,
@@ -465,6 +534,7 @@ export interface NiCodePreloadApi {
    * @param sessionId 正在运行的 Session 身份。
    * @param input 要入队的用户消息。
    * @returns Runtime 接受消息后的入队确认。
+   * @throws Error IPC 调用、后端处理或返回值校验失败时拒绝，页面负责保留当前状态并报告失败。
    */
   enqueueSessionMessage(
     projectId: string,
@@ -477,6 +547,7 @@ export interface NiCodePreloadApi {
    * @param projectId Session 所属 Project UUID 或 default。
    * @param sessionId 要停止的 Session 身份。
    * @returns 主进程已完成幂等 Stop 处理的确认。
+   * @throws Error IPC 调用、后端处理或返回值校验失败时拒绝，页面负责保留当前状态并报告失败。
    */
   stopSession(
     projectId: string,
@@ -486,15 +557,41 @@ export interface NiCodePreloadApi {
 
 /** Electron ipcRenderer.invoke 的最小接口，便于在不引入 Electron 类型依赖时测试。 */
 export interface IpcRendererInvokePort {
+  /**
+   * 通过指定 IPC channel 调用主进程并返回未知业务结果。
+   *
+   * @param channel 固定 IPC channel。
+   * @param args 传给主进程的业务参数。
+   * @returns 主进程返回的未知业务结果，由上层方法校验。
+   * @throws Error IPC 调用失败时拒绝，调用方负责展示或处理失败。
+   */
   invoke(channel: string, ...args: unknown[]): Promise<unknown>
-  /** @param channel 固定推送 channel。 @param listener 不向页面传递 Electron 事件的监听器。 */
+  /**
+   * 登记固定 channel 的推送监听器，Electron 事件仅在 preload 内部使用。
+   *
+   * @param channel 固定推送 channel。
+   * @param listener 不向页面传递 Electron 事件的监听器。
+   * @returns IPC 端口原始返回值，页面不直接消费。
+   */
   on?(channel: string, listener: (event: unknown, value: unknown) => void): unknown
-  /** @param channel 固定 channel。 @param listener 先前注册的同一监听器。 */
+  /**
+   * 按 channel 与原监听函数移除本次推送订阅。
+   *
+   * @param channel 固定 channel。
+   * @param listener 先前注册的同一监听器。
+   * @returns IPC 端口原始返回值，页面不直接消费。
+   */
   removeListener?(channel: string, listener: (event: unknown, value: unknown) => void): unknown
 }
 
 /** Electron contextBridge.exposeInMainWorld 的最小接口。 */
 export interface ContextBridgePort {
+  /**
+   * 将已构造的窄接口发布到 Renderer 的指定全局名称。
+   *
+   * @param apiKey Renderer 中发布接口的全局名称。
+   * @param api 已构造且允许暴露的窄接口对象。
+   */
   exposeInMainWorld(apiKey: string, api: unknown): void
 }
 
@@ -505,53 +602,128 @@ export interface ContextBridgePort {
  */
 export function createSessionApi(ipcRenderer: IpcRendererInvokePort): NiCodePreloadApi {
   return Object.freeze({
+    /**
+     * 读取历史；前端缓存命中时不调用。
+     * @param projectId 所属 Project 或 default。
+     * @param sessionId 对话身份。
+     * @returns 已提交事件及控制快照。
+     * @throws Error 当历史恢复、存储或传输结果检查失败时抛出。
+     */
     async getSessionData(projectId: string, sessionId: string): Promise<SessionData> {
       const data = requireSessionData(await ipcRenderer.invoke(SESSION_IPC_CHANNELS.getSessionData, projectId, sessionId))
       if (data.projectId !== projectId || data.sessionId !== sessionId) throw new TypeError("历史结果属于其他对话")
       return data
     },
+    /**
+     * 工作区统一监听更新，只把业务数据交给页面。
+     * @param listener 接收已检查的对话更新。
+     * @returns 删除该监听器的函数。
+     */
     onSessionUpdate(listener: (update: SessionUpdate) => void): () => void {
       if (!ipcRenderer.on || !ipcRenderer.removeListener) throw new TypeError("IPC 端口不支持事件监听")
       const receive = (_event: unknown, value: unknown): void => { listener(requireSessionUpdate(value)) }
       ipcRenderer.on(SESSION_IPC_CHANNELS.update, receive)
       return () => { ipcRenderer.removeListener!(SESSION_IPC_CHANNELS.update, receive) }
     },
+    /**
+     * 修改对话设置，运行中也可调用。
+     * @param projectId 所属分组。
+     * @param sessionId 对话身份。
+     * @param patch 模型或权限更新。
+     * @returns 后端确认的控制状态。
+     * @throws Error 当更新或存储无效时抛出。
+     */
     async updateSessionSettings(projectId: string, sessionId: string, patch: SessionSettingsPatch): Promise<SessionControl> {
       return requireSessionControl(await ipcRenderer.invoke(SESSION_IPC_CHANNELS.updateSessionSettings, projectId, sessionId, patch))
     },
+    /**
+     * 提交当前等待中的审批决定。
+     * @param projectId 所属分组。
+     * @param sessionId 对话身份。
+     * @param approvalId 审批身份。
+     * @param decision 用户明确作出的决定。
+     * @returns accepted 为 false 时表示请求已经结束或不存在。
+     * @throws Error IPC 调用、后端处理或返回值校验失败时拒绝，页面负责保留当前状态并报告失败。
+     */
     async decideSessionApproval(projectId: string, sessionId: string, approvalId: string, decision: "approved" | "denied"): Promise<{ accepted: boolean }> {
       const value = await ipcRenderer.invoke(SESSION_IPC_CHANNELS.decideSessionApproval, projectId, sessionId, approvalId, decision)
       if (!isRecord(value) || typeof value.accepted !== "boolean") throw new TypeError("审批结果无效")
       return { accepted: value.accepted }
     },
+    /**
+     * @returns 选中的目录及名称；用户取消时为 null。
+     * @throws Error IPC 调用、后端处理或返回值校验失败时拒绝，页面负责保留当前状态并报告失败。
+     */
     async selectDirectory(): Promise<DirectorySelection | null> {
       return requireDirectorySelection(await ipcRenderer.invoke(PROJECT_IPC_CHANNELS.selectDirectory))
     },
 
+    /**
+     * 创建没有关联对话的新 Project。
+     * @param name 非空的项目名称。
+     * @param directories 可选的现存绝对目录路径列表。
+     * @returns 新项目的页面摘要。
+     * @throws Error IPC 调用、后端处理或返回值校验失败时拒绝，页面负责保留当前状态并报告失败。
+     */
     async createProject(name: string, directories?: string[]): Promise<ProjectSummary> {
       return requireProjectSummary(await ipcRenderer.invoke(PROJECT_IPC_CHANNELS.createProject, name, directories))
     },
 
+    /**
+     * 将现存目录追加到 Project 关联列表末尾。
+     * @param projectId Project UUID。
+     * @param directory 现存目录的绝对路径。
+     * @returns 成功确认或失败原因。
+     * @throws Error IPC 调用、后端处理或返回值校验失败时拒绝，页面负责保留当前状态并报告失败。
+     */
     async addProjectDirectory(projectId: string, directory: string): Promise<ProjectDirectoryResult> {
       return requireProjectDirectoryResult(await ipcRenderer.invoke(PROJECT_IPC_CHANNELS.addProjectDirectory, projectId, directory))
     },
 
+    /**
+     * 从 Project 的关联列表中移除目录。
+     * @param projectId Project UUID。
+     * @param directory 现存目录的绝对路径。
+     * @returns 成功确认或失败原因。
+     * @throws Error IPC 调用、后端处理或返回值校验失败时拒绝，页面负责保留当前状态并报告失败。
+     */
     async removeProjectDirectory(projectId: string, directory: string): Promise<ProjectDirectoryResult> {
       return requireProjectDirectoryResult(await ipcRenderer.invoke(PROJECT_IPC_CHANNELS.removeProjectDirectory, projectId, directory))
     },
 
+    /**
+     * 读取非 default Project 的当前页面摘要。
+     * @returns Project 及其目录和对话索引摘要。
+     * @throws Error 当数据库读取失败或主进程返回无效数据时由页面处理。
+     */
     async listProjects(): Promise<ProjectSummary[]> {
       return requireProjectSummaries(await ipcRenderer.invoke(STARTUP_DATA_IPC_CHANNELS.listProjects))
     },
 
+    /**
+     * 读取 default 分组的当前对话索引。
+     * @returns default 分组的对话摘要。
+     * @throws Error 当数据库读取失败或主进程返回无效数据时由页面处理。
+     */
     async listDefaultSessions(): Promise<SessionSummary[]> {
       return requireSessionSummaries(await ipcRenderer.invoke(STARTUP_DATA_IPC_CHANNELS.listDefaultSessions))
     },
 
+    /**
+     * 读取当前 Provider 与模型列表。
+     * @returns 不含凭据的 Provider 及模型摘要。
+     * @throws Error 当数据库读取失败或主进程返回无效数据时由页面处理。
+     */
     async listProviders(): Promise<ProviderSummary[]> {
       return requireProviderSummaries(await ipcRenderer.invoke(STARTUP_DATA_IPC_CHANNELS.listProviders))
     },
 
+    /**
+     * 按需同步并读取单个来源的全部技能，包含禁用项和单条描述错误。
+     * @param target Global 或已登记的非 default Project。
+     * @returns 来源技能列表；空列表同样是有效查询结果。
+     * @throws Error 来源读取失败或主进程返回值无效。
+     */
     async listSkills(target: SkillTarget): Promise<SkillSummary[]> {
       const value = await ipcRenderer.invoke(SKILL_IPC_CHANNELS.listSkills, target)
       if (!Array.isArray(value)) throw new TypeError("主进程返回了无效的 Skill 列表")
@@ -568,28 +740,64 @@ export function createSessionApi(ipcRenderer: IpcRendererInvokePort): NiCodePrel
       })
     },
 
+    /**
+     * 保存单个来源中指定技能的启停状态，不改写描述或对话历史。
+     * @param target 要修改的来源。
+     * @param name 完整文件夹名。
+     * @param enabled 目标启用状态。
+     * @returns 后端确认已持久化的登记项。
+     * @throws Error 输入无效、技能不存在、保存失败或返回值无效。
+     */
     async setSkillEnabled(target: SkillTarget, name: string, enabled: boolean): Promise<SkillRegistryEntry> {
       const entry = requireSkillEntry(await ipcRenderer.invoke(SKILL_IPC_CHANNELS.setSkillEnabled, target, name, enabled), target)
       if (entry.name !== name || entry.enabled !== enabled) throw new TypeError("Skill 保存结果与请求不一致")
       return entry
     },
 
+    /**
+     * @returns 当前 MCP 配置和运行状态。
+     * @throws Error 查询或返回值校验失败。
+     */
     async listMcpServers(): Promise<MCPServerSummary[]> {
       return requireMcpSummaries(await ipcRenderer.invoke(MCP_IPC_CHANNELS.listMcpServers))
     },
+    /**
+     * @param config 完整配置。
+     * @returns 保存及连接尝试后的列表。
+     * @throws Error 输入、持久化或资源清理失败。
+     */
     async createMcpServer(config: MCPConfig): Promise<MCPServerSummary[]> {
       return requireMcpSummaries(await ipcRenderer.invoke(MCP_IPC_CHANNELS.createMcpServer, config))
     },
+    /**
+     * @param originalName 当前名称。
+     * @param config 完整新配置。
+     * @returns 同步后的列表。
+     * @throws Error 名称冲突、保存或清理失败。
+     */
     async updateMcpServer(originalName: string, config: MCPConfig): Promise<MCPServerSummary[]> {
       return requireMcpSummaries(await ipcRenderer.invoke(MCP_IPC_CHANNELS.updateMcpServer, originalName, config))
     },
+    /**
+     * @param name 待删除的配置身份。
+     * @returns 删除并清理后的列表。
+     * @throws Error 名称不存在、保存或清理失败。
+     */
     async deleteMcpServer(name: string): Promise<MCPServerSummary[]> {
       return requireMcpSummaries(await ipcRenderer.invoke(MCP_IPC_CHANNELS.deleteMcpServer, name))
     },
+    /**
+     * @returns 重读配置并重新连接全部启用项后的列表。
+     * @throws Error 配置无效或旧资源清理失败。
+     */
     async reloadMcpServers(): Promise<MCPServerSummary[]> {
       return requireMcpSummaries(await ipcRenderer.invoke(MCP_IPC_CHANNELS.reloadMcpServers))
     },
 
+    /**
+     * @returns 按名称汇总的供应商及其协议数组；目录为空时返回空数组。
+     * @throws TypeError 主进程返回的目录项无效。
+     */
     async listCompatibleProviders(): Promise<CompatibleProviderOption[]> {
       const value = await ipcRenderer.invoke(PROVIDER_IPC_CHANNELS.listCompatibleProviders)
       if (!Array.isArray(value) || !value.every((entry: unknown): entry is CompatibleProviderOption =>
@@ -606,42 +814,106 @@ export function createSessionApi(ipcRenderer: IpcRendererInvokePort): NiCodePrel
       return value
     },
 
+    /**
+     * @param input 已兼容供应商名称、协议与凭据。
+     * @returns 内置模型已保存后的无凭据摘要。
+     * @throws Error IPC 调用、后端处理或返回值校验失败时拒绝，页面负责保留当前状态并报告失败。
+     */
     async createCompatibleProvider(input: CompatibleProviderCreateInput): Promise<ProviderSummary> {
       return requireProviderSummary(await ipcRenderer.invoke(PROVIDER_IPC_CHANNELS.createCompatibleProvider, input))
     },
 
+    /**
+     * @param input 自定义连接和模型配置。
+     * @returns 已保存的无凭据摘要。
+     * @throws Error IPC 调用、后端处理或返回值校验失败时拒绝，页面负责保留当前状态并报告失败。
+     */
     async createCustomProvider(input: CustomProviderCreateInput): Promise<ProviderSummary> {
       return requireProviderSummary(await ipcRenderer.invoke(PROVIDER_IPC_CHANNELS.createCustomProvider, input))
     },
 
+    /**
+     * 更新 Provider 显示名称与服务地址；空 URL 表示清除地址。
+     * @param providerId 要更新的 Provider ID。
+     * @param name 新的非空显示名称。
+     * @param url 新服务地址；空字符串会清除已有地址。
+     * @returns 主进程确认当前操作完成后解析。
+     * @throws Error IPC 调用、后端处理或返回值校验失败时拒绝，页面负责保留当前状态并报告失败。
+     */
     async updateProvider(providerId: string, name: string, url: string): Promise<void> {
       await ipcRenderer.invoke(PROVIDER_IPC_CHANNELS.updateProvider, providerId, name, url)
     },
 
+    /**
+     * 删除 Provider、其所有模型记录和 API Key。
+     * @param providerId 要删除的 Provider ID。
+     * @returns 主进程确认当前操作完成后解析。
+     * @throws Error IPC 调用、后端处理或返回值校验失败时拒绝，页面负责保留当前状态并报告失败。
+     */
     async deleteProvider(providerId: string): Promise<void> {
       await ipcRenderer.invoke(PROVIDER_IPC_CHANNELS.deleteProvider, providerId)
     },
 
+    /**
+     * 替换或移除 Provider API Key。
+     * @param providerId API Key 所属 Provider ID。
+     * @param apiKey 新 API Key；null 表示移除。
+     * @returns 主进程确认当前操作完成后解析。
+     * @throws Error IPC 调用、后端处理或返回值校验失败时拒绝，页面负责保留当前状态并报告失败。
+     */
     async updateApiKey(providerId: string, apiKey: string | null): Promise<void> {
       await ipcRenderer.invoke(PROVIDER_IPC_CHANNELS.updateApiKey, providerId, apiKey)
     },
 
+    /**
+     * 在 Provider 模型列表末尾新增一条记录。
+     * @param providerId 模型所属 Provider ID。
+     * @param model 新模型配置。
+     * @returns 主进程生成身份后的模型摘要。
+     * @throws Error IPC 调用、后端处理或返回值校验失败时拒绝，页面负责保留当前状态并报告失败。
+     */
     async createModel(providerId: string, model: ProviderModelInput): Promise<ModelAppend> {
       return requireModelAppend(await ipcRenderer.invoke(PROVIDER_IPC_CHANNELS.createModel, providerId, model))
     },
 
+    /**
+     * 更新指定模型身份的名称、Token 限制或推理配置。
+     * @param reference 要更新的 Provider 与模型引用。
+     * @param update 要替换的名称或 Token 限制。
+     * @returns 主进程确认当前操作完成后解析。
+     * @throws Error IPC 调用、后端处理或返回值校验失败时拒绝，页面负责保留当前状态并报告失败。
+     */
     async updateModel(reference: ProviderModelReference, update: ProviderModelUpdate): Promise<void> {
       await ipcRenderer.invoke(PROVIDER_IPC_CHANNELS.updateModel, reference, update)
     },
 
+    /**
+     * 删除指定 Provider 下由 modelId 标识的模型。
+     * @param reference 要删除的 Provider 与模型引用。
+     * @returns 主进程确认当前操作完成后解析。
+     * @throws Error IPC 调用、后端处理或返回值校验失败时拒绝，页面负责保留当前状态并报告失败。
+     */
     async deleteModel(reference: ProviderModelReference): Promise<void> {
       await ipcRenderer.invoke(PROVIDER_IPC_CHANNELS.deleteModel, reference)
     },
 
+    /**
+     * 设置默认模型，或传 null 回到列表顺序的第一个模型。
+     * @param reference 默认模型的 Provider 与模型引用；null 表示清除显式默认值。
+     * @returns 主进程确认当前操作完成后解析。
+     * @throws Error IPC 调用、后端处理或返回值校验失败时拒绝，页面负责保留当前状态并报告失败。
+     */
     async setDefaultModel(reference: ProviderModelReference | null): Promise<void> {
       await ipcRenderer.invoke(PROVIDER_IPC_CHANNELS.setDefaultModel, reference)
     },
 
+    /**
+     * 在指定 Project 分组中创建并启动 Session。
+     * @param projectId Session 所属 Project UUID 或 default。
+     * @param input 首轮用户消息与模型选择。
+     * @returns 首批 Turn 事件成功提交后的 Session 身份和 Turn 编号。
+     * @throws Error IPC 调用、后端处理或返回值校验失败时拒绝，页面负责保留当前状态并报告失败。
+     */
     async startNewSession(
       projectId: string,
       input: StartNewSessionInput,
@@ -654,6 +926,14 @@ export function createSessionApi(ipcRenderer: IpcRendererInvokePort): NiCodePrel
       return requireStartedSessionResponse(response)
     },
 
+    /**
+     * 在指定 Project 分组中恢复已有 Session。
+     * @param projectId Session 所属 Project UUID 或 default。
+     * @param sessionId 要恢复的 Session 身份。
+     * @param input 新 Turn 的用户消息；模型与推理等级从 Session Meta 读取。
+     * @returns 新 Turn 首批事件成功提交后的 Session 身份和 Turn 编号。
+     * @throws Error IPC 调用、后端处理或返回值校验失败时拒绝，页面负责保留当前状态并报告失败。
+     */
     async continueSession(
       projectId: string,
       sessionId: string,
@@ -668,6 +948,14 @@ export function createSessionApi(ipcRenderer: IpcRendererInvokePort): NiCodePrel
       return requireStartedSessionResponse(response)
     },
 
+    /**
+     * 向指定 Project 中正在运行的 Session 追加消息。
+     * @param projectId Session 所属 Project UUID 或 default。
+     * @param sessionId 正在运行的 Session 身份。
+     * @param input 要入队的用户消息。
+     * @returns Runtime 接受消息后的入队确认。
+     * @throws Error IPC 调用、后端处理或返回值校验失败时拒绝，页面负责保留当前状态并报告失败。
+     */
     async enqueueSessionMessage(
       projectId: string,
       sessionId: string,
@@ -682,6 +970,13 @@ export function createSessionApi(ipcRenderer: IpcRendererInvokePort): NiCodePrel
       return requireEnqueuedSessionMessageResponse(response)
     },
 
+    /**
+     * 停止指定 Project 中的活动 Session Runtime。
+     * @param projectId Session 所属 Project UUID 或 default。
+     * @param sessionId 要停止的 Session 身份。
+     * @returns 主进程已完成幂等 Stop 处理的确认。
+     * @throws Error IPC 调用、后端处理或返回值校验失败时拒绝，页面负责保留当前状态并报告失败。
+     */
     async stopSession(
       projectId: string,
       sessionId: string,
@@ -696,7 +991,13 @@ export function createSessionApi(ipcRenderer: IpcRendererInvokePort): NiCodePrel
   })
 }
 
-/** 把窄化后的 Session API 安装到 Renderer 的 `window.nicode`。 */
+/**
+ * 创建冻结的窄接口，并通过 contextBridge 暴露给 Renderer。
+ *
+ * @param contextBridge preload 持有的安全桥接端口。
+ * @param ipcRenderer preload 持有的 IPC 调用及监听端口。
+ * @throws Error 接口创建或桥接暴露失败时传播，preload 启动入口负责报告。
+ */
 export function exposeSessionApi(
   contextBridge: ContextBridgePort,
   ipcRenderer: IpcRendererInvokePort,
@@ -755,11 +1056,23 @@ function requireMcpSummaries(value: unknown): MCPServerSummary[] {
   return structuredClone(value) as MCPServerSummary[]
 }
 
-/** @param value 待检查的 URL。 @returns 是否为绝对 HTTP(S) 地址。 */
+/**
+ * 检查地址是否为绝对 HTTP 或 HTTPS URL。
+ *
+ * @param value 待检查的 URL。
+ * @returns 是否为绝对 HTTP(S) 地址。
+ */
 function isMcpHttpUrl(value: string): boolean {
   try { return ["http:", "https:"].includes(new URL(value).protocol) } catch { return false }
 }
 
+/**
+ * 检查新建或继续 Turn 的 IPC 确认结果，只返回 Session 身份和 Turn。
+ *
+ * @param value 主进程返回的未知结果。
+ * @returns 身份与 Turn 编号通过检查的启动确认。
+ * @throws Error 结果缺少有效身份或 Turn 编号时抛出 TypeError。
+ */
 function requireStartedSessionResponse(value: unknown): StartedSessionResponse {
   if (
     typeof value !== "object" ||
@@ -777,6 +1090,13 @@ function requireStartedSessionResponse(value: unknown): StartedSessionResponse {
   return { sessionId: value.sessionId, turn: value.turn }
 }
 
+/**
+ * 检查入队确认的身份、消息 ID 和文本块，只返回允许的确认字段。
+ *
+ * @param value 主进程返回的未知入队结果。
+ * @returns 通过检查的入队确认；文本块保持返回值中的引用。
+ * @throws Error 入队确认字段不符合契约时抛出 TypeError。
+ */
 function requireEnqueuedSessionMessageResponse(value: unknown): EnqueuedSessionMessageResponse {
   if (
     typeof value !== "object" ||
@@ -793,7 +1113,12 @@ function requireEnqueuedSessionMessageResponse(value: unknown): EnqueuedSessionM
   return { sessionId: value.sessionId, messageId: value.messageId, content: value.content }
 }
 
-/** @param value 未经检查的模型引用。 @returns 是否具有现有 ModelRef 的必需字段。 */
+/**
+ * 检查模型引用的必需身份、协议及推理等级字段。
+ *
+ * @param value 未经检查的模型引用。
+ * @returns 是否具有现有 ModelRef 的必需字段。
+ */
 function isModelReference(value: unknown): value is ModelRef {
   return isRecord(value) && typeof value.providerId === "string" && value.providerId.length > 0 &&
     typeof value.modelId === "string" && value.modelId.length > 0 && typeof value.name === "string" &&
@@ -801,7 +1126,13 @@ function isModelReference(value: unknown): value is ModelRef {
     (PROTOCOLS as readonly unknown[]).includes(value.protocol)
 }
 
-/** @param value 未知 IPC 值。 @returns 已检查的控制快照。 @throws TypeError 当必需字段无效时抛出。 */
+/**
+ * 检查控制快照的版本、水位、设置和内存消息状态。
+ *
+ * @param value 未知 IPC 值。
+ * @returns 已检查的控制快照。
+ * @throws TypeError 当必需字段无效时抛出。
+ */
 function requireSessionControl(value: unknown): SessionControl {
   const messagesValid = (items: unknown): boolean => Array.isArray(items) && items.every((item) =>
     isRecord(item) && typeof item.messageId === "string" && item.messageId.length > 0 &&
@@ -818,7 +1149,12 @@ function requireSessionControl(value: unknown): SessionControl {
   return value as unknown as SessionControl
 }
 
-/** @param value 未知事件值。 @returns 是否具有持久化事件的身份与已知类型。 */
+/**
+ * 检查事件的日志身份与类型，不在此完整校验各事件载荷。
+ *
+ * @param value 未知事件值。
+ * @returns 是否具有持久化事件的身份与已知类型。
+ */
 function isSessionEvent(value: unknown): value is SessionEvent {
   return isRecord(value) && typeof value.eventId === "string" && value.eventId.length > 0 &&
     typeof value.sessionId === "string" && typeof value.createdAt === "string" &&
@@ -828,7 +1164,10 @@ function isSessionEvent(value: unknown): value is SessionEvent {
       "turn/start", "turn/end", "step/start", "step/end", "approval/request", "approval/result"].includes(value.type as string)
 }
 
-/** @param value IPC 查询结果。
+/**
+ * 检查历史结果的身份、连续事件序号、摘要和控制快照。
+ *
+ * @param value IPC 查询结果。
  * @returns 身份与事件顺序已检查的历史。
  * @throws TypeError 当结果无效时抛出。
  */
@@ -842,7 +1181,10 @@ function requireSessionData(value: unknown): SessionData {
   return { projectId: value.projectId, sessionId: value.sessionId, summary, events: value.events,
     latestSeq: value.latestSeq as number, control: requireSessionControl(value.control) }
 }
-/** @param value 主进程推送值。
+/**
+ * 检查主进程推送的事件、状态或错误业务更新。
+ *
+ * @param value 主进程推送值。
  * @returns 已检查的业务更新。
  * @throws TypeError 当更新无效时抛出。
  */
@@ -861,6 +1203,13 @@ function requireSessionUpdate(value: unknown): SessionUpdate {
   throw new TypeError("主进程返回了无效的对话更新")
 }
 
+/**
+ * 检查停止操作的 Session 身份确认。
+ *
+ * @param value 主进程返回的未知停止结果。
+ * @returns 包含有效 Session ID 的停止确认。
+ * @throws Error Session ID 缺失或无效时抛出 TypeError。
+ */
 function requireStoppedSessionResponse(value: unknown): StoppedSessionResponse {
   if (
     typeof value !== "object" ||
@@ -906,12 +1255,24 @@ function requireProjectSummaries(value: unknown): ProjectSummary[] {
   return value as ProjectSummary[]
 }
 
-/** @returns 已检查的单个 Project 摘要；无效时抛出 TypeError。 */
+/**
+ * 复用项目列表检查器校验单个项目摘要。
+ *
+ * @param value 未经检查的单个 IPC 项目结果。
+ * @returns 通过检查的项目摘要。
+ * @throws Error 摘要字段无效时抛出 TypeError。
+ */
 function requireProjectSummary(value: unknown): ProjectSummary {
   return requireProjectSummaries([value])[0]
 }
 
-/** @returns 已检查的目录选择结果；取消时为 null。 */
+/**
+ * 检查系统目录选择结果，并保留用户取消的 null。
+ *
+ * @param value 主进程返回的目录选择结果。
+ * @returns 有效目录选择，或表示取消的 null。
+ * @throws Error 非空结果缺少有效路径与名称时抛出 TypeError。
+ */
 function requireDirectorySelection(value: unknown): DirectorySelection | null {
   if (value === null) return null
   if (!isRecord(value) || typeof value.path !== "string" ||
@@ -921,7 +1282,13 @@ function requireDirectorySelection(value: unknown): DirectorySelection | null {
   return { path: value.path, name: value.name }
 }
 
-/** @returns 已检查的目录变更结果。 */
+/**
+ * 检查项目关联目录操作的成功确认或失败说明。
+ *
+ * @param value 主进程返回的目录操作结果。
+ * @returns 通过检查的目录操作确认。
+ * @throws Error 确认结构无效时抛出 TypeError。
+ */
 function requireProjectDirectoryResult(value: unknown): ProjectDirectoryResult {
   if (isRecord(value) && value.success === true) return { success: true }
   if (isRecord(value) && value.success === false &&
@@ -1003,6 +1370,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value)
 }
 
+/**
+ * 检查未知值是否为文本内容块数组，不改写块内容。
+ *
+ * @param value 待检查的消息内容。
+ * @returns 值是否满足当前消息文本块检查条件。
+ */
 function isTextContent(value: unknown): value is EnqueueSessionMessageInput["content"] {
   return Array.isArray(value) && value.every((block) =>
     typeof block === "object" &&

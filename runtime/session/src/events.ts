@@ -1,15 +1,9 @@
 /**
- * Session Event 的结构与「待写入事件」契约（第 8 节）。
+ * Session 已提交事件与待写入事件的数据契约。
  *
- * 事件身份（`eventId` / `sessionId` / `seq` / `createdAt`）由 SessionEventLog 补齐，
- * 因此本文件除了完整事件结构，还给出 `SessionEventInput`（去掉身份字段）作为上层写事件的契约：
- * AgentLoop 只描述"发生了什么"，不自行分配 `seq`；需要引用已写事件时用 `appendEvent` 的返回值。
- *
- * 当前定义开发备忘录第 8 节的完整 Session Event 联合；尚未落地的生产方也先提供
- * 结构契约，使 Event Log 恢复可以读取并保留全部合法历史事件。
- *
- * 架构依据：.git/技术文档/开发备忘录1.0.17.md 第 8 节（Session Event Log）
- * 实施阶段：.git/技术文档/开发TODOList.md 阶段 6.1（事件输出契约）、6.4（tool/result 关联）
+ * 日志层分配 eventId、sessionId、seq 和 createdAt；Turn 与 Step 由运行层决定。
+ * 事件覆盖生命周期、模型块与完整消息、工具结果、审批、上下文增量、摘要和文件变化。
+ * 调用方通过追加结果引用已提交事件的身份，不自行推算日志序号。
  */
 
 import type {
@@ -24,41 +18,52 @@ import type { AppError } from "../../error/src/types.ts"
 import type { ToolResult } from "../../tools/src/types.ts"
 import type { CurrentSessionBaseline } from "./session-state.ts"
 
-/** 事件基类（第 8.2 节）。 */
+/** 事件基类。 */
 export interface EventBase {
+  /** 日志分配的事件唯一身份。 */
   eventId: string
+  /** 事件或记录所属的 Session 身份。 */
   sessionId: string
+  /** 日志为当前 Session 分配的事件序号。 */
   seq: number
+  /** 事件创建时间字符串。 */
   createdAt: string
 
+  /** 运行层分配的 Turn 编号。 */
   turn?: number
+  /** Turn 内由运行层分配的 Step 编号。 */
   step?: number
 }
 
 /**
- * 由 SessionEventLog 分配的身份字段（第 8.2 节）。
+ * 由 SessionEventLog 分配的身份字段。
  *
  * 与 `EventBase` 的 `turn` / `step` 区分开：Turn 与 Step 由调用方（SessionRuntime / AgentLoop）
  * 决定，不是日志分配的。
  */
 type EventIdentity = "eventId" | "sessionId" | "seq" | "createdAt"
 
-/** V1 入口用户输入：模型用于确定 turn/start.model，不写入 user/message（第 8.3 节）。 */
+/** V1 入口用户输入：模型用于确定 turn/start.model，不写入 user/message。 */
 export interface UserMessageInput {
+  /** 当前消息或上下文记录的内容。 */
   content: ModelTextBlock[]
+  /** 本次输入选定的完整模型引用。 */
   model: ModelRef
 }
 
-/** 新 Turn 的固定模型（第 8.9 节）。 */
+/** 新 Turn 的固定模型。 */
 export interface TurnStartEvent extends EventBase {
   type: "turn/start"
+  /** 运行层分配的 Turn 编号。 */
   turn: number
+  /** 本次输入选定的完整模型引用。 */
   model: ModelRef
 }
 
-/** 用户实际发送的消息（第 8.3 节）。 */
+/** 用户实际发送的消息。 */
 export interface UserMessageEvent extends EventBase {
   type: "user/message"
+  /** 运行层分配的 Turn 编号。 */
   turn: number
   message: {
     id: string
@@ -67,79 +72,96 @@ export interface UserMessageEvent extends EventBase {
   }
 }
 
-/** Turn / Step 的终态原因（第 8.9 节）。 */
+/** Turn / Step 的终态原因。 */
 export type StepEndReason = "completed" | "stopped" | "error"
 
-/** Turn 结束；异常恢复只会补写 `reason = "error"`（第 8.9、10.2 节）。 */
+/** Turn 结束；异常恢复只会补写 `reason = "error"`。 */
 export interface TurnEndEvent extends EventBase {
   type: "turn/end"
+  /** 运行层分配的 Turn 编号。 */
   turn: number
   reason: StepEndReason
 }
 
-/** Step 开始（第 8.9 节）。 */
+/** Step 开始。 */
 export interface StepStartEvent extends EventBase {
   type: "step/start"
+  /** 运行层分配的 Turn 编号。 */
   turn: number
+  /** Turn 内由运行层分配的 Step 编号。 */
   step: number
 }
 
-/** Step 结束（第 8.9 节）。 */
+/** Step 结束。 */
 export interface StepEndEvent extends EventBase {
   type: "step/end"
+  /** 运行层分配的 Turn 编号。 */
   turn: number
+  /** Turn 内由运行层分配的 Step 编号。 */
   step: number
   reason: StepEndReason
 }
 
-/** 模型流：块开始（第 8.4 节）。 */
+/** 模型流：块开始。 */
 export interface AssistantBlockStartEvent extends EventBase {
   type: "assistant/block_start"
+  /** 运行层分配的 Turn 编号。 */
   turn: number
+  /** Turn 内由运行层分配的 Step 编号。 */
   step: number
   blockId: string
   index: number
   blockType: BlockType
 }
 
-/** 模型流：块增量（第 8.4 节）。 */
+/** 模型流：块增量。 */
 export interface AssistantBlockDeltaEvent extends EventBase {
   type: "assistant/block_delta"
+  /** 运行层分配的 Turn 编号。 */
   turn: number
+  /** Turn 内由运行层分配的 Step 编号。 */
   step: number
   blockId: string
   delta: AssistantBlockDelta
 }
 
-/** 模型流：块结束（第 8.4 节）。 */
+/** 模型流：块结束。 */
 export interface AssistantBlockEndEvent extends EventBase {
   type: "assistant/block_end"
+  /** 运行层分配的 Turn 编号。 */
   turn: number
+  /** Turn 内由运行层分配的 Step 编号。 */
   step: number
   blockId: string
   index: number
   block: AssistantContentBlock
 }
 
-/** 本 Step 的权威 Assistant Message（第 8.5 节）。 */
+/** 本 Step 的权威 Assistant Message。 */
 export interface AssistantMessageEvent extends EventBase {
   type: "assistant/message"
+  /** 运行层分配的 Turn 编号。 */
   turn: number
+  /** Turn 内由运行层分配的 Step 编号。 */
   step: number
   message: {
     id: string
     role: "assistant"
     content: AssistantContentBlock[]
   }
+  /** 本次输入选定的完整模型引用。 */
   model: ModelRef
+  /** 从已提交正常 Assistant 消息派生的 Session Usage。 */
   usage?: Usage
   finishReason?: string
 }
 
-/** 工具结果（第 8.6 节）。`toolCallEventId` 指向对应工具调用块的 `assistant/block_end.eventId`。 */
+/** 工具结果。`toolCallEventId` 指向对应工具调用块的 `assistant/block_end.eventId`。 */
 export interface ToolResultEvent extends EventBase {
   type: "tool/result"
+  /** 运行层分配的 Turn 编号。 */
   turn: number
+  /** Turn 内由运行层分配的 Step 编号。 */
   step: number
   toolCallEventId: string
   toolCallId: string
@@ -147,10 +169,12 @@ export interface ToolResultEvent extends EventBase {
   result: ToolResult
 }
 
-/** 工具执行前的审批请求（第 8.12 节）。 */
+/** 工具执行前的审批请求。 */
 export interface ApprovalRequestEvent extends EventBase {
   type: "approval/request"
+  /** 运行层分配的 Turn 编号。 */
   turn: number
+  /** Turn 内由运行层分配的 Step 编号。 */
   step: number
   approvalId: string
   toolCallEventId: string
@@ -163,10 +187,12 @@ export interface ApprovalRequestEvent extends EventBase {
 
 export type ApprovalDecision = "approved" | "denied" | "cancelled"
 
-/** 审批结果；恢复未完成审批时补写 `cancelled`（第 8.12、10.4 节）。 */
+/** 审批结果；恢复未完成审批时补写 `cancelled`。 */
 export interface ApprovalResultEvent extends EventBase {
   type: "approval/result"
+  /** 运行层分配的 Turn 编号。 */
   turn: number
+  /** Turn 内由运行层分配的 Step 编号。 */
   step: number
   approvalId: string
   decision: ApprovalDecision
@@ -202,20 +228,24 @@ export interface SkillContextChange {
   description: string
 }
 
-/** 已有 Session 在 Turn 开始前提交的固定上下文增量（第 8.10、11.5 节）。 */
+/** 已有 Session 在 Turn 开始前提交的固定上下文增量。 */
 export interface ContextUpdateEvent extends EventBase {
   type: "context_update"
+  /** 运行层分配的 Turn 编号。 */
   turn: number
   source:
     | { type: "agents_md"; path: string; hash: string; fullContent: string }
     | { type: "skill"; changes: SkillContextChange[] }
+  /** 当前消息或上下文记录的内容。 */
   content: string
 }
 
-/** 不属于 ToolResult 的独立 Runtime 错误（第 8.7 节）。 */
+/** 不属于 ToolResult 的独立 Runtime 错误。 */
 export interface AppErrorEvent extends EventBase {
   type: "app/error"
+  /** 运行层分配的 Turn 编号。 */
   turn?: number
+  /** Turn 内由运行层分配的 Step 编号。 */
   step?: number
   error: AppError
   sourceEventId?: string
@@ -224,6 +254,7 @@ export interface AppErrorEvent extends EventBase {
 /** 压缩尝试开始；不改变上下文，只有同一 summaryId 的 end 成功提交才生效。 */
 export interface SummaryStartEvent extends EventBase {
   type: "summary/start"
+  /** 运行层分配的 Turn 编号。 */
   turn: number
   /** 本次压缩尝试的配对身份。 */
   summaryId: string
@@ -236,6 +267,7 @@ export interface SummaryStartEvent extends EventBase {
 /** 已完成的完整压缩结果；end 是正文与固定基线的唯一提交点。 */
 export interface SummaryEndEvent extends EventBase {
   type: "summary/end"
+  /** 运行层分配的 Turn 编号。 */
   turn: number
   /** 与对应 start 一致的压缩尝试身份。 */
   summaryId: string
@@ -260,16 +292,19 @@ export interface FileDiffHunk {
 }
 
 export interface FileChange {
+  /** 文件或来源的路径。 */
   path: string
   changeType: "created" | "modified" | "deleted"
   hunks: FileDiffHunk[]
   stats: { additions: number; deletions: number }
+  /** 最近设置的文件变化说明。 */
   description?: string
 }
 
-/** Turn 结束前提交的最终文件变化（第 8.9、34.3 节）。 */
+/** Turn 结束前提交的最终文件变化。 */
 export interface TurnFileChangesEvent extends EventBase {
   type: "turn/file_changes"
+  /** 运行层分配的 Turn 编号。 */
   turn: number
   files: FileChange[]
 }
@@ -294,7 +329,7 @@ export type SummaryStartEventInput = Omit<SummaryStartEvent, EventIdentity>
 export type SummaryEndEventInput = Omit<SummaryEndEvent, EventIdentity>
 export type TurnFileChangesEventInput = Omit<TurnFileChangesEvent, EventIdentity>
 
-/** 开发备忘录第 8.11 节的完整 Session Event 联合。 */
+/** 所有受支持的已提交 Session 事件联合。 */
 export type SessionEvent =
   | TurnStartEvent
   | TurnEndEvent
@@ -314,7 +349,7 @@ export type SessionEvent =
   | SummaryEndEvent
   | TurnFileChangesEvent
 
-/** 上层交给 SessionEventLog 的事件：内容齐备，只缺日志分配的身份字段（第 8.2 节）。 */
+/** 上层交给 SessionEventLog 的事件：内容齐备，只缺日志分配的身份字段。 */
 export type SessionEventInput =
   | TurnStartEventInput
   | TurnEndEventInput
@@ -335,10 +370,11 @@ export type SessionEventInput =
   | TurnFileChangesEventInput
 
 /**
- * 事件出口，对应 SessionEventLog 的最小形态。
+ * 追加单条 Session 事件的异步出口。
  *
- * 返回**已落盘**的事件，因为后续事件需要引用它的身份：`tool/result.toolCallEventId`
- * 指向工具调用块的 `block_end.eventId`（第 8.6 节）；Usage 记账要记录 `lastUsageEventSeq`
- * （第 27.4 节，尚未实现）。`seq` 只能由 Event Log 分配，调用方不能自行推算。
+ * 返回已提交事件，供后续工具结果等记录引用真实 eventId；seq 由日志层分配。
+ * @param event 尚未分配日志身份的完整事件输入。
+ * @returns 已持久化并包含日志身份的事件。
+ * @throws Error 校验或持久化失败时拒绝，调用方应停止依赖该事件的后续写入。
  */
 export type AppendSessionEvent = (event: SessionEventInput) => Promise<SessionEvent>

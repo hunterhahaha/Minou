@@ -1,9 +1,5 @@
 /**
- * 进程级 HTTP Dispatcher：Provider SDK / fetch → Global Dispatcher → HTTP Keep-Alive（第 7 节）。
- *
- * Provider 与 Model 可以动态切换，底层 HTTP 连接由这里统一复用。
- *
- * 架构依据：.git/技术文档/开发备忘录1.0.17.md 第 7 节（网络层）、第 4 节（启动初始化第 9 步）
+ * 安装并缓存进程级 undici Dispatcher，供全局 fetch 与 SDK 共享 HTTP 连接池。
  */
 
 import * as undici from "undici"
@@ -12,26 +8,12 @@ import * as undici from "undici"
 let dispatcher: undici.Dispatcher | undefined
 
 /**
- * 初始化进程级 HTTP Dispatcher。应在创建任何 Provider SDK 客户端之前调用一次。
+ * 初始化全局 Dispatcher，应在创建 Provider SDK 客户端前执行。
  *
- * 两个要点（均由实测确认，非文档记载）：
- *
- * 1. **必须在构造 SDK 客户端之前调用。** 两个官方 SDK 都在 `new` 时就把当时的 `fetch`
- *    捕获到实例上，之后再替换全局 `fetch` 不会影响已建好的客户端。
- *    这正是备忘录第 4 节把「配置全局 Network Dispatcher」（第 9 步）排在
- *    「初始化 Protocol Adapter」（第 11 步）之前的原因。
- *
- * 2. **副作用范围是替换全局。** `undici.install()` 的实现是把 `globalThis` 上的
- *    `fetch` / `Headers` / `Request` / `Response` / `FormData` / `WebSocket` 等整体替换为
- *    undici 的实现（它本身**不**设置 dispatcher）。`setGlobalDispatcher` 则通过
- *    `Symbol.for("undici.globalDispatcher.1")` 共享，因此 Node 原生 `globalThis.fetch`
- *    也会走这里设置的 Agent，SDK 无需额外配置即可复用 Keep-Alive。
- *    这是文档要求的做法，但属于全局改动，故集中在这一个函数里。
- *
- * 重复调用是安全的：已有实例时直接复用，不会重建 Agent、不会丢弃连接池。
- *
- * @returns 已安装并可供调用方复用的进程级 Dispatcher。
- * @throws 当 undici Agent 创建、全局 Dispatcher 设置或全局 API 安装失败时，向调用方抛出底层异常。
+ * 先创建 Agent 并设置全局 Dispatcher，再安装 undici 全局网络 API；全部完成后缓存实例。
+ * 重复调用返回缓存对象；外部关闭对象不会清除此缓存或恢复全局 API。
+ * @returns 本进程缓存的 Dispatcher。
+ * @throws Error 创建 Agent、设置 Dispatcher 或安装 API 失败时传播；已发生的全局副作用不自动回滚，调用方负责处理启动失败。
  */
 export function initNetworkDispatcher(): undici.Dispatcher {
   if (dispatcher !== undefined) return dispatcher

@@ -1,23 +1,9 @@
 /**
- * Anthropic Messages Adapter（第 6 节，TODOList 阶段 3）。
+ * Anthropic Messages 的请求与统一流事件转换。
  *
- * 两个方向都在本文件里，便于对照阅读：
- *   - 请求方向：统一上下文 → `system` + `messages`（`tool_use` 在 assistant content，
- *     `tool_result` 在 user content，靠 `tool_use_id` 配对）；
- *   - 响应方向：`RawMessageStreamEvent` → `ModelStreamEvent`。
- *
- * 协议侧参考：.git/技术文档/三个协议调用时传入的上下文示例.md 第 1 节。
- * 架构依据：开发备忘录第 6 节（模型协议层）、第 7 节（网络层）、第 8.4 / 8.5 节（流事件与完成态）、
- *          第 11.1 / 11.3 节（System Message 与回放）、第 16.2 节（工具结果只消费 text）、第 25 节（错误）
- * 设计文档：.git/技术文档/NiCode_Usage统一设计.md 第 2 节（Usage 映射）
- * 实施阶段：.git/技术文档/开发TODOList.md 阶段 3
- *
- * 本文件的三条实现决定（均为文档未规定处，已在阶段报告中单列）：
- *   1. `max_tokens` 直接使用必需的 `ModelConfig.maxOutputTokens`。
- *   2. 回放 assistant 历史时跳过 `thinking` 块：统一内容块只有 `text`，
- *      而 Anthropic 的 thinking 块回放必须带 `signature`，凑不出合法块。
- *   3. 协议里没有统一表达能力的块（`redacted_thinking`、`server_tool_use`、
- *      各种 server tool result 等）不进入统一流，其 index 被忽略。
+ * 请求映射 system、messages、tool_use 与 tool_result；max_tokens 使用模型最大输出配置。
+ * 历史 thinking 缺少签名，不回传到协议请求；未支持的服务端块不进入统一流。
+ * SDK 自动重试关闭，流请求通过共享入口处理重试、取消与错误归一化。
  */
 
 import Anthropic from "@anthropic-ai/sdk"
@@ -49,8 +35,8 @@ import type {
   UnifiedToolDefinition,
 } from "./types.ts"
 
-// SDK 的协议类型都挂在 `Anthropic.Messages` 命名空间下，这里逐个取别名，
-// 让函数签名保持可读（注意命名空间本身不能别名为类型）。
+/** SDK 的协议类型都挂在 `Anthropic.Messages` 命名空间下，这里逐个取别名， */
+/** 让函数签名保持可读（注意命名空间本身不能别名为类型）。 */
 type MessageParam = Anthropic.Messages.MessageParam
 type ContentBlockParam = Anthropic.Messages.ContentBlockParam
 type ToolResultBlockParam = Anthropic.Messages.ToolResultBlockParam
@@ -59,9 +45,9 @@ type RawMessageStreamEvent = Anthropic.Messages.RawMessageStreamEvent
 type MessageCreateParamsStreaming = Anthropic.Messages.MessageCreateParamsStreaming
 type ToolInputSchema = Anthropic.Messages.Tool.InputSchema
 
-// ---------------------------------------------------------------------------
-// 请求方向：统一上下文 → Anthropic Messages
-// ---------------------------------------------------------------------------
+
+/** 请求方向：统一上下文 → Anthropic Messages */
+
 
 /**
  * 统一 user content → Anthropic 文本块，空文本块不发送。
@@ -77,7 +63,7 @@ function toUserContent(content: string | ModelTextBlock[]): ModelTextBlock[] {
 /**
  * 统一 assistant content → Anthropic content。
  *
- * `thinking` 被跳过，原因见文件头第 2 条。
+ * 历史 thinking 块缺少协议回放要求的 signature，因此不回传。
  *
  * @param blocks 统一 assistant 内容块。
  * @returns Anthropic 可接受的文本块和 `tool_use` 块；thinking 及空文本被跳过。
@@ -120,7 +106,7 @@ function isToolResultMessage(message: MessageParam): boolean {
  *
  * 两个协议特有的约束：
  *   - `tool_result` 必须放在 user 消息的 content 里，不能单独成消息，因此连续的 tool 结果
- *     合并进同一个 user 消息，保证 tool_use / tool_result 的配对顺序不变（第 11.3 节）；
+ *     合并进同一个 user 消息，保证 tool_use / tool_result 的配对顺序不变；
  *   - content 不能为空数组，因此空文本、只剩 thinking 的 assistant 消息直接跳过。
  *
  * @param messages 除首个 System Message 外的统一会话消息。
@@ -143,7 +129,7 @@ export function toAnthropicMessages(messages: ModelMessage[]): MessageParam[] {
     }
 
     if (message.role === "tool") {
-      // 工具结果只消费 text 块（第 16.2 节）。
+      /** 工具结果只消费 text 块。 */
       const block: ToolResultBlockParam = {
         type: "tool_result",
         tool_use_id: message.toolCallId,
@@ -173,7 +159,7 @@ function toAnthropicTools(tools: UnifiedToolDefinition[]): ToolUnion[] {
   return tools.map((tool) => ({
     name: tool.name,
     description: tool.description,
-    // 统一格式固定 inputSchema 为 JSON Schema，字段名差异只在这里出现（第 6 节）。
+    /** 统一格式固定 inputSchema 为 JSON Schema，字段名差异只在这里出现。 */
     input_schema: tool.inputSchema as ToolInputSchema,
   }))
 }
@@ -212,9 +198,9 @@ export function buildAnthropicRequest(
   return params
 }
 
-// ---------------------------------------------------------------------------
-// 响应方向：RawMessageStreamEvent → ModelStreamEvent
-// ---------------------------------------------------------------------------
+
+/** 响应方向：RawMessageStreamEvent → ModelStreamEvent */
+
 
 /** 正在拼装的块：Anthropic 的块只有增量，`block_end` 需要自己累积出的完整内容。 */
 interface PendingBlock {
@@ -298,11 +284,11 @@ function hasReportedUsage(fields: AnthropicUsageFields): boolean {
 }
 
 /**
- * `stop_reason` → 统一完成状态（第 8.5 节）。
+ * `stop_reason` → 统一完成状态。
  *
  * 只有"已结束的完整 tool_call"才算待执行：`tool_use` 但没有任何 `content_block_stop` 过的
  * tool_call 块时不能报 `tool_calls`。`pause_turn` 等其它取值按 unknown 处理，
- * 不凭文本存在推断 finished（第 8.5 节）。
+ * 不凭文本存在推断 finished。
  *
  * @param stopReason Anthropic 的原始 `stop_reason`。
  * @param endedToolCalls 已收到结束事件的完整工具调用数量。
@@ -434,7 +420,7 @@ export async function* mapAnthropicStream(
           const text = content.type === "text" ? content.text : content.thinking
           const block = openBlock(event.index, blockType)
           yield { type: "block_start", index: block.index, blockType }
-          // 起始事件里已经带文本时补一条增量，避免增量之和与 block_end 的内容不一致。
+          /** 起始事件里已经带文本时补一条增量，避免增量之和与 block_end 的内容不一致。 */
           if (text.length > 0) {
             block.text += text
             yield {
@@ -450,11 +436,11 @@ export async function* mapAnthropicStream(
           const block = openBlock(event.index, "tool_call")
           block.toolCallId = content.id
           block.name = content.name
-          // 非流式给出 input 时（空对象是常态）把它当作已拼装的参数起点。
+          /** 非流式给出 input 时（空对象是常态）把它当作已拼装的参数起点。 */
           if (hasKeys(content.input)) block.argumentsJson = serializeToolCallArguments(content.input)
 
           yield { type: "block_start", index: block.index, blockType: "tool_call" }
-          // 先给出 id 与 name：下游不必等到第一个参数增量才知道调用的是哪个工具。
+          /** 先给出 id 与 name：下游不必等到第一个参数增量才知道调用的是哪个工具。 */
           yield {
             type: "block_delta",
             index: block.index,
@@ -463,8 +449,8 @@ export async function* mapAnthropicStream(
           break
         }
 
-        // 其余块类型（redacted_thinking / server_tool_use / 各类 server tool result 等）
-        // 没有统一表达，忽略该 index 的后续增量与结束事件。
+        /** 其余块类型（redacted_thinking / server_tool_use / 各类 server tool result 等） */
+        /** 没有统一表达，忽略该 index 的后续增量与结束事件。 */
         break
       }
 
@@ -503,7 +489,7 @@ export async function* mapAnthropicStream(
           break
         }
 
-        // signature_delta / citations_delta：统一格式没有对应表达，忽略。
+        /** signature_delta / citations_delta：统一格式没有对应表达，忽略。 */
         break
       }
 
@@ -549,16 +535,16 @@ function hasKeys(value: unknown): boolean {
   return typeof value === "object" && value !== null && Object.keys(value).length > 0
 }
 
-// ---------------------------------------------------------------------------
-// Adapter
-// ---------------------------------------------------------------------------
+
+/** Adapter */
+
 
 /**
  * 创建 Anthropic Messages Adapter。
  *
  * `config` 提供一个具体模型的配置：请求里的 `model` 用它校验，`max_tokens` 用它取默认值。
  * SDK 自身的重试被关闭（`maxRetries: 0`），重试统一由 `runtime/network/` 负责，
- * 否则一次逻辑请求会被两层重试各自放大（第 7 节）。
+ * 否则一次逻辑请求会被两层重试各自放大。
  *
  * @param config 要绑定的 Anthropic 模型配置。
  * @param options Anthropic 客户端的凭据、地址和额外请求头。
@@ -586,7 +572,7 @@ export function createAnthropicAdapter(
     request: UnifiedModelRequest,
     signal: AbortSignal,
   ): AsyncGenerator<ModelStreamEvent> {
-    // 校验与请求构建在迭代时抛出：AgentLoop 只需在一处处理 Adapter 的错误。
+    /** 校验与请求构建在迭代时抛出：AgentLoop 只需在一处处理 Adapter 的错误。 */
     assertRequestMatchesModel(request, config)
     const params = buildAnthropicRequest(request, config)
 
@@ -599,7 +585,7 @@ export function createAnthropicAdapter(
 }
 
 /**
- * 发起一次真实请求并逐个产出协议事件；取消由 SDK 的 `signal` 传递（第 6 节）。
+ * 发起一次真实请求并逐个产出协议事件；取消由 SDK 的 `signal` 传递。
  *
  * @param client Anthropic SDK 客户端。
  * @param params 已构建的流式请求参数。

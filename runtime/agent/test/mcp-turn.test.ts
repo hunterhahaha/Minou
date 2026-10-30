@@ -1,3 +1,9 @@
+/**
+ * 通过本地 MCP 测试服务、脚本模型和真实 Session 存储验证动态工具载入。
+ *
+ * 覆盖发现与载入、逐 Step 暴露、审批执行、Queue、Continue、派生状态修复，
+ * 并检查 Session 已载入工具不会泄露到全局基础工具列表。
+ */
 import assert from "node:assert/strict"
 import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
@@ -70,7 +76,11 @@ async function main(): Promise<void> {
       }
     } }
   }
-  /** @returns 同一 Session 的新活动实例；持久化状态不由实例缓存。 */
+  /**
+   * 为同一持久化 Session 创建新的活动实例，模型脚本与全局能力由当前场景共用。
+   * @returns 绑定测试 Session 目录和数据库的新 Runtime。
+   * @throws Error Runtime 构造失败时抛出，调用方负责释放场景资源。
+   */
   const createRuntime = () => new SessionRuntime({ projectGroupId: "default", sessionId: "mcp-session", sessionDirectory: dir,
     databasePath: join(paths.rootDir, "events.sqlite"), metaDatabasePath: paths.metaDatabasePath, systemPrompt: "offline", global })
   const initial = createRuntime()
@@ -81,7 +91,12 @@ async function main(): Promise<void> {
     await requested
     initial.enqueueSessionMessage({ content: MESSAGE })
     release()
-    /** 已有审批出口处理真实远程调用；发现与载入不产生审批。 */
+    /**
+     * 消费 Session 事件流，对每个审批请求提交通过决定。
+     * @param runtime 当前事件流所属的 SessionRuntime。
+     * @returns 事件流关闭且已收到的审批均处理后完成。
+     * @throws AssertionError 审批请求不再处于等待状态时抛出。
+     */
     const approve = async (runtime: SessionRuntime) => {
       for await (const event of runtime.events) {
         if (event.type === "approval/request") assert.equal(await runtime.decideApproval(event.approvalId, "approved"), true)
@@ -98,7 +113,9 @@ async function main(): Promise<void> {
     const statePath = join(dir, "contextstate.json")
     const state = JSON.parse(await readFile(statePath, "utf8")) as { mcp: UnifiedToolDefinition[] }
     assert.equal(state.mcp[0].name, name)
-    // 模拟 Meta 提交后 contextstate 写入中断：恢复必须使用 Meta 身份和当前 Catalog。
+    /**
+     * 模拟 Meta 提交后 contextstate 写入中断：恢复必须使用 Meta 身份和当前 Catalog。
+     */
     await writeFile(statePath, JSON.stringify({ ...state, mcp: [] }))
     resumed = createRuntime()
     const approvalResume = approve(resumed)

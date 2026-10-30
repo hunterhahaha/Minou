@@ -392,7 +392,11 @@ export function SettingsDialog({ initialSection = "models", onClose, onProviders
   }, [])
 
   useEffect(() => {
-    /** @param event 键盘事件；原生下拉浮层优先处理 Escape，其余情况沿用创建期间的关闭保护。 */
+    /**
+     * 按当前弹层及提交状态处理 Escape，保留已有关闭保护。
+     *
+     * @param event 键盘事件；原生下拉浮层优先处理 Escape，其余情况沿用创建期间的关闭保护。
+     */
     function closeOnEscape(event: KeyboardEvent): void {
       if (event.key === "Escape" && !document.querySelector("select:open")) requestClose()
     }
@@ -1201,7 +1205,11 @@ function CreateModelDialog({
   }
 
   useEffect(() => {
-    /** @param event Escape 只处理当前模型弹窗；创建中保留表单并阻止外层关闭。 */
+    /**
+     * 按当前弹层及提交状态处理 Escape，保留已有关闭保护。
+     *
+     * @param event Escape 只处理当前模型弹窗；创建中保留表单并阻止外层关闭。
+     */
     function closeOnEscape(event: KeyboardEvent): void {
       if (event.key !== "Escape") return
       event.preventDefault()

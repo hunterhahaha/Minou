@@ -1,9 +1,9 @@
 /**
- * Session 派生持久化状态的文件实现。
+ * Session Meta 与派生文件的初始化、校验、串行更新和事件恢复。
  *
- * Event Log 是事实来源；本文件创建和修复共享 SQLite Meta、`contextstate.json`、
- * `agents_md.snapshot` 与 `tool_output/`。首次初始化中断按项目负责人确认的规则，
- * 使用恢复当下的 AGENTS.md / Skill / MCP 状态建立基线。
+ * 管理共享 SQLite Meta、contextstate.json、agents_md.snapshot 和 tool_output 目录。
+ * 初始化缺失状态时优先使用最近提交 Summary 的基线，否则解析当前来源；
+ * 恢复依据已校验事件重建 Usage 和已提交上下文，不修改 Event Log。
  */
 
 import { randomUUID } from "node:crypto"
@@ -86,7 +86,9 @@ export interface SessionSkillContextEntry {
  * Session 已载入过的 Skill 来源记录及其当前有效状态。
  */
 export interface SessionSkillContextState {
+  /** 当前基线或比较状态的标识。 */
   id: string | null
+  /** 已载入来源的历史记录和当前启用状态。 */
   entries: SessionSkillContextEntry[]
 }
 
@@ -100,10 +102,13 @@ export interface SessionMeta {
   name: string
   /** Meta 的持久化结构版本。 */
   version: typeof SESSION_META_VERSION
+  /** 后续 Turn 启动时读取的持久化模型选择。 */
   currentModel: ModelRef
   /** 当前 Session 的工具权限模式；不从全局或 Project 配置继承。 */
   sandboxMode: SandboxMode
+  /** 从已提交正常 Assistant 消息派生的 Session Usage。 */
   usage: RealUsage
+  /** 已载入 Skill 来源及增量比较状态。 */
   skills: SessionSkillContextState
   /** MCP 载入身份和预算记录，保存在 additional_meta_json 中。 */
   loadedMcpTools?: SessionLoadedMCPTool[]
@@ -112,34 +117,40 @@ export interface SessionMeta {
 
 /** `contextstate.json` 的已确认结构。 */
 export interface SessionContextState {
+  /** 固定 AGENTS.md 内容与比较哈希。 */
   agentsmd: {
     hash: string
     content: string
   }
+  /** 已载入 Skill 来源及增量比较状态。 */
   skills: {
     id: string
     content: string
   }
+  /** 写入派生上下文的 MCP 工具定义。 */
   mcp: UnifiedToolDefinition[]
 }
 
 /** 恢复当下由 Project / Skill / MCP Runtime 汇总出的初始化基线。 */
 export interface CurrentSessionBaseline {
+  /** 固定 AGENTS.md 内容与比较哈希。 */
   agentsmd: {
     /** 当前实际参与比较的 AGENTS.md 绝对路径。 */
     path: string
     hash: string
     content: string
   }
+  /** 已载入 Skill 来源及增量比较状态。 */
   skills: {
     content: string
     entries: SessionSkillContextEntry[]
     /** 按 Skill 名称保存已经过预算处理、可写入增量事件的 description。 */
     descriptions: Record<string, string>
   }
+  /** 写入派生上下文的 MCP 工具定义。 */
   mcp: UnifiedToolDefinition[]
   /**
-   * 尚未在架构文档中固定字段名的其它 meta 状态，例如 Session Loaded MCP Tools。
+   * 基线提供者补充的 Meta 状态，例如 MCP 工具载入记录。
    * 不得包含身份、名称、版本或其它由本模块维护的 Meta 字段。
    */
   additionalMeta?: Record<string, unknown>
@@ -157,13 +168,18 @@ export interface FileSessionStateOptions {
   databasePath: string
   /** 所有 Session 共用的 Meta 数据库绝对路径。 */
   metaDatabasePath: string
-  /** 从 Event Log 读取尚未窄化的事件；组合实现使用同一个 FileSessionEventLog。 */
+  /**
+   * 从 Event Log 读取尚未窄化的事件；组合实现使用同一个 FileSessionEventLog。
+   * @returns 当前操作完成后的结果；异步写入等待提交完成后解析。
+   */
   readEvents(): Promise<readonly unknown[]>
-  /** 读取恢复当下的 AGENTS.md、Skill、MCP 及其它 Session meta 基线。 */
+  /**
+   * 读取恢复当下的 AGENTS.md、Skill、MCP 及其它 Session meta 基线。
+   * @returns 当前操作完成后的结果；异步写入等待提交完成后解析。
+   */
   resolveCurrentBaseline(): Promise<CurrentSessionBaseline>
   /**
    * 计算 name 与 description 的本地估算，用于重放已提交 Skill 增量。
-   *
    * @param description 事件中记录的 Skill 名称与截断描述。
    * @returns 本地估算器返回的 Token 数。
    */
@@ -172,7 +188,11 @@ export interface FileSessionStateOptions {
 
 /** `SessionRepairPorts` 中派生状态部分的文件系统实现。 */
 export interface FileSessionState {
-  /** @returns 从 Meta 读取最近正常 Agent 请求的完整输入 Token；不包括压缩 Usage。 @throws Error Meta 不可读或无效。 */
+  /**
+   * 读取当前 Session 的持久化状态。
+   * @returns 从 Meta 读取最近正常 Agent 请求的完整输入 Token；不包括压缩 Usage。
+   * @throws Error Meta 不可读或无效。
+   */
   readAgentInputTokens(): Promise<number>
   /**
    * 按权威 assistant/message Usage 幂等同步 Meta，仅替换 usage，不修改其他派生状态。
@@ -182,14 +202,12 @@ export interface FileSessionState {
   synchronizeUsage(): Promise<void>
   /**
    * 读取持久化的固定 Skill 内容，供普通 Turn 继续使用同一上下文基线。
-   *
    * @returns 从 Session Context State 重读并复制的 Skill 固定内容。
    * @throws Error 状态文件无效或无法读取时抛出。
    */
   readSkillBaseline(): Promise<SessionContextState["skills"]>
   /**
    * 按当前有效来源静默更新已载入记录的 enabled 状态。
-   *
    * @param current 已完成目录同步和来源合并的当前 Skill 条目。
    * @returns Meta 状态保存完成后兑现的 Promise；没有变化时不写入。
    * @throws Error 输入状态无效，或 Meta 读取、写入失败时抛出。
@@ -197,59 +215,65 @@ export interface FileSessionState {
   synchronizeSkillStatus(current: readonly SessionSkillContextEntry[]): Promise<void>
   /**
    * 重新读取来源并保存完整 Skill 基线；不提交 Summary 或决定其 checkpoint。
-   *
    * @returns 同步并保存的完整 Skill 元信息。
    * @throws Error 来源、已有派生状态或保存失败；调用方负责在合适的完整重载边界调用。
    */
   reloadSkills(): Promise<CurrentSessionBaseline["skills"]>
-  /** @returns 从 Meta 重读并校验的 MCP 载入记录。 @throws Error 状态损坏或不可读取。 */
+  /**
+   * 读取当前 Session 的持久化状态。
+   * @returns 从 Meta 重读并校验的 MCP 载入记录。
+   * @throws Error 状态损坏或不可读取。
+   */
   readLoadedMCPTools(): Promise<SessionLoadedMCPTool[]>
   /**
    * 在 Session 串行边界先保存 Meta，再原子更新 contextstate.mcp。
    * @param tools 完整载入状态。
    * @param definitions 当前有效 Catalog 的定义。
    * @throws Error 校验或写入失败；已提交的 Meta 用于下次同步恢复定义。
+   * @returns 当前操作完成后的结果；异步写入等待提交完成后解析。
    */
   writeLoadedMCPTools(tools: SessionLoadedMCPTool[], definitions: UnifiedToolDefinition[]): Promise<void>
   /**
    * 幂等补齐或重建缺失、损坏的 Session 派生文件。
-   *
    * @throws Error 当 Session 路径、Event Log 或当前初始化基线无效时抛出。
+   * @returns 当前操作完成后的结果；异步写入等待提交完成后解析。
    */
   initializeSession(): Promise<void>
   /**
    * 在当前 Session 的串行状态队列中重新读取 Meta，仅替换当前模型。
-   *
    * @param model 要保存为下一 Turn 选择的完整模型引用。
    * @throws Error 当模型引用、Session Meta 或原子写入无效时抛出。
+   * @returns 当前操作完成后的结果；异步写入等待提交完成后解析。
    */
   writeCurrentModel(model: ModelRef): Promise<void>
   /**
    * 每次调用都从数据库重新读取并校验当前 Session 的 Meta。
-   *
    * @returns 与解析结果脱离引用关系的当前模型引用。
    * @throws Error 当 Session Meta 缺失、损坏或不可读取时抛出。
    */
   readCurrentModel(): Promise<ModelRef>
-  /** @returns 从 Meta 重读并复制的对话名称及设置；Meta 不可读时抛出。 */
+  /**
+   * 读取当前 Session 的持久化状态。
+   * @returns 从 Meta 重读并复制的对话名称及设置；Meta 不可读时抛出。
+   */
   readSettings(): Promise<Pick<SessionMeta, "name" | "currentModel" | "sandboxMode">>
   /**
    * 在共享状态队列中原子修改指定设置，保留其余 Meta 字段。
    * @param patch 至少指定模型或沙箱模式的更新。
    * @throws Error 当更新或已有 Meta 无效，或数据库写入失败时抛出。
+   * @returns 当前操作完成后的结果；异步写入等待提交完成后解析。
    */
   writeSettings(patch: SessionSettingsPatch): Promise<void>
   /**
    * 从已校验 Event Log 全量重建 Usage，并修复已提交的 AGENTS.md / Skill 增量。
    * 该方法不修改 Event Log，也不应用未提交的 Summary。
-   *
    * @param events 已由 SessionRuntime 完成结构和生命周期校验的事件。
    * @throws Error 当派生文件无法读取、写入或无法按已确认结构解释时抛出。
+   * @returns 当前操作完成后的结果；异步写入等待提交完成后解析。
    */
   repairDerivedState(events: readonly SessionEvent[]): Promise<void>
   /**
    * 读取已有 Session 在下一 Turn 开始前需要比较的 AGENTS.md 快照和 Skill 状态。
-   *
    * @returns 与当前磁盘状态脱离引用关系的比较值。
    * @throws Error 当派生状态缺失或结构无效时抛出。
    */
@@ -271,7 +295,6 @@ const EMPTY_USAGE: RealUsage = {
 
 /**
  * 创建仅绑定到一个 Session 的文件型 SessionState。
- *
  * @param options Session 身份、目录、Event Log 读取器和当前上下文基线提供者。
  * @returns 只初始化和修复该 Session 派生文件的访问器。
  * @throws Error 当 Session ID 非法或 Session 目录不是绝对路径时抛出。
@@ -602,11 +625,11 @@ function isLoadedMCPTools(value: unknown): value is SessionLoadedMCPTool[] {
  *
  * 该函数使用 `%USERPROFILE%/.nicode/meta.sqlite`；
  * 已经持有绑定式 {@link FileSessionState} 的 Runtime 应优先调用实例方法。
- *
  * @param projectId Session 所属 Project UUID 或 default。
  * @param sessionId Session 目录身份。
  * @param model 要保存的完整模型引用。
  * @throws Error 当 USERPROFILE、身份、模型引用或 Session Meta 无效时抛出。
+ * @returns 当前操作完成后的结果；异步写入等待提交完成后解析。
  */
 export async function writeCurrentModel(
   projectId: ProjectId,
@@ -655,7 +678,6 @@ interface SessionStatePaths {
 
 /**
  * 校验绑定到派生状态访问器的 Session ID。
- *
  * @param sessionId 调用方提供的 Session ID。
  * @throws Error 当 Session ID 为空、为相对目录标记或包含路径分隔符时抛出。
  */
@@ -673,7 +695,6 @@ function validateSessionId(sessionId: string): void {
 
 /**
  * 由已经绑定并规范化的 Session 目录生成全部派生状态路径。
- *
  * @param sessionDirectory 当前 Session 的绝对目录。
  * @param databasePath 共享 Event Log 数据库的绝对路径。
  * @param metaDatabasePath 共享 Meta 数据库的绝对路径。
@@ -699,7 +720,6 @@ function resolveStatePaths(
 
 /**
  * 从 Event Log 最后一个 `turn/start` 取得派生 meta 的当前模型。
- *
  * @param values 尚未由本模块窄化的 Event Log 值。
  * @param eventsPath Event Log 路径，用于错误定位。
  * @returns 最后一个 Turn 实际采用的模型。
@@ -719,7 +739,6 @@ function findLastTurnModel(values: readonly unknown[], eventsPath: string): Mode
 
 /**
  * 找出日志中最后一条 Skill 增量事件的 ID。
- *
  * @param values 尚未由本模块窄化的 Event Log 值。
  * @returns 最后一条 Skill 增量的事件 ID；不存在时返回 null。
  */
@@ -738,7 +757,6 @@ function findLatestSkillEventId(values: readonly unknown[]): string | null {
  * 按 seq 顺序从权威 `assistant/message.usage` 全量重建 meta.usage。
  *
  * 缺失缓存字段按项目负责人确认的规则作为 0；Compression Usage 不进入该结构。
- *
  * @param events 已通过 SessionRuntime 校验的 Event Log。
  * @returns 可覆盖写入 Session Meta 的四项 Usage 派生统计。
  */
@@ -746,7 +764,7 @@ function rebuildUsage(events: readonly SessionEvent[]): RealUsage {
   const usage: RealUsage = { ...EMPTY_USAGE }
   for (const event of events) {
     if (event.type !== "assistant/message" || event.usage === undefined) continue
-    // 项目负责人于 2026-09-19 明确：厂商未报告的缓存字段在此派生统计中按 0 处理。
+    /** 项目负责人于 2026-09-19 明确：厂商未报告的缓存字段在此派生统计中按 0 处理。 */
     const cacheReadTokens = event.usage.cacheReadTokens ?? 0
     const cacheWriteTokens = event.usage.cacheWriteTokens ?? 0
     usage.inputTokens = event.usage.inputTokens + cacheReadTokens + cacheWriteTokens
@@ -760,7 +778,6 @@ function rebuildUsage(events: readonly SessionEvent[]): RealUsage {
 
 /**
  * 找出最后一条已提交的 AGENTS.md 增量。
- *
  * @param events 已通过 SessionRuntime 校验的事件。
  * @returns 最后一条 AGENTS.md 增量；不存在时返回 undefined。
  */
@@ -780,7 +797,6 @@ function findLatestAgentsUpdate(
 
 /**
  * 判断事件是否为 Skill 上下文增量。
- *
  * @param event 待判断的 Session 事件。
  * @returns 事件是否为 Skill `context_update`。
  */
@@ -792,7 +808,6 @@ function isSkillContextUpdate(
 
 /**
  * 按来源身份幂等补入已提交新增记录，不从磁盘重读描述或覆盖历史状态。
- *
  * @param entries 本次 Meta 条目副本，成功时原地追加。
  * @param changes 已提交事件内的新增来源。
  * @param estimateSkillTokens 现有本地文本估算器。
@@ -812,7 +827,6 @@ function applySkillChanges(entries: SessionSkillContextEntry[], changes: readonl
 
 /**
  * 从事件中的原始来源和已截断描述生成记录。
- *
  * @param name 文件夹名。
  * @param path Skill 文件夹绝对路径。
  * @param scope 来源作用域。
@@ -829,7 +843,6 @@ function skillEntryFromDescription(name: string, path: string, scope: SkillScope
 
 /**
  * 校验来源同步或 Summary 保存的完整基线，避免把无效派生状态写入磁盘。
- *
  * @param baseline Project / Skill / MCP Runtime 汇总的当前状态。
  * @throws Error 当任一已确认字段不符合持久化结构时抛出。
  */
@@ -865,7 +878,6 @@ export function validateCurrentBaseline(baseline: CurrentSessionBaseline): void 
 
 /**
  * 读取可修复 JSON 文件；缺失、非法 JSON 或结构不符均返回 undefined。
- *
  * @param path 派生 JSON 文件路径。
  * @param validate 对应持久化结构的类型守卫。
  * @returns 有效对象；文件缺失或内容损坏时返回 undefined。
@@ -892,7 +904,6 @@ async function readOptionalJson<T>(path: string, validate: (value: unknown) => v
 
 /**
  * 读取修复阶段必须存在且结构有效的 JSON 文件。
- *
  * @param path 派生 JSON 文件路径。
  * @param validate 对应持久化结构的类型守卫。
  * @param label 错误信息中的状态名称。
@@ -911,7 +922,6 @@ async function readRequiredJson<T>(
 
 /**
  * 读取可修复文本文件；缺失返回 undefined，非普通文件拒绝。
- *
  * @param path 派生文本文件路径。
  * @returns 文件内容；缺失时返回 undefined。
  * @throws Error 当路径不是普通文件或读取失败时抛出。
@@ -925,7 +935,6 @@ async function readOptionalTextFile(path: string): Promise<string | undefined> {
 
 /**
  * 读取修复阶段必须存在的文本文件。
- *
  * @param path 派生文本文件路径。
  * @param label 错误信息中的状态名称。
  * @returns 文件原文。
@@ -939,10 +948,10 @@ async function readRequiredTextFile(path: string, label: string): Promise<string
 
 /**
  * 确保路径存在且为目录；缺失时递归创建。
- *
  * @param path 目标目录路径。
  * @param label 错误信息中的目录名称。
  * @throws Error 当现有路径不是目录或创建失败时抛出。
+ * @returns 当前操作完成后的结果；异步写入等待提交完成后解析。
  */
 async function ensureDirectory(path: string, label: string): Promise<void> {
   const kind = await pathKind(path)
@@ -955,10 +964,10 @@ async function ensureDirectory(path: string, label: string): Promise<void> {
 
 /**
  * 要求路径当前是普通目录。
- *
  * @param path 目标目录路径。
  * @param label 错误信息中的目录名称。
  * @throws Error 当路径缺失或不是目录时抛出。
+ * @returns 当前操作完成后的结果；异步写入等待提交完成后解析。
  */
 async function requireDirectory(path: string, label: string): Promise<void> {
   if (await pathKind(path) !== "directory") throw new Error(`${label}不存在或不是目录：${path}`)
@@ -966,10 +975,10 @@ async function requireDirectory(path: string, label: string): Promise<void> {
 
 /**
  * 原子写入格式化 JSON，并以换行结尾。
- *
  * @param path 目标 JSON 文件路径。
  * @param value 可序列化的派生状态。
  * @throws Error 当序列化或写入失败时抛出。
+ * @returns 当前操作完成后的结果；异步写入等待提交完成后解析。
  */
 async function atomicWriteJson(path: string, value: unknown): Promise<void> {
   await atomicWriteText(path, `${JSON.stringify(value, null, 2)}\n`)
@@ -977,10 +986,10 @@ async function atomicWriteJson(path: string, value: unknown): Promise<void> {
 
 /**
  * 在同目录写临时文件后原子替换目标文件。
- *
  * @param path 目标文件路径。
  * @param content 要完整写入的文本。
  * @throws Error 当临时文件写入或替换失败时抛出。
+ * @returns 当前操作完成后的结果；异步写入等待提交完成后解析。
  */
 async function atomicWriteText(path: string, content: string): Promise<void> {
   const temporaryPath = `${path}.${randomUUID()}.tmp`
@@ -995,7 +1004,6 @@ async function atomicWriteText(path: string, content: string): Promise<void> {
 
 /**
  * 获取路径种类；不存在与其它访问错误分开处理。
- *
  * @param path 要检查的路径。
  * @returns 缺失、普通文件、目录或其它文件系统对象。
  * @throws Error 当路径检查因 ENOENT 以外原因失败时抛出。
@@ -1017,7 +1025,6 @@ const SESSION_STATE_QUEUES = new Map<string, SerializedQueue>()
 
 /**
  * 取得同一 Session 目录唯一的进程内状态队列。
- *
  * @param sessionDirectory 已规范化或可规范化的绝对 Session 目录。
  * @returns 同一路径的绑定访问器和全局写入口共用的串行队列。
  */
@@ -1033,11 +1040,11 @@ function getSessionStateQueue(sessionDirectory: string): SerializedQueue {
 
 /**
  * 重新读取完整 Session Meta，只替换模型选择后原子写回。
- *
  * @param paths 已绑定 Session 的派生状态路径。
  * @param queue 该 Session 唯一的状态串行队列。
  * @param model 调用方要持久化的完整模型引用。
  * @throws Error 当模型引用或现有 Session Meta 无效，或写入失败时抛出。
+ * @returns 当前操作完成后的结果；异步写入等待提交完成后解析。
  */
 async function writeCurrentModelAtPaths(
   paths: SessionStatePaths,
@@ -1065,7 +1072,6 @@ interface SerializedQueue {
 
 /**
  * 在当前 Session 上串行执行派生状态文件操作。
- *
  * @param queue 当前对话目录对应的唯一进程内队列。
  * @param operation 获得当前 Session 写入权后执行的操作。
  * @returns 操作返回值。
@@ -1078,7 +1084,6 @@ function runSerialized<T>(queue: SerializedQueue, operation: () => Promise<T>): 
 
 /**
  * 深拷贝 Skill 条目，避免修改初始化提供者或已解析对象。
- *
  * @param entries 待复制的 Skill 条目。
  * @returns 与输入脱离引用关系的新数组。
  */
@@ -1088,7 +1093,6 @@ function cloneSkillEntries(entries: readonly SessionSkillContextEntry[]): Sessio
 
 /**
  * 校验当前 Session Meta 的身份和结构。
- *
  * @param value 待检查的 JSON 值。
  * @param projectId 当前分组身份。
  * @param sessionId 当前对话身份。
@@ -1122,7 +1126,6 @@ function readRequiredMeta(paths: SessionStatePaths): SessionMeta {
 
 /**
  * 校验 `contextstate.json` 的完整结构。
- *
  * @param value 待检查的 JSON 值。
  * @returns 值是否为有效 SessionContextState。
  */
@@ -1138,7 +1141,6 @@ function isSessionContextState(value: unknown): value is SessionContextState {
 
 /**
  * 校验 `meta.usage` 的四项有限非负统计。
- *
  * @param value 待检查的 JSON 值。
  * @returns 值是否为有效 RealUsage。
  */
@@ -1153,7 +1155,6 @@ function isRealUsage(value: unknown): value is RealUsage {
 
 /**
  * 校验 Session 持久化的沙盒模式。
- *
  * @param value 待检查的 JSON 值。
  * @returns 值是否为当前版本支持的对话级沙盒模式。
  */
@@ -1163,7 +1164,6 @@ function isSandboxMode(value: unknown): value is SandboxMode {
 
 /**
  * 校验 Session Skill 比较状态。
- *
  * @param value 待检查的 JSON 值。
  * @returns 值是否含有效事件游标和无重复 Skill 条目。
  */
@@ -1175,7 +1175,6 @@ function isSessionSkillContextState(value: unknown): value is SessionSkillContex
 
 /**
  * 校验 Skill 载入条目及来源身份唯一性，允许不同来源同名。
- *
  * @param value 待检查的 JSON 值。
  * @returns 值是否为有效 Skill 条目数组。
  */
@@ -1195,7 +1194,6 @@ function isSkillEntries(value: unknown): value is SessionSkillContextEntry[] {
 
 /**
  * 校验 AGENTS.md 固定上下文状态。
- *
  * @param value 待检查的 JSON 值。
  * @returns 值是否同时包含 hash 与原文。
  */
@@ -1205,7 +1203,6 @@ function isAgentsState(value: unknown): value is SessionContextState["agentsmd"]
 
 /**
  * 校验持久化 MCP 工具定义所需的统一字段。
- *
  * @param value 待检查的 JSON 值。
  * @returns 值是否为有效 UnifiedToolDefinition。
  */
@@ -1218,7 +1215,6 @@ function isUnifiedToolDefinition(value: unknown): value is UnifiedToolDefinition
 
 /**
  * 校验持久化模型引用。
- *
  * @param value 待检查的 JSON 值。
  * @returns 值是否为受支持协议的 ModelRef。
  */
@@ -1233,7 +1229,6 @@ function isModelRef(value: unknown): value is ModelRef {
 
 /**
  * 判断值是否为有限非负数。
- *
  * @param value 待检查的值。
  * @returns 值是否可用于 Usage 统计。
  */
@@ -1243,7 +1238,6 @@ function isNonNegativeNumber(value: unknown): value is number {
 
 /**
  * 判断值是否为非空字符串。
- *
  * @param value 待检查的值。
  * @returns 值是否为去除首尾空白后仍非空的字符串。
  */
@@ -1253,7 +1247,6 @@ function isNonEmptyString(value: unknown): value is string {
 
 /**
  * 判断值是否为非数组对象。
- *
  * @param value 待检查的值。
  * @returns 值是否可按字符串字段读取。
  */
@@ -1263,7 +1256,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 /**
  * 判断异常是否带有 Node.js 错误码。
- *
  * @param value 捕获到的未知异常。
  * @returns 异常是否可按 NodeJS.ErrnoException 读取。
  */

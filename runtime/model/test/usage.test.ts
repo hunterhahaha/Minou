@@ -1,13 +1,7 @@
 /**
- * Usage 转换测试：三个协议的厂商字段 → 统一 Usage（Usage 设计文档第 2、3、4、5、9 节）。
+ * 验证三种协议的 Usage 映射与完整输入、总 Token 推导。
  *
- * 不依赖测试框架；直接运行：
- *   node --experimental-strip-types runtime/model/test/usage.test.ts
- *
- * 重点验证三条容易出错的规则：
- *   - 三个输入桶互不重叠（Chat Completions / Responses 必须减去缓存桶）；
- *   - 可选缓存字段缺失表示"未报告"，不是 0；
- *   - reasoningTokens 是 outputTokens 的子集，不重复相加。
+ * 检查缓存桶扣除、缺失与零值的区别、兼容字段优先级和 reasoning 不重复计数。
  */
 
 import assert from "node:assert/strict"
@@ -19,10 +13,15 @@ import {
   convertResponsesUsage,
 } from "../src/usage.ts"
 
+/**
+ * 依次执行当前文件的请求转换、流事件或 Usage 断言；协议集成场景使用本地假 Provider 并在场景结束后关闭服务。
+ * @returns 全部断言和异步场景完成后解析。
+ * @throws Error 断言或场景执行失败时向上传播，测试入口报告失败。
+ */
 async function main(): Promise<void> {
-  // -------------------------------------------------------------------------
-  // 1. Anthropic Messages（设计文档第 2 节）
-  // -------------------------------------------------------------------------
+  /** ------------------------------------------------------------------------- */
+  /** 1. Anthropic Messages */
+  /** ------------------------------------------------------------------------- */
 
   {
     const usage = convertAnthropicUsage({
@@ -33,21 +32,21 @@ async function main(): Promise<void> {
       output_tokens_details: { thinking_tokens: 25 },
     })
 
-    // 该协议的四个字段本身互不重叠，input_tokens 直接就是未缓存输入。
+    /** 该协议的四个字段本身互不重叠，input_tokens 直接就是未缓存输入。 */
     assert.equal(usage.inputTokens, 100)
     assert.equal(usage.outputTokens, 40)
     assert.equal(usage.cacheReadTokens, 900)
     assert.equal(usage.cacheWriteTokens, 50)
     assert.equal(usage.reasoningTokens, 25)
 
-    // 完整 Prompt = 三个输入桶之和（第 6.1 节）。
+    /** 完整 Prompt = 三个输入桶之和。 */
     assert.equal(promptTokens(usage), 1050)
-    // 该协议不返回 total_tokens，由 Prompt + Output 派生。
+    /** 该协议不返回 total_tokens，由 Prompt + Output 派生。 */
     assert.equal(usage.totalTokens, undefined)
     assert.equal(resolveTotalTokens(usage), 1090)
   }
 
-  // 缺缓存字段 → 未报告（undefined），不是 0。
+  /** 缺缓存字段 → 未报告（undefined），不是 0。 */
   {
     const usage = convertAnthropicUsage({ input_tokens: 100, output_tokens: 10 })
     assert.equal(usage.cacheReadTokens, undefined, "缺失的缓存字段必须是 undefined")
@@ -56,7 +55,7 @@ async function main(): Promise<void> {
     assert.equal(promptTokens(usage), undefined, "缓存桶未知时无法确定完整 Prompt")
   }
 
-  // 明确为 0 与缺失要保留区别。
+  /** 明确为 0 与缺失要保留区别。 */
   {
     const usage = convertAnthropicUsage({
       input_tokens: 100,
@@ -69,7 +68,7 @@ async function main(): Promise<void> {
     assert.equal(promptTokens(usage), 100)
   }
 
-  // null 与缺字段同样按未报告处理（SDK 把可缺省字段标成 null）。
+  /** null 与缺字段同样按未报告处理（SDK 把可缺省字段标成 null）。 */
   {
     const usage = convertAnthropicUsage({
       input_tokens: 7,
@@ -81,9 +80,9 @@ async function main(): Promise<void> {
     assert.equal(usage.cacheWriteTokens, undefined)
   }
 
-  // -------------------------------------------------------------------------
-  // 2. Chat Completions（设计文档第 3 节）
-  // -------------------------------------------------------------------------
+  /** ------------------------------------------------------------------------- */
+  /** 2. Chat Completions */
+  /** ------------------------------------------------------------------------- */
 
   {
     const usage = convertChatCompletionsUsage({
@@ -94,7 +93,7 @@ async function main(): Promise<void> {
       completion_tokens_details: { reasoning_tokens: 64 },
     })
 
-    // prompt_tokens 是完整输入，必须减去缓存读取与缓存写入。
+    /** prompt_tokens 是完整输入，必须减去缓存读取与缓存写入。 */
     assert.equal(usage.inputTokens, 100, "inputTokens 必须是未缓存输入")
     assert.equal(usage.outputTokens, 200)
     assert.equal(usage.cacheReadTokens, 800)
@@ -102,12 +101,12 @@ async function main(): Promise<void> {
     assert.equal(usage.reasoningTokens, 64)
     assert.equal(usage.totalTokens, 1200)
 
-    // 不变式：未缓存 + 缓存读取 + 缓存写入 = 完整 Prompt。
+    /** 不变式：未缓存 + 缓存读取 + 缓存写入 = 完整 Prompt。 */
     assert.equal(usage.inputTokens + 800 + 100, 1000)
     assert.equal(promptTokens(usage), 1000)
   }
 
-  // 兼容厂商把命中数放在 prompt_cache_hit_tokens（第 3.1 节）。
+  /** 兼容厂商把命中数放在 prompt_cache_hit_tokens。 */
   {
     const usage = convertChatCompletionsUsage({
       prompt_tokens: 500,
@@ -118,7 +117,7 @@ async function main(): Promise<void> {
     assert.equal(usage.inputTokens, 200)
   }
 
-  // 兼容厂商把命中数放在顶层 cached_tokens。
+  /** 兼容厂商把命中数放在顶层 cached_tokens。 */
   {
     const usage = convertChatCompletionsUsage({
       prompt_tokens: 500,
@@ -129,7 +128,7 @@ async function main(): Promise<void> {
     assert.equal(usage.inputTokens, 300)
   }
 
-  // 标准字段优先于兼容字段。
+  /** 标准字段优先于兼容字段。 */
   {
     const usage = convertChatCompletionsUsage({
       prompt_tokens: 500,
@@ -141,7 +140,7 @@ async function main(): Promise<void> {
     assert.equal(usage.cacheReadTokens, 400, "prompt_tokens_details.cached_tokens 优先")
   }
 
-  // 没有缓存写入字段时不推算（第 3.2 节），只减缓存读取部分。
+  /** 没有缓存写入字段时不推算，只减缓存读取部分。 */
   {
     const usage = convertChatCompletionsUsage({
       prompt_tokens: 500,
@@ -153,16 +152,16 @@ async function main(): Promise<void> {
     assert.equal(resolveTotalTokens(usage), 550, "缺 total_tokens 时由 Prompt + Output 派生")
   }
 
-  // 缺 total_tokens 且缺 prompt_tokens → 不构造总量。
+  /** 缺 total_tokens 且缺 prompt_tokens → 不构造总量。 */
   {
     const usage = convertChatCompletionsUsage({ completion_tokens: 5 })
     assert.equal(usage.totalTokens, undefined)
     assert.equal(usage.inputTokens, 0)
   }
 
-  // -------------------------------------------------------------------------
-  // 3. Responses（设计文档第 4 节）
-  // -------------------------------------------------------------------------
+  /** ------------------------------------------------------------------------- */
+  /** 3. Responses */
+  /** ------------------------------------------------------------------------- */
 
   {
     const usage = convertResponsesUsage({
@@ -182,7 +181,7 @@ async function main(): Promise<void> {
     assert.equal(promptTokens(usage), 900)
   }
 
-  // 缺缓存写入字段：只减缓存读取，且不推算。
+  /** 缺缓存写入字段：只减缓存读取，且不推算。 */
   {
     const usage = convertResponsesUsage({
       input_tokens: 900,
@@ -192,11 +191,11 @@ async function main(): Promise<void> {
     })
     assert.equal(usage.cacheWriteTokens, undefined)
     assert.equal(usage.inputTokens, 200)
-    // totalTokens 可信时仍能推出完整 Prompt（第 6.1 节第 2 条）。
+    /** totalTokens 可信时仍能推出完整 Prompt。 */
     assert.equal(promptTokens(usage), 900)
   }
 
-  // 厂商数字自相矛盾（缓存大于完整输入）时未缓存输入按 0 处理，不出现负数。
+  /** 厂商数字自相矛盾（缓存大于完整输入）时未缓存输入按 0 处理，不出现负数。 */
   {
     const usage = convertResponsesUsage({
       input_tokens: 100,
@@ -209,7 +208,7 @@ async function main(): Promise<void> {
   console.log("usage.test.ts: Usage 转换断言通过")
 }
 
-// 不用顶层 await：测试运行时被 Node 当作 ESM，但 tsc 按 CommonJS 检查。
+/** 不用顶层 await：测试运行时被 Node 当作 ESM，但 tsc 按 CommonJS 检查。 */
 main().catch((error: unknown) => {
   console.error(error)
   process.exitCode = 1

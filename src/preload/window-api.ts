@@ -17,17 +17,40 @@ export interface WindowState {
 
 /** 提供当前窗口的控制和状态订阅，不暴露窗口对象、标识或应用退出能力。 */
 export interface NiCodeWindowApi {
-  /** @returns 当前窗口最小化完成；IPC 失败由调用方展示。 */
+  /**
+   * 请求将当前窗口最小化。
+   *
+   * @returns 当前窗口最小化完成；IPC 失败由调用方展示。
+   */
   minimize(): Promise<void>
-  /** @returns 切换后的最大化状态；IPC 失败由调用方展示。 */
+  /**
+   * 请求切换当前窗口最大化状态并读取确认结果。
+   *
+   * @returns 切换后的最大化状态；IPC 失败由调用方展示。
+   */
   toggleMaximize(): Promise<WindowState>
-  /** @returns 当前窗口状态；IPC 失败由调用方展示。 */
+  /**
+   * 请求读取当前窗口状态。
+   *
+   * @returns 当前窗口状态；IPC 失败由调用方展示。
+   */
   getState(): Promise<WindowState>
-  /** @param listener 接收校验后的状态，不接收 Electron 事件。 @returns 取消本次订阅。 */
+  /**
+   * 订阅校验后的窗口状态更新，并返回当前订阅的清理函数。
+   *
+   * @param listener 接收校验后的状态，不接收 Electron 事件。
+   * @returns 取消本次订阅。
+   */
   onStateChanged(listener: (state: WindowState) => void): () => void
 }
 
-/** @param value 主进程返回或推送的未知数据。 @returns 纯窗口状态。 @throws TypeError 状态字段非法。 */
+/**
+ * 检查窗口状态字段，只向页面返回业务状态。
+ *
+ * @param value 主进程返回或推送的未知数据。
+ * @returns 纯窗口状态。
+ * @throws TypeError 状态字段非法。
+ */
 function requireWindowState(value: unknown): WindowState {
   if (typeof value !== "object" || value === null || !("maximized" in value) || typeof value.maximized !== "boolean") throw new TypeError("窗口状态无效")
   return { maximized: value.maximized }
@@ -40,13 +63,30 @@ function requireWindowState(value: unknown): WindowState {
  */
 export function createWindowApi(ipcRenderer: Pick<IpcRenderer, "invoke" | "on" | "removeListener">): NiCodeWindowApi {
   return Object.freeze({
-    /** @returns 当前窗口最小化完成；失败由调用方捕获。 */
+    /**
+     * 请求将当前窗口最小化。
+     *
+     * @returns 当前窗口最小化完成；失败由调用方捕获。
+     */
     async minimize(): Promise<void> { await ipcRenderer.invoke(WINDOW_IPC_CHANNELS.minimize) },
-    /** @returns 校验后的最大化状态；失败由调用方捕获。 */
+    /**
+     * 请求切换当前窗口最大化状态并读取确认结果。
+     *
+     * @returns 校验后的最大化状态；失败由调用方捕获。
+     */
     async toggleMaximize(): Promise<WindowState> { return requireWindowState(await ipcRenderer.invoke(WINDOW_IPC_CHANNELS.toggleMaximize)) },
-    /** @returns 校验后的初始窗口状态；失败由调用方捕获。 */
+    /**
+     * 请求读取当前窗口状态。
+     *
+     * @returns 校验后的初始窗口状态；失败由调用方捕获。
+     */
     async getState(): Promise<WindowState> { return requireWindowState(await ipcRenderer.invoke(WINDOW_IPC_CHANNELS.getState)) },
-    /** @param listener 不接收 Electron 事件的状态监听器。 @returns 只取消当前监听的清理函数。 */
+    /**
+     * 订阅校验后的窗口状态更新，并返回当前订阅的清理函数。
+     *
+     * @param listener 不接收 Electron 事件的状态监听器。
+     * @returns 只取消当前监听的清理函数。
+     */
     onStateChanged(listener: (state: WindowState) => void): () => void {
       /** @param _event 不向 Renderer 转发的 Electron 事件。 @param value 未知窗口状态。 */
       const receive = (_event: IpcRendererEvent, value: unknown): void => { listener(requireWindowState(value)) }
@@ -56,7 +96,13 @@ export function createWindowApi(ipcRenderer: Pick<IpcRenderer, "invoke" | "on" |
   })
 }
 
-/** @param contextBridge Electron 隔离桥。 @param ipcRenderer preload 的 IPC 端口。 @returns 窗口 API 注册完成。 */
+/**
+ * 通过隔离桥发布当前窗口的控制与状态订阅接口。
+ *
+ * @param contextBridge Electron 隔离桥。
+ * @param ipcRenderer preload 的 IPC 端口。
+ * @returns 窗口 API 注册完成。
+ */
 export function exposeWindowApi(contextBridge: Pick<ContextBridge, "exposeInMainWorld">, ipcRenderer: Pick<IpcRenderer, "invoke" | "on" | "removeListener">): void {
   contextBridge.exposeInMainWorld("nicodeWindow", createWindowApi(ipcRenderer))
 }

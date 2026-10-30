@@ -1,14 +1,8 @@
 /**
- * 三个 Protocol Adapter 的公共部分（第 6、7、25 节）。
+ * 三种 Adapter 共用的请求校验、推理字段拼装、文本与工具参数转换，以及流式重试入口。
  *
- * 单独成文件的原因是：请求校验、文本拼接、tool_call 参数序列化、以及「重试 + 错误归一化」
- * 这四件事与协议无关，三个 Adapter 完全一致。放在这里可以保证它们的行为只有一份实现。
- *
- * 架构依据：
- *   - .git/技术文档/开发备忘录1.0.17.md 第 6 节（模型协议层）、第 7 节（网络层）、
- *     第 8.4 节（内容块）、第 11.3 节（回放）、第 16.2 节（工具结果只消费 text）、第 25 节（错误）
- *   - .git/技术文档/NiCode_Usage统一设计.md
- * 实施阶段：.git/技术文档/开发TODOList.md 阶段 3 / 4 / 5 的公共部分
+ * 请求校验失败使用 Runtime 来源的 AppError；流执行失败由共享入口归一化。
+ * 首个内容增量标记有效输出，重试与取消处理委托网络层。
  */
 
 import { createAbortError } from "../../error/src/abort.ts"
@@ -24,9 +18,9 @@ import type {
   UnifiedModelRequest,
 } from "./types.ts"
 
-// ---------------------------------------------------------------------------
-// 请求校验
-// ---------------------------------------------------------------------------
+
+/** 请求校验 */
+
 
 /**
  * 请求本身不合法（统一格式的约定没有被满足）。
@@ -101,7 +95,7 @@ export interface SplitModelContext {
 }
 
 /**
- * 拆分 System Message（第 11.1、11.4 节）。
+ * 拆分 System Message。
  *
  * `messages[0]` 必须是唯一的 System Message，它对应 Anthropic `system`、
  * Chat Completions `developer/system`、Responses `instructions`；`messages[1...]` 才是会话上下文。
@@ -130,14 +124,14 @@ export function splitSystemMessage(request: UnifiedModelRequest): SplitModelCont
   return { system: first.content, rest: messages.slice(1) }
 }
 
-// ---------------------------------------------------------------------------
-// 文本与工具调用参数
-// ---------------------------------------------------------------------------
+
+/** 文本与工具调用参数 */
+
 
 /**
  * 按顺序拼接文本块，不添加分隔符。
  *
- * 工具结果只消费 `type="text"`（第 16.2、11.3 节）；Chat Completions 与 Responses 的字符串
+ * 工具结果只消费 `type="text"`；Chat Completions 与 Responses 的字符串
  * 字段由这里拼接后填入，Anthropic 则保留文本块数组。
  * 用户消息也是同样的规则：统一 user content 允许字符串或文本块数组，三个协议都只转换文本。
  *
@@ -168,7 +162,7 @@ export function serializeToolCallArguments(value: unknown): string {
     const text = JSON.stringify(value)
     return text === undefined ? "{}" : text
   } catch {
-    // 循环引用等无法序列化的值：协议侧必须拿到字符串，退化为空参数对象。
+    /** 循环引用等无法序列化的值：协议侧必须拿到字符串，退化为空参数对象。 */
     return "{}"
   }
 }
@@ -177,7 +171,7 @@ export function serializeToolCallArguments(value: unknown): string {
  * 解析协议侧累积出的 arguments JSON 字符串，作为统一 tool_call 块的 `arguments`。
  *
  * 返回解析后的对象；无法解析时**原样返回字符串**，不吞掉内容 —— 被 token 上限截断的
- * tool_call 是正常路径（第 8.5 节允许它进入消息），保留原始文本便于上层判断与展示。
+ * tool_call 是正常路径，保留原始文本便于上层判断与展示。
  *
  * @param raw 协议流中累积出的参数文本。
  * @returns 成功解析后的值；空文本返回空对象，解析失败返回原始字符串。
@@ -223,9 +217,9 @@ export function streamInterruptedError(protocol: Protocol): Error {
   return new Error(`${protocol} 协议流在结束事件前中断`)
 }
 
-// ---------------------------------------------------------------------------
-// 重试与错误归一化
-// ---------------------------------------------------------------------------
+
+/** 重试与错误归一化 */
+
 
 /**
  * 判定一个值是否已经是统一错误结构。
@@ -244,7 +238,7 @@ export function isAppError(value: unknown): value is AppError {
 }
 
 /**
- * 流式重试边界（第 7 节）：首个内容增量才算"有效模型输出"。
+ * 流式重试边界：首个内容增量才算"有效模型输出"。
  *
  * 只有 `block_delta` 算有效输出。`block_start` 本身不含模型生成的内容，
  * 因此允许它先被缓冲、失败的尝试不会把它泄漏给消费方（见 `network/src/retry.ts`）。
@@ -258,15 +252,15 @@ function isFirstContentDelta(event: ModelStreamEvent): boolean {
 }
 
 /**
- * 把一次「协议流 → 统一事件流」的尝试包装为带自动重试的流（第 7、25 节）。
+ * 把一次「协议流 → 统一事件流」的尝试包装为带自动重试的流。
  *
  * 三个 Adapter 的差异只在 `attempt` 内部（请求构建与事件转换），重试边界、取消排除与
  * 错误归一化完全一致，所以共用这一个入口：
  *
- *   - 尚未产出有效输出 + 可重试错误 → 重新请求（第 7 节），消费方看不到失败尝试的痕迹；
- *   - 已产出有效输出 → 原样抛出，交给错误处理（第 7 节）；
- *   - 取消类错误 / 调用方取消信号已触发 → 不重试（第 7、14 节），归一化为 `CANCELLED`；
- *   - 其余失败在重试耗尽后归一化为 `source = "model"` 的 AppError（第 25 节）。
+ *   - 尚未产出有效输出 + 可重试错误 → 重新请求，消费方看不到失败尝试的痕迹；
+ *   - 已产出有效输出 → 原样抛出，交给错误处理；
+ *   - 取消类错误 / 调用方取消信号已触发 → 不重试，归一化为 `CANCELLED`；
+ *   - 其余失败在重试耗尽后归一化为 `source = "model"` 的 AppError。
  *
  * 归一化放在这里而不是各 Adapter 里，保证"抛出的一定是 AppError"这一条对所有协议成立。
  *
@@ -274,7 +268,7 @@ function isFirstContentDelta(event: ModelStreamEvent): boolean {
  * （例如 Anthropic 只吐出 message_start 就正常返回）。因此这里以调用方信号为准做兜底 ——
  * 信号的 `aborted` 就是"这次请求是被用户取消的"的权威依据，不管底层抛了什么。
  * 少了这条兜底，取消会被下层的"流被截断"错误盖成 REQUEST_FAILED，
- * 前端与 Event Log 就无法区分"用户停止"和"请求失败"（第 14、25 节）。
+ * 前端与 Event Log 就无法区分"用户停止"和"请求失败"。
  *
  * @param attempt 单次协议请求尝试；接收本次尝试专用的取消信号并返回统一事件流。
  * @param signal 调用方的取消信号。
@@ -288,9 +282,9 @@ export async function* runModelStream(
   try {
     yield* streamWithRetry(attempt, { signal, isValidOutput: isFirstContentDelta })
   } catch (error) {
-    // 已经是统一错误（例如请求校验失败）时原样抛出，避免被再次包装成 REQUEST_FAILED。
+    /** 已经是统一错误（例如请求校验失败）时原样抛出，避免被再次包装成 REQUEST_FAILED。 */
     if (isAppError(error)) throw error
-    // 调用方取消是权威信号：无论底层抛的是什么，都归一化为 CANCELLED。
+    /** 调用方取消是权威信号：无论底层抛的是什么，都归一化为 CANCELLED。 */
     if (signal.aborted) throw normalizeModelError(createAbortError())
     throw normalizeModelError(error)
   }

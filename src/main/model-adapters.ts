@@ -91,7 +91,12 @@ export async function createTurnModelAdapter(
   }
 }
 
-/** @param model 用于不含凭据的错误定位的完整模型引用。 */
+/**
+ * 将完整模型引用格式化为不包含凭据的诊断文本。
+ *
+ * @param model 用于不含凭据的错误定位的完整模型引用。
+ * @returns 包含 Provider、协议、模型身份、名称及推理等级的定位文本。
+ */
 function formatModelRef(model: ModelRef): string {
   return `ModelRef(${model.providerId}/${model.protocol}/${model.modelId}/${model.name})`
 }

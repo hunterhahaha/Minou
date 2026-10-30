@@ -20,7 +20,6 @@ export class ToolOutputStore {
 
   /**
    * 绑定已存在的工具输出目录，不创建目录或日志文件。
-   *
    * @param directory - Session 初始化时创建的 tool_output 绝对目录。
    * @throws Error - 路径不是绝对目录、目录不存在或目录检查失败；调用方负责转换为工具错误。
    */
@@ -37,7 +36,6 @@ export class ToolOutputStore {
 
   /**
    * 按接收顺序收集输出块。首次超过 64 KB 时写出之前的完整缓冲并开始增量落盘，内存只保留最后 64 KB。
-   *
    * @param data - 当前收到的原始字节或按 UTF-8 编码的字符串。
    * @throws Error - 批次已结束或磁盘操作失败；调用方必须返回工具错误并处理批次资源。
    */
@@ -58,7 +56,6 @@ export class ToolOutputStore {
 
   /**
    * 结束输出批次，将大输出临时文件发布为本次调用日志，不覆盖既有日志。对完整 UTF-8 文本，跳过截断起点的续字节以避免从字符中间开始解码。
-   *
    * @param toolCallId - 日志文件名使用的工具调用 ID，不得为空或包含路径分隔符、Windows 非法字符。
    * @returns 完整小输出，或尾部、原始总字节数和完整日志绝对路径；成功后不能继续追加。
    * @throws Error - 批次已结束、调用 ID 无效、日志重名或磁盘操作失败；调用方负责返回工具错误并清理资源。
@@ -83,7 +80,6 @@ export class ToolOutputStore {
 
   /**
    * 关闭未交付批次的文件句柄，删除内部临时日志并释放内存缓冲；已发布的正式日志不会被删除。
-   *
    * @throws Error - 文件句柄关闭或临时日志删除失败；调用方负责报告清理异常。
    */
   discard(): void {
@@ -94,7 +90,6 @@ export class ToolOutputStore {
   }
   /**
    * 将一块字节完整写入当前日志句柄，处理单次写入未覆盖整块数据的情况。
-   *
    * @param data - 需要写入日志的原始字节。
    * @throws Error - 写入失败或返回零字节而无法继续；上层收集操作负责处理异常。
    */

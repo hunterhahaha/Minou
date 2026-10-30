@@ -163,7 +163,12 @@ function Workspace() {
   /** 技能列表只在查看时读取，弹窗卸载和工作区路由切换均保留字典。 */
   const [skillsByScope, setSkillsByScope] = useState<SkillCache>({})
 
-  /** @param projectId 要刷新的摘要分组；不重查聊天历史。 @returns 摘要更新完成。 */
+  /**
+   * 刷新指定分组的对话索引摘要，不重新加载完整历史。
+   *
+   * @param projectId 要刷新的摘要分组；不重查聊天历史。
+   * @returns 摘要更新完成。
+   */
   async function refreshSessionSummaries(projectId: string): Promise<void> {
     try {
       if (projectId === "default") setDefaultSessions({ status: "ready", value: await window.nicode.listDefaultSessions() })
@@ -176,7 +181,11 @@ function Workspace() {
     if (update.kind === "event" && update.event.type === "turn/end") void refreshSessionSummaries(update.projectId)
   }), [sessionsState])
 
-  /** @returns 项目查询结束后的 Promise；失败会转成当前区域的错误状态。 */
+  /**
+   * 查询项目摘要，将结果或错误保存到当前页面状态。
+   *
+   * @returns 项目查询结束后的 Promise；失败会转成当前区域的错误状态。
+   */
   async function loadProjects(): Promise<void> {
     setProjects({ status: "loading" })
     try {
@@ -195,7 +204,11 @@ function Workspace() {
     }
   }
 
-  /** @returns default 对话查询结束后的 Promise；失败会转成当前区域的错误状态。 */
+  /**
+   * 查询 default 分组对话摘要，将结果或错误保存到当前页面状态。
+   *
+   * @returns default 对话查询结束后的 Promise；失败会转成当前区域的错误状态。
+   */
   async function loadDefaultSessions(): Promise<void> {
     setDefaultSessions({ status: "loading" })
     try {
@@ -206,7 +219,11 @@ function Workspace() {
     }
   }
 
-  /** @returns Provider 查询结束后的 Promise；失败会转成当前区域的错误状态。 */
+  /**
+   * 查询不含凭据的 Provider 摘要并更新当前页面状态。
+   *
+   * @returns Provider 查询结束后的 Promise；失败会转成当前区域的错误状态。
+   */
   async function loadProviders(): Promise<void> {
     setProviders({ status: "loading" })
     try {
@@ -383,7 +400,11 @@ function Workspace() {
   }, [theme])
 
   useEffect(() => {
-    /** @param event 应用快捷键仅在没有业务弹窗时处理，输入法组合期间不导航。 */
+    /**
+     * 处理工作区导航快捷键，保留输入法与业务弹窗的键盘边界。
+     *
+     * @param event 应用快捷键仅在没有业务弹窗时处理，输入法组合期间不导航。
+     */
     function workspaceShortcut(event: KeyboardEvent): void {
       if (!(event.ctrlKey || event.metaKey) || event.isComposing || document.querySelector('[aria-modal="true"]')) return
       if (event.key.toLowerCase() === "k") { event.preventDefault(); setOpenMenu(null); setSearchOpen(true) }
@@ -403,7 +424,11 @@ function Workspace() {
 
   useEffect(() => {
     if (openMenu === null) return
-    /** @param event 键盘事件；Escape 关闭当前弹层。 */
+    /**
+     * 按当前弹层及提交状态处理 Escape，保留已有关闭保护。
+     *
+     * @param event 键盘事件；Escape 关闭当前弹层。
+     */
     function closeOnEscape(event: KeyboardEvent): void {
       if (event.key === "Escape") setOpenMenu(null)
     }
@@ -413,7 +438,11 @@ function Workspace() {
 
   useEffect(() => {
     if (!projectDialogOpen) return
-    /** @param event 键盘事件；Escape 在提交期间不关闭弹窗。 */
+    /**
+     * 在项目创建弹窗中处理 Escape，提交期间保留弹窗。
+     *
+     * @param event 键盘事件；Escape 在提交期间不关闭弹窗。
+     */
     function closeProjectDialogOnEscape(event: KeyboardEvent): void {
       if (event.key === "Escape" && !creatingProject) closeProjectDialog()
     }
@@ -481,7 +510,11 @@ function Workspace() {
     }
   }
 
-  /** @returns 新对话首批事件提交后清理当前分组草稿并导航；失败保留草稿。 */
+  /**
+   * 提交当前分组草稿，首批事件成功后清理草稿并进入新对话。
+   *
+   * @returns 新对话首批事件提交后清理当前分组草稿并导航；失败保留草稿。
+   */
   async function sendNewChat(): Promise<void> {
     const text = sessionsState.draftsByKey[newDraftKey] ?? ""
     if (!text.trim() || !selectedModel || !selectedReasoningLevel || savingDefaultModel || sessionsState.view(newDraftKey).busy) return

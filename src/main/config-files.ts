@@ -1,8 +1,4 @@
-/**
- * 启动配置文件的初始化、V2 结构检查与 SQLite 数据库准备。
- *
- * 架构依据：开发备忘录第 2–4 节，以及配置 V2、Provider 和工作区 SQLite 结构。
- */
+/** 启动配置文件的初始化、V2 结构检查与 Provider、工作区、Session 数据库准备。 */
 
 import { lstat, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises"
 import { randomUUID } from "node:crypto"
@@ -21,6 +17,9 @@ const INITIAL_CONFIG = `${JSON.stringify({
   mcpServers: [],
   runtime: { userMessageMode: "queue" },
 }, null, 2)}\n`
+/**
+ * 启动时确定的 NiCode 配置根目录和各共享数据库路径。
+ */
 export interface ConfigFilePaths {
   /** `.nicode` 配置根目录。 */
   rootDir: string
@@ -58,10 +57,24 @@ export interface ConfigInitializationOptions {
   skipSkills?: boolean
 }
 
+/**
+ * 检查未知异常是否携带 EEXIST，供独占创建配置文件时区分已存在。
+ *
+ * @param error 文件创建时捕获的未知异常。
+ * @returns 异常是否为带 EEXIST 的非空对象。
+ */
 function isFileExistsError(error: unknown): boolean {
   return error !== null && typeof error === "object" && "code" in error && error.code === "EEXIST"
 }
 
+/**
+ * 仅在文件缺失时独占创建初始内容，再读取并要求顶层为 JSON 对象。
+ *
+ * @param filePath 配置文件路径。
+ * @param initialContent 首次创建时写入的完整 JSON 文本。
+ * @returns 从现有或新建文件解析的 JSON 对象。
+ * @throws Error 创建、读取或 JSON 检查失败时抛出，已有文件不会被覆盖。
+ */
 async function ensureJsonObjectFile(filePath: string, initialContent: string): Promise<Record<string, unknown>> {
   try {
     await writeFile(filePath, initialContent, { encoding: "utf8", flag: "wx" })
@@ -104,6 +117,14 @@ async function readJsonObjectFile(filePath: string): Promise<Record<string, unkn
   return value as Record<string, unknown>
 }
 
+/**
+ * 执行同步配置检查，为失败异常补充文件路径并保留原始 cause。
+ *
+ * @param filePath 错误报告中使用的配置路径。
+ * @param check 执行当前结构校验的同步函数。
+ * @returns 检查函数的原始返回值。
+ * @throws Error 检查失败时包装并传播，由启动或配置保存入口报告。
+ */
 function checkFile<T>(filePath: string, check: () => T): T {
   try {
     return check()

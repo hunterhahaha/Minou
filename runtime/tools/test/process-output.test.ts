@@ -7,7 +7,6 @@ import { renderShell, renderTerminalInput } from "../src/render/process.ts"
 
 /**
  * 运行本文件的离线断言或本机临时进程验证，并在结束时释放测试资源。
- *
  * @returns 本文件全部验证和资源清理完成时兑现的 Promise。
  * @throws Error - 断言、临时存储或本机后端验证失败；顶层测试出口记录异常并设置失败退出码。
  */

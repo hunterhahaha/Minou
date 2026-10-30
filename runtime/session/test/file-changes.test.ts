@@ -1,7 +1,15 @@
-/** TurnFileChangeTracker 的净变化、说明与多 hunk 测试。 */
+/**
+ * 使用内存 Buffer 验证 Turn 文件净变化，不修改示例路径中的真实文件。
+ *
+ * 覆盖多次修改的合并、说明覆盖、多 hunk 统计、撤销变化和新建空文件。
+ */
 import assert from "node:assert/strict"
 import { TurnFileChangeTracker } from "../src/file-changes.ts"
 
+/**
+ * 依次验证文件净变化、说明和 diff 统计的内存断言。
+ * @throws Error 断言或临时存储操作失败时传播，由测试入口报告失败。
+ */
 function main(): void {
   const tracker = new TurnFileChangeTracker()
   const old = Array.from({ length: 25 }, (_, index) => `line ${index + 1}`).join("\n") + "\n"

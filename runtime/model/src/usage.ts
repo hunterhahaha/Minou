@@ -1,23 +1,9 @@
 /**
- * 三个协议的 Usage → 统一 Usage（对外契约见 `./types.ts` 的 `Usage`）。
+ * 将三种协议的 Usage 字段转换为互不重叠的输入、缓存与输出计数。
  *
- * 事实源：.git/技术文档/NiCode_Usage统一设计.md 第 2、3、4、5 节（Usage 部分以此为准，
- * 取代开发备忘录第 27.1、35.2 节的旧定义）。Runtime 只处理统一后的 Usage，
- * 厂商字段差异全部止步于本文件。
- *
- * 三条贯穿全部实现的规则：
- *   1. 三个输入桶互不重叠：Anthropic 的四个字段本身就互不重叠（第 2 节），
- *      而 Chat Completions 的 `prompt_tokens`、Responses 的 `input_tokens` 是**完整输入**，
- *      必须减去缓存读取与缓存写入（第 3.3、4.3 节）。
- *   2. 可选缓存字段缺失表示**未报告**，不是 0，绝不自行推算（第 9 节第 8、13 条）。
- *      因此 `cacheReadTokens` / `cacheWriteTokens` / `reasoningTokens` 缺失时留 undefined。
- *   3. `reasoningTokens` 是 `outputTokens` 的子集，只映射，不参与任何相加（第 9 节第 4、5 条）。
- *
- * 本文件只做字段映射，不做累计、不读 `totalTokens` 之外的派生量（累计与命中率见
- * `./types.ts` 的 `accumulateUsage` / `cacheHitRate`）。
- *
- * 架构依据：.git/技术文档/NiCode_Usage统一设计.md；开发备忘录第 27 节（Token 与 Usage）
- * 实施阶段：.git/技术文档/开发TODOList.md 阶段 3 / 4 / 5 的 Usage 转换
+ * Chat Completions 和 Responses 的完整输入需扣除已报告的缓存桶；
+ * 可选桶缺失时保留未报告状态，reasoning 属于输出子集，不重复计入总量。
+ * 本文件只做字段映射，累计及派生量由统一 Usage 函数计算。
  */
 
 import type { Usage } from "./types.ts"
@@ -38,7 +24,7 @@ function readCount(value: number | null | undefined): number | undefined {
 /**
  * 从"完整输入 Token"里扣除已报告的缓存桶，得到统一 `inputTokens`（未缓存输入）。
  *
- * 只扣实际报告的桶：缺少 `cacheWriteTokens` 时只扣缓存读取部分（第 3.3、4.3 节），
+ * 只扣实际报告的桶：缺少 `cacheWriteTokens` 时只扣缓存读取部分，
  * 两个桶都缺时 `inputTokens` 就是完整输入。结果为负说明厂商数字自相矛盾，
  * 按 0 处理（未缓存输入不可能是负值）。
  *
@@ -56,9 +42,9 @@ function subtractCacheBuckets(
   return Math.max(0, uncached)
 }
 
-// ---------------------------------------------------------------------------
-// Anthropic Messages（第 2 节）
-// ---------------------------------------------------------------------------
+
+/** Anthropic Messages */
+
 
 /**
  * Anthropic Messages 的 Usage 原始字段。
@@ -79,7 +65,7 @@ export interface AnthropicUsageFields {
 }
 
 /**
- * Anthropic Messages → 统一 Usage（第 2 节）。
+ * Anthropic Messages → 统一 Usage。
  *
  *   inputTokens       ← input_tokens（该字段本身就是未缓存输入，不再拆分）
  *   cacheReadTokens   ← cache_read_input_tokens
@@ -87,11 +73,9 @@ export interface AnthropicUsageFields {
  *   reasoningTokens   ← output_tokens_details.thinking_tokens
  *
  * `totalTokens` 留空：Anthropic 不返回该字段，统一总量由 `resolveTotalTokens` 从各输入桶与
- * `outputTokens` 相加得到（第 2、6.5 节）。
+ * `outputTokens` 相加得到。
  *
- * `thinking_tokens`：设计文档第 2、5 节把 Anthropic 的 reasoning 记为"通常缺失"，
- * 但当前 SDK（0.126）在 `output_tokens_details.thinking_tokens` 提供了独立且可靠的
- * reasoning 计数，符合"存在可靠独立字段就填"的条件，故按可用字段映射。
+ * `thinking_tokens`：仅在 output_tokens_details.thinking_tokens 提供数值时映射 reasoning，缺失时不推算。
  *
  * @param fields Anthropic `message_start` 或 `message_delta` 提供的 Usage 字段。
  * @returns 符合统一 Usage 契约的字段；未报告的可选桶保持为 `undefined`。
@@ -115,12 +99,12 @@ export function convertAnthropicUsage(fields: AnthropicUsageFields): Usage {
   return usage
 }
 
-// ---------------------------------------------------------------------------
-// OpenAI Chat Completions（第 3 节）
-// ---------------------------------------------------------------------------
+
+/** OpenAI Chat Completions */
+
 
 /**
- * Chat Completions 的 Usage 原始字段，含兼容厂商的字段位置（第 3.1 节）。
+ * Chat Completions 的 Usage 原始字段，含兼容厂商的字段位置。
  *
  * `prompt_cache_hit_tokens` 与顶层 `cached_tokens` 不是 OpenAI 官方字段，
  * 是部分兼容厂商放置缓存命中数的地方，读取顺序见 `convertChatCompletionsUsage`。
@@ -148,7 +132,7 @@ export interface ChatCompletionsUsageFields {
 }
 
 /**
- * Chat Completions → 统一 Usage（第 3 节）。
+ * Chat Completions → 统一 Usage。
  *
  *   cacheReadTokens  ← prompt_tokens_details.cached_tokens
  *                       ｜prompt_cache_hit_tokens｜cached_tokens（兼容读取）
@@ -156,7 +140,7 @@ export interface ChatCompletionsUsageFields {
  *   inputTokens      ← prompt_tokens − cacheReadTokens − cacheWriteTokens
  *   outputTokens     ← completion_tokens
  *   reasoningTokens  ← completion_tokens_details.reasoning_tokens
- *   totalTokens      ← total_tokens；缺失时用 prompt_tokens + completion_tokens（第 3.5 节）
+ *   totalTokens      ← total_tokens；缺失时用 prompt_tokens + completion_tokens
  *
  * @param fields Chat Completions 最后一个带 Usage 的流 chunk 的字段。
  * @returns 符合统一 Usage 契约的字段；缓存细分缺失时不将其伪造为 0。
@@ -192,9 +176,9 @@ export function convertChatCompletionsUsage(fields: ChatCompletionsUsageFields):
   return usage
 }
 
-// ---------------------------------------------------------------------------
-// OpenAI Responses（第 4 节）
-// ---------------------------------------------------------------------------
+
+/** OpenAI Responses */
+
 
 /** Responses 的 Usage 原始字段（`response.completed` / `response.incomplete` 的 `response.usage`）。 */
 export interface ResponsesUsageFields {
@@ -216,7 +200,7 @@ export interface ResponsesUsageFields {
 }
 
 /**
- * Responses → 统一 Usage（第 4 节）。
+ * Responses → 统一 Usage。
  *
  *   cacheReadTokens  ← input_tokens_details.cached_tokens
  *   cacheWriteTokens ← input_tokens_details.cache_write_tokens（没有则留空，不推算）

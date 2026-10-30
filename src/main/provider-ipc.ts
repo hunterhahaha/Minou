@@ -31,6 +31,9 @@ import type {
 import type { Protocol } from "../../runtime/model/src/types.ts"
 import { defaultReasoningConfig, isReasoningField, isReasoningLevels } from "../../runtime/model/src/reasoning.ts"
 
+/**
+ * 创建 Provider 时随请求提供的模型配置数组。
+ */
 type Models = ProviderModelInput[]
 
 /** 新建模型未提供上下文窗口时使用的 Token 数。 */

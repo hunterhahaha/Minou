@@ -1,4 +1,9 @@
-/** 真实 Session 存储、MemoryManager 和工具执行器的离线整链测试。 */
+/**
+ * 通过真实记忆工具、事件日志和临时存储验证 Session 记忆调用链。
+ *
+ * 脚本模型依次驱动新对话、排队消息及重建实例后的继续入口，
+ * 检查 default 与 Project 的记忆隔离、工具结果回填和调用身份。
+ */
 import assert from "node:assert/strict"
 import { mkdir, mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
@@ -90,7 +95,11 @@ async function scenario(profile: string, projectId: string): Promise<void> {
       }
     } }
   }
-  /** @returns 当前分组同一 Session 的真实 Runtime；构造不创建新记忆。 */
+  /**
+   * 为同一持久化 Session 创建新的活动实例，模型脚本与全局能力由当前场景共用。
+   * @returns 绑定测试 Session 目录和数据库的新 Runtime。
+   * @throws Error Runtime 构造失败时抛出，调用方负责释放场景资源。
+   */
   const createRuntime = (): SessionRuntime => new SessionRuntime({
     projectGroupId: projectId, sessionId: "memory-session", sessionDirectory: join(paths.rootDir, "sessions", projectId, "memory-session"),
     databasePath: join(paths.rootDir, "events.sqlite"), metaDatabasePath: paths.metaDatabasePath, systemPrompt: "离线测试", global,
@@ -127,7 +136,12 @@ async function scenario(profile: string, projectId: string): Promise<void> {
   } finally { resumed.close() }
 }
 
-/** @returns default 与 Project 的完整调用链验证完成。 */
+/**
+ * 在独立临时用户目录中验证 default 与 Project 的记忆调用链，并清理测试目录。
+ *
+ * @returns default 与 Project 的完整调用链验证完成。
+ * @throws Error 断言或场景执行失败时向上传播，测试入口记录错误并设置失败退出码。
+ */
 async function main(): Promise<void> {
   const root = await mkdtemp(join(tmpdir(), "nicode-memory-turn-"))
   try {

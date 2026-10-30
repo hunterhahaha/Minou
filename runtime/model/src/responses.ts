@@ -1,28 +1,9 @@
 /**
- * Responses Adapter（第 6 节，TODOList 阶段 5）。
+ * Responses 的请求与统一流事件转换。
  *
- * 两个方向都在本文件里：
- *   - 请求方向：统一上下文 → `instructions` + `input`（`input` 是 InputItem 列表，
- *     `function_call` 与 `function_call_output` 与 message 同级，靠 `call_id` 配对）；
- *   - 响应方向：`ResponseStreamEvent` 流 → `ModelStreamEvent`。
- *
- * 协议侧参考：.git/技术文档/三个协议调用时传入的上下文示例.md 第 3 节。
- * 架构依据：开发备忘录第 6 节（模型协议层）、第 7 节（网络层）、第 8.4 / 8.5 节、
- *          第 11.1 / 11.3 节、第 16.2 节（工具结果只消费 text）、第 25 节（错误）
- * 设计文档：.git/技术文档/NiCode_Usage统一设计.md 第 4 节（Usage 映射）
- * 实施阶段：.git/技术文档/开发TODOList.md 阶段 5
- *
- * 本文件的五条实现决定（均为文档未规定处，已在阶段报告中单列）：
- *   1. `store: false`：NiCode 自己维护 Session 与上下文，不依赖服务端保存响应；
- *      即使 Provider 默认开启存储，也不把会话内容留在服务端。
- *   2. 不使用 `previous_response_id`，每次完整传入上下文（示例文档明确该方式）。
- *   3. thinking 增量优先取 `reasoning_summary_text.delta`（这是回传给用户的那份），
- *      缺失时退回 `reasoning_text.delta`。两者语义不同（原始推理 vs 摘要），
- *      若同一次响应都出现，会拼进同一个 thinking 块。
- *   4. `status=failed` / `status=cancelled` / `type="error"` 按异常抛出（不产出 `stream_end`），
- *      `status=incomplete` 正常产出 `stream_end` 且 `completion="incomplete"`。
- *   5. 无法序列化的 arguments 退化为 `"{}"`（协议要求字符串），
- *      这类调用仍会进入统一流，由 Runtime 按其 result 处理。
+ * 每次完整传入 instructions 和 input，不使用 previous_response_id，请求设置 store 为 false。
+ * 工具调用与结果作为独立 input 项按 call_id 配对；文本与思考按块累积。
+ * 失败或取消终态抛出异常，incomplete 作为完成状态交付；共享入口负责重试与错误归一化。
  */
 
 import OpenAI from "openai"
@@ -59,9 +40,9 @@ type FunctionTool = OpenAI.Responses.FunctionTool
 /** 该协议的工具项类型：`input` 与 `output` 两种方向共用的形状。 */
 type FunctionCallItem = Extract<ResponseInputItem, { type: "function_call" }>
 
-// ---------------------------------------------------------------------------
-// 请求方向：统一上下文 → Responses
-// ---------------------------------------------------------------------------
+
+/** 请求方向：统一上下文 → Responses */
+
 
 /**
  * 统一 `messages[1...]` → Responses `input`。
@@ -109,7 +90,7 @@ export function toResponsesInput(messages: ModelMessage[]): ResponseInputItem[] 
     }
 
     if (message.role === "tool") {
-      // 工具结果只消费 text 块（第 16.2 节）。
+      /** 工具结果只消费 text 块。 */
       items.push({
         type: "function_call_output",
         call_id: message.toolCallId,
@@ -132,7 +113,7 @@ function toResponsesTools(tools: UnifiedToolDefinition[]): FunctionTool[] {
     type: "function",
     name: tool.name,
     description: tool.description,
-    // 该协议的 parameters 直接是 JSON Schema；统一格式的 inputSchema 原样转过去。
+    /** 该协议的 parameters 直接是 JSON Schema；统一格式的 inputSchema 原样转过去。 */
     parameters: tool.inputSchema,
     strict: false,
   }))
@@ -172,9 +153,9 @@ export function buildResponsesRequest(
   return params
 }
 
-// ---------------------------------------------------------------------------
-// 响应方向：ResponseStreamEvent → ModelStreamEvent
-// ---------------------------------------------------------------------------
+
+/** 响应方向：ResponseStreamEvent → ModelStreamEvent */
+
 
 /**
  * 正在拼装的块。
@@ -237,7 +218,7 @@ interface TerminalInfo {
 }
 
 /**
- * 统一完成状态（第 8.5 节）。
+ * 统一完成状态。
  *
  *   status=completed → 已结束的完整 tool_call 是否存在决定 tool_calls / finished
  *   status=incomplete → incomplete
@@ -416,7 +397,7 @@ export async function* mapResponsesStream(
           block.toolCallId = item.call_id
           block.name = item.name
           yield { type: "block_start", index: block.index, blockType: "tool_call" }
-          // 先给出 id 与 name：下游不必等到第一个参数增量才知道调用的是哪个工具。
+          /** 先给出 id 与 name：下游不必等到第一个参数增量才知道调用的是哪个工具。 */
           yield {
             type: "block_delta",
             index: block.index,
@@ -431,8 +412,8 @@ export async function* mapResponsesStream(
           break
         }
 
-        // 其它 item 类型（web_search_call / code_interpreter_call / mcp_call 等）
-        // 没有统一表达，忽略。
+        /** 其它 item 类型（web_search_call / code_interpreter_call / mcp_call 等） */
+        /** 没有统一表达，忽略。 */
         break
       }
 
@@ -481,18 +462,18 @@ export async function* mapResponsesStream(
         const block = toolCallBlocks.get(event.item_id)
         const call = calls.get(event.item_id)
         if (block === undefined || call === undefined) break
-        // done 事件带最终完整参数：以它为准，避免增量丢包导致参数不完整。
+        /** done 事件带最终完整参数：以它为准，避免增量丢包导致参数不完整。 */
         call.argumentsJson = event.arguments
         block.argumentsJson = event.arguments
         break
       }
 
       case "response.output_item.done": {
-        // 该 item 的块到此结束；reasoning 的正文也可能只在这里出现（摘要模式下没有 delta）。
+        /** 该 item 的块到此结束；reasoning 的正文也可能只在这里出现（摘要模式下没有 delta）。 */
         const item = event.item
 
         if (item.type === "function_call") {
-          // function_call 的 id 可选，收尾键必须与打开时一致（见 `callKey`）。
+          /** function_call 的 id 可选，收尾键必须与打开时一致（见 `callKey`）。 */
           for (const mapped of closeItem(callKey(item))) yield mapped
           break
         }
@@ -547,11 +528,11 @@ export async function* mapResponsesStream(
 
   if (terminal === undefined) throw streamInterruptedError("responses")
 
-  // 收尾仍未结束的 thinking / text 块：内容就是已累积的增量，被截断时也应保留。
-  //
-  // 工具调用块只能由 `response.output_item.done`(function_call) 收尾 —— 那是协议对
-  // "该调用已完整"的显式声明。没有收到它的调用参数可能只传了一半，产出 `block_end`
-  // 会让 AgentLoop 把它当成完整调用（第 8.5 节："未结束的 tool_call 不进入消息"）。
+  /** 收尾仍未结束的 thinking / text 块：内容就是已累积的增量，被截断时也应保留。 */
+  /** ------------------------------------------------------------------------- */
+  /** 工具调用块只能由 `response.output_item.done`(function_call) 收尾 —— 那是协议对 */
+  /** "该调用已完整"的显式声明。没有收到它的调用参数可能只传了一半，产出 `block_end` */
+  /** 会让 AgentLoop 把它当成完整调用。 */
   for (const mapped of flushTextBlocks()) yield mapped
 
   const finishReason = terminal.incompleteReason ?? terminal.status
@@ -563,15 +544,15 @@ export async function* mapResponsesStream(
   }
 }
 
-// ---------------------------------------------------------------------------
-// Adapter
-// ---------------------------------------------------------------------------
+
+/** Adapter */
+
 
 /**
  * 创建 Responses Adapter。
  *
  * 与另外两个 Adapter 一样关闭 SDK 自身的重试（`maxRetries: 0`），
- * 重试统一由 `runtime/network/` 负责（第 7 节）。
+ * 重试统一由 `runtime/network/` 负责。
  *
  * @param config 要绑定的 Responses 模型配置。
  * @param options OpenAI SDK 客户端的凭据、地址和额外请求头。
@@ -600,7 +581,7 @@ export function createResponsesAdapter(
     request: UnifiedModelRequest,
     signal: AbortSignal,
   ): AsyncGenerator<ModelStreamEvent> {
-    // 校验与请求构建在迭代时抛出：AgentLoop 只需在一处处理 Adapter 的错误。
+    /** 校验与请求构建在迭代时抛出：AgentLoop 只需在一处处理 Adapter 的错误。 */
     assertRequestMatchesModel(request, config)
     const params = buildResponsesRequest(request, config)
 
@@ -613,7 +594,7 @@ export function createResponsesAdapter(
 }
 
 /**
- * 发起一次真实请求并逐个产出协议事件；取消由 SDK 的 `signal` 传递（第 6 节）。
+ * 发起一次真实请求并逐个产出协议事件；取消由 SDK 的 `signal` 传递。
  *
  * @param client OpenAI SDK 客户端。
  * @param params 已构建的流式请求参数。

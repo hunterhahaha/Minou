@@ -227,43 +227,102 @@ export async function normalizeRequest(value: unknown, base: string, cwd: string
   }
 }
 
-/** @param value 未信任对象。 @param label 字段职责。 @param keys 允许字段。 @returns 原对象。 @throws CliInputError 类型或字段无效。 */
+/**
+ * 校验未知值为对象且仅包含允许字段，不复制或改写对象。
+ *
+ * @param value 未信任对象。
+ * @param label 字段职责。
+ * @param keys 允许字段。
+ * @returns 原对象。
+ * @throws CliInputError 类型或字段无效。
+ */
 function object(value: unknown, label: string, keys: readonly string[]): Record<string, unknown> {
   if (value === null || typeof value !== "object" || Array.isArray(value)) throw new CliInputError(`${label} 必须为对象。`)
   const result = value as Record<string, unknown>
   if (Object.keys(result).some((key) => !keys.includes(key))) throw new CliInputError(`${label} 包含未知字段。`)
   return result
 }
-/** @param value 未信任文本。 @param label 字段职责。 @returns 不修改正文的非空文本。 @throws CliInputError 非文本或空白。 */
+/**
+ * 校验必需文本为非空白字符串，保留原始正文。
+ *
+ * @param value 未信任文本。
+ * @param label 字段职责。
+ * @returns 不修改正文的非空文本。
+ * @throws CliInputError 非文本或空白。
+ */
 function text(value: unknown, label: string): string {
   if (typeof value !== "string" || !value.trim()) throw new CliInputError(`${label} 必须为非空文本。`)
   return value
 }
-/** @param value 可省略字段。 @param label 字段职责。 @returns 合法文本或 undefined。 @throws CliInputError 非空文本约束失败。 */
+/**
+ * 允许字段省略，存在时复用必需文本检查。
+ *
+ * @param value 可省略字段。
+ * @param label 字段职责。
+ * @returns 合法文本或 undefined。
+ * @throws CliInputError 非空文本约束失败。
+ */
 function optionalText(value: unknown, label: string): string | undefined { return value === undefined ? undefined : text(value, label) }
-/** @param value 未信任数组。 @param label 字段职责。 @returns 去重文本列表。 @throws CliInputError 数组或条目无效。 */
+/**
+ * 检查字符串列表并去重，保留首次出现顺序。
+ *
+ * @param value 未信任数组。
+ * @param label 字段职责。
+ * @returns 去重文本列表。
+ * @throws CliInputError 数组或条目无效。
+ */
 function strings(value: unknown, label: string): string[] {
   if (!Array.isArray(value)) throw new CliInputError(`${label} 必须为字符串数组。`)
   return [...new Set(value.map((entry) => text(entry, label)))]
 }
-/** @param value 命令行列表。 @returns 拆分后的名称；省略时为空。 @throws CliInputError 包含空条目。 */
+/**
+ * 将逗号分隔的命令行值拆为名称列表。
+ *
+ * @param value 命令行列表。
+ * @returns 拆分后的名称；省略时为空。
+ * @throws CliInputError 包含空条目。
+ */
 function csv(value?: string): string[] { return value === undefined ? [] : value.split(",").map((entry) => text(entry.trim(), "列表参数")) }
-/** @param value 数值。 @param label 字段名。 @param max 最大合法值。 @returns 合法正整数。 @throws CliInputError 超出约束。 */
+/**
+ * 检查数值为约束范围内的正整数。
+ *
+ * @param value 数值。
+ * @param label 字段名。
+ * @param max 最大合法值。
+ * @returns 合法正整数。
+ * @throws CliInputError 超出约束。
+ */
 function integer(value: unknown, label: string, max: number): number {
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1 || value > max) throw new CliInputError(`${label} 必须为范围内的正整数。`)
   return value
 }
-/** @param path 输入路径。 @returns UTF-8 文本。 @throws CliInputError 文件不可读。 */
+/**
+ * 以 UTF-8 读取 CLI 输入文件，并转换读取错误。
+ *
+ * @param path 输入路径。
+ * @returns UTF-8 文本。
+ * @throws CliInputError 文件不可读。
+ */
 async function readText(path: string): Promise<string> {
   try { return await readFile(path, "utf8") } catch { throw new CliInputError("输入文件不可读。") }
 }
-/** @param path JSON 路径。 @returns 未信任 JSON。 @throws CliInputError 文件不可读或 JSON 非法。 */
+/**
+ * 读取并解析 CLI JSON 输入，不信任解析后的业务结构。
+ *
+ * @param path JSON 路径。
+ * @returns 未信任 JSON。
+ * @throws CliInputError 文件不可读或 JSON 非法。
+ */
 async function readJson(path: string): Promise<unknown> {
   const input = await readText(path)
   try { return JSON.parse(input) as unknown } catch { throw new CliInputError("输入文件必须为合法 JSON。") }
 }
 
-/** @returns 本次运行的空统计状态。 */
+/**
+ * 创建当前 Run 独立的初始统计对象。
+ *
+ * @returns 本次运行的空统计状态。
+ */
 export function createStatistics(): RunStatistics { return { steps: 0, toolCalls: 0, messages: 0, reportedUsage: 0, answer: "" } }
 
 /**
@@ -301,7 +360,12 @@ export function mapEvent(event: SessionEvent): { type: string; data: Record<stri
   }
 }
 
-/** @param usage 已报告消息的累计 Usage。 @returns 公共字段名，缺失字段保持缺失。 */
+/**
+ * 将内部累计 Usage 转为公共输出字段，保留未报告状态。
+ *
+ * @param usage 已报告消息的累计 Usage。
+ * @returns 公共字段名，缺失字段保持缺失。
+ */
 export function mapUsage(usage?: Usage): PublicUsage | null {
   if (!usage) return null
   return {
@@ -313,11 +377,21 @@ export function mapUsage(usage?: Usage): PublicUsage | null {
   }
 }
 
-/** @param reason 最终结束原因。 @returns 公共执行状态。 */
+/**
+ * 将内部结束原因映射为公共执行状态。
+ *
+ * @param reason 最终结束原因。
+ * @returns 公共执行状态。
+ */
 export function resultStatus(reason: StopReason): RunResult["status"] {
   return reason === "finished" ? "completed" : reason === "error" || reason === "invalid_request" ? "failed" : "stopped"
 }
-/** @param reason 最终结束原因。 @returns V1 固定退出码。 */
+/**
+ * 将内部结束原因映射为固定 CLI 退出码。
+ *
+ * @param reason 最终结束原因。
+ * @returns V1 固定退出码。
+ */
 export function exitCode(reason: StopReason): number {
   return { finished: 0, invalid_request: 2, max_steps: 10, timeout: 124, interrupted: 130, model_incomplete: 1, error: 1 }[reason]
 }

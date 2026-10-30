@@ -1,7 +1,8 @@
 /**
- * 使用真实 Session 存储和工具执行器验证 Skill 对话流程。
+ * 使用真实 Skill 来源、registry 和 Session 持久化验证 Skill 上下文更新。
  *
- * 覆盖首次载入、Queue、Continue、来源状态静默更新和已提交事件恢复。
+ * 脚本模型检查 Turn 固定文本、启停保存、新来源增量与来源覆盖，
+ * 并通过故障注入检查已提交事件与派生状态的恢复边界。
  */
 import assert from "node:assert/strict"
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
@@ -24,12 +25,11 @@ const MESSAGE = [{ type: "text" as const, text: "使用 Skill" }]
 
 /**
  * 创建 Skill 文件并同步来源 registry。
- *
  * @param source Global 或 Project Skill 来源目录。
  * @param name 要创建的 Skill 文件夹名。
  * @param description 写入 frontmatter 和正文的描述文本。
  * @returns 文件写入和 registry 同步完成后兑现的 Promise。
- * @throws 文件系统写入或 registry 同步失败时抛出。
+ * @throws Error 文件系统写入或 registry 同步失败时抛出，调用方负责清理临时来源。
  */
 async function addSkill(source: string, name: string, description: string): Promise<void> {
   await mkdir(join(source, name), { recursive: true })
@@ -39,7 +39,6 @@ async function addSkill(source: string, name: string, description: string): Prom
 
 /**
  * 执行真实 Turn、管理器启停保存、增量通知和故障恢复验证。
- *
  * @returns 全部 Session 与 Skill 验证完成后兑现的 Promise。
  * @throws AssertionError 记录、通知或恢复结果不符合契约时抛出；运行时和文件系统错误也会向上传递。
  */
@@ -79,25 +78,29 @@ async function main(): Promise<void> {
       } }
     }
     const directory = join(paths.rootDir, "sessions", PROJECT, "session")
+    /**
+     * 为同一持久化 Session 创建新的活动实例，模型脚本与全局能力由当前场景共用。
+     * @returns 绑定测试 Session 目录和数据库的新 Runtime。
+     * @throws Error Runtime 构造失败时抛出，调用方负责释放场景资源。
+     */
     const createRuntime = () => new SessionRuntime({ projectGroupId: PROJECT, sessionId: "session", sessionDirectory: directory, databasePath: join(paths.rootDir, "events.sqlite"), metaDatabasePath: paths.metaDatabasePath, systemPrompt: "system", global })
     let runtime = createRuntime()
     /**
-     * 读取当前测试对话的持久化 Meta。
-     *
-     * @returns 当前 Session 的 Meta 快照。
+     * 从 Meta 数据库读取当前 Session 的设置和 Skill 比较状态。
+     * @returns 当前持久化 Meta；测试场景已完成初始化。
+     * @throws Error 数据库读取失败时抛出，由当前场景报告。
      */
     const meta = () => readSessionMeta(paths.metaDatabasePath, PROJECT, "session") as SessionMeta
     /**
-     * 从当前 Session 事件中筛选 Skill 增量通知。
-     *
-     * @returns 已持久化的 Skill context_update 事件。
+     * 读取真实日志并筛选 Skill 来源变化通知，保留事件顺序。
+     * @returns source 为 skill 的 context_update 事件。
+     * @throws Error 日志读取失败时拒绝，由当前场景报告。
      */
     const notifications = async () => (await runtime.readEvents() as readonly SessionEvent[]).filter((event) => event.type === "context_update" && event.source.type === "skill")
     /**
-     * 继续当前 Session 并等待下一 Turn 完成。
-     *
-     * @returns Turn 完成后兑现的 Promise。
-     * @throws SessionRuntime 的继续或 Turn 执行失败时抛出。
+     * 使用当前用户消息继续同一 Session，并等待该 Turn 完成。
+     * @returns 下一 Turn 执行和收尾完成后解析。
+     * @throws Error 继续入口或 Turn 运行失败时拒绝，由当前场景报告。
      */
     const next = async () => { const turn = await runtime.continueSession({ content: MESSAGE }); await turn.completion }
     try {

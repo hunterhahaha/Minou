@@ -21,7 +21,11 @@ export function ComposerInput({ inputRef, value, ...props }: ComposerInputProps)
     const node = ref.current
     if (!node) return
     let width = node.clientWidth
-    /** @returns 仅更新 DOM 尺寸，不触发 React 草稿变更。 */
+    /**
+     * 根据受控文本更新输入区域的 DOM 高度。
+     *
+     * @returns 仅更新 DOM 尺寸，不触发 React 草稿变更。
+     */
     function resize(): void {
       if (!node) return
       const limit = Number.parseFloat(getComputedStyle(node).maxHeight) || 200

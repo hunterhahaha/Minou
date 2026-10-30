@@ -30,7 +30,6 @@ export class TerminalRouter {
   private readonly sessions = new Map<string, Map<string, TerminalEntry>>()
   /**
    * 绑定 PTY 后端和收集时限；构造时不启动终端进程。
-   *
    * @param backend - 创建本机 PTY 并持续报告输出、命令标记和退出事件的后端。
    * @param collectionMs - 单次输入的最长收集时间，默认 3000 毫秒；测试可传入较短时限。
    * @param startupMs - 打开终端等待首次就绪标记的时限，默认 10000 毫秒。
@@ -39,7 +38,6 @@ export class TerminalRouter {
 
   /**
    * 将 Project 与 Session 身份编码为资源字典的联合键。
-   *
    * @param projectId - 对话所属的 Project ID 或 default 分组身份。
    * @param sessionId - 当前对话的 Session ID。
    * @returns 使用 JSON 数组编码的联合身份，避免两个字符串直接拼接产生歧义。
@@ -47,7 +45,6 @@ export class TerminalRouter {
   private key(projectId: string, sessionId: string): string { return JSON.stringify([projectId, sessionId]) }
   /**
    * 获取指定对话的终端字典；首次访问时创建空字典并登记到进程内资源表。
-   *
    * @param projectId - 对话所属的 Project ID 或 default 分组身份。
    * @param sessionId - 与 projectId 共同确定终端资源隔离范围的 Session ID。
    * @returns 对话独占的可变终端字典；后续访问复用同一个字典对象。
@@ -60,7 +57,6 @@ export class TerminalRouter {
   }
   /**
    * 从指定对话的资源字典查找终端，不创建新字典或新终端。自然退出但仍保留未读输出的记录仍可查到。
-   *
    * @param projectId - 对话所属的 Project ID 或 default 分组身份。
    * @param sessionId - 允许访问目标终端的 Session ID。
    * @param id - 在该对话范围内查找的终端身份。
@@ -75,7 +71,6 @@ export class TerminalRouter {
 
   /**
    * 创建并登记一个 PTY，等待首次就绪标记后返回状态快照。启动失败或取消时移除记录并清理进程和未读输出。
-   *
    * @param projectId - 对话所属的 Project ID 或 default 分组身份。
    * @param sessionId - 新终端归属的 Session ID。
    * @param cwd - Runtime 解析出的终端初始工作目录。
@@ -114,7 +109,6 @@ export class TerminalRouter {
   /**
    * 向目标 PTY 原样写入输入，并收集本窗口归属的未交付输出；空输入只拉取输出。完成标记、退出或收集时限结束本次窗口，不根据输出内容猜测命令状态。
    * 成功交付后切换到新的输出批次，晚到内容留给下一次调用。取消保留未交付内容，持续标记监听仍可更新终端状态。
-   *
    * @param projectId - 对话所属的 Project ID 或 default 分组身份。
    * @param sessionId - 允许访问目标终端的 Session ID。
    * @param id - 当前对话中的目标终端身份。
@@ -170,7 +164,6 @@ export class TerminalRouter {
 
   /**
    * 读取指定对话的活动终端快照，排除尚未就绪、自然退出及已关闭的记录。
-   *
    * @param projectId - 对话所属的 Project ID 或 default 分组身份。
    * @param sessionId - 要查询的 Session ID。
    * @returns 活动终端状态的独立副本数组；不存在该对话的资源表时返回空数组。
@@ -180,7 +173,6 @@ export class TerminalRouter {
   }
   /**
    * 显式移除目标终端并等待本机进程退出，丢弃其尚未交付的输出。
-   *
    * @param projectId - 对话所属的 Project ID 或 default 分组身份。
    * @param sessionId - 允许关闭目标终端的 Session ID。
    * @param id - 需要关闭的终端身份。
@@ -190,7 +182,6 @@ export class TerminalRouter {
   async close(projectId: string, sessionId: string, id: string): Promise<void> { await this.remove(this.terminals(projectId, sessionId), this.entry(projectId, sessionId, id)) }
   /**
    * 向当前对话全部尚未退出的 PTY 各发送一次 Ctrl+C。发送本身不更新状态，也不证明前台命令已经终止。
-   *
    * @param projectId - 对话所属的 Project ID 或 default 分组身份。
    * @param sessionId - 需要中断其活动终端的 Session ID。
    * @returns 发送 Ctrl+C 时捕获的异常列表；空数组仅表示发送调用没有抛出异常。
@@ -204,7 +195,6 @@ export class TerminalRouter {
   }
   /**
    * 应用退出时移除全部终端资源，等待各进程退出并清理未读临时输出；普通 Runtime 活动期关闭不调用此方法。
-   *
    * @returns 全部清理任务完成时兑现的 Promise。
    * @throws AggregateError - 一个或多个终端清理任务失败；宿主负责报告其中的异常。
    */
@@ -218,7 +208,6 @@ export class TerminalRouter {
   }
   /**
    * 先将记录标记为关闭并从字典移除，通知正在等待的操作，然后释放本机进程与未读输出；迟到事件无法恢复该记录。
-   *
    * @param terminals - 目标终端所属的对话资源字典。
    * @param entry - 需要移除和清理的终端记录。
    * @returns 进程退出和输出资源清理完成时兑现的 Promise。
@@ -232,7 +221,6 @@ export class TerminalRouter {
   }
   /**
    * 处理持续到来的后端事件：追加未读输出，通过匹配的执行序号更新状态和 cwd，并通知当前打开或收集操作。已关闭记录的事件直接忽略。
-   *
    * @param entry - 接收事件的终端资源记录。
    * @param event - 原始数据、命令开始、命令完成或进程退出事件。
    */

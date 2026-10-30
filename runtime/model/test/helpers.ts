@@ -1,14 +1,8 @@
 /**
- * 三个 Adapter 测试共用的假 Provider 服务器。
+ * 三种 Adapter 测试共用的本地 HTTP 与 SSE 假 Provider 及流收集辅助函数。
  *
- * 只有本文件不与 `src/` 下的源码一一对应：它是三个协议测试共同的测试基础设施，
- * 用来验证"真实走一遍 SDK + HTTP + SSE"的路径（离线单元转换在各自的 test 里）。
- *
- * 三个协议的线上格式由实测确定（见文件末尾注释），要点：
- *   - 请求体是 JSON，`/v1/messages`、`/v1/chat/completions`、`/v1/responses` 三条路径；
- *   - 响应是 `text/event-stream`；
- *   - Anthropic 必须带 `event: <type>` 名，两个 OpenAI 协议只需要 `data:`，
- *     且 Chat Completions 必须以 `data: [DONE]` 结束。
+ * 服务器记录请求，按响应计划返回事件、错误、挂起或断开连接；
+ * 测试可经真实 SDK 访问本地服务，也可用数组脚本直接驱动离线转换。
  */
 
 import { createServer } from "node:http"
@@ -29,7 +23,7 @@ export interface FakeResponse {
   /** 是否在流末尾挂起不结束（用于取消测试）。 */
   hang?: boolean
   /**
-   * 写完事件后掐断连接（用于「流中途断开」的重试测试，第 7 节）。
+   * 写完事件后掐断连接。
    *
    * 两个 SDK 都会抛出 `TypeError: terminated`，其 `cause` 是 undici 的
    * `SocketError`（`UND_ERR_SOCKET`），因此 `isRetryableError` 判定为可重试。
@@ -69,17 +63,34 @@ export interface FakeProvider {
   close: () => Promise<void>
 }
 
-/** 把对象序列化为一行 SSE `data:`。 */
+/**
+ * 把对象序列化为一行 SSE `data:`。
+ * @param payload 要作为 SSE data 输出的对象或原始字符串。
+ * @returns 带 data 前缀及事件分隔换行的 SSE 文本。
+ * @throws Error 数据读取、序列化或异步场景执行失败时传播，调用方负责处理并清理资源。
+ */
 export function sseData(payload: object | string): string {
   const text = typeof payload === "string" ? payload : JSON.stringify(payload)
   return `data: ${text}\n\n`
 }
 
-/** 把对象序列化为 Anthropic 的 `event:` + `data:` 两行。 */
+/**
+ * 把对象序列化为 Anthropic 的 `event:` + `data:` 两行。
+ * @param type 要构造的 SSE 事件名或响应终态事件类型。
+ * @param payload 要作为 SSE data 输出的对象或原始字符串。
+ * @returns 包含 event 名称和 JSON data 的 SSE 文本。
+ * @throws Error 数据读取、序列化或异步场景执行失败时传播，调用方负责处理并清理资源。
+ */
 export function sseEvent(type: string, payload: object): string {
   return `event: ${type}\ndata: ${JSON.stringify(payload)}\n\n`
 }
 
+/**
+ * 顺序读取 HTTP 请求体并将全部缓冲区合并为 UTF-8 字符串。
+ * @param request 当前 HTTP 请求或统一模型请求。
+ * @returns 完整请求体的 UTF-8 文本。
+ * @throws Error 数据读取、序列化或异步场景执行失败时传播，调用方负责处理并清理资源。
+ */
 async function readBody(request: IncomingMessage): Promise<string> {
   const chunks: Buffer[] = []
   for await (const chunk of request) chunks.push(chunk as Buffer)
@@ -90,11 +101,21 @@ async function readBody(request: IncomingMessage): Promise<string> {
  * 启动一个假 Provider。
  *
  * 每次请求都会记录路径与请求体，然后按 `plan` 写出 SSE。`plan` 返回的状态码非 200 时
- * 返回 JSON 错误体，用于验证可重试 / 不可重试的错误路径（第 7 节）。
+ * 返回 JSON 错误体，用于验证可重试 / 不可重试的错误路径。
+ * @param plan 静态响应或根据捕获请求及同路径零基请求次数决定响应的函数。
+ * @returns 服务地址、已捕获请求和关闭函数；调用方须在场景结束后关闭服务。
+ * @throws Error 数据读取、序列化或异步场景执行失败时传播，调用方负责处理并清理资源。
  */
 export async function startFakeProvider(plan: ResponsePlan): Promise<FakeProvider> {
   const requests: CapturedRequest[] = []
 
+  /**
+   * 记录请求路径、JSON 请求体与请求头，按响应计划返回错误或 SSE，并模拟挂起或断开。
+   * @param request 当前 HTTP 请求或统一模型请求。
+   * @param response 当前请求对应的 HTTP 响应，可被写入或主动断开。
+   * @returns 当前场景的转换结果。
+   * @throws Error 数据读取、序列化或异步场景执行失败时传播，调用方负责处理并清理资源。
+   */
   async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
     const body = await readBody(request)
     const captured: CapturedRequest = {
@@ -119,10 +140,10 @@ export async function startFakeProvider(plan: ResponsePlan): Promise<FakeProvide
       response.write(typeof event === "string" ? event : sseData(event))
     }
 
-    if (planned.hang === true) return // 保持连接打开，等待客户端取消。
+    if (planned.hang === true) return /** 保持连接打开，等待客户端取消。 */
     if (planned.destroy === true) {
       if (planned.destroyAfterMs === undefined) {
-        response.destroy() // 立刻掐断：客户端可能一个事件都收不到。
+        response.destroy() /** 立刻掐断：客户端可能一个事件都收不到。 */
       } else {
         setTimeout(() => response.destroy(), planned.destroyAfterMs)
       }
@@ -146,14 +167,19 @@ export async function startFakeProvider(plan: ResponsePlan): Promise<FakeProvide
 
   return {
     origin,
-    // 只给 origin：三个 SDK 都会自己拼上 `/v1/<path>`，多带一段会变成 `/v1/v1/...`。
+    /** Anthropic 使用 origin，OpenAI 使用 origin/v1，分别匹配 SDK 的路径拼接。 */
     baseURL: (protocol) => (protocol === "anthropic_messages" ? origin : `${origin}/v1`),
     requests,
     close: () => new Promise<void>((resolve) => server.close(() => resolve())),
   }
 }
 
-/** 收集一个异步迭代器到数组。 */
+/**
+ * 收集一个异步迭代器到数组。
+ * @param source 按原顺序消费的异步事件源。
+ * @returns 按产出顺序收集的数组。
+ * @throws Error 数据读取、序列化或异步场景执行失败时传播，调用方负责处理并清理资源。
+ */
 export async function collect<T>(source: AsyncIterable<T>): Promise<T[]> {
   const out: T[] = []
   for await (const item of source) out.push(item)
@@ -165,6 +191,8 @@ export async function collect<T>(source: AsyncIterable<T>): Promise<T[]> {
  *
  * 离线转换函数的入参是 `AsyncIterable`（真实 SDK 流就是异步可迭代的），
  * 数组虽然在运行期也能被 `for await` 消费，但类型上不满足，因此测试统一用这个包一层。
+ * @param items 要逐项产出的事件数组。
+ * @returns 依次产出输入数组元素的异步迭代器。
  */
 export function streamOf<T>(items: T[]): AsyncIterable<T> {
   return (async function* () {
@@ -172,7 +200,12 @@ export function streamOf<T>(items: T[]): AsyncIterable<T> {
   })()
 }
 
-/** 断言一段异步迭代以抛错结束，并返回该错误。 */
+/**
+ * 断言一段异步迭代以抛错结束，并返回该错误。
+ * @param source 按原顺序消费的异步事件源。
+ * @returns 异步消费期间捕获的原始异常值。
+ * @throws Error 预期错误没有发生时抛出，当前测试应失败。
+ */
 export async function collectError<T>(source: AsyncIterable<T>): Promise<unknown> {
   try {
     await collect(source)
@@ -182,18 +215,18 @@ export async function collectError<T>(source: AsyncIterable<T>): Promise<unknown
   throw new Error("预期抛出错误，但正常完成")
 }
 
-// ---------------------------------------------------------------------------
-// 实测确认的线上格式（对应上面三个协议的事件序列）
-// ---------------------------------------------------------------------------
-//
-// baseURL 约定（见 `FakeProvider.baseURL` 的说明）：Anthropic 用 origin（自己拼 /v1），
-//   OpenAI 用 origin + /v1。同一个字符串不能同时满足两个 SDK。
-//
-// Anthropic `/v1/messages`：事件名与 `data.type` 必须一致，SDK 按事件名过滤；
-//   结束序列为 message_start → content_block_* → message_delta(stop_reason) → message_stop。
-// Chat Completions `/v1/chat/completions`：只需 `data:`；Usage 在 choices 为空的最后一个
-//   chunk 上（`stream_options.include_usage`）；必须以 `data: [DONE]` 结束。
-// Responses `/v1/responses`：只需 `data:`；结束事件是 response.completed / .incomplete / .failed。
-//
-// 取消：三个 SDK 在流中途被 abort 时**不一定抛错**，可能直接结束流
-//   （见 `src/shared.ts` 的 `runModelStream`，取消以调用方信号为准做兜底）。
+
+/** 实测确认的线上格式（对应上面三个协议的事件序列） */
+
+
+/** baseURL 约定（见 `FakeProvider.baseURL` 的说明）：Anthropic 用 origin（自己拼 /v1）， */
+/** OpenAI 用 origin + /v1。同一个字符串不能同时满足两个 SDK。 */
+
+/** Anthropic `/v1/messages`：事件名与 `data.type` 必须一致，SDK 按事件名过滤； */
+/** 结束序列为 message_start → content_block_* → message_delta(stop_reason) → message_stop。 */
+/** Chat Completions `/v1/chat/completions`：只需 `data:`；Usage 在 choices 为空的最后一个 */
+/** chunk 上（`stream_options.include_usage`）；必须以 `data: [DONE]` 结束。 */
+/** Responses `/v1/responses`：只需 `data:`；结束事件是 response.completed / .incomplete / .failed。 */
+
+/** 取消：三个 SDK 在流中途被 abort 时**不一定抛错**，可能直接结束流 */
+/** （见 `src/shared.ts` 的 `runModelStream`，取消以调用方信号为准做兜底）。 */

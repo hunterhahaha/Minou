@@ -1,42 +1,17 @@
 /**
- * ToolScheduler：一次工具小轮的串并行调度（第 17 节）。
+ * 按工具名称将一批有序调用切轮，并按轮执行。
  *
- * 调度模型是「按模型给出的顺序切轮，逐轮执行」：
- *
- *   拿到有序的 tool_call 数组后从索引 0 开始取：
- *     - 取到的第一个工具是独占工具 → 它单独一轮，本轮不再取别的；
- *     - 取到的是共享只读工具     → 继续往后取，直到取完全部或者遇到独占工具。
- *   一轮内的调用并发执行，一轮全部结束后才开始下一轮。
- *
- * 于是「连续的一段共享只读调用」彼此并发，「独占工具」永远单独占一轮 ——
- * 第 17 节的三条规则（共享可并发、共享运行中独占等待、独占运行中后续共享等待）都由这两句话推出。
- *
- * 切轮由 `planToolRounds` 完成（纯函数），执行由 `runToolCalls` 逐轮驱动；
- * 实际执行仍由调用方注入的 `execute` 完成（第 17 节：Scheduler 只控制调度及调用关联，
- * 所有实际执行均委托统一 execute）。
- *
- * 交出方式：`runToolCalls` 是异步迭代器，一轮之内**谁先完成谁先交出**，调用方收到一个就写一条
- * `tool/result`（第 16.5 节：完成后即可记录，不等待整个 Turn 结束再批量 render）。
- * 代价是交出顺序 = 完成顺序，与 tool_call 的顺序不同 —— 第 8.6 / 11.3 节要求的是
- * `toolCallId` 与调用的配对，与写入顺序无关。
- *
- * 尚未实现（均需要本项目尚未落地的模块，不在本阶段范围内）：
- *   - 审批请求的顺序处理与「审批屏障」（依赖 ApprovalManager，第 21 节）；
- *   - 收到取消信号时由调度器直接为尚未启动的调用产出 `CANCELLED` 结果
- *     （第 16.4、17 节；产出该结果要经过 render，目前由注入的执行入口按取消信号处理）；
- *   - 跨 Step / 跨 Turn 的 Session 级调度状态（第 17 节「ToolScheduler 按 Session 管理执行顺序」）。
- *
- * 架构依据：.git/技术文档/开发备忘录1.0.17.md 第 16.4 节（统一 execute 流程）、
- *          第 16.5 节（日志、上下文与 UI）、第 17 节（Tool Scheduler）
- * 实施阶段：.git/技术文档/开发TODOList.md 阶段 6.4（接调度入口与 tool/result 写入）
+ * 连续共享只读调用同轮并发，独占工具单独成轮；整轮结束并交付结果后才开始下一轮。
+ * 同轮结果按完成顺序连同原调用交出，异常等待同轮结束后传播。
+ * 实际执行、取消和审批由注入的 execute 及其 Session 资源处理，本模块不维护跨批次状态。
  */
 
 import type { ToolResult } from "./types.ts"
 
 /**
- * 共享只读工具（第 17 节「共享只读组」）。
+ * 共享只读工具。
  *
- * 名单照文档抄写。不在名单里的工具一律按独占执行处理，因此动态载入的 MCP Tool 与将来新增的
+ * 只有列出的名称按共享只读调度。不在名单里的工具一律按独占执行处理，因此动态载入的 MCP Tool 与将来新增的
  * 内置工具默认独占 —— 漏登记只会让调度更保守，不会让有副作用的工具意外并发。
  */
 export const SHARED_READ_ONLY_TOOLS = [
@@ -52,22 +27,29 @@ export const SHARED_READ_ONLY_TOOLS = [
 
 const SHARED_READ_ONLY_TOOL_SET: ReadonlySet<string> = new Set(SHARED_READ_ONLY_TOOLS)
 
-/** 调度分组（第 17 节）。 */
+/** 调度分组。 */
 export type ToolScheduleGroup = "shared" | "exclusive"
 
-/** 判定一个工具属于共享只读组还是独占执行组（第 17 节）。 */
+/**
+ * 判定一个工具属于共享只读组还是独占执行组。
+ * @param toolName 用于确定共享或独占分组的工具名称。
+ * @returns 名单内名称返回 shared，其他名称返回 exclusive。
+ */
 export function toolScheduleGroup(toolName: string): ToolScheduleGroup {
   return SHARED_READ_ONLY_TOOL_SET.has(toolName) ? "shared" : "exclusive"
 }
 
-/** 调度器需要从每次调用中知道的最小信息：工具名决定串并行（第 17 节）。 */
+/** 调度器需要从每次调用中知道的最小信息：工具名决定串并行。 */
 export interface SchedulableToolCall {
+  /** 用于注册、查找或调度的工具名称。 */
   toolName: string
 }
 
-/** 一次调用的结果，连同原调用一起交出，便于调用方关联 `tool/result`（第 8.6 节）。 */
+/** 一次调用的结果，连同原调用一起交出，便于调用方关联 `tool/result`。 */
 export interface ToolCallResult<TCall extends SchedulableToolCall> {
+  /** 与结果一起交付的原始工具调用。 */
   call: TCall
+  /** 当前调用整理后的统一工具结果。 */
   result: ToolResult
 }
 
@@ -76,6 +58,8 @@ export interface ToolCallResult<TCall extends SchedulableToolCall> {
  *
  * 规则就是文件头那两句：独占工具单独一轮；共享只读工具尽可能多地凑成同一轮。
  * 纯函数，返回的每一轮内部都可以安全并发，轮与轮之间必须串行。
+ * @param calls 按模型请求顺序排列的调用，不修改原数组。
+ * @returns 保持调用顺序的轮数组；共享连续段同轮，独占各自成轮。
  */
 export function planToolRounds<TCall extends SchedulableToolCall>(
   calls: readonly TCall[],
@@ -86,14 +70,14 @@ export function planToolRounds<TCall extends SchedulableToolCall>(
   while (index < calls.length) {
     const call = calls[index]
 
-    // 该轮的第一个工具就是独占工具：本轮不再取别的。
+    /** 该轮的第一个工具就是独占工具：本轮不再取别的。 */
     if (toolScheduleGroup(call.toolName) === "exclusive") {
       rounds.push([call])
       index += 1
       continue
     }
 
-    // 共享只读：一直取到取完全部、或者遇到下一个独占工具。
+    /** 共享只读：一直取到取完全部、或者遇到下一个独占工具。 */
     const round: TCall[] = []
     while (index < calls.length && toolScheduleGroup(calls[index].toolName) === "shared") {
       round.push(calls[index])
@@ -110,7 +94,11 @@ export function planToolRounds<TCall extends SchedulableToolCall>(
  *
  * 轮与轮之间严格串行：下一轮的调用在上一轮全部结束、且上一轮的结果都已交出之后才启动。
  * 提前中断消费（不把迭代器读完）时，正在运行的那一轮不会被取消 —— 取消只由 `execute`
- * 自己按 `AbortSignal` 处理（第 14 节）。
+ * 自己按 `AbortSignal` 处理。
+ * @param calls 按模型请求顺序排列的调用，不修改原数组。
+ * @param execute 执行单次调用的异步入口，取消和业务失败由其处理。
+ * @returns 按轮执行、同轮按完成顺序产出的原调用与工具结果。
+ * @throws 执行入口抛出的首个异常在同轮其余调用完成并交付结果后传播；后续轮不启动。
  */
 export async function* runToolCalls<TCall extends SchedulableToolCall>(
   calls: readonly TCall[],
@@ -131,6 +119,10 @@ type Outcome<TCall extends SchedulableToolCall> =
  *
  * 本轮全部结束后才返回；若其中有调用抛错，抛出**第一个**错误（按完成顺序），
  * 之前已交出的结果照常生效。工具失败的正常表达是 `ToolResult`，抛出属于 Turn 级失败。
+ * @param round 当前同轮并发执行的调用集合。
+ * @param execute 执行单次调用的异步入口，取消和业务失败由其处理。
+ * @returns 当前轮按完成顺序产出的成功结果，消费完成后传播首个执行异常。
+ * @throws 执行入口抛出的首个异常在同轮其余调用完成并交付结果后传播；后续轮不启动。
  */
 async function* runRound<TCall extends SchedulableToolCall>(
   round: readonly TCall[],
@@ -149,6 +141,7 @@ async function* runRound<TCall extends SchedulableToolCall>(
    *
    * 三件事按这个顺序做完，被唤醒的一方看到的 `pending` 才一定已经排除了刚完成的调用，
    * 否则会误判为「还有人在跑」而继续等待一个永远不会到来的唤醒。
+   * @param outcome 一次调用已完成的结果或异常。
    */
   function settle(outcome: Outcome<TCall>): void {
     completed.push(outcome)
@@ -159,7 +152,7 @@ async function* runRound<TCall extends SchedulableToolCall>(
   }
 
   for (const call of round) {
-    // 立即启动、不等待：本轮的调用并发执行。
+    /** 立即启动、不等待：本轮的调用并发执行。 */
     void (async () => {
       try {
         settle({ kind: "result", call, result: await execute(call) })
@@ -171,7 +164,7 @@ async function* runRound<TCall extends SchedulableToolCall>(
 
   while (pending > 0 || completed.length > 0) {
     if (completed.length === 0) {
-      // 条件检查与设置 wake 之间没有 await，因此不会丢唤醒。
+      /** 条件检查与设置 wake 之间没有 await，因此不会丢唤醒。 */
       await new Promise<void>((resolve) => {
         wake = resolve
       })

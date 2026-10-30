@@ -10,7 +10,11 @@ import { readSessionMeta, saveSessionMeta, updateSessionMetaName } from "../src/
 import type { ModelRef } from "../../model/src/types.ts"
 import type { SessionLoadedMCPTool } from "../../mcp/src/types.ts"
 
-/** @returns MCP Meta、派生文件和设置并发更新验证完成。 @throws AssertionError 状态或恢复行为偏离契约。 */
+/**
+ * 依次执行当前文件的持久化与恢复场景，并按现有清理流程释放临时资源。
+ * @returns MCP Meta、派生文件和设置并发更新验证完成。
+ * @throws AssertionError 状态或恢复行为偏离契约。
+ */
 async function main(): Promise<void> {
   const root = await mkdtemp(join(tmpdir(), "nicode-mcp-state-"))
   try {

@@ -79,7 +79,13 @@ export function registerMCPTools(tools: ToolRegistry, renders: RenderRegistry, m
   return manager.onCatalogChanged(synchronize)
 }
 
-/** @param manager 全局目录和预算计算器。 @param names 本批候选。 @param context Session 边界。 @returns 持久化后的新载入数量或错误。 */
+/**
+ * 按当前 Session 的模型窗口计算 MCP 载入状态，并提交载入记录及有效定义。
+ * @param manager 全局目录和预算计算器。
+ * @param names 本批候选。
+ * @param context Session 边界。
+ * @returns 持久化后的新载入数量或错误。
+ */
 async function load(manager: MCPManager, names: string[], context: ToolExecutionContext<object>): Promise<MCPLoadToolsResult | AppError> {
   if (!context.mcpRuntime) return mcpError("MCP_RUNTIME_MISSING", "当前 Session 缺少 MCP 上下文。")
   if (!context.mcpRuntime.contextWindow) return mcpError("MCP_CONTEXT_WINDOW_MISSING", "当前模型缺少 MCP 预算上下文窗口。")
@@ -92,9 +98,21 @@ async function load(manager: MCPManager, names: string[], context: ToolExecution
   } catch { return mcpError("MCP_LOAD_FAILED", "MCP 工具状态读取或保存失败。") }
 }
 
-/** @param message 参数错误说明。 @returns 统一参数失败。 */
+/**
+ * 构造参数校验失败结果，供统一执行入口交给结果整理器。
+ * @param message 参数错误说明。
+ * @returns 统一参数失败。
+ */
 function invalid<T extends object>(message: string): ToolArgumentValidation<T> { return { success: false, error: mcpError("INVALID_TOOL_ARGUMENTS", message) } }
-/** @param result 专属结果或错误。 @returns 是否为 AppError。 */
+/**
+ * 根据结果字段区分业务输出与 AppError。
+ * @param result 专属结果或错误。
+ * @returns 是否为 AppError。
+ */
 function isError(result: object): result is AppError { return "source" in result && "code" in result && "message" in result }
-/** @param text 成功结果文本。 @returns 统一文本结果。 */
+/**
+ * 将成功说明包装为统一文本 ToolResult。
+ * @param text 成功结果文本。
+ * @returns 统一文本结果。
+ */
 function success(text: string): ToolResult { return { status: "success", content: [{ type: "text", text }] } }

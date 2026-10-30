@@ -11,7 +11,13 @@ import type { WindowState } from "../preload/window-api.ts"
  * @throws Error 重复注册时由 Electron 抛出；无效请求在对应 IPC Promise 中拒绝。
  */
 export function registerWindowIpcHandlers(ipcMain: Pick<IpcMain, "handle">, windows: Pick<typeof BrowserWindow, "fromWebContents">): void {
-  /** @param event 当前请求的发送者。 @returns 仅属于该发送者的存活主 frame 窗口。 @throws Error 非法或已销毁窗口请求。 */
+  /**
+   * 根据 IPC 发送者定位存活且属于主 frame 的窗口。
+   *
+   * @param event 当前请求的发送者。
+   * @returns 仅属于该发送者的存活主 frame 窗口。
+   * @throws Error 非法或已销毁窗口请求。
+   */
   function currentWindow(event: IpcMainInvokeEvent): BrowserWindow {
     const window = windows.fromWebContents(event.sender)
     if (!window || window.isDestroyed() || event.sender.isDestroyed() || event.senderFrame !== event.sender.mainFrame) throw new Error("窗口控制来源无效")

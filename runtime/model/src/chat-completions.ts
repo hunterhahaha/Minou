@@ -1,27 +1,9 @@
 /**
- * Chat Completions Adapter（第 6 节，TODOList 阶段 4）。
+ * Chat Completions 的请求与统一流事件转换。
  *
- * 两个方向都在本文件里：
- *   - 请求方向：统一上下文 → `messages`（系统指令在最前，`tool_calls` 在 assistant 消息，
- *     工具结果是独立的 `role: "tool"` 消息，靠 `tool_call_id` 配对）；
- *   - 响应方向：`ChatCompletionChunk` 流 → `ModelStreamEvent`。
- *
- * 协议侧参考：.git/技术文档/三个协议调用时传入的上下文示例.md 第 2 节。
- * 架构依据：开发备忘录第 6 节（模型协议层）、第 7 节（网络层）、第 8.4 / 8.5 节、
- *          第 11.1 / 11.3 节、第 16.2 节（工具结果只消费 text）、第 25 节（错误）
- * 设计文档：.git/技术文档/NiCode_Usage统一设计.md 第 3 节（Usage 映射，含兼容字段读取）
- * 实施阶段：.git/技术文档/开发TODOList.md 阶段 4
- *
- * 本文件的四条实现决定（均为文档未规定处，已在阶段报告中单列）：
- *   1. 系统消息用 `system` 而不是 `developer`：示例文档两个都提过，但 `system` 是
- *      各兼容厂商的公共子集，NiCode 的 Provider 可以是任意 baseURL。
- *   2. 不发送 `max_tokens` / `max_completion_tokens`：两者在不同 Provider 上互不兼容
- *      （新推理模型要求改名后的 `max_completion_tokens`），config 结构未定，
- *      先由 Provider 默认值决定输出上限。
- *   3. thinking 增量读取厂商扩展字段 `reasoning_content` / `reasoning`（字符串）：
- *      该协议本身没有思考通道，统一 thinking 块只能来自这里。
- *   4. 已废弃且不带 id 的 `delta.function_call` 不转换为 tool_call：统一块必须有
- *      `toolCallId`，缺失时无法与工具结果配对，该种结束原因按 unknown 处理。
+ * 系统指令使用 system 消息，工具调用及结果通过 tool_call_id 配对。
+ * 请求不发送最大输出字段；思考增量从 reasoning_content 或 reasoning 扩展读取。
+ * 缺少调用 ID 的旧式 function_call 不构成完整工具调用；共享入口负责重试与错误归一化。
  */
 
 import OpenAI from "openai"
@@ -60,9 +42,9 @@ type ChatCompletionCreateParamsStreaming = OpenAI.ChatCompletionCreateParamsStre
 
 type AssistantToolCalls = NonNullable<ChatCompletionAssistantMessageParam["tool_calls"]>
 
-// ---------------------------------------------------------------------------
-// 请求方向：统一上下文 → Chat Completions
-// ---------------------------------------------------------------------------
+
+/** 请求方向：统一上下文 → Chat Completions */
+
 
 /**
  * 统一 `messages[1...]` → Chat Completions `messages`（不含系统消息）。
@@ -91,7 +73,7 @@ export function toChatCompletionsMessages(messages: ModelMessage[]): ChatComplet
 
       const param: ChatCompletionAssistantMessageParam = {
         role: "assistant",
-        // 只有工具调用时 content 必须是 null，不能是空字符串。
+        /** 只有工具调用时 content 必须是 null，不能是空字符串。 */
         content: text.length > 0 ? text : null,
       }
       if (toolCalls.length > 0) param.tool_calls = toolCalls
@@ -100,7 +82,7 @@ export function toChatCompletionsMessages(messages: ModelMessage[]): ChatComplet
     }
 
     if (message.role === "tool") {
-      // 工具结果只消费 text 块（第 16.2 节）。
+      /** 工具结果只消费 text 块。 */
       const param: ChatCompletionToolMessageParam = {
         role: "tool",
         tool_call_id: message.toolCallId,
@@ -143,7 +125,7 @@ function toAssistantToolCalls(blocks: AssistantContentBlock[]): AssistantToolCal
       type: "function",
       function: {
         name: block.name,
-        // 协议的 arguments 是 JSON 字符串。
+        /** 协议的 arguments 是 JSON 字符串。 */
         arguments: serializeToolCallArguments(block.arguments),
       },
     })
@@ -164,7 +146,7 @@ function toChatCompletionsTools(tools: UnifiedToolDefinition[]): ChatCompletionT
     function: {
       name: tool.name,
       description: tool.description,
-      // 协议侧的字段名是 parameters，统一格式固定叫 inputSchema。
+      /** 协议侧的字段名是 parameters，统一格式固定叫 inputSchema。 */
       parameters: tool.inputSchema,
     },
   }))
@@ -174,7 +156,7 @@ function toChatCompletionsTools(tools: UnifiedToolDefinition[]): ChatCompletionT
  * 构建一次 Chat Completions 流式请求。
  *
  * 必须带 `stream_options.include_usage`：该协议默认不在流里返回 Usage，
- * 而权威 Usage 是 Adapter 的输出契约之一（第 8.5、27.1 节）。
+ * 而权威 Usage 是 Adapter 的输出契约之一。
  *
  * @param request 待转换的统一模型请求。
  * @param config 当前 Adapter 绑定的完整模型配置，包含推理字段路径。
@@ -204,9 +186,9 @@ export function buildChatCompletionsRequest(
   return params
 }
 
-// ---------------------------------------------------------------------------
-// 响应方向：ChatCompletionChunk 流 → ModelStreamEvent
-// ---------------------------------------------------------------------------
+
+/** 响应方向：ChatCompletionChunk 流 → ModelStreamEvent */
+
 
 /** 正在拼装的块。 */
 interface PendingBlock {
@@ -253,10 +235,10 @@ function hasReportedUsage(fields: ChatCompletionsUsageFields): boolean {
 }
 
 /**
- * `finish_reason` → 统一完成状态（第 8.5 节）。
+ * `finish_reason` → 统一完成状态。
  *
  * 只有"已结束的完整 tool_call"才算待执行；`function_call` 属已废弃形态，
- * 没有 id 时无法配对（见文件头第 4 条），因此不可能满足该条件。
+ * 没有 id 时无法配对，因此不可能满足该条件。
  *
  * @param finishReason 协议返回的原始结束原因。
  * @param endedToolCalls 已完整收尾的工具调用数量。
@@ -388,7 +370,7 @@ export async function* mapChatCompletionsStream(
    * `finish_reason` 是这里唯一的完整性信号（不能用统一完成状态来判断：
    * 那个状态本身要等工具调用收尾后才算得出来）。被 `length` 截断的工具调用参数
    * 可能只传了一半，产出 `block_end` 会让 AgentLoop 把它当成完整调用
-   * （第 8.5 节："未结束的 tool_call 不进入消息"）。
+   * 。
    *
    * @returns 根据结束原因收尾后的统一 block_end 事件。
    */
@@ -426,7 +408,7 @@ export async function* mapChatCompletionsStream(
       }
     }
 
-    // refusal 是拒绝回答的正文，统一格式没有独立表达，按 text 块发出去，不丢内容。
+    /** refusal 是拒绝回答的正文，统一格式没有独立表达，按 text 块发出去，不丢内容。 */
     const text = delta.content ?? delta.refusal ?? undefined
     if (typeof text === "string" && text.length > 0) {
       for (const event of closeOtherChannels("text")) yield event
@@ -451,7 +433,7 @@ export async function* mapChatCompletionsStream(
 
         if (call.id != null) block.toolCallId = call.id
 
-        // 工具名按分片累积：协议允许 name 分片到达。
+        /** 工具名按分片累积：协议允许 name 分片到达。 */
         const nameDelta = call.function?.name
         if (nameDelta !== undefined && nameDelta.length > 0) {
           block.name += nameDelta
@@ -489,15 +471,15 @@ export async function* mapChatCompletionsStream(
   }
 }
 
-// ---------------------------------------------------------------------------
-// Adapter
-// ---------------------------------------------------------------------------
+
+/** Adapter */
+
 
 /**
  * 创建 Chat Completions Adapter。
  *
  * 与 Anthropic 一样关闭 SDK 自身的重试（`maxRetries: 0`），重试统一由 `runtime/network/` 负责，
- * 否则一次逻辑请求会被两层重试各自放大（第 7 节）。
+ * 否则一次逻辑请求会被两层重试各自放大。
  *
  * @param config 要绑定的 Chat Completions 模型配置。
  * @param options OpenAI SDK 客户端的凭据、地址和额外请求头。
@@ -526,7 +508,7 @@ export function createChatCompletionsAdapter(
     request: UnifiedModelRequest,
     signal: AbortSignal,
   ): AsyncGenerator<ModelStreamEvent> {
-    // 校验与请求构建在迭代时抛出：AgentLoop 只需在一处处理 Adapter 的错误。
+    /** 校验与请求构建在迭代时抛出：AgentLoop 只需在一处处理 Adapter 的错误。 */
     assertRequestMatchesModel(request, config)
     const params = buildChatCompletionsRequest(request, config)
 
@@ -539,7 +521,7 @@ export function createChatCompletionsAdapter(
 }
 
 /**
- * 发起一次真实请求并逐个产出协议 chunk；取消由 SDK 的 `signal` 传递（第 6 节）。
+ * 发起一次真实请求并逐个产出协议 chunk；取消由 SDK 的 `signal` 传递。
  *
  * @param client OpenAI SDK 客户端。
  * @param params 已构建的流式请求参数。

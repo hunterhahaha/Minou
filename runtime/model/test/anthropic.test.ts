@@ -1,17 +1,7 @@
 /**
- * Anthropic Messages Adapter 测试（第 6、7、8.4、8.5、11、16.2、25 节）。
+ * 通过离线事件脚本与本地假 Provider 验证 Anthropic Adapter。
  *
- * 不依赖测试框架；直接运行：
- *   node --experimental-strip-types runtime/model/test/anthropic.test.ts
- *
- * 四类覆盖（对齐 TODOList 阶段 3 的验证要求）：
- *   1. 请求转换：统一上下文 → system + messages（含工具调用配对）；
- *   2. 正常流：thinking / text 增量 → 统一事件，finishReason 与完成状态；
- *   3. 工具调用流：增量拼装出完整 toolCallId / name / arguments；
- *   4. 取消：AbortSignal 终止请求且不重试；另附 Usage 转换与错误归一化。
- *
- * 事件构造用 `as` 断言：这里要测的是 Adapter 对协议事件的搬运规则，
- * 不需要为每个字段补齐 SDK 要求的全部属性。
+ * 覆盖请求转换、文本与思考流、工具参数拼装、完成状态、Usage、重试、取消及错误归一化。
  */
 
 import assert from "node:assert/strict"
@@ -42,17 +32,28 @@ const MODEL: ModelConfig = {
   reasoningField: { path: ["output_config", "effort"] },
 }
 
-/** 离线转换入口：协议事件数组 → 统一事件流（真实 SDK 的流本身就是异步可迭代的）。 */
+/**
+ * 离线转换入口：协议事件数组 → 统一事件流（真实 SDK 的流本身就是异步可迭代的）。
+ * @param events 按协议或统一格式排列的测试事件数组。
+ * @returns 转换后的统一事件异步生成器；消费时执行协议校验。
+ */
 function mapAnthropicStream(events: RawMessageStreamEvent[]): AsyncGenerator<ModelStreamEvent> {
   return mapAnthropicStreamOf(streamOf(events))
 }
 
-/** 构造协议事件；只填被测字段。 */
+/**
+ * 构造协议事件；只填被测字段。
+ * @param value 仅包含当前场景所需字段的协议事件对象。
+ * @returns 当前场景的转换结果。
+ */
 function event(value: Record<string, unknown>): RawMessageStreamEvent {
   return value as unknown as RawMessageStreamEvent
 }
 
-/** 一条含工具调用与工具结果的统一上下文（对照协议示例文档第 1 节）。 */
+/**
+ * 一条含工具调用与工具结果的统一上下文。
+ * @returns 包含 System、用户、Assistant 工具调用及工具结果的统一请求。
+ */
 function agentRequest(): UnifiedModelRequest {
   return {
     model: { providerId: "anthropic", protocol: "anthropic_messages", modelId: "model-record-1", name: "claude-test", reasoningLevel: "medium" },
@@ -96,7 +97,10 @@ function agentRequest(): UnifiedModelRequest {
   }
 }
 
-/** 一个正常流：thinking + text，最终 end_turn。 */
+/**
+ * 一个正常流：thinking + text，最终 end_turn。
+ * @returns 按协议顺序排列的正常思考与文本事件脚本。
+ */
 function normalStream(): RawMessageStreamEvent[] {
   return [
     event({
@@ -123,7 +127,11 @@ function normalStream(): RawMessageStreamEvent[] {
   ]
 }
 
-/** 事件序列的紧凑摘要，便于整体比对块结构。 */
+/**
+ * 事件序列的紧凑摘要，便于整体比对块结构。
+ * @param events 按协议或统一格式排列的测试事件数组。
+ * @returns 保留事件类型、块身份与内容的紧凑对照结构。
+ */
 function summarize(events: ModelStreamEvent[]): string[] {
   return events.map((item) => {
     if (item.type === "block_start") return `start:${item.index}:${item.blockType}`
@@ -139,16 +147,25 @@ function summarize(events: ModelStreamEvent[]): string[] {
   })
 }
 
-/** 文本块的最终内容，便于断言拼接结果。 */
+/**
+ * 文本块的最终内容，便于断言拼接结果。
+ * @param events 按协议或统一格式排列的测试事件数组。
+ * @returns 流中已结束文本块的内容。
+ */
 function endedText(events: ModelStreamEvent[]): string {
   const ended = events.find((item) => item.type === "block_end")
   return ended?.type === "block_end" && ended.block.type === "text" ? ended.block.text : ""
 }
 
+/**
+ * 依次执行当前文件的请求转换、流事件或 Usage 断言；协议集成场景使用本地假 Provider 并在场景结束后关闭服务。
+ * @returns 全部断言和异步场景完成后解析。
+ * @throws Error 断言或场景执行失败时向上传播，测试入口报告失败。
+ */
 async function main(): Promise<void> {
-  // -------------------------------------------------------------------------
-  // 1. 请求转换（第 11.1、11.3、16.2 节）
-  // -------------------------------------------------------------------------
+  /** ------------------------------------------------------------------------- */
+  /** 1. 请求转换 */
+  /** ------------------------------------------------------------------------- */
 
   {
     const params = buildAnthropicRequest(agentRequest(), MODEL)
@@ -162,20 +179,20 @@ async function main(): Promise<void> {
     assert.equal(params.max_tokens, MODEL.maxOutputTokens)
     assert.deepEqual(params.output_config, { effort: "medium" })
     assert.equal(params.stream, true)
-    // messages[0] 对应协议的 system 位置。
+    /** messages[0] 对应协议的 system 位置。 */
     assert.equal(params.system, "You are a coding agent.")
     assert.equal(params.messages.length, 5, "system 之外的 5 条消息各自成项")
 
     const [user, assistantWithCall, toolResult, assistantText, lastUser] = params.messages
     assert.deepEqual(user, { role: "user", content: [{ type: "text", text: "读取 config.ts" }] })
 
-    // thinking 不回放（协议要求 thinking 块带 signature），tool_use 保留在 assistant content。
+    /** thinking 不回放（协议要求 thinking 块带 signature），tool_use 保留在 assistant content。 */
     assert.deepEqual(assistantWithCall, {
       role: "assistant",
       content: [{ type: "tool_use", id: "toolu_01", name: "read_file", input: { path: "/p/config.ts" } }],
     })
 
-    // 工具结果进入 user content 的 tool_result，并用 tool_use_id 配对。
+    /** 工具结果进入 user content 的 tool_result，并用 tool_use_id 配对。 */
     assert.deepEqual(toolResult, {
       role: "user",
       content: [{ type: "tool_result", tool_use_id: "toolu_01", content: "PORT=3000" }],
@@ -187,7 +204,7 @@ async function main(): Promise<void> {
     })
     assert.deepEqual(lastUser, { role: "user", content: [{ type: "text", text: "改成 8080" }] })
 
-    // 工具定义映射到 input_schema。
+    /** 工具定义映射到 input_schema。 */
     assert.deepEqual(params.tools, [
       {
         name: "read_file",
@@ -201,14 +218,14 @@ async function main(): Promise<void> {
     ])
   }
 
-  // 空 tools 不发送该字段（协议不接受空数组）。
+  /** 空 tools 不发送该字段（协议不接受空数组）。 */
   {
     const bare = agentRequest()
     bare.tools = []
     assert.equal(buildAnthropicRequest(bare, MODEL).tools, undefined)
   }
 
-  // 连续的工具结果合并进同一个 user 消息：该协议不允许 tool_result 单独成条。
+  /** 连续的工具结果合并进同一个 user 消息：该协议不允许 tool_result 单独成条。 */
   {
     const multi = agentRequest()
     multi.context.messages = [
@@ -235,7 +252,7 @@ async function main(): Promise<void> {
     })
   }
 
-  // 多块文本按顺序保留（该协议保留块，只过滤空块）。
+  /** 多块文本按顺序保留（该协议保留块，只过滤空块）。 */
   {
     const multi = agentRequest()
     multi.context.messages = [
@@ -252,9 +269,9 @@ async function main(): Promise<void> {
     })
   }
 
-  // -------------------------------------------------------------------------
-  // 2. 正常流：thinking / text → 统一事件（第 8.4 节）
-  // -------------------------------------------------------------------------
+  /** ------------------------------------------------------------------------- */
+  /** 2. 正常流：thinking / text → 统一事件 */
+  /** ------------------------------------------------------------------------- */
 
   {
     const events = await collect(mapAnthropicStream(normalStream()))
@@ -270,7 +287,7 @@ async function main(): Promise<void> {
     ])
   }
 
-  // stream_end 带 Usage、finishReason；Anthropic 的 totalTokens 由派生得到。
+  /** stream_end 带 Usage、finishReason；Anthropic 的 totalTokens 由派生得到。 */
   {
     const events = await collect(mapAnthropicStream(normalStream()))
     const last = events[events.length - 1]
@@ -284,7 +301,7 @@ async function main(): Promise<void> {
     assert.equal(last.usage?.cacheWriteTokens, undefined, "未报告的字段保持未报告")
   }
 
-  // 块序号重编号：协议 index 不连续时统一流仍从 0 起连续。
+  /** 块序号重编号：协议 index 不连续时统一流仍从 0 起连续。 */
   {
     const events = await collect(
       mapAnthropicStream([
@@ -309,7 +326,7 @@ async function main(): Promise<void> {
     )
   }
 
-  // 没有统一表达的块（如 redacted_thinking）被忽略，不影响后续块的序号。
+  /** 没有统一表达的块（如 redacted_thinking）被忽略，不影响后续块的序号。 */
   {
     const events = await collect(
       mapAnthropicStream([
@@ -342,7 +359,7 @@ async function main(): Promise<void> {
     )
   }
 
-  // stop_reason 与完成状态的对应（第 8.5 节）。
+  /** stop_reason 与完成状态的对应。 */
   const stopReasons: Array<[string | undefined, string]> = [
     ["max_tokens", "incomplete"],
     ["model_context_window_exceeded", "incomplete"],
@@ -372,7 +389,7 @@ async function main(): Promise<void> {
     )
   }
 
-  // 被截断的文本仍要收尾（内容就是已收到的增量）。
+  /** 被截断的文本仍要收尾（内容就是已收到的增量）。 */
   {
     const events = await collect(
       mapAnthropicStream([
@@ -393,7 +410,7 @@ async function main(): Promise<void> {
     )
   }
 
-  // 没有 message_stop 就结束（连接被截断）→ 抛错，不产出 stream_end。
+  /** 没有 message_stop 就结束（连接被截断）→ 抛错，不产出 stream_end。 */
   {
     const error = await collectError(
       mapAnthropicStream([
@@ -404,9 +421,9 @@ async function main(): Promise<void> {
     assert.match(String((error as Error).message), /中断/)
   }
 
-  // -------------------------------------------------------------------------
-  // 3. 工具调用流：增量拼装（第 8.4 节）
-  // -------------------------------------------------------------------------
+  /** ------------------------------------------------------------------------- */
+  /** 3. 工具调用流：增量拼装 */
+  /** ------------------------------------------------------------------------- */
 
   {
     const events = await collect(
@@ -436,7 +453,7 @@ async function main(): Promise<void> {
       ]),
     )
 
-    // id 与 name 在块开始时就以增量给出，不必等第一个参数分片。
+    /** id 与 name 在块开始时就以增量给出，不必等第一个参数分片。 */
     const firstDelta = events.find((item) => item.type === "block_delta")
     assert.deepEqual(firstDelta, {
       type: "block_delta",
@@ -461,7 +478,7 @@ async function main(): Promise<void> {
     assert.equal(last?.type === "stream_end" ? last.finishReason : undefined, "tool_use")
   }
 
-  // tool_use 但没有 content_block_stop → 不产出 block_end，完成状态不是 tool_calls。
+  /** tool_use 但没有 content_block_stop → 不产出 block_end，完成状态不是 tool_calls。 */
   {
     const events = await collect(
       mapAnthropicStream([
@@ -493,7 +510,7 @@ async function main(): Promise<void> {
     assert.equal(last?.type === "stream_end" ? last.completion : undefined, "unknown")
   }
 
-  // 被截断的参数原样保留，便于上层判断而不是悄悄丢掉。
+  /** 被截断的参数原样保留，便于上层判断而不是悄悄丢掉。 */
   {
     const events = await collect(
       mapAnthropicStream([
@@ -525,7 +542,7 @@ async function main(): Promise<void> {
     })
   }
 
-  // content_block_start 已带文本时补一条增量，保证增量之和与 block_end 内容一致。
+  /** content_block_start 已带文本时补一条增量，保证增量之和与 block_end 内容一致。 */
   {
     const events = await collect(
       mapAnthropicStream([
@@ -548,9 +565,9 @@ async function main(): Promise<void> {
     assert.equal(endedText(events), "开头结尾")
   }
 
-  // -------------------------------------------------------------------------
-  // 4. 端到端：真实 SDK + HTTP + SSE（含 Usage、取消、错误归一化）
-  // -------------------------------------------------------------------------
+  /** ------------------------------------------------------------------------- */
+  /** 4. 端到端：真实 SDK + HTTP + SSE（含 Usage、取消、错误归一化） */
+  /** ------------------------------------------------------------------------- */
 
   const provider = await startFakeProvider((request) => {
     if (request.headers["x-test-scenario"] === "cancel") return { events: [], hang: true }
@@ -602,7 +619,7 @@ async function main(): Promise<void> {
     })
     const events = await collect(adapter.stream(agentRequest(), new AbortController().signal))
 
-    // 请求确实按该协议发出：system 独立、tool_result 在 user content、工具定义用 input_schema。
+    /** 请求确实按该协议发出：system 独立、tool_result 在 user content、工具定义用 input_schema。 */
     const sent = provider.requests[0]
     assert.equal(sent?.path, "/v1/messages")
     assert.equal(sent?.body.system, "You are a coding agent.")
@@ -625,7 +642,7 @@ async function main(): Promise<void> {
     assert.equal(last.usage?.cacheReadTokens, 10)
     assert.equal(last.usage?.cacheWriteTokens, 5)
 
-    // 取消：请求挂起时 abort → 抛 CANCELLED，且不重试（只发出一次请求）。
+    /** 取消：请求挂起时 abort → 抛 CANCELLED，且不重试（只发出一次请求）。 */
     const controller = new AbortController()
     const cancelling = createAnthropicAdapter(MODEL, {
       apiKey: "k",
@@ -649,11 +666,11 @@ async function main(): Promise<void> {
     await provider.close()
   }
 
-  // 流中途断开（尚无有效输出）→ 自动重试，且失败尝试的 block_start 不得泄漏给消费方。
-  // 这是第 7 节重试边界最容易出错的一条：重复的 block_start 会让 AgentLoop 写出两个块。
+  /** 流中途断开（尚无有效输出）→ 自动重试，且失败尝试的 block_start 不得泄漏给消费方。 */
+  /** 这是重试边界最容易出错的一条：重复的 block_start 会让 AgentLoop 写出两个块。 */
   {
     const provider = await startFakeProvider((_request, attempt) => {
-      // 第 1 次：只发出块开始就断开连接；第 2 次：完整成功。
+      /** 第 1 次：只发出块开始就断开连接；第 2 次：完整成功。 */
       if (attempt === 0) {
         return {
           events: [
@@ -726,7 +743,7 @@ async function main(): Promise<void> {
     }
   }
 
-  // 4xx（不可重试）→ 只请求一次，包装为 REQUEST_FAILED 并保留状态码。
+  /** 4xx（不可重试）→ 只请求一次，包装为 REQUEST_FAILED 并保留状态码。 */
   {
     const provider = await startFakeProvider({ status: 400, events: [] })
     try {
@@ -744,7 +761,7 @@ async function main(): Promise<void> {
     }
   }
 
-  // 5xx（可重试）→ 重试耗尽后归一化，共 3 次尝试。
+  /** 5xx（可重试）→ 重试耗尽后归一化，共 3 次尝试。 */
   {
     const provider = await startFakeProvider({ status: 503, events: [] })
     try {
@@ -760,7 +777,7 @@ async function main(): Promise<void> {
     }
   }
 
-  // 请求模型与 Adapter 绑定不一致 → runtime 侧错误，不发请求。
+  /** 请求模型与 Adapter 绑定不一致 → runtime 侧错误，不发请求。 */
   {
     const provider = await startFakeProvider({ events: [] })
     try {
@@ -787,7 +804,7 @@ async function main(): Promise<void> {
   console.log("anthropic.test.ts: Anthropic Messages Adapter 断言通过")
 }
 
-// 不用顶层 await：测试运行时被 Node 当作 ESM，但 tsc 按 CommonJS 检查。
+/** 不用顶层 await：测试运行时被 Node 当作 ESM，但 tsc 按 CommonJS 检查。 */
 main().catch((error: unknown) => {
   console.error(error)
   process.exitCode = 1

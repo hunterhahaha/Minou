@@ -37,7 +37,11 @@ export function WorkspaceSearch({ projects, sessions, status, onClose, onProject
     ...projects.flatMap((project) => project.sessions.map((session) => ({ id: `${project.projectId}:${session.sessionId}`, name: session.name, scope: project.name, projectId: project.projectId, sessionId: session.sessionId }))),
   ].filter((item) => `${item.name} ${item.scope}`.toLocaleLowerCase().includes(needle))
   const activeIndex = Math.min(active, Math.max(0, results.length - 1))
-  /** @param index 当前筛选结果的索引；空结果不执行导航。 */
+  /**
+   * 打开当前筛选结果中指定索引的对话，空结果不导航。
+   *
+   * @param index 当前筛选结果的索引；空结果不执行导航。
+   */
   function open(index: number): void {
     const result = results[index]
     if (!result) return

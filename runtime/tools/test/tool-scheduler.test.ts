@@ -1,22 +1,8 @@
 /**
- * ToolScheduler 切轮与调度测试（TODOList 阶段 6.4、第 17 节）。
+ * 使用延迟脚本观察工具切轮、并发与结果交付，不调用真实工具或网络。
  *
- * 用「带耗时的假执行函数」观察调度行为，不实现任何工具、不碰网络。运行：
- *   node --experimental-strip-types runtime/tools/test/tool-scheduler.test.ts
- *
- * 断言包在 async main() 里而非顶层 await：测试被 Node 当作 ESM 运行，
- * 但 tsc 按 CommonJS 检查，顶层 await 在后者不合法。
- *
- * 两层断言：
- *   - 切轮：`planToolRounds` 是纯函数，直接比对切分结果；
- *   - 执行：把执行轨迹（`start` / `end`）与消费轨迹（`got`）写进同一条数组，
- *     于是「谁先完成、谁先被交出、下一轮何时开始」都能直接从轨迹读出来，不依赖墙钟时间。
- *
- * 覆盖：切轮规则、共享只读并发且完成即交出、独占单独一轮、轮与轮严格串行、空批次、
- *       异常传播、分组名单。
- *
- * 架构依据：.git/技术文档/开发备忘录1.0.17.md 第 16.5 节（完成后即可记录）、
- *          第 17 节（Tool Scheduler）
+ * 通过 start、end、got 轨迹和并发峰值验证共享并发、独占串行、轮间等待及异常传播，
+ * 调度结论依据执行轨迹，不以耗时阈值代替顺序断言。
  */
 
 import assert from "node:assert/strict"
@@ -29,28 +15,47 @@ import {
 } from "../src/tool-scheduler.ts"
 import type { ToolResult } from "../src/types.ts"
 
-// ---------------------------------------------------------------------------
-// 辅助
-// ---------------------------------------------------------------------------
+/** --------------------------------------------------------------------------- */
+/** 辅助 */
+/** --------------------------------------------------------------------------- */
 
 interface FakeCall {
+  /** 用于注册、查找或调度的工具名称。 */
   toolName: string
   toolCallId: string
 }
 
+/**
+ * 等待指定毫秒，为调度轨迹制造可观察的完成顺序。
+ * @param ms 等待时长，单位为毫秒。
+ * @returns 定时器到期后解析的 Promise。
+ */
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
+/**
+ * 构造仅包含一个文本块的成功工具结果。
+ * @param text 要放入工具结果的文本。
+ * @returns 成功的单文本块工具结果。
+ */
 function textResult(text: string): ToolResult {
   return { status: "success", content: [{ type: "text", text }] }
 }
 
+/**
+ * 读取结果的首个文本块，缺失或类型不符时返回空字符串。
+ * @param result 业务输出、统一错误或已整理的工具结果。
+ * @returns 首个文本块内容，缺失时为空字符串。
+ */
 function textOf(result: ToolResult): string {
   const first = result.content[0]
   return first?.type === "text" ? first.text : ""
 }
 
+/**
+ * 调度测试的执行轨迹、并发峰值和结果收集入口。
+ */
 interface Harness {
   /** 执行与消费交错的轨迹，元素形如 `start call-1` / `end call-1` / `got call-1`。 */
   trace: string[]
@@ -65,6 +70,9 @@ interface Harness {
  *
  * `delays` 按 toolCallId 给单次调用的耗时，用来制造「后发先至」的完成顺序；
  * `failures` 里的调用在执行完成后抛错，用来观察异常传播。
+ * @param delays 按调用 ID 指定的延迟毫秒数。
+ * @param failures 按调用 ID 指定的执行后抛出值。
+ * @returns 执行与消费轨迹、峰值并发读数和调度消费入口。
  */
 function makeHarness(
   delays: Record<string, number> = {},
@@ -107,22 +115,25 @@ function makeHarness(
   }
 }
 
-// ---------------------------------------------------------------------------
-// 0. 切轮规则
-// ---------------------------------------------------------------------------
+/** --------------------------------------------------------------------------- */
+/** 0. 切轮规则 */
+/**
+ * ---------------------------------------------------------------------------
+ * @throws Error 断言或场景执行失败时传播，由测试入口报告失败。
+ */
 
 function testPlanToolRounds(): void {
   const call = (toolName: string, toolCallId: string): FakeCall => ({ toolName, toolCallId })
   const namesOf = (rounds: FakeCall[][]): string[][] =>
     rounds.map((round) => round.map((item) => item.toolCallId))
 
-  // 连续的一段共享只读 → 同一轮
+  /** 连续的一段共享只读 → 同一轮 */
   assert.deepEqual(
     namesOf(planToolRounds([call("read", "c1"), call("grep", "c2"), call("glob", "c3")])),
     [["c1", "c2", "c3"]],
   )
 
-  // 独占工具单独一轮，即便前后都是共享只读
+  /** 独占工具单独一轮，即便前后都是共享只读 */
   assert.deepEqual(
     namesOf(
       planToolRounds([
@@ -138,31 +149,35 @@ function testPlanToolRounds(): void {
     [["c1", "c2"], ["c3"], ["c4", "c5"], ["c6"], ["c7"]],
   )
 
-  // 本轮第一个就是独占 → 本轮只有它一个
+  /** 本轮第一个就是独占 → 本轮只有它一个 */
   assert.deepEqual(namesOf(planToolRounds([call("write", "c1"), call("edit", "c2")])), [
     ["c1"],
     ["c2"],
   ])
 
-  // 独占之后的共享只读进入新的一轮
+  /** 独占之后的共享只读进入新的一轮 */
   assert.deepEqual(
     namesOf(planToolRounds([call("write", "c1"), call("read", "c2"), call("read", "c3")])),
     [["c1"], ["c2", "c3"]],
   )
 
-  // 未登记的工具名按独占处理，因此也会单独占一轮
+  /** 未登记的工具名按独占处理，因此也会单独占一轮 */
   assert.deepEqual(
     namesOf(planToolRounds([call("read", "c1"), call("mcp__srv__do", "c2"), call("read", "c3")])),
     [["c1"], ["c2"], ["c3"]],
   )
 
-  // 空批次
+  /** 空批次 */
   assert.deepEqual(planToolRounds([]), [])
 }
 
-// ---------------------------------------------------------------------------
-// 1. 共享只读并发，且每完成一个就立刻交出
-// ---------------------------------------------------------------------------
+/** --------------------------------------------------------------------------- */
+/** 1. 共享只读并发，且每完成一个就立刻交出 */
+/**
+ * ---------------------------------------------------------------------------
+ * @returns 当前场景全部断言及异步操作完成后解析。
+ * @throws Error 断言或场景执行失败时传播，由测试入口报告失败。
+ */
 
 async function testSharedCallsStreamAsTheyFinish(): Promise<void> {
   const calls: FakeCall[] = [
@@ -174,7 +189,7 @@ async function testSharedCallsStreamAsTheyFinish(): Promise<void> {
 
   const results = await harness.run(calls)
 
-  // 三个调用都先启动（真的并发）；最快的一结束就被交出，不必等最慢的 call-1
+  /** 三个调用都先启动（真的并发）；最快的一结束就被交出，不必等最慢的 call-1 */
   assert.deepEqual(harness.trace, [
     "start call-1",
     "start call-2",
@@ -188,13 +203,17 @@ async function testSharedCallsStreamAsTheyFinish(): Promise<void> {
   ])
   assert.equal(harness.peakConcurrency, 3)
 
-  // 交出顺序 = 完成顺序，与接收顺序不同
+  /** 交出顺序 = 完成顺序，与接收顺序不同 */
   assert.deepEqual(results.map(textOf), ["call-3", "call-2", "call-1"])
 }
 
-// ---------------------------------------------------------------------------
-// 2. 独占串行
-// ---------------------------------------------------------------------------
+/** --------------------------------------------------------------------------- */
+/** 2. 独占串行 */
+/**
+ * ---------------------------------------------------------------------------
+ * @returns 当前场景全部断言及异步操作完成后解析。
+ * @throws Error 断言或场景执行失败时传播，由测试入口报告失败。
+ */
 
 async function testExclusiveCallsRunSerially(): Promise<void> {
   const calls: FakeCall[] = [
@@ -206,7 +225,7 @@ async function testExclusiveCallsRunSerially(): Promise<void> {
 
   const results = await harness.run(calls)
 
-  // 下一个独占工具要等上一个结束（连交出都发生在下一个启动之前）
+  /** 下一个独占工具要等上一个结束（连交出都发生在下一个启动之前） */
   assert.deepEqual(harness.trace, [
     "start call-1",
     "end call-1",
@@ -222,9 +241,13 @@ async function testExclusiveCallsRunSerially(): Promise<void> {
   assert.deepEqual(results.map(textOf), ["call-1", "call-2", "call-3"])
 }
 
-// ---------------------------------------------------------------------------
-// 3. 共享只读工具正在运行 → 独占工具等待
-// ---------------------------------------------------------------------------
+/** --------------------------------------------------------------------------- */
+/** 3. 共享只读工具正在运行 → 独占工具等待 */
+/**
+ * ---------------------------------------------------------------------------
+ * @returns 当前场景全部断言及异步操作完成后解析。
+ * @throws Error 断言或场景执行失败时传播，由测试入口报告失败。
+ */
 
 async function testExclusiveWaitsForRunningShared(): Promise<void> {
   const calls: FakeCall[] = [
@@ -236,7 +259,7 @@ async function testExclusiveWaitsForRunningShared(): Promise<void> {
 
   const results = await harness.run(calls)
 
-  // 两个读并发，等待期间已完成的 call-2 照常交出；写必须等它们都结束
+  /** 两个读并发，等待期间已完成的 call-2 照常交出；写必须等它们都结束 */
   assert.deepEqual(harness.trace, [
     "start call-1",
     "start call-2",
@@ -252,9 +275,13 @@ async function testExclusiveWaitsForRunningShared(): Promise<void> {
   assert.deepEqual(results.map(textOf), ["call-2", "call-1", "call-3"])
 }
 
-// ---------------------------------------------------------------------------
-// 4. 任一独占工具正在运行 → 之后的共享只读工具等待
-// ---------------------------------------------------------------------------
+/** --------------------------------------------------------------------------- */
+/** 4. 任一独占工具正在运行 → 之后的共享只读工具等待 */
+/**
+ * ---------------------------------------------------------------------------
+ * @returns 当前场景全部断言及异步操作完成后解析。
+ * @throws Error 断言或场景执行失败时传播，由测试入口报告失败。
+ */
 
 async function testSharedAfterExclusiveWaits(): Promise<void> {
   const calls: FakeCall[] = [
@@ -266,7 +293,7 @@ async function testSharedAfterExclusiveWaits(): Promise<void> {
 
   const results = await harness.run(calls)
 
-  // 独占期间没有任何并发；之后的两个读重新并发
+  /** 独占期间没有任何并发；之后的两个读重新并发 */
   assert.deepEqual(harness.trace, [
     "start call-1",
     "end call-1",
@@ -282,9 +309,13 @@ async function testSharedAfterExclusiveWaits(): Promise<void> {
   assert.deepEqual(results.map(textOf), ["call-1", "call-3", "call-2"])
 }
 
-// ---------------------------------------------------------------------------
-// 5. 混合批次
-// ---------------------------------------------------------------------------
+/** --------------------------------------------------------------------------- */
+/** 5. 混合批次 */
+/**
+ * ---------------------------------------------------------------------------
+ * @returns 当前场景全部断言及异步操作完成后解析。
+ * @throws Error 断言或场景执行失败时传播，由测试入口报告失败。
+ */
 
 async function testMixedBatch(): Promise<void> {
   const calls: FakeCall[] = [
@@ -296,7 +327,7 @@ async function testMixedBatch(): Promise<void> {
 
   const results = await harness.run(calls)
 
-  // call-2 先完成先交出；edit 要等 call-1 结束后才开始
+  /** call-2 先完成先交出；edit 要等 call-1 结束后才开始 */
   assert.deepEqual(harness.trace, [
     "start call-1",
     "start call-2",
@@ -311,9 +342,13 @@ async function testMixedBatch(): Promise<void> {
   assert.deepEqual(results.map(textOf), ["call-2", "call-1", "call-3"])
 }
 
-// ---------------------------------------------------------------------------
-// 6. 空批次
-// ---------------------------------------------------------------------------
+/** --------------------------------------------------------------------------- */
+/** 6. 空批次 */
+/**
+ * ---------------------------------------------------------------------------
+ * @returns 当前场景全部断言及异步操作完成后解析。
+ * @throws Error 断言或场景执行失败时传播，由测试入口报告失败。
+ */
 
 async function testEmptyBatch(): Promise<void> {
   const harness = makeHarness()
@@ -324,9 +359,13 @@ async function testEmptyBatch(): Promise<void> {
   assert.deepEqual(harness.trace, [])
 }
 
-// ---------------------------------------------------------------------------
-// 7. 异常传播
-// ---------------------------------------------------------------------------
+/** --------------------------------------------------------------------------- */
+/** 7. 异常传播 */
+/**
+ * ---------------------------------------------------------------------------
+ * @returns 当前场景全部断言及异步操作完成后解析。
+ * @throws Error 断言或场景执行失败时传播，由测试入口报告失败。
+ */
 
 async function testErrorPropagatesAfterDeliveredResults(): Promise<void> {
   const boom = new Error("执行失败")
@@ -341,8 +380,8 @@ async function testErrorPropagatesAfterDeliveredResults(): Promise<void> {
     (error: unknown) => error,
   )
 
-  // call-2 已经交出；call-1 失败后异常传播给调用方（工具失败的正常表达是 ToolResult，
-  // 抛出属于 Turn 级失败）
+  /** call-2 已经交出；call-1 失败后异常传播给调用方（工具失败的正常表达是 ToolResult， */
+  /** 抛出属于 Turn 级失败） */
   assert.equal(thrown, boom)
   assert.deepEqual(harness.trace, [
     "start call-1",
@@ -353,17 +392,20 @@ async function testErrorPropagatesAfterDeliveredResults(): Promise<void> {
   ])
 }
 
-// ---------------------------------------------------------------------------
-// 8. 分组名单
-// ---------------------------------------------------------------------------
+/** --------------------------------------------------------------------------- */
+/** 8. 分组名单 */
+/**
+ * ---------------------------------------------------------------------------
+ * @throws Error 断言或场景执行失败时传播，由测试入口报告失败。
+ */
 
 function testScheduleGroups(): void {
-  // 第 17 节「共享只读组」的所有成员
+  /** 共享只读组的全部成员 */
   for (const toolName of SHARED_READ_ONLY_TOOLS) {
     assert.equal(toolScheduleGroup(toolName), "shared", `${toolName} 应为共享只读`)
   }
 
-  // 第 17 节「独占执行组」
+  /** 独占执行组 */
   for (const toolName of [
     "write",
     "edit",
@@ -379,13 +421,17 @@ function testScheduleGroups(): void {
     assert.equal(toolScheduleGroup(toolName), "exclusive", `${toolName} 应为独占执行`)
   }
 
-  // 未登记的工具名（含动态载入的 MCP Tool）按独占处理
+  /** 未登记的工具名（含动态载入的 MCP Tool）按独占处理 */
   assert.equal(toolScheduleGroup("mcp__some_server__some_tool"), "exclusive")
 }
 
-// ---------------------------------------------------------------------------
-// 入口
-// ---------------------------------------------------------------------------
+/** --------------------------------------------------------------------------- */
+/** 入口 */
+/**
+ * ---------------------------------------------------------------------------
+ * @returns 当前场景全部断言及异步操作完成后解析。
+ * @throws Error 断言或场景执行失败时传播，由测试入口报告失败。
+ */
 
 async function main(): Promise<void> {
   testPlanToolRounds()
@@ -400,7 +446,7 @@ async function main(): Promise<void> {
   console.log("tool-scheduler.test.ts: 调度断言通过")
 }
 
-// 不用顶层 await：测试运行时被 Node 当作 ESM，但 tsc 按 CommonJS 检查。
+/** 不用顶层 await：测试运行时被 Node 当作 ESM，但 tsc 按 CommonJS 检查。 */
 main().catch((error: unknown) => {
   console.error(error)
   process.exitCode = 1

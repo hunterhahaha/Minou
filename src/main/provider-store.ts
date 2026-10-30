@@ -69,6 +69,9 @@ export interface TurnProviderSnapshot {
   credential?: ProviderCredential
 }
 
+/**
+ * Provider SQLite 查询返回的原始列值，供转换为业务记录。
+ */
 interface ProviderRow {
   id: string
   name: string
@@ -78,6 +81,9 @@ interface ProviderRow {
   default_headers_json: string | null
 }
 
+/**
+ * 模型 SQLite 查询返回的原始列值，推理配置 JSON 在转换时解析。
+ */
 interface ModelRow {
   id: string
   name: string
@@ -296,6 +302,7 @@ function providerFromRow(row: ProviderRow): ProviderRecord {
 /**
  * 将 SQLite 模型行校验并恢复成持久化模型记录。
  * @param row 模型数据库行。
+ * @param protocol 从所属 Provider 读取的协议，用于检查推理字段路径。
  * @returns 不含协议的模型字段。
  * @throws Error 当持久化字段无效时抛出。
  */
@@ -563,7 +570,7 @@ export function setProviderApiKey(databasePath: string, providerId: string, apiK
 /**
  * 设置显式默认模型；null 表示恢复按顺序选择第一个模型。
  * @param databasePath Provider 数据库绝对路径。
- * @param identity 已配置模型的 Provider 与模型组合身份，或 null。
+ * @param reference 已配置模型的 Provider 与模型组合身份，或 null。
  * @throws Error 当模型不存在或数据库无法写入时抛出。
  */
 export function setDefaultModel(databasePath: string, reference: ProviderModelReference | null): void {

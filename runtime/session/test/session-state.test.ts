@@ -1,4 +1,8 @@
-/** 共享 Session Meta 数据库与派生状态恢复测试。 */
+/**
+ * 使用临时共享 SQLite 与派生文件验证 Session 状态初始化、设置和恢复。
+ *
+ * 覆盖名称与模型保持、联合身份隔离、事件派生 Usage 与上下文，以及缺失或损坏状态。
+ */
 
 import assert from "node:assert/strict"
 import { existsSync } from "node:fs"
@@ -21,7 +25,11 @@ const SECOND_PROJECT_ID = "00000000-0000-4000-8000-000000000002"
 const MODEL: ModelRef = { providerId: "provider", protocol: "responses", modelId: "first", name: "First Model", reasoningLevel: "medium" }
 const OTHER_MODEL: ModelRef = { ...MODEL, modelId: "second", name: "Second Model", reasoningLevel: "high" }
 
-/** 为一个 Session 提供当前 AGENTS.md、Skill 和 MCP 基线。 */
+/**
+ * 为一个 Session 提供当前 AGENTS.md、Skill 和 MCP 基线。
+ * @param root 当前测试使用的隔离临时目录。
+ * @returns 包含 AGENTS.md、Skill、MCP 与附加 Meta 的当前测试基线。
+ */
 function baseline(root: string): CurrentSessionBaseline {
   return {
     agentsmd: { path: join(root, "AGENTS.md"), hash: "hash", content: "rules" },
@@ -35,7 +43,13 @@ function baseline(root: string): CurrentSessionBaseline {
   }
 }
 
-/** 创建已经提交首批 Event Log 的 Session 与其派生状态访问器。 */
+/**
+ * 创建已经提交首批 Event Log 的 Session 与其派生状态访问器。
+ * @param root 当前测试使用的隔离临时目录。
+ * @param projectId 所属 Project UUID 或 default。
+ * @param sessionId 要创建或访问的 Session 身份。
+ * @throws Error 断言或临时存储操作失败时传播，由测试入口报告失败。
+ */
 async function session(root: string, projectId: string, sessionId: string) {
   const sessionDirectory = join(root, ".nicode", "sessions", projectId, sessionId)
   await mkdir(sessionDirectory, { recursive: true })
@@ -57,7 +71,12 @@ async function session(root: string, projectId: string, sessionId: string) {
   return { state, log, sessionDirectory, metaDatabasePath }
 }
 
-/** 验证初始字段、列分离、改名和修复对名称的保持。 */
+/**
+ * 验证初始字段、列分离、改名和修复对名称的保持。
+ * @param root 当前测试使用的隔离临时目录。
+ * @returns 当前场景的断言及异步操作完成后解析。
+ * @throws Error 断言或临时存储操作失败时传播，由测试入口报告失败。
+ */
 async function testInitializationAndRename(root: string): Promise<void> {
   const item = await session(root, PROJECT_ID, "shared-session")
   await item.state.initializeSession()
@@ -94,7 +113,12 @@ async function testInitializationAndRename(root: string): Promise<void> {
   assert.equal(existsSync(join(item.sessionDirectory, "meta.json")), false)
 }
 
-/** 验证联合身份隔离及 default 分组。 */
+/**
+ * 验证联合身份隔离及 default 分组。
+ * @param root 当前测试使用的隔离临时目录。
+ * @returns 当前场景的断言及异步操作完成后解析。
+ * @throws Error 断言或临时存储操作失败时传播，由测试入口报告失败。
+ */
 async function testIsolation(root: string): Promise<void> {
   const first = await session(root, PROJECT_ID, "same-id")
   const second = await session(root, SECOND_PROJECT_ID, "same-id")
@@ -107,7 +131,12 @@ async function testIsolation(root: string): Promise<void> {
   assert.equal((readSessionMeta(first.metaDatabasePath, PROJECT_ID, "same-id") as SessionMeta).name, "Project 1")
 }
 
-/** 恢复权威 Usage、Skill 与 AGENTS.md 事件时保留 SQLite 中的名称和模型选择。 */
+/**
+ * 恢复权威 Usage、Skill 与 AGENTS.md 事件时保留 SQLite 中的名称和模型选择。
+ * @param root 当前测试使用的隔离临时目录。
+ * @returns 当前场景的断言及异步操作完成后解析。
+ * @throws Error 断言或临时存储操作失败时传播，由测试入口报告失败。
+ */
 async function testDerivedRepair(root: string): Promise<void> {
   const item = await session(root, PROJECT_ID, "derived-repair")
   await item.state.initializeSession()
@@ -151,7 +180,12 @@ async function testDerivedRepair(root: string): Promise<void> {
   assert.equal(await readFile(join(item.sessionDirectory, "agents_md.snapshot"), "utf8"), "new rules")
 }
 
-/** 验证名称和身份的错误边界以及缺失 Meta 的补建。 */
+/**
+ * 验证名称和身份的错误边界以及缺失 Meta 的补建。
+ * @param root 当前测试使用的隔离临时目录。
+ * @returns 当前场景的断言及异步操作完成后解析。
+ * @throws Error 断言或临时存储操作失败时传播，由测试入口报告失败。
+ */
 async function testErrorsAndRecovery(root: string): Promise<void> {
   const item = await session(root, PROJECT_ID, "recover")
   assert.throws(() => updateSessionMetaName(item.metaDatabasePath, PROJECT_ID, "recover", "name"), /不存在/)
@@ -191,6 +225,11 @@ async function testErrorsAndRecovery(root: string): Promise<void> {
   }
 }
 
+/**
+ * 依次执行当前文件的持久化与恢复场景，并按现有清理流程释放临时资源。
+ * @returns 当前场景的断言及异步操作完成后解析。
+ * @throws Error 断言或临时存储操作失败时传播，由测试入口报告失败。
+ */
 async function main(): Promise<void> {
   const root = await mkdtemp(join(tmpdir(), "nicode-session-meta-"))
   try {
@@ -212,7 +251,12 @@ async function main(): Promise<void> {
   console.log("session-state.test.ts: SQLite Session Meta 断言通过")
 }
 
-/** @param root 临时用户目录。 @returns 设置串行写入、名称保留与重新读取验证。 */
+/**
+ * 读取当前 Session 的持久化状态。
+ * @param root 临时用户目录。
+ * @returns 设置串行写入、名称保留与重新读取验证。
+ * @throws Error 断言或临时存储操作失败时传播，由测试入口报告失败。
+ */
 async function testSettings(root: string): Promise<void> {
   const item = await session(root, PROJECT_ID, "settings")
   await item.state.initializeSession()

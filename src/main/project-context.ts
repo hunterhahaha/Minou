@@ -121,7 +121,12 @@ function formatWorkspaceInfo(
   }, null, 2)}\n</workspace_info>`
 }
 
-/** @returns 输入文本的 SHA-256 十六进制摘要。 */
+/**
+ * 对基线文本计算 SHA-256，用于 AGENTS.md 内容比较。
+ *
+ * @param content 要计算哈希的完整文本。
+ * @returns SHA-256 十六进制字符串。
+ */
 function hashText(content: string): string {
   return createHash("sha256").update(content).digest("hex")
 }
@@ -143,7 +148,14 @@ function requireDirectorySync(path: string, label: string): void {
   if (!state.isDirectory()) throw new Error(`${label}不是目录：${path}`)
 }
 
-/** 读取普通文本文件，并在错误中保留绝对路径。 */
+/**
+ * 以 UTF-8 读取文本，在读取失败的错误中保留路径与原始原因。
+ *
+ * @param filePath 要读取的文件路径。
+ * @param label 错误消息中说明文件职责的名称。
+ * @returns 文件原始文本。
+ * @throws Error 读取失败时包装后传播，由上下文解析入口处理。
+ */
 async function readTextFile(filePath: string, label: string): Promise<string> {
   try {
     return await readFile(filePath, "utf8")
@@ -152,7 +164,14 @@ async function readTextFile(filePath: string, label: string): Promise<string> {
   }
 }
 
-/** 缺失时返回空文本，其它文件类型和读取错误继续失败。 */
+/**
+ * 缺失文件返回空文本；存在时要求普通文件并读取。
+ *
+ * @param filePath 可缺失的文件路径。
+ * @param label 错误消息中的文件职责。
+ * @returns 文件文本；不存在时为空字符串。
+ * @throws Error 路径类型不符、检查或读取失败时传播。
+ */
 async function readOptionalTextFile(filePath: string, label: string): Promise<string> {
   const kind = await pathKind(filePath)
   if (kind === "missing") return ""
@@ -160,7 +179,13 @@ async function readOptionalTextFile(filePath: string, label: string): Promise<st
   return readTextFile(filePath, label)
 }
 
-/** @returns 路径当前类型；只有 ENOENT 被解释为缺失。 */
+/**
+ * 通过 lstat 区分缺失、普通文件、目录及其他节点。
+ *
+ * @param path 要检查的路径。
+ * @returns 当前路径类型，仅 ENOENT 被解释为 missing。
+ * @throws Error 除 ENOENT 外的路径检查错误包装后传播。
+ */
 async function pathKind(path: string): Promise<"missing" | "file" | "directory" | "other"> {
   let state
   try {
@@ -174,7 +199,12 @@ async function pathKind(path: string): Promise<"missing" | "file" | "directory" 
   return "other"
 }
 
-/** 判断未知异常是否携带 Node 文件系统错误码。 */
+/**
+ * 检查异常是否为携带 code 属性的 Error，不验证错误码的具体值。
+ *
+ * @param error 文件操作捕获的未知异常。
+ * @returns 值是否符合当前文件系统错误分支需要的形状。
+ */
 function isNodeError(error: unknown): error is NodeJS.ErrnoException {
   return error instanceof Error && "code" in error
 }

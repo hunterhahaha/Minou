@@ -31,7 +31,7 @@ export async function executePresent(
       if (!(await stat(path)).isFile()) continue
       if (tracker.describe(path, candidate.description) && !presented.includes(path)) presented.push(path)
     } catch {
-      // 第 18.6 节：单项路径无效时继续处理其余文件。
+      /** 单项路径无效时继续处理其余文件。 */
     }
   }
   return { presented }

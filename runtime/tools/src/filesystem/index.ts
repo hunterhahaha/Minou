@@ -114,12 +114,19 @@ export async function runRipgrep(
   }
 }
 
-/** @returns 与统一取消识别兼容的错误。 */
+/**
+ * 构造可被统一取消识别函数识别的错误。
+ * @returns 与统一取消识别兼容的错误。
+ */
 function abortError(): Error {
   return Object.assign(new Error("工具调用已取消"), { name: "AbortError" })
 }
 
-/** @param error 文件系统异常。 @returns 是否含 Node 错误码。 */
+/**
+ * 检查异常是否为带字符串 code 的 Error。
+ * @param error 文件系统异常。
+ * @returns 是否含 Node 错误码。
+ */
 function isNodeError(error: unknown): error is NodeJS.ErrnoException {
   return error instanceof Error && "code" in error
 }

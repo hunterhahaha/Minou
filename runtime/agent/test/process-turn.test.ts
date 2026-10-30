@@ -1,3 +1,9 @@
+/**
+ * 使用脚本模型和真实本机 Shell、PTY 后端验证 Session 进程工具链。
+ *
+ * 覆盖工具结果回填、队列 Turn 复用终端、停止中断、继续对话与终端关闭；
+ * 配置和会话存储使用临时目录，测试结束时释放进程工具资源。
+ */
 import assert from "node:assert/strict"
 import { mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
@@ -15,7 +21,6 @@ const MESSAGE = [{ type: "text" as const, text: "测试进程工具" }]
 
 /**
  * 从下一 Step 的模型上下文提取指定工具结果，并断言调用关联及成功状态。
- *
  * @param request - 下一 Step 收到的统一模型请求。
  * @param id - 要检查的工具调用 ID。
  * @returns 该工具结果全部 text 内容块拼接后的文本。
@@ -28,7 +33,7 @@ function toolText(request: UnifiedModelRequest, id: string): string {
 }
 
 /**
- * 运行本文件的离线断言或本机临时进程验证，并在结束时释放测试资源。
+ * 使用真实本机 Shell 和 PTY 验证工具回填、终端复用、停止与继续，并释放进程资源。
  *
  * @returns 本文件全部验证和资源清理完成时兑现的 Promise。
  * @throws Error - 断言、临时存储或本机后端验证失败；顶层测试出口记录异常并设置失败退出码。
@@ -55,6 +60,9 @@ async function main(): Promise<void> {
       if (turn === 3) {
         modelWaiting()
         await new Promise<never>((_resolve, reject) => {
+          /**
+           * 以取消错误拒绝脚本模型等待中的 Promise，使停止操作进入 Loop 取消收尾。
+           */
           const abort = () => reject(createAbortError())
           if (signal.aborted) abort(); else signal.addEventListener("abort", abort, { once: true })
         })
@@ -96,10 +104,9 @@ async function main(): Promise<void> {
     } }
   }
   /**
-   * 为同一持久对话创建新的 Runtime 活动实例，继续使用共享能力中的原终端资源。
-   *
-   * @returns 绑定测试 Session 身份和真实存储的 Runtime。
-   * @throws Error - Runtime 构造或 Project 上下文解析失败；测试入口负责报告失败。
+   * 为同一持久化 Session 创建新的活动实例，模型脚本与全局能力由当前场景共用。
+   * @returns 绑定测试 Session 目录和数据库的新 Runtime。
+   * @throws Error Runtime 构造失败时抛出，调用方负责释放场景资源。
    */
   const runtime = () => new SessionRuntime({ projectGroupId: "default", sessionId, sessionDirectory: join(paths.rootDir, "sessions", "default", sessionId), databasePath: join(paths.rootDir, "events.sqlite"), metaDatabasePath: paths.metaDatabasePath, systemPrompt: "离线测试", global })
   try {

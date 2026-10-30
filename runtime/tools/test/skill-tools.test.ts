@@ -14,7 +14,6 @@ import type { ToolCallContext, ToolResult } from "../src/types.ts"
 
 /**
  * 从工具结果中提取失败错误码。
- *
  * @param result 待检查的工具执行结果。
  * @returns 失败时的错误码；成功结果返回 undefined。
  */
@@ -22,7 +21,6 @@ function code(result: ToolResult) { return result.status === "error" ? result.er
 
 /**
  * 执行 skill_load 的工具契约验证。
- *
  * @returns 所有验证完成后兑现的 Promise。
  * @throws AssertionError 工具参数、权限、结果或错误处理不符合预期时抛出；文件系统错误也会向上传递。
  */

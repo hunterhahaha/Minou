@@ -8,7 +8,6 @@ export * from "./router.ts"
 
 /**
  * 登记四个 PTY 工具及其参数检查、执行函数和专属 render；修改工具执行前等待审批，terminal_list 只查询当前对话资源。
- *
  * @param tools - 保存模型定义和业务执行函数的工具注册表。
  * @param renders - 按工具名保存结果整理器的注册表。
  * @param router - 按 Project 与 Session 隔离并跨 Turn 持有终端的路由。

@@ -1,4 +1,9 @@
-/** 共享 SQLite 数据库中的 Session Event Log。 */
+/**
+ * 共享 SQLite 中按 Project 与 Session 联合身份隔离的追加事件日志。
+ *
+ * 同一进程中同一日志身份的写入按队列串行执行；日志层分配事件身份与序号，
+ * 单条追加及 Turn 首批事件使用事务提交，读取返回按序排列且仍需上层校验的事件。
+ */
 
 import { randomUUID } from "node:crypto"
 import { lstat } from "node:fs/promises"
@@ -69,7 +74,6 @@ const CREATE_EVENTS_TABLE = `CREATE TABLE IF NOT EXISTS session_events (
 
 /**
  * 缺失时创建共享 Event Log 数据库和事件表；已有普通文件只确认存在，不读取或检查其内容。
- *
  * @param databasePath `.nicode/events.sqlite` 的绝对路径。
  * @returns 缺失数据库创建完成，或已有普通文件确认存在后解析的 Promise。
  * @throws Error 当路径不是普通文件或缺失数据库无法创建时抛出。
@@ -420,6 +424,7 @@ async function pathKind(path: string): Promise<"file" | "directory" | "other" | 
  * 要求 Session 目录存在。
  * @param path Session 目录的绝对路径。
  * @throws Error 当目标不是目录时抛出。
+ * @returns 当前操作完成后的结果；异步写入等待提交完成后解析。
  */
 async function requireDirectory(path: string): Promise<void> {
   const stats = await lstat(path).catch((error: unknown) => {
@@ -432,6 +437,7 @@ async function requireDirectory(path: string): Promise<void> {
  * 要求共享数据库是普通文件。
  * @param path 数据库绝对路径。
  * @throws Error 当数据库缺失或不是普通文件时抛出。
+ * @returns 当前操作完成后的结果；异步写入等待提交完成后解析。
  */
 async function requireDatabase(path: string): Promise<void> {
   const kind = await pathKind(path)

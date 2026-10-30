@@ -15,6 +15,11 @@ import { WINDOW_IPC_CHANNELS } from "../preload/window-api.ts"
 /** `BrowserWindow` 类在本模块使用的构造与静态能力。 */
 export interface BrowserWindowConstructorPort {
   new(options: BrowserWindowConstructorOptions): BrowserWindow
+  /**
+   * 查询当前 Electron 窗口集合，不创建新窗口。
+   *
+   * @returns 当前全部窗口实例。
+   */
   getAllWindows(): BrowserWindow[]
 }
 
@@ -26,7 +31,10 @@ export interface ElectronWindowOptions {
   rendererHtmlPath: string
   /** 开发时 Vite Renderer 地址；未提供时从构建后的 HTML 加载。 */
   rendererUrl?: string
-  /** Renderer 页面后台装载失败时的进程级错误出口。 */
+  /**
+   * Renderer 页面后台装载失败时的进程级错误出口。
+   * @param error 后台页面加载时捕获的原始错误。
+   */
   onWindowLoadFailure(error: unknown): void
 }
 
@@ -54,7 +62,12 @@ export function createElectronWindowManager(
 
   const retainedWindows = new Set<BrowserWindow>()
   return {
-    /** @param update 对话更新；单窗失败不会阻止其余窗口接收。 @throws AggregateError 有窗口发送失败。 */
+    /**
+     * 向存活主窗口发送当前对话更新，窗口发送失败交给宿主处理。
+     *
+     * @param update 对话更新；单窗失败不会阻止其余窗口接收。
+     * @throws AggregateError 有窗口发送失败。
+     */
     sendSessionUpdate(update: SessionUpdate): void {
       const failures: unknown[] = []
       for (const window of retainedWindows) {
@@ -64,6 +77,11 @@ export function createElectronWindowManager(
       }
       if (failures.length) throw new AggregateError(failures, "Session 窗口更新发送失败")
     },
+    /**
+     * 构造并保留主窗口，装载开发地址或本地页面，按加载结果显示窗口。
+     *
+     * @throws Error 窗口构造等同步错误向上传播；异步加载失败交给宿主回调并尝试显示窗口。
+     */
     createMainWindow(): void {
       const window = new BrowserWindowClass({
         width: 1200,
@@ -109,6 +127,11 @@ export function createElectronWindowManager(
         showWindow()
       })
     },
+    /**
+     * 查询 Electron 当前窗口集合，不创建新窗口。
+     *
+     * @returns 当前是否至少存在一个打开的窗口。
+     */
     hasOpenWindows(): boolean {
       return BrowserWindowClass.getAllWindows().length > 0
     },

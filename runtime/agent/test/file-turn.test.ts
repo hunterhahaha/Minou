@@ -1,4 +1,9 @@
-/** 文件变更、审批与 Turn 收尾事件顺序的离线集成测试。 */
+/**
+ * 使用内存事件日志和假工具验证文件变化、审批及 Turn 收尾顺序。
+ *
+ * 各场景驱动真实 SessionRuntime 与 Loop，向文件追踪器记录缓冲区差异，
+ * 断言正常、停止、失败和审批取消时的事件，不写入被追踪的示例文件。
+ */
 import assert from "node:assert/strict"
 import type { ModelAdapter, ModelRef } from "../../model/src/types.ts"
 import type { SessionEvent, SessionEventInput } from "../../session/src/events.ts"
@@ -11,14 +16,25 @@ import { tmpdir } from "node:os"
 const MODEL: ModelRef = { providerId: "p", protocol: "responses", modelId: "m", name: "Model", reasoningLevel: "medium" }
 const MESSAGE = [{ type: "text" as const, text: "test" }]
 const FILE = "C:\\project\\change.txt"
+/** 文件变化与审批测试使用的正常、停止、失败和审批分支。 */
 type Scenario = "normal" | "stopped" | "error" | "approval" | "approval_stop"
 
-/** @param scenario 要执行的收尾路径。 @returns 已提交的事件序列。 */
+/**
+ * 装配脚本模型和假文件工具，执行指定收尾路径并收集真实 Runtime 写出的事件。
+ * @param scenario 要执行的收尾路径。
+ * @returns 已提交的事件序列。
+ * @throws Error 断言或场景执行失败时向上传播，测试入口记录错误并设置失败退出码。
+ */
 async function run(scenario: Scenario): Promise<SessionEvent[]> {
   const sessionId = `file-turn-${scenario}`
   const events: SessionEvent[] = []
   let requestCount = 0
   let ports!: SessionRuntime
+  /**
+   * 向内存日志追加带身份的事件，并在审批请求发布后安排通过或停止操作。
+   * @param input 待记录的 Session 事件。
+   * @returns 已追加到内存数组的完整事件。
+   */
   const append = async (input: SessionEventInput): Promise<SessionEvent> => {
     const event = { ...input, sessionId, eventId: `event-${events.length + 1}`, seq: events.length + 1, createdAt: "2026-09-24T00:00:00Z" } as SessionEvent
     events.push(event)
@@ -119,6 +135,11 @@ async function run(scenario: Scenario): Promise<SessionEvent[]> {
   return events
 }
 
+/**
+ * 依次验证正常、停止、失败、审批通过和审批取消时的文件变化与 Turn 终态。
+ * @returns 当前场景的断言及异步操作完成后解析。
+ * @throws Error 断言或场景执行失败时向上传播，测试入口记录错误并设置失败退出码。
+ */
 async function main(): Promise<void> {
   const normal = await run("normal")
   assert.deepEqual(normal.slice(-2).map((event) => event.type), ["turn/file_changes", "turn/end"])

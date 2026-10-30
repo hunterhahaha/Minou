@@ -1,11 +1,7 @@
 /**
- * Electron 主进程的可测试启动装配。
+ * Electron 主进程的启动装配，注册 IPC、连接 Session Runtime 与窗口生命周期。
  *
- * 进程划分（AGENTS.md 实现约定）：主进程承载 Runtime，渲染进程承载 UI。本文件只依赖
- * Electron 生命周期、IPC 与窗口管理的最小宿主端口；真实 Electron 包、BrowserWindow 参数和
- * Renderer 页面加载由之后的桌面壳入口提供。
- *
- * 架构依据：.git/技术文档/开发备忘录1.0.17.md 第 1、4、28、29 节
+ * 本文件依赖最小宿主端口；真实 Electron 对象、窗口配置和页面加载由桌面入口提供。
  */
 
 import { join } from "node:path"
@@ -41,7 +37,6 @@ export interface ElectronAppPort {
   whenReady(): Promise<void>
   /**
    * 注册应用生命周期监听器。
-   *
    * @param event 要监听的 Electron 应用事件。
    * @param listener 生命周期监听器，退出事件可先阻止退出以等待进程清理。
    */
@@ -52,7 +47,11 @@ export interface ElectronAppPort {
 
 /** BrowserWindow 具体实现之外，启动流程需要的窗口生命周期能力。 */
 export interface MainWindowLifecyclePort {
-  /** @param update 向全部存活的 NiCode 窗口发送的更新。 */
+  /**
+   * 向存活主窗口发送当前对话更新，窗口发送失败交给宿主处理。
+   *
+   * @param update 向全部存活的 NiCode 窗口发送的更新。
+   */
   sendSessionUpdate?(update: SessionUpdate): void
   /** 创建并开始装载一个主窗口。 */
   createMainWindow(): void

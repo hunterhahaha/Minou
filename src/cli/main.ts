@@ -157,7 +157,12 @@ export async function runCli(argv: readonly string[]): Promise<number> {
   let releaseStopped!: () => void
   const stopped = new Promise<void>((resolveStopped) => { releaseStopped = resolveStopped })
 
-  /** @returns 共享的清理任务，停止期间和 finally 可重复调用。 @throws Error 清理任一资源失败。 */
+  /**
+   * 释放本次 CLI Run 的共享资源，重复调用复用同一清理任务。
+   *
+   * @returns 共享的清理任务，停止期间和 finally 可重复调用。
+   * @throws Error 清理任一资源失败。
+   */
   function dispose(): Promise<void> {
     return disposal ??= (async () => {
       unsubscribeMcp?.()
@@ -166,7 +171,11 @@ export async function runCli(argv: readonly string[]): Promise<number> {
       if (results.some((result) => result.status === "rejected")) throw new Error("部分运行资源清理失败")
     })()
   }
-  /** @param cause 首个取消原因。使现有工具和模型观察同一信号，并立即启动资源释放。 */
+  /**
+   * 记录首个停止原因、触发共享取消信号并立即开始资源释放。
+   *
+   * @param cause 首个取消原因。使现有工具和模型观察同一信号，并立即启动资源释放。
+   */
   function stop(cause: StopReason): void {
     if (reason !== undefined || finished) return
     reason = cause
@@ -174,12 +183,23 @@ export async function runCli(argv: readonly string[]): Promise<number> {
     controller.abort()
     terminal?.interrupt("default", sessionId)
     releaseStopped()
-    // 每个异步初始化后都会检查取消状态，避免释放后继续创建新资源。
+    /** 每个异步初始化后都会检查取消状态，避免释放后继续创建新资源。 */
     void dispose().catch(() => undefined)
   }
-  /** @throws AbortError 本次已收到停止请求。 */
+  /**
+   * 在 CLI 执行边界检查是否已有停止请求。
+   *
+   * @throws AbortError 本次已收到停止请求。
+   */
   function checkStopped(): void { if (controller.signal.aborted) throw createAbortError() }
-  /** @param type 公共事件类型。 @param data 白名单数据。 @returns 有序写入完成。 @throws Error stdout 失败。 */
+  /**
+   * 按公共协议向 stdout 有序写入事件。
+   *
+   * @param type 公共事件类型。
+   * @param data 白名单数据。
+   * @returns 有序写入完成。
+   * @throws Error stdout 失败。
+   */
   function emit(type: string, data: Record<string, unknown>): Promise<void> {
     if (destination.format !== "jsonl") return Promise.resolve()
     const event: PublicEvent = { version: 1, seq: ++publicSeq, type, run_id: runId, session_id: sessionId, data }
@@ -191,7 +211,13 @@ export async function runCli(argv: readonly string[]): Promise<number> {
     outputTail = writing.catch(() => undefined)
     return writing
   }
-  /** @param input 未分配身份的现有事件。 @returns 已持久化事件。 @throws Error 存储或公共输出失败。 */
+  /**
+   * 先提交内部事件，再更新运行统计与允许公开的事件输出。
+   *
+   * @param input 未分配身份的现有事件。
+   * @returns 已持久化事件。
+   * @throws Error 存储或公共输出失败。
+   */
   async function appendEvent(input: SessionEventInput) {
     if (finished || !eventLog) throw new Error("本次事件日志不可写")
     const event = await eventLog.appendEvent(input)
@@ -209,7 +235,12 @@ export async function runCli(argv: readonly string[]): Promise<number> {
   process.on("SIGINT", interrupt)
   process.on("SIGTERM", interrupt)
 
-  /** @returns 完成模型与工具执行。 @throws Error 所有阶段的错误由外层映射为公共结果。 */
+  /**
+   * 独立装配本次 CLI Run 的模型与工具，执行 AgentLoop 并映射运行结果。
+   *
+   * @returns 完成模型与工具执行。
+   * @throws Error 所有阶段的错误由外层映射为公共结果。
+   */
   async function execute(): Promise<void> {
     request = (await readCliInput(argv, cwd)).request
     runId = request.runId
@@ -238,7 +269,7 @@ export async function runCli(argv: readonly string[]): Promise<number> {
     const mode = request.sandboxMode
     const workspace = request.workspace
     const roots = [workspace, outputDirectory]
-    // 编译入口位于 dist/src/cli；源码导入仅供仓库内的离线测试。
+    /** 编译入口位于 dist/src/cli；源码导入仅供仓库内的离线测试。 */
     const applicationRoot = typeof __dirname === "string" ? resolve(__dirname, "../../..") : cwd
     registerFileTools(tools, renders, { rgPath: bundledRipgrepPath(applicationRoot), loadAccess: () => ({ sandboxMode: mode, roots }) })
     shell = new ShellRouter()
@@ -400,7 +431,7 @@ export async function runCli(argv: readonly string[]): Promise<number> {
 if (typeof require !== "undefined" && require.main === module) {
   void runCli(process.argv.slice(2)).then((code) => {
     process.exitCode = code
-    // 先让 Node 排空网络/原生句柄的 close 回调；仅残留句柄阻止退出时才强制结束。
+    /** 先让 Node 排空网络/原生句柄的 close 回调；仅残留句柄阻止退出时才强制结束。 */
     setTimeout(() => process.exit(code), 1000).unref()
   }, () => {
     process.stderr.write("CLI 启动失败。\n", () => process.exit(1))

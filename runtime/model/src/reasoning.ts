@@ -1,15 +1,22 @@
-/** 模型推理等级配置的协议默认值、校验与请求字段拼装。 */
+/**
+ * 模型推理等级的协议默认配置、持久化输入校验及请求字段拼装。
+ *
+ * 路径校验拒绝危险属性名和协议保留根字段；模型切换时保留仍受支持的等级。
+ */
 
 import type { Protocol, ReasoningField } from "./types.ts"
 
+/** 新模型使用的默认推理等级，导出配置时复制数组。 */
 const DEFAULT_LEVELS = ["low", "medium", "high"] as const
 
+/** 各协议推理等级字段的默认路径，创建配置时复制路径。 */
 const DEFAULT_PATHS: Record<Protocol, readonly string[]> = {
   anthropic_messages: ["output_config", "effort"],
   chat_completions: ["reasoning_effort"],
   responses: ["reasoning", "effort"],
 }
 
+/** 推理字段不得覆盖的协议请求根字段。 */
 const RESERVED_ROOTS: Record<Protocol, readonly string[]> = {
   anthropic_messages: ["model", "max_tokens", "system", "messages", "stream", "tools", "tool_choice"],
   chat_completions: ["model", "messages", "stream", "stream_options", "tools", "tool_choice"],

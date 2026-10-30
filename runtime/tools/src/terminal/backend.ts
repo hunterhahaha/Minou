@@ -13,14 +13,12 @@ export type PtyEvent =
 export interface PtyProcess {
   /**
    * 向已创建的本机 PTY 原样发送字符，不自动追加回车。
-   *
    * @param input - 需要发送的命令、交互文本或控制字符。
    * @throws Error - 本机 PTY 输入写入失败；路由负责转换为工具错误。
    */
   write(input: string): void
   /**
    * 终止本机终端并等待退出，释放输出和退出事件的监听；关闭期间不再报告业务事件。
-   *
    * @returns 进程退出和监听资源释放完成时兑现的 Promise。
    * @throws Error - 本机进程关闭失败；路由或宿主负责报告清理异常。
    */
@@ -30,7 +28,6 @@ export interface PtyProcess {
 export interface PtyBackend {
   /**
    * 创建一个本机 PTY 并接入持续事件出口；首次就绪等待和 Session 归属由 TerminalRouter 管理。
-   *
    * @param cwd - Runtime 解析的终端初始工作目录。
    * @param nonce - 此终端独占的随机内部标记身份。
    * @param receive - 持续接收输出、命令开始/完成标记及退出事件的回调。
@@ -47,7 +44,6 @@ export class PtyMarkerParser {
   private readonly prefix: string
   /**
    * 构造本终端的内部标记前缀并绑定事件出口；不读取或创建进程。
-   *
    * @param nonce - 此终端内部标记使用的随机身份。
    * @param receive - 按接收顺序处理可见文本和解析后标记的回调。
    */
@@ -55,7 +51,6 @@ export class PtyMarkerParser {
 
   /**
    * 解析本次字符串数据，保留跨块未完整标记；仅删除符合本终端身份和结构的内部标记，无效标记仍作为业务输出交付。
-   *
    * @param text - PTY 本次收到的已解码字符串数据。
    * @throws receive 回调抛出异常时原样传播；后端与路由负责保持事件出口的错误边界。
    */
@@ -86,7 +81,6 @@ export class PtyMarkerParser {
   }
   /**
    * 进程退出时把无法组成完整标记的剩余字符串作为业务输出交付，并清空解析缓冲。
-   *
    * @throws receive 回调抛出异常时原样传播；事件出口负责处理。
    */
   end(): void { if (this.buffer) this.receive({ type: "data", data: this.buffer }); this.buffer = "" }
@@ -100,13 +94,11 @@ export class PwshPtyBackend implements PtyBackend {
   private readonly executable: string
   /**
    * 绑定 PowerShell 7 后端的可执行文件名或路径，构造时不加载 node-pty 或创建终端。
-   *
    * @param executable - PowerShell 7 可执行文件名或路径，默认使用 pwsh。
    */
   constructor(executable = "pwsh") { this.executable = executable }
   /**
    * 加载真实 node-pty 后端并启动持久 PowerShell，注入随机身份和执行序号标记，挂接跨块解析与退出监听。该方法返回句柄，不等待首次就绪标记。
-   *
    * @param cwd - 本次新终端的初始工作目录。
    * @param nonce - 注入 PowerShell 并用于过滤内部协议的随机终端身份。
    * @param receive - 接收可见输出、明确命令状态标记和自然退出事件的持续回调。

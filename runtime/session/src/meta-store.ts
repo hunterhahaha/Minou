@@ -1,4 +1,9 @@
-/** 所有 Session 共用的 SQLite Meta 存储。 */
+/**
+ * 按 Project 与 Session 联合身份读写共享 SQLite Meta。
+ *
+ * 初始化检查数据库版本和表结构；模型、权限、Usage、Skill 与附加字段分别序列化。
+ * 此层处理数据库记录与 JSON，完整 Meta 业务结构由派生状态层进一步校验。
+ */
 
 import { lstatSync } from "node:fs"
 import { isAbsolute, resolve } from "node:path"
@@ -31,14 +36,23 @@ const META_TYPES = ["TEXT", "TEXT", "TEXT", "INTEGER", "TEXT", "TEXT", "TEXT", "
 
 /** 一条数据库记录的原始列值；JSON 列尚未解析。 */
 interface MetaRow {
+  /** SQLite 原始 project_id 列值；JSON 列在此尚未解析。 */
   project_id: string
+  /** SQLite 原始 session_id 列值；JSON 列在此尚未解析。 */
   session_id: string
+  /** SQLite 原始 name 列值；JSON 列在此尚未解析。 */
   name: string
+  /** SQLite 原始 version 列值；JSON 列在此尚未解析。 */
   version: number
+  /** SQLite 原始 current_model_json 列值；JSON 列在此尚未解析。 */
   current_model_json: string
+  /** SQLite 原始 sandbox_mode_json 列值；JSON 列在此尚未解析。 */
   sandbox_mode_json: string
+  /** SQLite 原始 usage_json 列值；JSON 列在此尚未解析。 */
   usage_json: string
+  /** SQLite 原始 skills_json 列值；JSON 列在此尚未解析。 */
   skills_json: string
+  /** SQLite 原始 additional_meta_json 列值；JSON 列在此尚未解析。 */
   additional_meta_json: string
 }
 

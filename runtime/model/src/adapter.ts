@@ -1,14 +1,7 @@
 /**
- * Protocol Adapter 的创建入口（第 6 节）。
+ * 按 ModelConfig.protocol 选择协议工厂，每次创建绑定指定模型的新 Adapter。
  *
- * 三个 Adapter 实现同一个 `ModelAdapter` 接口，差异只在协议内部；本文件只负责按
- * `ModelConfig.protocol` 选择实现，让上层（SessionRuntime / AgentLoop）不需要 switch。
- * 当前宿主在每个 Turn 开始时调用该入口；本模块不缓存 SDK Client 或 Adapter。
- *
- * 架构依据：开发备忘录第 6 节（模型协议层：Provider → Protocol → Models）、
- *          第 3 节（CredentialStore 为 Adapter 提供凭据）、
- *          第 7 节（全局 Dispatcher 必须早于任一 Adapter 初始化）
- * 实施阶段：.git/技术文档/开发TODOList.md 阶段 3 / 4 / 5
+ * 连接参数由调用方提供，本入口不读取凭据或数据库，也不缓存 SDK Client 与 Adapter。
  */
 
 import { createAnthropicAdapter } from "./anthropic.ts"
@@ -19,11 +12,11 @@ import type { ModelAdapter, ModelConfig, Protocol } from "./types.ts"
 /**
  * 创建一个 Adapter 所需的协议侧连接参数。
  *
- * 凭据本身由 `CredentialStore` 按 providerId 提供（第 3 节），本接口只接收它的结果，
+ * 凭据本身由 `CredentialStore` 按 providerId 提供，本接口只接收它的结果，
  * 因此这里没有 providerId 字段 —— Adapter 不查凭据，只被喂凭据。
  *
- * `baseURL` 与 `defaultHeaders` 是协议兼容厂商的必要出口（第 35.1 节的 Provider 配置尚未定义），
- * 先作为可选参数留在这里；等 `config.json` 的结构确定后由配置层填。
+ * `baseURL` 与 `defaultHeaders` 由宿主从 Provider 配置快照提供；
+ * 未传地址时使用 SDK 默认值。
  */
 export interface ProtocolClientOptions {
   /** 由 CredentialStore 按 Provider 提供的 API Key。 */
@@ -53,7 +46,7 @@ const ADAPTER_FACTORIES: Record<
  * 为某个模型创建其协议对应的 Adapter。
  *
  * 一个 Adapter 实例绑定一个模型：请求校验需要它，Anthropic 的必填 `max_tokens`
- * 也要从它有默认值。模型切换 = 换实例，与第 6 节"Provider 与 Model 可动态切换"一致。
+ * 也要从它有默认值。切换模型时由宿主创建新实例。
  *
  * @param config 要绑定的 Provider、协议和模型配置。
  * @param options 协议客户端所需的凭据、地址和额外请求头。

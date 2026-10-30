@@ -22,7 +22,6 @@ export interface SkillLoadInput extends ToolCallMeta {
 
 /**
  * 成对登记 Skill 读取工具和专属 renderer，不读取来源配置。
- *
  * @param tools 应用工具注册表。
  * @param renders 应用结果整理器注册表。
  * @param manager 应用共享的 Skill 来源管理器。

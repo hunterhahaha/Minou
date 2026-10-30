@@ -1,15 +1,7 @@
 /**
- * Responses Adapter 测试（第 6、7、8.4、8.5、11、16.2、25 节）。
+ * 通过离线事件脚本与本地假 Provider 验证 Responses Adapter。
  *
- * 不依赖测试框架；直接运行：
- *   node --experimental-strip-types runtime/model/test/responses.test.ts
- *
- * 四类覆盖（对齐 TODOList 阶段 5 的验证要求）：
- *   1. 请求转换：统一上下文 → instructions + input（function_call / function_call_output；
- *      一条 assistant 消息会展开成 message + 若干 function_call item）；
- *   2. 正常流：reasoning / text 增量 → 统一事件，status 与完成状态；
- *   3. 工具调用流：由 `output_item.done` 决定调用完整性，参数以 done 事件为准；
- *   4. 取消：请求挂起时 abort → CANCELLED，且不重试；另附 Usage 转换与错误归一化。
+ * 覆盖 instructions 与 input、文本与思考流、函数调用完整性、终态、Usage、重试与取消。
  */
 
 import assert from "node:assert/strict"
@@ -41,25 +33,50 @@ const MODEL: ModelConfig = {
   reasoningField: { path: ["reasoning", "effort"] },
 }
 
-/** 离线转换入口：协议事件数组 → 统一事件流。 */
+/**
+ * 离线转换入口：协议事件数组 → 统一事件流。
+ * @param events 按协议或统一格式排列的测试事件数组。
+ * @returns 转换后的统一事件异步生成器；消费时执行协议校验。
+ */
 function mapResponsesStream(events: ResponseStreamEvent[]): AsyncGenerator<ModelStreamEvent> {
   return mapResponsesStreamOf(streamOf(events))
 }
 
-/** 构造协议事件；只填被测字段。 */
+/**
+ * 构造协议事件；只填被测字段。
+ * @param value 仅包含当前场景所需字段的协议事件对象。
+ * @returns 当前场景的转换结果。
+ */
 function event(value: Record<string, unknown>): ResponseStreamEvent {
   return value as unknown as ResponseStreamEvent
 }
 
+/**
+ * 构造尚在生成中的 Responses Assistant 文本消息项。
+ * @param id 协议输出项的唯一身份。
+ * @returns 带消息 ID 的进行中文本消息项。
+ */
 function textMessageItem(id = "item_1"): Record<string, unknown> {
   return { id, type: "message", role: "assistant", status: "in_progress", content: [] }
 }
 
+/**
+ * 构造尚在生成中的 Responses 函数调用项，参数初始为空字符串。
+ * @param id 协议输出项的唯一身份。
+ * @param callId 函数调用与结果配对使用的调用 ID。
+ * @param name 函数调用名称。
+ * @returns 带 item ID、调用 ID 与名称的进行中函数调用项。
+ */
 function functionCallItem(id: string, callId: string, name: string): Record<string, unknown> {
   return { id, type: "function_call", call_id: callId, name, arguments: "", status: "in_progress" }
 }
 
-/** response.completed / .incomplete 的结束事件；`output` 用于判断是否含函数调用。 */
+/**
+ * response.completed / .incomplete 的结束事件；`output` 用于判断是否含函数调用。
+ * @param type 要构造的 SSE 事件名或响应终态事件类型。
+ * @param options 用于覆盖终态 output、status、原因及 Usage 的可选字段。
+ * @returns 携带终态和测试字段的 Responses 结束事件。
+ */
 function terminalEvent(
   type: "response.completed" | "response.incomplete",
   options: {
@@ -86,7 +103,10 @@ function terminalEvent(
   }
 }
 
-/** 一条含工具调用与工具结果的统一上下文（对照协议示例文档第 3 节）。 */
+/**
+ * 一条含工具调用与工具结果的统一上下文。
+ * @returns 包含 System、用户、Assistant 工具调用及工具结果的统一请求。
+ */
 function agentRequest(): UnifiedModelRequest {
   return {
     model: { providerId: "openai", protocol: "responses", modelId: "model-record-3", name: "gpt-responses-test", reasoningLevel: "medium" },
@@ -130,7 +150,11 @@ function agentRequest(): UnifiedModelRequest {
   }
 }
 
-/** 事件序列的紧凑摘要，便于整体比对块结构。 */
+/**
+ * 事件序列的紧凑摘要，便于整体比对块结构。
+ * @param events 按协议或统一格式排列的测试事件数组。
+ * @returns 保留事件类型、块身份与内容的紧凑对照结构。
+ */
 function summarize(events: ModelStreamEvent[]): string[] {
   return events.map((item) => {
     if (item.type === "block_start") return `start:${item.index}:${item.blockType}`
@@ -146,13 +170,22 @@ function summarize(events: ModelStreamEvent[]): string[] {
   })
 }
 
-/** stream_end 的完成状态。 */
+/**
+ * stream_end 的完成状态。
+ * @param events 按协议或统一格式排列的测试事件数组。
+ * @returns 流结束事件中的统一完成状态。
+ */
 function completionOf(events: ModelStreamEvent[]): string | undefined {
   const last = events[events.length - 1]
   return last?.type === "stream_end" ? last.completion : undefined
 }
 
-/** 某个块的最终内容。 */
+/**
+ * 某个块的最终内容。
+ * @param events 按协议或统一格式排列的测试事件数组。
+ * @param blockType 要筛选的完整内容块类型。
+ * @returns 与指定类型匹配的已结束块内容。
+ */
 function endedBlock(
   events: ModelStreamEvent[],
   blockType: "text" | "thinking" | "tool_call",
@@ -165,10 +198,15 @@ function endedBlock(
     : undefined
 }
 
+/**
+ * 依次执行当前文件的请求转换、流事件或 Usage 断言；协议集成场景使用本地假 Provider 并在场景结束后关闭服务。
+ * @returns 全部断言和异步场景完成后解析。
+ * @throws Error 断言或场景执行失败时向上传播，测试入口报告失败。
+ */
 async function main(): Promise<void> {
-  // -------------------------------------------------------------------------
-  // 1. 请求转换（第 11.1、11.3、16.2 节）
-  // -------------------------------------------------------------------------
+  /** ------------------------------------------------------------------------- */
+  /** 1. 请求转换 */
+  /** ------------------------------------------------------------------------- */
 
   {
     const params = buildResponsesRequest(agentRequest(), MODEL)
@@ -187,17 +225,17 @@ async function main(): Promise<void> {
     assert.throws(() => buildResponsesRequest({ ...agentRequest(), model: { ...agentRequest().model, reasoningLevel: "unsupported" } }, MODEL),
       (error: unknown) => typeof error === "object" && error !== null && "code" in error && error.code === "INVALID_MODEL_REQUEST")
     assert.equal(params.stream, true)
-    // 自己维护 Session 与上下文，不依赖服务端保存。
+    /** 自己维护 Session 与上下文，不依赖服务端保存。 */
     assert.equal(params.store, false)
-    // 不使用 previous_response_id：每次完整传入上下文（示例文档明确的方式）。
+    /** 不使用 previous_response_id：每次完整传入上下文。 */
     assert.equal((params as unknown as Record<string, unknown>).previous_response_id, undefined)
 
-    // messages[0] 对应 instructions。
+    /** messages[0] 对应 instructions。 */
     assert.equal(params.instructions, "You are a coding agent.")
 
     const input = params.input as unknown as Array<Record<string, unknown>>
     assert.deepEqual(input[0], { role: "user", content: "读取 config.ts" })
-    // assistant 消息展开成 message + 若干 function_call item（协议要求两者同级）。
+    /** assistant 消息展开成 message + 若干 function_call item（协议要求两者同级）。 */
     assert.deepEqual(input[1], { role: "assistant", content: "我先看一下。" })
     assert.deepEqual(input[2], {
       type: "function_call",
@@ -213,7 +251,7 @@ async function main(): Promise<void> {
     assert.deepEqual(input[4], { role: "assistant", content: "当前端口是 3000。" })
     assert.deepEqual(input[5], { role: "user", content: "改成 8080" })
 
-    // 工具定义：该协议的 parameters 直接是 JSON Schema。
+    /** 工具定义：该协议的 parameters 直接是 JSON Schema。 */
     assert.deepEqual(params.tools, [
       {
         type: "function",
@@ -229,14 +267,14 @@ async function main(): Promise<void> {
     ])
   }
 
-  // 空 tools 不发送该字段。
+  /** 空 tools 不发送该字段。 */
   {
     const bare = agentRequest()
     bare.tools = []
     assert.equal(buildResponsesRequest(bare, MODEL).tools, undefined)
   }
 
-  // 多块文本拼接；thinking 不回放；工具结果只取 text。
+  /** 多块文本拼接；thinking 不回放；工具结果只取 text。 */
   {
     const input = toResponsesInput([
       { role: "user", content: [{ type: "text", text: "PORT=" }, { type: "text", text: "3000" }] },
@@ -256,7 +294,7 @@ async function main(): Promise<void> {
     ])
   }
 
-  // 带 isError 的工具结果仍按文本传出（该协议没有 is_error 位置，第 16.2 节）。
+  /** 带 isError 的工具结果仍按文本传出。 */
   {
     const input = toResponsesInput([
       { role: "tool", toolCallId: "c1", content: [{ type: "text", text: "失败原因" }], isError: true },
@@ -264,12 +302,12 @@ async function main(): Promise<void> {
     assert.deepEqual(input, [{ type: "function_call_output", call_id: "c1", output: "失败原因" }])
   }
 
-  // 空文本消息不发送。
+  /** 空文本消息不发送。 */
   assert.deepEqual(toResponsesInput([{ role: "user", content: "" }]), [])
 
-  // -------------------------------------------------------------------------
-  // 2. 正常流（第 8.4、8.5 节）
-  // -------------------------------------------------------------------------
+  /** ------------------------------------------------------------------------- */
+  /** 2. 正常流 */
+  /** ------------------------------------------------------------------------- */
 
   {
     const events = await collect(
@@ -349,7 +387,7 @@ async function main(): Promise<void> {
     ])
   }
 
-  // reasoning 原文通道（非摘要）也能产出 thinking 增量。
+  /** reasoning 原文通道（非摘要）也能产出 thinking 增量。 */
   {
     const events = await collect(
       mapResponsesStream([
@@ -379,7 +417,7 @@ async function main(): Promise<void> {
     assert.equal(endedBlock(events, "thinking")?.text, "原始推理")
   }
 
-  // 摘要模式下没有 delta：summary 只在 output_item.done 出现，也要补一条增量。
+  /** 摘要模式下没有 delta：summary 只在 output_item.done 出现，也要补一条增量。 */
   {
     const events = await collect(
       mapResponsesStream([
@@ -409,7 +447,7 @@ async function main(): Promise<void> {
     assert.equal(endedBlock(events, "thinking")?.text, "摘要内容")
   }
 
-  // Usage 与完成状态：status=completed 且没有函数调用 → finished。
+  /** Usage 与完成状态：status=completed 且没有函数调用 → finished。 */
   {
     const events = await collect(
       mapResponsesStream([
@@ -459,7 +497,7 @@ async function main(): Promise<void> {
     assert.equal(last.usage?.totalTokens, 1050)
   }
 
-  // status=incomplete → incomplete，finishReason 取 incomplete_details.reason。
+  /** status=incomplete → incomplete，finishReason 取 incomplete_details.reason。 */
   {
     const events = await collect(
       mapResponsesStream([
@@ -471,7 +509,7 @@ async function main(): Promise<void> {
     assert.equal(last?.type === "stream_end" ? last.finishReason : undefined, "max_output_tokens")
   }
 
-  // 没有 Usage → stream_end 不带 usage。
+  /** 没有 Usage → stream_end 不带 usage。 */
   {
     const events = await collect(
       mapResponsesStream([event(terminalEvent("response.completed"))]),
@@ -480,7 +518,7 @@ async function main(): Promise<void> {
     assert.equal(last?.type === "stream_end" ? last.usage : "missing", undefined)
   }
 
-  // status=failed 与 error 事件 → 抛错，不产出 stream_end（第 8.5 节）。
+  /** status=failed 与 error 事件 → 抛错，不产出 stream_end。 */
   {
     const error = await collectError(
       mapResponsesStream([
@@ -502,7 +540,7 @@ async function main(): Promise<void> {
     assert.match(String((error as Error).message), /流内错误/)
   }
 
-  // 没有结束事件就断流 → 抛中断错误。
+  /** 没有结束事件就断流 → 抛中断错误。 */
   {
     const error = await collectError(
       mapResponsesStream([
@@ -517,7 +555,7 @@ async function main(): Promise<void> {
     assert.match(String((error as Error).message), /中断/)
   }
 
-  // 非文本 / 非函数调用的 item（如 web_search_call）被忽略。
+  /** 非文本 / 非函数调用的 item（如 web_search_call）被忽略。 */
   {
     const events = await collect(
       mapResponsesStream([
@@ -533,9 +571,9 @@ async function main(): Promise<void> {
     assert.equal(events.filter((item) => item.type === "block_start").length, 0)
   }
 
-  // -------------------------------------------------------------------------
-  // 3. 工具调用流：完整性由 output_item.done 决定（第 8.4、8.5 节）
-  // -------------------------------------------------------------------------
+  /** ------------------------------------------------------------------------- */
+  /** 3. 工具调用流：完整性由 output_item.done 决定 */
+  /** ------------------------------------------------------------------------- */
 
   {
     const events = await collect(
@@ -586,7 +624,7 @@ async function main(): Promise<void> {
       ]),
     )
 
-    // id 与 name 在块开始时就以增量给出。
+    /** id 与 name 在块开始时就以增量给出。 */
     const firstDelta = events.find((item) => item.type === "block_delta")
     assert.deepEqual(firstDelta, {
       type: "block_delta",
@@ -606,7 +644,7 @@ async function main(): Promise<void> {
     assert.equal(last?.type === "stream_end" ? last.finishReason : undefined, "completed")
   }
 
-  // function_call_arguments.done 带最终完整参数：以它为准（增量丢包也不影响）。
+  /** function_call_arguments.done 带最终完整参数：以它为准（增量丢包也不影响）。 */
   {
     const events = await collect(
       mapResponsesStream([
@@ -647,7 +685,7 @@ async function main(): Promise<void> {
     })
   }
 
-  // 没有 output_item.done 的调用 → 不产出 block_end，完成状态不是 tool_calls。
+  /** 没有 output_item.done 的调用 → 不产出 block_end，完成状态不是 tool_calls。 */
   {
     const events = await collect(
       mapResponsesStream([
@@ -664,7 +702,7 @@ async function main(): Promise<void> {
           output_index: 0,
           delta: '{"a":',
         }),
-        // 被截断：status=incomplete，没有 output_item.done。
+        /** 被截断：status=incomplete，没有 output_item.done。 */
         event(terminalEvent("response.incomplete", { reason: "max_output_tokens" })),
       ]),
     )
@@ -676,7 +714,7 @@ async function main(): Promise<void> {
     assert.equal(completionOf(events), "incomplete")
   }
 
-  // 并行工具调用：两个 item 各自独立成块。
+  /** 并行工具调用：两个 item 各自独立成块。 */
   {
     const events = await collect(
       mapResponsesStream([
@@ -735,7 +773,7 @@ async function main(): Promise<void> {
     assert.equal(completionOf(events), "tool_calls")
   }
 
-  // status=completed 但没有任何函数调用 → finished（不凭"有工具定义"推断）。
+  /** status=completed 但没有任何函数调用 → finished（不凭"有工具定义"推断）。 */
   {
     const events = await collect(
       mapResponsesStream([event(terminalEvent("response.completed"))]),
@@ -743,9 +781,9 @@ async function main(): Promise<void> {
     assert.equal(completionOf(events), "finished")
   }
 
-  // -------------------------------------------------------------------------
-  // 4. 端到端：真实 SDK + HTTP + SSE
-  // -------------------------------------------------------------------------
+  /** ------------------------------------------------------------------------- */
+  /** 4. 端到端：真实 SDK + HTTP + SSE */
+  /** ------------------------------------------------------------------------- */
 
   const provider = await startFakeProvider((request) => {
     if (request.headers["x-test-scenario"] === "cancel") return { events: [], hang: true }
@@ -841,7 +879,7 @@ async function main(): Promise<void> {
     assert.equal(last.usage?.outputTokens, 5)
     assert.equal(last.usage?.totalTokens, 45)
 
-    // 取消：不重试，归一化为 CANCELLED。
+    /** 取消：不重试，归一化为 CANCELLED。 */
     const controller = new AbortController()
     const cancelling = createResponsesAdapter(MODEL, {
       apiKey: "k",
@@ -861,7 +899,7 @@ async function main(): Promise<void> {
     await provider.close()
   }
 
-  // 400 → 不可重试，包装为 REQUEST_FAILED。
+  /** 400 → 不可重试，包装为 REQUEST_FAILED。 */
   {
     const provider = await startFakeProvider({ status: 400, events: [] })
     try {
@@ -881,7 +919,7 @@ async function main(): Promise<void> {
   console.log("responses.test.ts: Responses Adapter 断言通过")
 }
 
-// 不用顶层 await：测试运行时被 Node 当作 ESM，但 tsc 按 CommonJS 检查。
+/** 不用顶层 await：测试运行时被 Node 当作 ESM，但 tsc 按 CommonJS 检查。 */
 main().catch((error: unknown) => {
   console.error(error)
   process.exitCode = 1

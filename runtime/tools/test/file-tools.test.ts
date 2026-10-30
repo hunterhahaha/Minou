@@ -11,18 +11,31 @@ import { createExecuteToolCall } from "../src/tool-executor.ts"
 import { RenderRegistry, ToolRegistry } from "../src/tool-registry.ts"
 import type { ToolCallContext, ToolResult } from "../src/types.ts"
 
-/** @param result 工具结果。 @returns 首个模型可见文本。 */
+/**
+ * 断言首个结果块为文本，并读取其模型可见内容。
+ * @param result 工具结果。
+ * @returns 首个模型可见文本。
+ */
 function content(result: ToolResult): string {
   const first = result.content[0]
   assert.equal(first.type, "text")
   return first.text
 }
 
-/** @param result 工具结果。 @returns 错误码或 undefined。 */
+/**
+ * 读取失败结果的错误码，成功结果返回 undefined。
+ * @param result 工具结果。
+ * @returns 错误码或 undefined。
+ */
 function code(result: ToolResult): string | undefined {
   return result.status === "error" ? result.error.code : undefined
 }
 
+/**
+ * 按顺序执行当前文件的断言和已有资源清理流程。
+ * @returns 当前场景全部断言及异步操作完成后解析。
+ * @throws Error 断言或场景执行失败时传播，由测试入口报告失败。
+ */
 async function main(): Promise<void> {
   const root = await mkdtemp(join(tmpdir(), "nicode-file-tools-"))
   try {

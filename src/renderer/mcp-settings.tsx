@@ -30,10 +30,20 @@ interface McpDraft {
 }
 
 let nextRowId = 0
-/** @param value 初始行值。 @returns 具有唯一表单身份的新行。 */
+/**
+ * 为键值表单行生成独立身份和初始值。
+ *
+ * @param value 初始行值。
+ * @returns 具有唯一表单身份的新行。
+ */
 function valueRow(value = ""): ValueRow { return { id: ++nextRowId, value } }
 
-/** @param config 已保存配置；省略时创建默认启用的 stdio 草稿。 @returns 独立表单草稿。 */
+/**
+ * 从已保存 MCP 配置构造独立草稿，缺省时使用启用的 stdio 草稿。
+ *
+ * @param config 已保存配置；省略时创建默认启用的 stdio 草稿。
+ * @returns 独立表单草稿。
+ */
 function draftFromConfig(config?: MCPConfig): McpDraft {
   return {
     name: config?.name ?? "", enabled: config?.enabled ?? true, transport: config?.transport ?? "stdio",
@@ -80,7 +90,13 @@ function parseDraft(draft: McpDraft, servers: MCPServerSummary[], originalName: 
   const name = draft.name.trim()
   if (!name) throw new Error("MCP 名称不能为空。")
   if (servers.some((server) => server.config.name === name && server.config.name !== originalName)) throw new Error("MCP 名称已存在。")
-  /** @param value 超时草稿。 @returns 有限正数秒或省略值。 @throws Error 超出后端计时器范围。 */
+  /**
+   * 解析可省略的超时草稿，并检查后端计时器范围。
+   *
+   * @param value 超时草稿。
+   * @returns 有限正数秒或省略值。
+   * @throws Error 超出后端计时器范围。
+   */
   function seconds(value: string): number | undefined {
     if (!value.trim()) return undefined
     const number = Number(value)
@@ -104,7 +120,12 @@ function parseDraft(draft: McpDraft, servers: MCPServerSummary[], originalName: 
   return { ...base, transport: "streamable-http", url, ...(bearer ? { bearer_token_env_var: bearer } : {}), ...(headers ? { http_headers: headers } : {}) }
 }
 
-/** @param server 服务器快照。 @returns 页面状态说明。 */
+/**
+ * 根据 MCP 连接快照生成当前状态说明。
+ *
+ * @param server 服务器快照。
+ * @returns 页面状态说明。
+ */
 function statusLabel(server: MCPServerSummary): string {
   if (!server.config.enabled && !server.error) return "已禁用"
   return { connecting: "正在连接", connected: "已连接", disconnected: "未连接", error: "连接错误" }[server.status]
@@ -133,7 +154,11 @@ export function McpSettings({ onBusyChange }: McpSettingsProps) {
   let validation: string | null = null
   try { parseDraft(draft, servers, selected) } catch (failure) { validation = (failure as Error).message }
 
-  /** @param server 要编辑的项；省略时开始新增。 */
+  /**
+   * 切换当前编辑的 MCP 项，缺省时初始化新增草稿。
+   *
+   * @param server 要编辑的项；省略时开始新增。
+   */
   function choose(server?: MCPServerSummary): void {
     if (pending.current) return
     setSelected(server?.config.name ?? null)
@@ -176,7 +201,12 @@ export function McpSettings({ onBusyChange }: McpSettingsProps) {
 
   useEffect(() => { void perform(() => window.nicode.listMcpServers(), null, null) }, [])
 
-  /** @param event 表单提交事件。 @returns 保存及对应连接尝试完成。 */
+  /**
+   * 提交 MCP 表单并等待后端保存与对应连接尝试。
+   *
+   * @param event 表单提交事件。
+   * @returns 保存及对应连接尝试完成。
+   */
   async function save(event: FormEvent<HTMLFormElement>): Promise<void> {
     event.preventDefault()
     if (validation || pending.current) return
@@ -251,7 +281,12 @@ interface PairEditorProps {
   /** 当前有序行。 */ rows: PairRow[]
   /** @param rows 更新后的完整行列表。 */ onChange: (rows: PairRow[]) => void
 }
-/** @param props 环境变量或请求头的草稿及更新回调。 @returns 可增删的键值行编辑器。 */
+/**
+ * 展示环境变量或请求头的可增删键值草稿行。
+ *
+ * @param props 环境变量或请求头的草稿及更新回调。
+ * @returns 可增删的键值行编辑器。
+ */
 function PairEditor({ label, rows, onChange }: PairEditorProps) {
   return <div className="mcp-rows"><div className="mcp-row-heading"><span>{label}</span><button type="button" className="settings-secondary-button" onClick={() => onChange([...rows, { ...valueRow(), key: "" }])}>添加{label}</button></div>
     {rows.map((row, index) => <div className="mcp-pair-row" key={row.id}>

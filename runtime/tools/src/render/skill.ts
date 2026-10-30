@@ -8,7 +8,6 @@ import type { ToolResult } from "../types.ts"
 
 /**
  * 将 Skill 读取结果呈现为完整正文或明确错误。
- *
  * @param result 完整 Skill 数据或统一错误对象。
  * @returns 错误信息、未找到提示或包含完整正文的成功结果。
  */

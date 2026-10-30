@@ -1,10 +1,13 @@
 /**
- * SessionRuntime 的活动实例、消息队列与两个 Turn 入口（架构备忘录第 13.1、13.2 节）。
+ * 单个 Session 的活动实例、Turn 入口、消息队列与事件日志恢复。
  *
- * SessionRuntime 绑定一个 Session 的 Event Log、派生状态、消息队列与持久化事件流；本文件实现
- * 第 10 节确定的 Event Log 校验与补写顺序，并以 FIFO 串行启动后续 Turn。
- * appendTurnStartAndUserMessage 必须在一个持久化批次中提交两条事件；失败不能启动 Loop。
- * 当前 runAgentLoop 只负责 Step，Turn 收尾仍由调用方处理。
+ * SessionRuntime 绑定 Event Log、派生状态和事件流，原子提交 turn/start 与 user/message
+ * 后启动 Loop，并在 Loop 结束后写入文件变化和 Turn 终态。FIFO 队列只保存消息内容，
+ * 下一 Turn 启动时才读取模型选择并创建 Adapter。
+ *
+ * 每个 Step 前检查压缩阈值，成功提交 Summary 后替换内存上下文；工具审批逐次持久化请求与决定。
+ * 恢复流程先校验日志、生命周期、块流与 Summary，再补齐派生状态、未结束块、Assistant 消息、
+ * 审批与工具结果，最后关闭残留的 Step 和 Turn；恢复不会重新执行工具。
  */
 
 import { randomUUID } from "node:crypto"
@@ -73,9 +76,15 @@ export interface SessionRuntimeOptions {
   systemPrompt: string
   /** 启动时创建、所有 Session 共用的具体能力对象。 */
   global: SessionRuntimeGlobal
-  /** 测试或宿主控制事件时间的入口。 */
+  /**
+   * 提供持久化事件的时间；省略时由事件日志使用当前时间。
+   * @returns 分配给新事件的时间。
+   */
   now?: () => Date
-  /** 测试或宿主控制事件 ID 的入口。 */
+  /**
+   * 提供持久化事件 ID；省略时由事件日志生成随机身份。
+   * @returns 新事件的唯一 ID。
+   */
   createEventId?: () => string
   /** Queue、停止和关闭变化时通知宿主；回调不得抛出或等待模型执行。 */
   onStateChanged?: () => void
@@ -88,6 +97,7 @@ export interface SessionRuntimeOptions {
  * @param workspaceInfo 当前 Project/default 的工作区说明。
  * @param baseline 与 Turn 开始增量检查相同的 AGENTS.md / Skill 基线。
  * @returns 以双换行分隔非空部分的 System Message。
+ * @throws Error AGENTS.md 路径非绝对路径或缺少 Skill 描述时抛出，调用方应终止上下文构建。
  */
 function composeSystemMessage(
   systemPrompt: string,
@@ -108,7 +118,7 @@ function composeSystemMessage(
 }
 
 /**
- * 按架构第 11.3 节把权威 Session Event 回放为模型上下文。
+ * 将已提交的 Session 事件回放为模型上下文；存在 Summary 时从最新摘要及其覆盖范围之后继续回放。
  *
  * @param events 已通过结构、生命周期、Block 与 Summary 校验的事件。
  * @param systemMessage 当前 Turn 新建的固定 System Message。
@@ -166,6 +176,7 @@ function replayModelContent(
  * @param previous `meta.skills.entries` 中的历史比较状态。
  * @param descriptions 当前有效 Skill 的预算后 description。
  * @returns 应写入同一条 `context_update` 的有序 changes。
+ * @throws Error 新载入 Skill 缺少描述时抛出，调用方不得提交不完整的增量。
  */
 function collectSkillChanges(current: readonly SessionSkillContextEntry[], previous: readonly SessionSkillContextEntry[], descriptions: Readonly<Record<string, string>>): SkillContextChange[] {
   const loaded = new Set(previous.map(skillSourceKey))
@@ -202,7 +213,11 @@ function formatAgentsMdUpdate(oldContent: string, newContent: string): string {
   ].join("\n")
 }
 
-/** @param content 待按行比较的文本。 */
+/**
+ * 将文本拆为行，统一 CRLF 并去掉末尾换行产生的空项。
+ * @param content 待按行比较的文本。
+ * @returns 用于行差异比较的文本行；空文本返回空数组。
+ */
 function splitLines(content: string): string[] {
   if (content === "") return []
   const normalized = content.replace(/\r\n/g, "\n")
@@ -276,7 +291,11 @@ function diffLineHunks(
   return hunks
 }
 
-/** @param sessionId 要绑定到磁盘路径的 Session ID。 */
+/**
+ * 校验 Session ID 可作为单个目录名，拒绝空值、点目录与路径分隔符。
+ * @param sessionId 要绑定到磁盘路径的 Session ID。
+ * @throws Error ID 无效时抛出，调用方应终止 Runtime 创建。
+ */
 function validateRuntimeSessionId(sessionId: string): void {
   if (
     sessionId.trim() === ""
@@ -307,6 +326,9 @@ export interface SessionRuntimeProcessing {
   completion: Promise<void>
 }
 
+/**
+ * 已提交并启动的 Turn 身份、活动事件流和后台完成任务。
+ */
 export interface StartedSessionTurn {
   /** 新创建或继续运行的 Session ID。 */
   sessionId: string
@@ -318,6 +340,9 @@ export interface StartedSessionTurn {
   completion: Promise<AgentLoopResult>
 }
 
+/**
+ * 继续已有 Session 的用户文本；模型在 Turn 启动时从持久化设置读取。
+ */
 export interface ContinueSessionInput {
   /** 要写入新 Turn 的用户文本内容。 */
   content: ModelTextBlock[]
@@ -364,14 +389,17 @@ export interface SessionRuntimeSnapshot {
 /** `repairSession` 读取和修复 Event Log 所需的最小持久化端口。 */
 export interface SessionRepairPorts {
   /**
-   * 检查 Session 目录并返回逐行解析后的 Event Log；缺失目录或日志时应拒绝。
+   * 检查 Session 存储并读取数据库中的事件；缺失目录、日志或读取失败时应拒绝。
    *
    * @returns 尚未信任、需要本文件校验的事件值集合。
+   * @throws Error 目录或日志缺失、读取失败时拒绝，调用方应中止恢复。
    */
   readEvents(): Promise<readonly unknown[]>
   /**
    * 幂等补齐首次初始化可能缺失的 Session 派生文件。
    *
+   * @returns 初始化完成后解析。
+   * @throws Error 派生状态初始化失败时拒绝，调用方应中止恢复。
    */
   initializeSession(): Promise<void>
   /**
@@ -379,6 +407,8 @@ export interface SessionRepairPorts {
    * 该端口不得改写 Event Log。
    *
    * @param events 已通过 Event Log 结构和生命周期校验的事件。
+   * @returns 派生状态修复完成后解析。
+   * @throws Error 派生状态修复失败时拒绝，调用方应中止恢复。
    */
   repairDerivedState(events: readonly SessionEvent[]): Promise<void>
   /**
@@ -386,6 +416,7 @@ export interface SessionRepairPorts {
    *
    * @param event 要追加的恢复事件输入。
    * @returns 已分配 eventId、seq 等身份并持久化的完整事件。
+   * @throws Error 追加失败时拒绝，调用方应中止恢复。
    */
   appendEvent(event: SessionEventInput): Promise<SessionEvent>
 }
@@ -409,20 +440,32 @@ export class SessionRuntime implements SessionRepairPorts {
   private readonly projectContext: ReturnType<SessionRuntimeGlobal["resolveProjectContext"]>
   /** 启动期创建一次并由所有 Session 共用的能力对象。 */
   private readonly global: SessionRuntimeGlobal
+  /** 当前 Turn 共用的基线解析任务；准备下一 Turn 或重载 Skill 时更新。 */
   private turnBaseline: Promise<CurrentSessionBaseline> | undefined
+  /** 活动期共用的取消控制器，停止后不为后续 Turn 重置。 */
   private readonly abortController = new AbortController()
   private readonly eventStream = new SessionEventStream()
+  /** 尚未提交新 Turn 的 FIFO 消息队列，仅保存在当前实例内存中。 */
   private readonly pendingMessages: PendingSessionMessage[] = []
+  /** 已离开队列但首批事件尚未提交的消息，供快照和关闭时保留其状态。 */
   private startingMessage: PendingSessionMessage | undefined
+  /** 关闭时丢弃的未提交消息快照，不写入 Event Log。 */
   private discardedMessages: PendingSessionMessage[] = []
+  /** 新 Session 首轮的派生状态与设置初始化任务，设置更新需等待它完成。 */
   private initialization: Promise<void> | undefined
+  /** 已发布事件的最后序号，供宿主合并事件流和快照。 */
   private lastCommittedSeq = 0
   private readonly onStateChanged: (() => void) | undefined
+  /** 按 Turn 保存的临时文件净变化追踪器，变化事件提交成功后移除。 */
   private readonly fileTrackers = new Map<number, TurnFileChangeTracker>()
+  /** 等待宿主决定的审批解析函数，以 approvalId 关联当前请求。 */
   private readonly pendingApprovals = new Map<string, (decision: ApprovalDecision) => void>()
+  /** 审批串行队尾任务，保证当前审批记录完成后再开始下一次审批。 */
   private approvalTail: Promise<void> = Promise.resolve()
+  /** 当前实例是否已启动过消息消费循环，防止重复启动。 */
   private processing = false
   private closed = false
+  /** 本实例当前或最近提交的 Turn 编号，供快照和宿主错误关联使用。 */
   private activeTurn: number | undefined
 
   /**
@@ -472,7 +515,10 @@ export class SessionRuntime implements SessionRepairPorts {
     })
   }
 
-  /** @returns 当前正在执行或最近一次启动的 Turn，供宿主关联后台错误。 */
+  /**
+   * 读取当前正在执行或最近一次启动的 Turn，不访问持久化层。
+   * @returns Turn 编号；本实例尚未启动 Turn 时为 undefined。
+   */
   get currentTurn(): number | undefined {
     return this.activeTurn
   }
@@ -543,6 +589,7 @@ export class SessionRuntime implements SessionRepairPorts {
    * 修复本 Session 后返回最后一个 Turn 编号。
    * @returns 恢复前日志中的最后 Turn 编号。
    * @throws SessionLogCorruptedError 日志不一致时抛出。
+   * @throws Error 实例已关闭，或日志读取、派生状态修复及恢复事件补写失败时传播。
    */
   repairSession(): Promise<{ lastTurn: number }> {
     this.assertOpen()
@@ -600,6 +647,7 @@ export class SessionRuntime implements SessionRepairPorts {
    * 将模型选择写入本 Session Meta。
    * @param model 要保存的模型选择。
    * @returns 写入完成时解析。
+   * @throws Error 实例已关闭或模型保存失败时传播，调用方应报告保存失败。
    */
   writeCurrentModel(model: ModelRef): Promise<void> {
     this.assertOpen()
@@ -609,6 +657,7 @@ export class SessionRuntime implements SessionRepairPorts {
   /**
    * 从本 Session Meta 重新读取模型选择。
    * @returns 当前持久化的模型引用。
+   * @throws Error 实例已关闭或 Meta 读取失败时传播，调用方不得使用未确认的模型。
    */
   readCurrentModel(): Promise<ModelRef> {
     this.assertOpen()
@@ -618,7 +667,7 @@ export class SessionRuntime implements SessionRepairPorts {
   /**
    * 查询已提交事件与当前设置；活动查询不执行异常恢复，关闭后的实例仍可读取最终快照。
    * @returns 事件数组、当前设置与 Queue 状态的脱离引用快照。
-   * @throws Error 当初始化、日志或 Meta 不可读时抛出。
+   * @throws Error 日志校验或 Meta 读取失败时抛出；已发生的初始化错误在此忽略。
    */
   async readSnapshot(): Promise<SessionRuntimeSnapshot> {
     await this.initialization?.catch(() => {})
@@ -641,6 +690,7 @@ export class SessionRuntime implements SessionRepairPorts {
    * 等待首次设置初始化后修改 Meta；模型选择不影响当前 Turn 的 Adapter。
    * @param patch 模型或沙箱模式的部分更新。
    * @throws Error 当初始化或设置写入失败时抛出。
+   * @returns 设置保存并通知宿主后解析。
    */
   async updateSettings(patch: SessionSettingsPatch): Promise<void> {
     this.assertOpen()
@@ -733,6 +783,7 @@ export class SessionRuntime implements SessionRepairPorts {
    * 在 turn/end 前持久化当前 Turn 的文件净变化。
    * @param turn 当前已完成执行的 Turn。
    * @returns 实际写入的文件变化；无净变化时为空。
+   * @throws Error 文件变化事件保存失败时传播；追踪器保留，交由 Turn 收尾处理。
    */
   async appendTurnFileChanges(turn: number): Promise<FileChange[]> {
     const tracker = this.fileTrackers.get(turn)
@@ -743,7 +794,11 @@ export class SessionRuntime implements SessionRepairPorts {
     return files
   }
 
-  /** @param turn 当前 Turn。 @returns 该 Turn 唯一的临时文件追踪器。 */
+  /**
+   * 取得当前 Turn 的文件变化追踪器，首次访问时创建并缓存在实例中。
+   * @param turn 当前 Turn 编号。
+   * @returns 该 Turn 唯一的临时文件追踪器。
+   */
   private trackerFor(turn: number): TurnFileChangeTracker {
     let tracker = this.fileTrackers.get(turn)
     if (tracker === undefined) {
@@ -759,6 +814,7 @@ export class SessionRuntime implements SessionRepairPorts {
    * @param reason 工具提供的审批说明；文件调用包含已规范化路径。
    * @param context 完整的调用身份与参数。
    * @returns 明确决定或取消。
+   * @throws Error 缺少工具调用事件身份或审批事件保存失败时传播；始终释放审批串行锁。
    */
   private async requestToolApproval(
     toolName: string,
@@ -899,6 +955,14 @@ export class SessionRuntime implements SessionRepairPorts {
     this.onStateChanged?.()
   }
 
+  /**
+   * 串行消费消息队列，等待当前 Turn 完成后才提交下一条消息。
+   * @param initialTurn 已启动的首轮；缺失时从队首创建下一 Turn。
+   * @param resolveStarted 首条排队消息启动后的通知；首轮已存在时省略。
+   * @param rejectStarted 首条排队消息启动失败的通知；成功通知后不再调用。
+   * @returns 队列耗尽或当前 Turn 停止后完成；实例关闭由外层 finally 处理。
+   * @throws Error Turn 启动或执行失败时拒绝任务，并通知尚未完成的 started Promise。
+   */
   private async consumeMessageQueue(
     initialTurn: StartedSessionTurn | undefined,
     resolveStarted: ((started: StartedSessionTurn) => void) | undefined,
@@ -933,7 +997,8 @@ export class SessionRuntime implements SessionRepairPorts {
 
   /**
    * 读取并缓存本 Turn 的同一份上下文基线。
-   * @returns 当前 Turn 的固定 AGENTS.md、Skill 和 MCP 基线。
+   * @returns 当前 Turn 的固定 AGENTS.md 与 Skill 基线。
+   * @throws Error 基线解析失败时传播；同一 Turn 保留该失败结果。
    */
   private resolveTurnBaseline(): Promise<CurrentSessionBaseline> {
     if (this.turnBaseline === undefined) {
@@ -1026,7 +1091,7 @@ export class SessionRuntime implements SessionRepairPorts {
 
   /**
    * 修复已有 Session，提交并启动下一 Turn。
-   * @param input 下一 Turn 的用户消息和模型选择。
+   * @param input 下一 Turn 的用户文本；模型另从 Session Meta 读取。
    * @returns 已提交的 Turn 身份、事件流与后台运行任务。
    * @throws Error 恢复、基线检查、Adapter 创建或首批提交失败。
    */
@@ -1047,7 +1112,7 @@ export class SessionRuntime implements SessionRepairPorts {
 
   /**
    * Queue 启动下一 Turn 时才读取当前模型。
-   * @param input 队首仅包含文本的消息。
+   * @param input 队首消息，包含文本、稳定消息 ID 和队列状态；不含模型选择。
    * @returns 已提交并启动的下一 Turn。
    * @throws Error 恢复、准备、Adapter 创建或首批提交失败。
    */
@@ -1085,16 +1150,16 @@ export class SessionRuntime implements SessionRepairPorts {
         ? { source: error.source, code: error.code, message: error.message, ...(error.details === undefined ? {} : { details: error.details }) }
         : normalizeError(error, "runtime", "TURN_FAILED")
       try { await this.appendEvent({ type: "app/error", turn, error: appError }) }
-      catch { /* 存储不可用时由宿主报告原错误。 */ }
-      try { await this.appendTurnFileChanges(turn) } catch { /* 保留运行错误。 */ }
+      catch { /** 存储不可用时由宿主报告原错误。 */ }
+      try { await this.appendTurnFileChanges(turn) } catch { /** 保留运行错误。 */ }
       try { await this.appendEvent({ type: "turn/end", turn, reason: "error" }) }
-      catch { /* 下次恢复时补写。 */ }
+      catch { /** 下次恢复时补写。 */ }
       throw error
     }
     try { await this.appendTurnFileChanges(turn) }
     catch (error) {
       try { await this.appendEvent({ type: "turn/end", turn, reason: "error" }) }
-      catch { /* 下次恢复时补写。 */ }
+      catch { /** 下次恢复时补写。 */ }
       throw error
     }
     await this.appendEvent({
@@ -1122,7 +1187,13 @@ export class SessionRuntime implements SessionRepairPorts {
     const threshold = summaryThreshold(options.adapter.contextWindow, options.adapter.maxOutputTokens)
     return runAgentLoop({
       ...options, turn, model, content,
-      /** @param input 下一 Step 的当前内容及一次确定的工具快照。 @throws Error 压缩或持久化失败。 */
+      /**
+       * 检查正常请求的输入量，达到阈值时使用本 Turn Adapter 压缩上下文。
+       * 成功提交 summary/end 并修复派生状态后，原地替换下一 Step 的消息内容。
+       * @param input 下一 Step 的当前内容及本次工具快照。
+       * @returns 未达阈值时直接完成；达到阈值时等待压缩及状态更新完成。
+       * @throws Error 取消、基线无效、压缩或持久化失败时传播，由 Loop 交给 Turn 收尾。
+       */
       beforeStep: async (input) => {
         if (options.signal.aborted) throw createAbortError()
         if (await this.sessionState.readAgentInputTokens() < threshold) return
@@ -1186,7 +1257,10 @@ export class SessionRuntime implements SessionRepairPorts {
     this.lastCommittedSeq = event.seq
   }
 
-  /** @throws Error 当前实例已关闭时抛出。 */
+  /**
+   * 拒绝对已关闭实例继续执行需要活动资源的操作。
+   * @throws Error 当前实例已关闭时抛出，调用方应停止本次操作。
+   */
   private assertOpen(): void {
     if (this.closed) {
       throw new Error(`SessionRuntime 已关闭：${this.sessionId}`)
@@ -1196,12 +1270,18 @@ export class SessionRuntime implements SessionRepairPorts {
 
 /** 单消费者、实例内存级的 SessionEvent 异步流。 */
 class SessionEventStream implements AsyncIterable<SessionEvent> {
+  /** 已发布但尚未交给唯一消费者的事件，按发布顺序缓存。 */
   private readonly buffered: SessionEvent[] = []
+  /** 无缓冲事件时等待中的 next 解析函数，仅支持顺序消费。 */
   private nextResolver: ((result: IteratorResult<SessionEvent>) => void) | undefined
+  /** 是否已经创建唯一消费者，防止同一事件流被重复遍历。 */
   private iteratorCreated = false
   private closed = false
 
-  /** @param event 已经成功持久化的 Session 事件。 */
+  /**
+   * 发布已提交事件；优先交给等待中的消费者，否则暂存到缓冲区。关闭后忽略新事件。
+   * @param event 已经成功持久化的 Session 事件。
+   */
   publish(event: SessionEvent): void {
     if (this.closed) return
     const resolveNext = this.nextResolver
@@ -1224,7 +1304,11 @@ class SessionEventStream implements AsyncIterable<SessionEvent> {
     }
   }
 
-  /** @returns 当前事件流唯一的异步迭代器。 */
+  /**
+   * 创建事件流唯一的异步迭代器；迭代消费不会重新读取磁盘。
+   * @returns 按发布顺序消费缓冲事件的迭代器。
+   * @throws Error 重复创建迭代器时抛出，调用方必须复用唯一消费者。
+   */
   [Symbol.asyncIterator](): AsyncIterator<SessionEvent> {
     if (this.iteratorCreated) {
       throw new Error("Session 事件流只能消费一次")
@@ -1235,6 +1319,10 @@ class SessionEventStream implements AsyncIterable<SessionEvent> {
     }
   }
 
+  /**
+   * 取出最早的缓冲事件；无缓冲且未关闭时保存等待中的消费者。
+   * @returns 下一个事件；关闭且缓冲耗尽时返回 done = true。调用方应顺序等待 next。
+   */
   private next(): Promise<IteratorResult<SessionEvent>> {
     const event = this.buffered.shift()
     if (event !== undefined) {
@@ -1249,19 +1337,29 @@ class SessionEventStream implements AsyncIterable<SessionEvent> {
   }
 }
 
-/** @param content 要保存到内存队列或返回给 Renderer 的文本内容。 */
+/**
+ * 复制文本块，隔离调用方与内存队列之间的对象引用。
+ * @param content 要保存到内存队列或返回给 Renderer 的文本内容。
+ * @returns 顺序一致且每个块均为新对象的文本块数组。
+ */
 function cloneMessageContent(content: readonly ModelTextBlock[]): ModelTextBlock[] {
   return content.map((block) => ({ ...block }))
 }
 
+/**
+ * Session 日志结构或事件关联损坏时使用的统一错误码。
+ */
 export const SESSION_LOG_CORRUPTED = "SESSION_LOG_CORRUPTED"
 
-/** Event Log 无法按架构规则解释时抛出的统一 Storage 错误。 */
+/** Event Log 结构、生命周期或事件关联不一致时抛出的 Storage 错误。 */
 export class SessionLogCorruptedError extends Error {
+  /** 固定 Storage 来源，供宿主归一化错误。 */
   readonly source = "storage" as const
+  /** 日志损坏错误码，供调用方识别不可直接继续的 Session。 */
   readonly code = SESSION_LOG_CORRUPTED
 
   /**
+   * 创建带 Session 身份和诊断原因的日志损坏错误。
    * @param sessionId 被判定为损坏的 Session ID。
    * @param detail 描述违反的 Event Log 规则的具体原因。
    */
@@ -1272,11 +1370,12 @@ export class SessionLogCorruptedError extends Error {
 }
 
 /**
- * 按开发备忘录第 10 节把 Session 修复到可继续创建新 Turn 的一致状态。
+ * 校验并补写中断的 Session 事件，使日志恢复到可继续创建新 Turn 的一致状态。
  *
  * @param sessionId 要读取和修复的 Session ID。
  * @param ports 提供 Event Log 访问、初始化、派生状态修复和事件追加能力的端口。
- * @returns 修复前 Event Log 中的最后 Turn 编号；不返回修复阶段读取过的模型。
+ * @returns 修复前 Event Log 中的最后 Turn 编号，用于分配下一 Turn。
+ * @throws Error 日志读取、初始化、派生状态修复或事件补写失败时传播，调用方应中止继续入口。
  * @throws SessionLogCorruptedError 当日志结构、生命周期或恢复关联不一致时抛出。
  */
 export async function repairSession(
@@ -1291,6 +1390,13 @@ export async function repairSession(
   await ports.initializeSession()
   await ports.repairDerivedState(events)
 
+  /**
+   * 补写恢复事件并校验返回内容，将已提交事件同步加入本次恢复使用的事件数组。
+   * @param input 要提交的恢复事件。
+   * @returns 身份、序号与请求内容均通过校验的持久化事件。
+   * @throws SessionLogCorruptedError 返回内容、事件身份或序号不一致时抛出，中止恢复。
+   * @throws Error 持久化失败时传播，由调用方报告恢复失败。
+   */
   const append = async (input: SessionEventInput): Promise<SessionEvent> => {
     const previousSeq = events.at(-1)?.seq ?? 0
     const written = validateSessionEvent(sessionId, await ports.appendEvent(input), events.length)
@@ -1352,7 +1458,11 @@ function turnEvents(
   ]
 }
 
-/** @param value 未知异常。 @returns 是否已经具有统一 AppError 的必需字段。 */
+/**
+ * 检查异常是否包含 AppError 的来源、错误码和消息，供 Turn 收尾保留原始错误信息。
+ * @param value 未知异常。
+ * @returns 是否具有受支持的 source 及字符串 code、message；不校验 details。
+ */
 function isAppErrorValue(value: unknown): value is AppError {
   return typeof value === "object" && value !== null && "source" in value &&
     typeof value.source === "string" && ["runtime", "model", "tool", "mcp", "storage", "system"].includes(value.source) &&
@@ -1361,8 +1471,18 @@ function isAppErrorValue(value: unknown): value is AppError {
 }
 
 
+/**
+ * 恢复事件追加入口；成功返回前校验写入内容、事件身份和递增序号。
+ * @param event 要补写的恢复事件。
+ * @returns 校验通过且已纳入恢复事件数组的持久化事件。
+ * @throws SessionLogCorruptedError 返回事件与请求不符或身份冲突时抛出。
+ * @throws Error 持久化失败时传播，调用方应中止恢复。
+ */
 type AppendRecoveryEvent = (event: SessionEventInput) => Promise<SessionEvent>
 
+/**
+ * 日志校验得到的 Turn 与 Step 生命周期，用于定位需补写的结束事件。
+ */
 interface LifecycleState {
   /** Event Log 中已出现的最后一个 Turn 编号。 */
   lastTurn: number
@@ -1372,6 +1492,9 @@ interface LifecycleState {
   openStep?: { turn: number; step: number }
 }
 
+/**
+ * 同一响应块的起始、增量和可选结束事件，供完整性校验与中断恢复使用。
+ */
 interface BlockStream {
   /** Block 的 `assistant/block_start` 事件。 */
   start: AssistantBlockStartEvent
@@ -1381,6 +1504,9 @@ interface BlockStream {
   end?: AssistantBlockEndEvent
 }
 
+/**
+ * 完整 Assistant 消息中确认的工具调用及其唯一匹配的块结束事件。
+ */
 interface AuthoritativeToolCall {
   /** 包含该工具调用的权威 `assistant/message` 事件。 */
   message: AssistantMessageEvent
@@ -1393,6 +1519,9 @@ interface AuthoritativeToolCall {
 const APPROVAL_DENIED = "APPROVAL_DENIED"
 const EXECUTION_STATE_UNKNOWN = "EXECUTION_STATE_UNKNOWN"
 
+/**
+ * 恢复时用于区分审批拒绝、取消和执行状态未知的工具错误码。
+ */
 type RecoveryToolErrorCode =
   | typeof CANCELLED
   | typeof APPROVAL_DENIED
@@ -2410,7 +2539,7 @@ function isNonEmptyString(value: unknown): value is string {
 }
 
 /**
- * 判断未知值是否为架构允许的 AppError 来源。
+ * 判断未知值是否为受支持的 AppError 来源。
  *
  * @param value 待判断的未知值。
  * @returns 值是否属于合法的 AppError source。

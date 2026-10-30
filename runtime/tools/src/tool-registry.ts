@@ -1,14 +1,14 @@
 /**
- * 工具与结果整理器注册表（第 16、16.3 节）。
+ * 工具定义、参数检查器、执行函数与结果整理器的内存注册表。
  *
- * ToolRegistry 保存模型可见定义、来源、参数检查器与业务执行函数；RenderRegistry 按同一名称
- * 保存结果整理器。正常调用方应使用 `registerTool` 成对登记，避免只登记其中一侧。
+ * 成对登记入口先检查两侧冲突，再写入工具和整理器；工具定义副本用于模型暴露。
+ * 动态 MCP 登记保留服务器与原始工具名称，注册表不执行工具或写入 Session 事件。
  */
 
 import type { AppError } from "../../error/src/types.ts"
 import type { ToolExecutionContext, ToolResult } from "./types.ts"
 
-/** 架构第 16 节规定的基础内置工具名称。 */
+/** 当前允许登记的基础内置工具名称。 */
 export const BUILTIN_TOOL_NAMES = [
   "glob",
   "grep",
@@ -78,14 +78,12 @@ export interface RegisteredTool<TArguments extends object = Record<string, unkno
   definition: ToolDefinition
   /**
    * 检查并按需要规范化业务参数。
-   *
    * @param input 已移除 `callDescription`、但尚未检查的业务参数对象。
    * @returns 检查成功后的业务参数，或应交给结果整理器的 AppError。
    */
   validateArguments(input: unknown): ToolArgumentValidation<TArguments>
   /**
    * 执行工具业务。
-   *
    * @param input 已检查且不含 `callDescription` 的业务参数。
    * @param context 调用身份、取消信号和包含调用说明的完整已检查参数。
    * @returns 工具专属结果或 AppError。
@@ -108,7 +106,13 @@ export interface ToolRegistration<TArguments extends object = Record<string, unk
   render: ToolRender<TOutput>
 }
 
+/**
+ * 注册表内部擦除泛型后的工具记录，保留执行与校验适配函数。
+ */
 type StoredTool = RegisteredTool<Record<string, unknown>, unknown>
+/**
+ * 注册表内部按工具名称保存的通用结果整理入口。
+ */
 type StoredRender = ToolRender<unknown>
 
 const BUILTIN_TOOL_NAME_SET: ReadonlySet<string> = new Set(BUILTIN_TOOL_NAMES)
@@ -129,7 +133,6 @@ export class ToolRegistry {
 
   /**
    * 登记一个工具。正常业务装配应优先使用 `registerTool` 同时登记结果整理器。
-   *
    * @param tool 要登记的工具。
    * @throws Error 当名称为空、名称与来源不符、Schema 不是普通对象或名称已经登记时抛出。
    */
@@ -162,7 +165,6 @@ export class ToolRegistry {
    * 确认一个工具当前可以登记，但不修改注册表。
    *
    * 该预检供 `registerTool` 在写入两个注册表前完成全部会失败的检查。
-   *
    * @param tool 待检查的工具。
    * @throws Error 当工具定义无效或名称已存在时抛出。
    */
@@ -177,7 +179,6 @@ export class ToolRegistry {
 
   /**
    * 按模型给出的名称查找工具。
-   *
    * @param name 工具名称。
    * @returns 已登记工具；不存在时返回 `undefined`。
    */
@@ -187,7 +188,6 @@ export class ToolRegistry {
 
   /**
    * 判断名称是否已经登记。
-   *
    * @param name 工具名称。
    * @returns 名称存在时为 `true`。
    */
@@ -197,7 +197,6 @@ export class ToolRegistry {
 
   /**
    * 按登记顺序返回基础工具定义的副本。
-   *
    * @returns 可供未来 ToolExposureManager 读取的定义；修改返回值不会改变注册表。
    */
   listDefinitions(): ToolDefinition[] {
@@ -209,7 +208,11 @@ export class ToolRegistry {
 export class RenderRegistry {
   private readonly renders = new Map<string, StoredRender>()
 
-  /** @param name 要成对移除的动态 MCP 名称。 @throws Error 名称不是动态工具名称。 */
+  /**
+   * 移除当前注册表中的动态 MCP 项；成对清理由宿主协调两张表。
+   * @param name 要成对移除的动态 MCP 名称。
+   * @throws Error 名称不是动态工具名称。
+   */
   removeMCP(name: string): void {
     if (!name.startsWith("mcp_") || BUILTIN_TOOL_NAME_SET.has(name)) throw new Error("不能移除内置结果整理器")
     this.renders.delete(name)
@@ -217,7 +220,6 @@ export class RenderRegistry {
 
   /**
    * 登记一个工具的结果整理器。
-   *
    * @param toolName 对应的工具名称。
    * @param render 要登记的结果整理函数。
    * @throws Error 当名称为空或已经登记时抛出。
@@ -229,7 +231,6 @@ export class RenderRegistry {
 
   /**
    * 确认一个名称当前可以登记结果整理器，但不修改注册表。
-   *
    * @param toolName 待检查的工具名称。
    * @throws Error 当名称为空或已经登记时抛出。
    */
@@ -240,7 +241,6 @@ export class RenderRegistry {
 
   /**
    * 按工具名称查找结果整理器。
-   *
    * @param toolName 工具名称。
    * @returns 已登记的结果整理器；不存在时返回 `undefined`。
    */
@@ -250,7 +250,6 @@ export class RenderRegistry {
 
   /**
    * 判断工具是否有已登记的结果整理器。
-   *
    * @param toolName 工具名称。
    * @returns 结果整理器存在时为 `true`。
    */
@@ -264,7 +263,6 @@ export class RenderRegistry {
  *
  * 两侧都先完成只读预检，再依次写入；JavaScript 同步执行期间不会被其它登记操作插入，
  * 因此正常返回后两侧一定同时存在，预检失败时两侧都不改变。
- *
  * @param toolRegistry 工具注册表。
  * @param renderRegistry 结果整理器注册表。
  * @param registration 工具、参数检查器、执行函数和结果整理器。
@@ -284,10 +282,9 @@ export function registerTool<TArguments extends object, TOutput>(
 
 /**
  * 检查工具名称、来源与基础 Schema 是否符合注册表约束。
- *
  * @param kind 工具来源。
  * @param definition 待登记的工具定义。
- * @throws Error 当定义不符合第 16 节名称规则或 Schema 不是普通对象时抛出。
+ * @throws Error 当定义不符合内置名称或动态 MCP 名称规则或 Schema 不是普通对象时抛出。
  */
 function validateToolDefinition(kind: ToolKind, definition: ToolDefinition): void {
   const name = definition.name as string
@@ -306,7 +303,6 @@ function validateToolDefinition(kind: ToolKind, definition: ToolDefinition): voi
 
 /**
  * 创建不会与注册表内部对象共享 Schema 引用的工具定义。
- *
  * @param definition 原始工具定义。
  * @returns 名称、说明及深拷贝后的参数 Schema。
  */
@@ -320,7 +316,6 @@ function cloneDefinition(definition: ToolDefinition): ToolDefinition {
 
 /**
  * 判断值是否为可按工具参数或 JSON Schema 处理的普通对象。
- *
  * @param value 待检查值。
  * @returns 值不是 null、数组或自定义类实例时为 `true`。
  */

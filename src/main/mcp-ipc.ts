@@ -92,7 +92,13 @@ function requireConfig(value: unknown): MCPConfig {
   return structuredClone(value) as MCPConfig
 }
 
-/** @param value 未知身份。 @returns 原样保留的有效名称。 @throws TypeError 名称为空或不是字符串。 */
+/**
+ * 要求 IPC 名称为非空字符串，保留其原始内容。
+ *
+ * @param value 未知身份。
+ * @returns 原样保留的有效名称。
+ * @throws TypeError 名称为空或不是字符串。
+ */
 function requireName(value: unknown): string {
   if (typeof value !== "string" || value.trim() === "") throw new TypeError("MCP 名称必须是非空字符串。")
   return value

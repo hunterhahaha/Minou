@@ -1,16 +1,8 @@
 /**
- * 工具运行时的统一结果结构（第 16.2 节）。
+ * 工具调用身份、Session 资源、业务执行上下文和统一 ToolResult 的数据契约。
  *
- * 每个工具的 render 把该工具的专属 Result 或 AppError 转成本文件的 `ToolResult`，
- * 统一 execute 返回它，AgentLoop 据此写 `tool/result` 事件、并把它转成回放用的 tool 消息。
- * 因此这里是「工具 → 上下文 / Event Log」这条数据流的契约。
- *
- * 本文件还定义 AgentLoop 与统一 ToolExecutor 共享的调用边界；注册表与具体执行编排分别位于
- * `tool-registry.ts`、`tool-executor.ts`。文件工具的专属结果结构位于 `file/types.ts`。
- *
- * 架构依据：.git/技术文档/开发备忘录1.0.17.md 第 16.2 节（统一 ToolResult 与内容块）、
- *          第 16.4 节（统一 execute 流程）、第 16.5 节（日志、上下文与 UI）
- * 实施阶段：TODOList 阶段 6.4 的 ToolResult + 第 16.4 节通用执行入口契约
+ * 身份与权限资源由 Runtime 注入；模型只提供工具参数及可选调用说明。
+ * 结果整理器将业务结果或 AppError 转为模型可见内容，运行层负责事件记录与上下文回填。
  */
 
 import type { AppError } from "../../error/src/types.ts"
@@ -59,13 +51,34 @@ export interface MCPToolRuntimeContext {
   /** 当前所属分组。 */ projectId: string
   /** 当前 Session 身份。 */ sessionId: string
   /** 当前 Turn 固定的上下文窗口；未装配模型规格时不能载入工具。 */ contextWindow?: number
-  /** @returns 当前 Meta 中的独立载入记录。 @throws Error 状态损坏或不可读取。 */
+  /**
+   * 从当前 Session Meta 读取并校验独立的 MCP 载入状态。
+   * @returns 当前 Meta 中的独立载入记录。
+   * @throws Error 状态损坏或不可读取。
+   */
   readLoadedTools(): Promise<SessionLoadedMCPTool[]>
-  /** @param tools 完整新状态。 @param definitions 有效定义。 @throws Error 持久化失败，由执行边界归一化。 */
+  /**
+   * 提交当前 Session 的完整 MCP 载入状态与有效定义。
+   * @param tools 完整新状态。
+   * @param definitions 有效定义。
+   * @throws Error 持久化失败，由执行边界归一化。
+   * @returns 载入状态与定义保存完成后解析。
+   */
   writeLoadedTools(tools: SessionLoadedMCPTool[], definitions: UnifiedToolDefinition[]): Promise<void>
-  /** @returns 本次检查时当前权限。 @throws Error 设置不可读取。 */
+  /**
+   * 重新读取当前 Session 的持久化权限模式。
+   * @returns 本次检查时当前权限。
+   * @throws Error 设置不可读取。
+   */
   readSandboxMode(): Promise<SandboxMode>
-  /** @param toolName 模型侧名称。 @param reason 审批原因。 @param context 完整调用身份。 @returns 审批或取消结果。 @throws Error 审批事件写入失败。 */
+  /**
+   * 通过 Session 端口提交审批请求并等待决定或取消。
+   * @param toolName 模型侧名称。
+   * @param reason 审批原因。
+   * @param context 完整调用身份。
+   * @returns 审批或取消结果。
+   * @throws Error 审批事件写入失败。
+   */
   requestApproval(toolName: string, reason: string, context: ToolExecutionContext<object>): Promise<ApprovalDecision>
 }
 
@@ -76,7 +89,6 @@ export interface ProcessToolRuntimeContext {
   /** Session 已初始化的工具输出绝对目录。 */ outputDirectory: string
   /**
    * 通过当前 Session 的审批出口记录请求，顺序等待用户决定，再记录结果。
-   *
    * @param toolName - 需要审批的进程工具名称。
    * @param reason - 供审批卡片和事件记录使用的操作说明。
    * @param context - 当前调用身份、已校验的完整参数和取消信号。
@@ -117,7 +129,7 @@ export interface ToolExecutionContext<TArguments extends object = Record<string,
 }
 
 /**
- * 工具结果的统一内容块（第 16.2 节）。
+ * 工具结果的统一内容块。
  *
  * 成功与错误分支都必须有 content。当前三种模型协议的工具结果转换**只处理 `type = "text"`**，
  * 其余类型是统一结构保留的表达能力，不在当前协议转换范围内。
@@ -129,27 +141,47 @@ export type ToolResultContent =
   | ToolResultResourceContent
   | ToolResultResourceLinkContent
 
+/**
+ * 模型可消费的纯文本工具内容。
+ */
 export interface ToolResultTextContent {
+  /** 当前内容块的固定类型标记。 */
   type: "text"
+  /** 纯文本内容。 */
   text: string
 }
 
+/**
+ * 携带 base64 数据和 MIME 类型的图像内容。
+ */
 export interface ToolResultImageContent {
+  /** 当前内容块的固定类型标记。 */
   type: "image"
   /** base64。 */
   data: string
+  /** 内容对应的 MIME 类型。 */
   mimeType: string
 }
 
+/**
+ * 携带 base64 数据和 MIME 类型的音频内容。
+ */
 export interface ToolResultAudioContent {
+  /** 当前内容块的固定类型标记。 */
   type: "audio"
   /** base64。 */
   data: string
+  /** 内容对应的 MIME 类型。 */
   mimeType: string
 }
 
+/**
+ * 内嵌的文本或二进制资源，按 URI 标识。
+ */
 export interface ToolResultResourceContent {
+  /** 当前内容块的固定类型标记。 */
   type: "resource"
+  /** 内嵌资源的位置、类型与文本或二进制内容。 */
   resource: {
     uri: string
     mimeType?: string
@@ -160,20 +192,28 @@ export interface ToolResultResourceContent {
   }
 }
 
+/**
+ * 指向外部资源的 URI 与可选描述信息。
+ */
 export interface ToolResultResourceLinkContent {
+  /** 当前内容块的固定类型标记。 */
   type: "resource_link"
+  /** 资源的 URI 标识。 */
   uri: string
+  /** 资源的可选显示名称。 */
   name?: string
+  /** 资源的可选说明。 */
   description?: string
+  /** 内容对应的 MIME 类型。 */
   mimeType?: string
 }
 
 /**
- * 统一 ToolResult（第 16.2 节）。
+ * 统一 ToolResult。
  *
  * `error` 保存 Runtime 统一错误；`content` 保存经过 render 处理的模型可见内容，
  * 内部堆栈等 details 不默认暴露。普通工具失败只用 `status = "error"` 表示，
- * 不为同一次失败额外写 `app/error`（第 8.6 节）。
+ * 不为同一次失败额外写 `app/error`。
  */
 export type ToolResult =
   | {
@@ -187,7 +227,7 @@ export type ToolResult =
     }
 
 /**
- * AgentLoop 使用的统一工具调用边界（第 16.4 节）。
+ * AgentLoop 使用的统一工具调用边界。
  *
  * 工具业务失败、参数错误和取消必须返回错误状态的 `ToolResult`；只有执行入口本身无法完成
  * 调用边界时才允许抛出异常。具体实现由 `createExecuteToolCall` 创建。

@@ -1,3 +1,9 @@
+/**
+ * 验证 SessionRuntime 的 Turn 入口、FIFO 队列、资源绑定、取消和事件日志恢复。
+ *
+ * 内存夹具记录调用顺序并注入失败；持久化场景使用临时 SQLite 与派生文件，
+ * 检查模型读取时机、上下文回放、恢复补写顺序和重复恢复的幂等性。
+ */
 import assert from "node:assert/strict"
 import { mkdtemp, readFile, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
@@ -23,6 +29,12 @@ const MODEL: ModelRef = { providerId: "provider-1", protocol: "anthropic_message
 const OTHER_MODEL: ModelRef = { providerId: "provider-2", protocol: "responses", modelId: "model-2", name: "gpt-test", reasoningLevel: "high" }
 const MESSAGE = [{ type: "text" as const, text: "你好" }]
 
+/**
+ * 创建内存 SessionRuntime 夹具，替换存储和上下文入口以记录调用顺序及模型选择。
+ * @param sessionId 夹具绑定的 Session 身份，省略时使用固定测试身份。
+ * @param initialEvents 用于模拟已有持久化记录的初始事件，复制数组后保留事件对象。
+ * @returns Runtime、恢复端口、调用与模型记录，以及预设后续模型读取值的入口。
+ */
 function fixture(
   sessionId = "session-1",
   initialEvents: readonly SessionEvent[] = [],
@@ -166,6 +178,13 @@ function fixture(
   }
 }
 
+/**
+ * 为测试事件补充确定性的 Session 身份、序号、事件 ID 和时间。
+ * @param sessionId 事件所属的 Session 身份。
+ * @param seq 同时用于事件 ID 和时间构造的日志序号。
+ * @param input 尚未补充持久化身份的事件内容。
+ * @returns 包含确定性持久化身份的完整 Session 事件。
+ */
 function persistedEvent(
   sessionId: string,
   seq: number,
@@ -180,6 +199,11 @@ function persistedEvent(
   } as SessionEvent
 }
 
+/**
+ * 构造首个 Turn 已提交的开始事件与用户消息，作为恢复场景的初始日志。
+ * @param sessionId 测试日志所属的 Session 身份。
+ * @returns 按提交顺序排列的 turn/start 与 user/message 事件。
+ */
 function initialRepairEvents(sessionId: string): SessionEvent[] {
   return [
     persistedEvent(sessionId, 1, { type: "turn/start", turn: 1, model: MODEL }),
@@ -191,12 +215,22 @@ function initialRepairEvents(sessionId: string): SessionEvent[] {
   ]
 }
 
+/**
+ * 构造已经关闭首个 Turn 的日志，供继续与排队入口测试使用。
+ * @param sessionId 测试日志所属的 Session 身份。
+ * @returns 首个 Turn 已以 completed 结束的事件数组。
+ */
 function completedSessionEvents(sessionId: string): SessionEvent[] {
   const events = initialRepairEvents(sessionId)
   events.push(persistedEvent(sessionId, 3, { type: "turn/end", turn: 1, reason: "completed" }))
   return events
 }
 
+/**
+ * 创建内存恢复端口，记录读写调用并将补写事件追加到可观察数组。
+ * @param initial 待恢复的初始日志；夹具复制数组以观察后续补写。
+ * @returns 恢复端口、事件和调用记录，以及绑定当前 Session 的恢复函数。
+ */
 function repairFixture(initial: readonly SessionEvent[]): {
   events: SessionEvent[]
   calls: string[]
@@ -226,6 +260,11 @@ function repairFixture(initial: readonly SessionEvent[]): {
   return { events, calls, repair: () => repairSession(sessionId, ports), ports }
 }
 
+/**
+ * 验证首批事件先提交、初始化后启动模型，以及事件流与 Turn 收尾顺序。
+ * @returns 当前场景的断言及异步操作完成后解析。
+ * @throws Error 断言或场景执行失败时向上传播，测试入口记录错误并设置失败退出码。
+ */
 async function testNewSession(): Promise<void> {
   const { ports, repairPorts, calls, batches, loopEvents, seenModels } = fixture()
   let releaseInitialization!: () => void
@@ -276,6 +315,11 @@ async function testNewSession(): Promise<void> {
   ])
 }
 
+/**
+ * 验证继续入口先恢复和准备上下文，再读取当前模型并提交下一 Turn。
+ * @returns 当前场景的断言及异步操作完成后解析。
+ * @throws Error 断言或场景执行失败时向上传播，测试入口记录错误并设置失败退出码。
+ */
 async function testContinueSession(): Promise<void> {
   const state = fixture(
     "session-existing",
@@ -305,6 +349,11 @@ async function testContinueSession(): Promise<void> {
   assert.deepEqual(state.seenModels, [OTHER_MODEL])
 }
 
+/**
+ * 验证一个 Turn 的多个 Step 共用同一次工厂创建的 Adapter。
+ * @returns 当前场景的断言及异步操作完成后解析。
+ * @throws Error 断言或场景执行失败时向上传播，测试入口记录错误并设置失败退出码。
+ */
 async function testOneAdapterServesAllStepsInTurn(): Promise<void> {
   const state = fixture("session-multi-step")
   let adapterFactoryCalls = 0
@@ -347,6 +396,11 @@ async function testOneAdapterServesAllStepsInTurn(): Promise<void> {
   assert.deepEqual(state.seenModels, [], "测试覆盖的 Adapter 工厂不得回落到旧 fixture")
 }
 
+/**
+ * 验证排队消息按 FIFO 提交、保留消息 ID，并在各 Turn 启动时读取模型。
+ * @returns 当前场景的断言及异步操作完成后解析。
+ * @throws Error 断言或场景执行失败时向上传播，测试入口记录错误并设置失败退出码。
+ */
 async function testQueuedMessagesRunInOrder(): Promise<void> {
   const state = fixture("session-queue")
   let releaseInitialization!: () => void
@@ -383,6 +437,11 @@ async function testQueuedMessagesRunInOrder(): Promise<void> {
   assert.throws(() => state.ports.enqueueSessionMessage({ content: MESSAGE }), /已关闭/)
 }
 
+/**
+ * 验证首批提交、恢复、初始化和 Adapter 创建失败时的新 Turn 提交边界。
+ * @returns 当前场景的断言及异步操作完成后解析。
+ * @throws Error 断言或场景执行失败时向上传播，测试入口记录错误并设置失败退出码。
+ */
 async function testFailureBoundaries(): Promise<void> {
   const failedBatch = fixture()
   failedBatch.ports.appendTurnStartAndUserMessage = async () => { throw new Error("batch failed") }
@@ -434,6 +493,11 @@ async function testFailureBoundaries(): Promise<void> {
   assert.equal(failedAdapter.batches.length, 0, "Adapter 失败前不得提交新 Turn")
 }
 
+/**
+ * 验证中断文本块的补写顺序、消息内容及重复恢复不追加事件。
+ * @returns 当前场景的断言及异步操作完成后解析。
+ * @throws Error 断言或场景执行失败时向上传播，测试入口记录错误并设置失败退出码。
+ */
 async function testRepairInterruptedTextStep(): Promise<void> {
   const sessionId = "session-repair-text"
   const initial = initialRepairEvents(sessionId)
@@ -492,10 +556,20 @@ async function testRepairInterruptedTextStep(): Promise<void> {
   assert.equal(state.events.length, eventCount, "重复恢复不得再次补写事件")
 }
 
+/**
+ * 验证恢复审批和工具结果时区分取消、拒绝与执行状态未知，随后关闭 Step 和 Turn。
+ * @returns 当前场景的断言及异步操作完成后解析。
+ * @throws Error 断言或场景执行失败时向上传播，测试入口记录错误并设置失败退出码。
+ */
 async function testRepairApprovalAndToolResults(): Promise<void> {
   const sessionId = "session-repair-tools"
   const initial = initialRepairEvents(sessionId)
   let seq = initial.length
+  /**
+   * 分配递增序号并向初始恢复日志追加事件，供审批关联场景使用。
+   * @param input 要追加到初始日志的事件输入。
+   * @returns 已补充身份并加入初始日志的事件。
+   */
   const add = (input: SessionEventInput): SessionEvent => {
     const event = persistedEvent(sessionId, ++seq, input)
     initial.push(event)
@@ -545,6 +619,12 @@ async function testRepairApprovalAndToolResults(): Promise<void> {
     model: MODEL,
   })
 
+  /**
+   * 根据完整工具调用块构造对应的审批请求并加入初始恢复日志。
+   * @param approvalId 当前审批请求的唯一身份。
+   * @param end 审批关联的工具调用块结束事件。
+   * @throws AssertionError 关联事件不是完整工具调用块时抛出，停止构造场景。
+   */
   const request = (
     approvalId: string,
     end: SessionEvent,
@@ -617,6 +697,11 @@ async function testRepairApprovalAndToolResults(): Promise<void> {
   ])
 }
 
+/**
+ * 验证不完整工具调用不会在恢复时生成孤立的工具结果。
+ * @returns 当前场景的断言及异步操作完成后解析。
+ * @throws Error 断言或场景执行失败时向上传播，测试入口记录错误并设置失败退出码。
+ */
 async function testInterruptedToolCallDoesNotCreateOrphanResult(): Promise<void> {
   const sessionId = "session-repair-incomplete-tool"
   const initial = initialRepairEvents(sessionId)
@@ -643,6 +728,11 @@ async function testInterruptedToolCallDoesNotCreateOrphanResult(): Promise<void>
   assert.deepEqual(state.events.slice(5).map((event) => event.type), ["step/end", "turn/end"])
 }
 
+/**
+ * 验证恢复保留上下文增量，且不为只有开始事件的 Summary 补写成功结果。
+ * @returns 当前场景的断言及异步操作完成后解析。
+ * @throws Error 断言或场景执行失败时向上传播，测试入口记录错误并设置失败退出码。
+ */
 async function testRepairPreservesContextAndUncommittedSummary(): Promise<void> {
   const sessionId = "session-repair-summary"
   const initial = initialRepairEvents(sessionId)
@@ -684,6 +774,11 @@ async function testRepairPreservesContextAndUncommittedSummary(): Promise<void> 
   assert.equal(state.events.filter((event) => event.type === "summary/end").length, 0)
 }
 
+/**
+ * 验证孤立块增量和缺失首条用户消息的日志在初始化或补写前被拒绝。
+ * @returns 当前场景的断言及异步操作完成后解析。
+ * @throws Error 断言或场景执行失败时向上传播，测试入口记录错误并设置失败退出码。
+ */
 async function testCorruptedLogIsRejectedBeforeWrites(): Promise<void> {
   const sessionId = "session-corrupted"
   const initial = initialRepairEvents(sessionId)
@@ -713,6 +808,11 @@ async function testCorruptedLogIsRejectedBeforeWrites(): Promise<void> {
   assert.deepEqual(missingFirstMessage.calls, ["readEvents"])
 }
 
+/**
+ * 使用临时 SQLite 和派生文件验证目录、事件提交、基线变化、摘要回放及 Adapter 装配。
+ * @returns 当前场景的断言及异步操作完成后解析。
+ * @throws Error 断言或场景执行失败时向上传播，测试入口记录错误并设置失败退出码。
+ */
 async function testConcreteRuntimeBindings(): Promise<void> {
   const root = await mkdtemp(join(tmpdir(), "nicode-runtime-bindings-"))
   try {
@@ -853,6 +953,11 @@ async function testConcreteRuntimeBindings(): Promise<void> {
   }
 }
 
+/**
+ * 验证同一实例跨 Turn 共用取消信号，其他 Session 实例不受影响。
+ * @returns 当前场景的断言及异步操作完成后解析。
+ * @throws Error 断言或场景执行失败时向上传播，测试入口记录错误并设置失败退出码。
+ */
 async function testRuntimeScopedCancellation(): Promise<void> {
   const first = fixture("session-cancellation-1")
   const second = fixture("session-cancellation-2")
@@ -950,6 +1055,11 @@ async function testStoppedThinkingCanContinue(): Promise<void> {
   }
 }
 
+/**
+ * 依次执行 Session 入口、队列、恢复、资源绑定和停止后继续的断言场景。
+ * @returns 当前场景的断言及异步操作完成后解析。
+ * @throws Error 断言或场景执行失败时向上传播，测试入口记录错误并设置失败退出码。
+ */
 async function main(): Promise<void> {
   await testNewSession()
   await testContinueSession()

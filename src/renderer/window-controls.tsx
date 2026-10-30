@@ -17,7 +17,12 @@ export function WindowControls() {
     void window.nicodeWindow.getState().then((next) => { if (mounted && !receivedUpdate) setState(next) }).catch(() => { if (mounted) setError("无法读取窗口状态") })
     return () => { mounted = false; unsubscribe() }
   }, [])
-  /** @param action 用户触发的窗口操作。 @returns 操作完成；失败时保留可重试的按钮。 */
+  /**
+   * 执行用户触发的窗口操作，并保留失败后的重试入口。
+   *
+   * @param action 用户触发的窗口操作。
+   * @returns 操作完成；失败时保留可重试的按钮。
+   */
   async function operate(action: "minimize" | "maximize"): Promise<void> {
     setError(null)
     try {

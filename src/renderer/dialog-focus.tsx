@@ -12,7 +12,11 @@ export function useDialogFocus<T extends HTMLElement>(ref: RefObject<T | null>, 
     if (!active || !ref.current) return
     const dialog = ref.current
     const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null
-    /** @returns 当前弹窗内可操作且可见的焦点目标。 */
+    /**
+     * 查询当前弹窗内可见且可操作的焦点目标。
+     *
+     * @returns 当前弹窗内可操作且可见的焦点目标。
+     */
     function targets(): HTMLElement[] {
       return [...dialog.querySelectorAll<HTMLElement>('button, input, select, textarea, a[href], [tabindex="0"]')]
         .filter((node) => !node.matches(':disabled, [aria-hidden="true"]') && node.getClientRects().length > 0)
@@ -21,7 +25,11 @@ export function useDialogFocus<T extends HTMLElement>(ref: RefObject<T | null>, 
       const preferred = dialog.querySelector<HTMLElement>("[data-dialog-autofocus]")
       if (!dialog.contains(document.activeElement)) (preferred && !preferred.matches(":disabled") ? preferred : targets()[0] ?? dialog).focus()
     })
-    /** @param event 仅在最上层弹窗拦截 Tab，嵌套弹窗各自管理焦点。 */
+    /**
+     * 在当前最上层弹窗内处理 Tab 焦点循环，保留嵌套弹窗的独立焦点边界。
+     *
+     * @param event 仅在最上层弹窗拦截 Tab，嵌套弹窗各自管理焦点。
+     */
     function trap(event: KeyboardEvent): void {
       const dialogs = document.querySelectorAll('[aria-modal="true"]')
       if (event.key !== "Tab" || dialogs[dialogs.length - 1] !== dialog) return

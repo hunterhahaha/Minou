@@ -1,12 +1,22 @@
-/** 当前 Turn 内由 write/edit 产生的文件净变化与说明。 */
+/**
+ * 当前 Turn 文件工具修改的内存快照与净变化汇总。
+ *
+ * 首次记录保留旧内容，后续记录更新最终内容；汇总按内容哈希过滤撤销变化，
+ * 生成带统计与说明的文本 diff，不读取文件或持久化原始快照。
+ */
 import { createHash } from "node:crypto"
 import { structuredPatch } from "diff"
 import type { FileChange, FileDiffHunk } from "./events.ts"
 
+/** 单个路径在当前 Turn 首次修改前与最终内容的内存快照，以及可选说明。 */
 interface Snapshot {
+  /** 文件或来源的路径。 */
   path: string
+  /** 首次修改前的内容，不存在时为 null。 */
   oldBlob: Buffer | null
+  /** 最近记录的最终内容。 */
   newBlob: Buffer | null
+  /** 最近设置的文件变化说明。 */
   description?: string
 }
 
@@ -81,7 +91,11 @@ export class TurnFileChangeTracker {
   }
 }
 
-/** @param content 文件内容或不存在标记。 @returns SHA-256 或 null。 */
+/**
+ * 读取当前 Session 的持久化状态。
+ * @param content 文件内容或不存在标记。
+ * @returns SHA-256 或 null。
+ */
 function hash(content: Buffer | null): string | null {
   return content === null ? null : createHash("sha256").update(content).digest("hex")
 }
