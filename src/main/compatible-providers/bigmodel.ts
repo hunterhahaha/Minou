@@ -1,71 +1,130 @@
-/** BigModel 各协议的内置连接地址和完整模型创建资料。 */
-
+/**
+ * BigModel 标准 API 与 Coding Plan 的独立创建资料，2026-11-02 核对官方文档。
+ * 标准 API 使用标准 Key，Coding Plan 使用个人或团队套餐 Key；目录不判断账号权益。
+ * 普通 API 仅收录已核对的 Chat Completions；套餐不包含尚未开放的 FlashX。
+ * 来源及协议白名单见 docs/configuration-and-storage.md 的 GLM 接入说明。
+ */
 import type {CompatibleProviderDefinition} from "../compatible-providers.ts"
 
-/** 按目录展示顺序保存的 BigModel 协议资料。 */
-export const BIGMODEL_PROVIDERS: readonly CompatibleProviderDefinition[] = [
+/** 标准 API：当前主流、官方仍列出的通用 GLM 模型；不收录专属法律或独立媒体模型。 */
+export const BIGMODEL_API_PROVIDERS: readonly CompatibleProviderDefinition[] = [
     {
         protocol: "chat_completions",
         url: "https://open.bigmodel.cn/api/paas/v4",
         models: [
             {
-                supportsReasoning: true,
-                name: "glm-5.2",
-                contextWindow: 1048576,
+                name: "glm-5.3",
+                contextWindow: 1000000,
                 maxOutputTokens: 131072,
-                reasoningLevels: [
-                    "none", "minimal", "low", "medium",
-                    "high", "xhigh", "max",
-                ],
+                supportsReasoning: true,
+                reasoningLevels: ["low", "high", "max"],
                 reasoningField: {path: ["reasoning_effort"]},
             },
             {
+                name: "glm-5.3-flash",
+                contextWindow: 1000000,
+                maxOutputTokens: 131072,
                 supportsReasoning: true,
+                reasoningLevels: ["low", "high", "max"],
+                reasoningField: {path: ["reasoning_effort"]},
+            },
+            {
+                name: "glm-5.3-flashx",
+                contextWindow: 1000000,
+                maxOutputTokens: 131072,
+                supportsReasoning: true,
+                reasoningLevels: ["low", "high", "max"],
+                reasoningField: {path: ["reasoning_effort"]},
+            },
+            {
+                name: "glm-5.2",
+                contextWindow: 1000000,
+                maxOutputTokens: 131072,
+                supportsReasoning: true,
+                reasoningLevels: ["none", "high", "max"],
+                reasoningField: {path: ["reasoning_effort"]},
+            },
+            {
                 name: "glm-5.1",
-                contextWindow: 204800,
+                contextWindow: 200000,
                 maxOutputTokens: 131072,
+                supportsReasoning: true,
                 reasoningLevels: ["enabled", "disabled"],
                 reasoningField: {path: ["thinking", "type"]},
             },
             {
-                supportsReasoning: true,
                 name: "glm-5",
-                contextWindow: 204800,
+                contextWindow: 200000,
                 maxOutputTokens: 131072,
+                supportsReasoning: true,
                 reasoningLevels: ["enabled", "disabled"],
                 reasoningField: {path: ["thinking", "type"]},
             },
             {
-                supportsReasoning: true,
                 name: "glm-5-turbo",
-                contextWindow: 204800,
+                contextWindow: 200000,
                 maxOutputTokens: 131072,
+                supportsReasoning: true,
                 reasoningLevels: ["enabled", "disabled"],
                 reasoningField: {path: ["thinking", "type"]},
             },
             {
-                supportsReasoning: true,
                 name: "glm-4.7",
-                contextWindow: 204800,
+                contextWindow: 200000,
                 maxOutputTokens: 131072,
+                supportsReasoning: true,
                 reasoningLevels: ["enabled", "disabled"],
                 reasoningField: {path: ["thinking", "type"]},
             },
             {
-                supportsReasoning: true,
                 name: "glm-4.7-flash",
-                contextWindow: 204800,
+                contextWindow: 200000,
                 maxOutputTokens: 131072,
+                supportsReasoning: true,
                 reasoningLevels: ["enabled", "disabled"],
                 reasoningField: {path: ["thinking", "type"]},
             },
             {
-                supportsReasoning: true,
                 name: "glm-4.6",
-                contextWindow: 204800,
+                contextWindow: 200000,
                 maxOutputTokens: 131072,
+                supportsReasoning: true,
                 reasoningLevels: ["enabled", "disabled"],
                 reasoningField: {path: ["thinking", "type"]},
+            },
+        ],
+    },
+]
+
+/** Coding Plan：按协议收录官方接入指南确认的型号，独立保存模型资料。 */
+export const BIGMODEL_CODING_PLAN_PROVIDERS: readonly CompatibleProviderDefinition[] = [
+    {
+        protocol: "chat_completions",
+        url: "https://open.bigmodel.cn/api/coding/paas/v4",
+        models: [
+            {
+                name: "glm-5.3",
+                contextWindow: 1000000,
+                maxOutputTokens: 131072,
+                supportsReasoning: true,
+                reasoningLevels: ["low", "high", "max"],
+                reasoningField: {path: ["reasoning_effort"]},
+            },
+            {
+                name: "glm-5.3-flash",
+                contextWindow: 1000000,
+                maxOutputTokens: 131072,
+                supportsReasoning: true,
+                reasoningLevels: ["low", "high", "max"],
+                reasoningField: {path: ["reasoning_effort"]},
+            },
+            {
+                name: "glm-5.2",
+                contextWindow: 1000000,
+                maxOutputTokens: 131072,
+                supportsReasoning: true,
+                reasoningLevels: ["none", "high", "max"],
+                reasoningField: {path: ["reasoning_effort"]},
             },
         ],
     },
@@ -74,74 +133,33 @@ export const BIGMODEL_PROVIDERS: readonly CompatibleProviderDefinition[] = [
         url: "https://open.bigmodel.cn/api/anthropic",
         models: [
             {
-                supportsReasoning: true,
-                name: "glm-5.2",
-                contextWindow: 1048576,
+                name: "glm-5.3",
+                contextWindow: 1000000,
                 maxOutputTokens: 131072,
-                reasoningLevels: ["enabled", "disabled"],
-                reasoningField: {path: ["thinking", "type"]},
+                supportsReasoning: true,
+                reasoningLevels: ["low", "high", "max"],
+                reasoningField: {path: ["output_config", "effort"]},
             },
             {
-                supportsReasoning: true,
-                name: "glm-5.1",
-                contextWindow: 204800,
+                name: "glm-5.3-flash",
+                contextWindow: 1000000,
                 maxOutputTokens: 131072,
-                reasoningLevels: ["enabled", "disabled"],
-                reasoningField: {path: ["thinking", "type"]},
-            },
-            {
                 supportsReasoning: true,
-                name: "glm-5",
-                contextWindow: 204800,
-                maxOutputTokens: 131072,
-                reasoningLevels: ["enabled", "disabled"],
-                reasoningField: {path: ["thinking", "type"]},
-            },
-            {
-                supportsReasoning: true,
-                name: "glm-5-turbo",
-                contextWindow: 204800,
-                maxOutputTokens: 131072,
-                reasoningLevels: ["enabled", "disabled"],
-                reasoningField: {path: ["thinking", "type"]},
-            },
-            {
-                supportsReasoning: true,
-                name: "glm-4.7",
-                contextWindow: 204800,
-                maxOutputTokens: 131072,
-                reasoningLevels: ["enabled", "disabled"],
-                reasoningField: {path: ["thinking", "type"]},
-            },
-            {
-                supportsReasoning: true,
-                name: "glm-4.7-flash",
-                contextWindow: 204800,
-                maxOutputTokens: 131072,
-                reasoningLevels: ["enabled", "disabled"],
-                reasoningField: {path: ["thinking", "type"]},
-            },
-            {
-                supportsReasoning: true,
-                name: "glm-4.6",
-                contextWindow: 204800,
-                maxOutputTokens: 131072,
-                reasoningLevels: ["enabled", "disabled"],
-                reasoningField: {path: ["thinking", "type"]},
+                reasoningLevels: ["low", "high", "max"],
+                reasoningField: {path: ["output_config", "effort"]},
             },
         ],
     },
-    // Responses 兼容性待实测
     {
         protocol: "responses",
         url: "https://open.bigmodel.cn/api/v1",
         models: [
             {
-                supportsReasoning: true,
-                name: "glm-5.2",
-                contextWindow: 1048576,
+                name: "glm-5.3",
+                contextWindow: 1000000,
                 maxOutputTokens: 131072,
-                reasoningLevels: ["none", "high", "max"],
+                supportsReasoning: true,
+                reasoningLevels: ["high", "max"],
                 reasoningField: {path: ["reasoning", "effort"]},
             },
         ],

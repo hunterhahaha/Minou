@@ -53,9 +53,10 @@ type AssistantToolCalls = NonNullable<ChatCompletionAssistantMessageParam["tool_
  * content 为空且没有 tool_call 的 assistant 消息、以及空文本消息都不发送。
  *
  * @param messages 除首个 System Message 外的统一会话消息。
+ * @param replayReasoning GLM 请求使用 reasoning_content 回传历史思考；默认不发送厂商扩展。
  * @returns Chat Completions 消息数组。
  */
-export function toChatCompletionsMessages(messages: ModelMessage[]): ChatCompletionMessageParam[] {
+export function toChatCompletionsMessages(messages: ModelMessage[], replayReasoning = false): ChatCompletionMessageParam[] {
   const result: ChatCompletionMessageParam[] = []
 
   for (const message of messages) {
@@ -77,6 +78,12 @@ export function toChatCompletionsMessages(messages: ModelMessage[]): ChatComplet
         content: text.length > 0 ? text : null,
       }
       if (toolCalls.length > 0) param.tool_calls = toolCalls
+      if (replayReasoning) {
+        const reasoning = message.content
+          .filter((block) => block.type === "thinking")
+          .map((block) => block.text).join("")
+        if (reasoning.length > 0) Object.assign(param, { reasoning_content: reasoning })
+      }
       result.push(param)
       continue
     }
@@ -96,7 +103,7 @@ export function toChatCompletionsMessages(messages: ModelMessage[]): ChatComplet
 }
 
 /**
- * assistant 消息的文本部分：thinking 块不回放（协议没有对应的回传位置）。
+ * 提取 assistant 正文；GLM 的 thinking 由消息转换单独写入 reasoning_content。
  *
  * @param blocks 统一 assistant 内容块。
  * @returns 按原顺序拼接的文本。
@@ -171,7 +178,7 @@ export function buildChatCompletionsRequest(
 
   const params: ChatCompletionCreateParamsStreaming = {
     model: request.model.name,
-    messages: [{ role: "system", content: system }, ...toChatCompletionsMessages(rest)],
+    messages: [{ role: "system", content: system }, ...toChatCompletionsMessages(rest, /^glm-/i.test(config.name))],
     stream: true,
     stream_options: { include_usage: true },
   }

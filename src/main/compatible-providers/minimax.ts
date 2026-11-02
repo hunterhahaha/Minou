@@ -1,12 +1,12 @@
-/** MiniMax 各协议的内置连接地址和完整模型创建资料。 */
+/** MiniMax 按地区与接入方式提供的 Chat Completions 创建资料。 */
 
 import type {CompatibleProviderDefinition} from "../compatible-providers.ts"
 
-/** 按目录展示顺序保存的 MiniMax 协议资料。 */
-export const MINIMAX_PROVIDERS: readonly CompatibleProviderDefinition[] = [
+/** 用于生成各接入入口的 MiniMax Chat Completions 模型资料。 */
+const MINIMAX_CHAT_TEMPLATE: readonly CompatibleProviderDefinition[] = [
     {
         protocol: "chat_completions",
-        url: "https://api.minimaxi.com/v1",
+        url: "https://api.minimax.com/v1",
         models: [
             {
                 supportsReasoning: true,
@@ -26,48 +26,14 @@ export const MINIMAX_PROVIDERS: readonly CompatibleProviderDefinition[] = [
             },
         ],
     },
-    {
-        protocol: "responses",
-        url: "https://api.minimaxi.com/v1",
-        models: [
-            {
-                supportsReasoning: true,
-                name: "MiniMax-M3.1-Flash",
-                contextWindow: 1000000,
-                maxOutputTokens: 524288,
-                reasoningLevels: ["low", "medium", "high", "xhigh", "max"],
-                reasoningField: {path: ["reasoning", "effort"]},
-            },
-            {
-                supportsReasoning: true,
-                name: "MiniMax-M3",
-                contextWindow: 1000000,
-                maxOutputTokens: 524288,
-                reasoningLevels: ["none", "minimal", "low", "medium", "high"],
-                reasoningField: {path: ["reasoning", "effort"]},
-            },
-        ],
-    },
-    {
-        protocol: "anthropic_messages",
-        url: "https://api.minimaxi.com/anthropic",
-        models: [
-            {
-                supportsReasoning: true,
-                name: "MiniMax-M3.1-Flash",
-                contextWindow: 1000000,
-                maxOutputTokens: 524288,
-                reasoningLevels: ["low", "medium", "high", "xhigh", "max"],
-                reasoningField: {path: ["output_config", "effort"]},
-            },
-            {
-                supportsReasoning: true,
-                name: "MiniMax-M3",
-                contextWindow: 1000000,
-                maxOutputTokens: 524288,
-                reasoningLevels: ["disabled", "adaptive"],
-                reasoningField: {path: ["thinking", "type"]},
-            },
-        ],
-    },
+]
+
+/** MINIMAX CN 入口；独立复制模型配置，避免入口间共享可变对象。 */
+export const MINIMAX_CN_PROVIDERS: readonly CompatibleProviderDefinition[] = [
+    {...structuredClone(MINIMAX_CHAT_TEMPLATE[0]!), url: "https://api.minimax.com/v1"},
+]
+
+/** MINIMAX INTERNATIONAL 入口；独立复制模型配置，避免入口间共享可变对象。 */
+export const MINIMAX_INTERNATIONAL_PROVIDERS: readonly CompatibleProviderDefinition[] = [
+    {...structuredClone(MINIMAX_CHAT_TEMPLATE[0]!), url: "https://api.minimax.io/v1"},
 ]

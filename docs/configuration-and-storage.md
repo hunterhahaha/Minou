@@ -91,6 +91,67 @@ STDIO 环境使用 SDK 默认环境加显式 `env`。HTTP Bearer 在连接时从
 
 兼容供应商目录只是创建资料，由 [compatible-providers.ts](../src/main/compatible-providers.ts) 按供应商名称索引，每个名称对应一个协议资料数组，数组条目包含 `protocol`、`url` 和 `models`。各供应商资料放在 `src/main/compatible-providers/` 下的独立文件中，当前 DeepSeek 资料见 [deepseek.ts](../src/main/compatible-providers/deepseek.ts)。列表按字典键生成名称并去重协议，创建时先按名称取数组，再匹配单个协议；现有数据不会被模板自动覆盖。
 
+### Kimi 与 MiniMax 地区入口
+
+按指定地址表配置以下 Chat Completions 创建模板，替换原有 `Kimi`、`MiniMax` 单一目录项及其 Responses、Anthropic 预设。模型名称、上下文窗口、最大输出和推理配置沿用当前 Chat Completions 模板；地址表未提供新的模型规格或套餐模型白名单。
+
+| 入口 | Base URL |
+| --- | --- |
+| Kimi 国内 API | `https://api.moonshot.cn/v1` |
+| Kimi 国内 Coding Plan | `https://api.kimi.com/coding/v1` |
+| Kimi 国际 API | `https://api.moonshot.ai/v1` |
+| Kimi 国际 Coding Plan | `https://api.kimi.ai/coding/v1` |
+| MiniMax 国内 | `https://api.minimax.com/v1` |
+| MiniMax 国际 | `https://api.minimax.io/v1` |
+
+MiniMax 的 API 与 Coding Plan 共用地区地址，不单独拆分套餐入口。各入口仅提供创建资料；创建和运行继续使用现有 Provider 存储与 Adapter 流程，模板不自动改写已保存的供应商。Kimi 的套餐模型可用性仍以所用账号权益为准。
+
+### GLM 标准 API 与 Coding Plan 接入
+
+2026-11-02 依据两家官方文档重建 GLM 创建模板，入口分别为 `BigModel API`、`BigModel Coding Plan`、`Z.AI API`、`Z.AI Coding Plan`，替换原来的 `BigModel` 目录项。模板只影响新建供应商，不会改写已保存的供应商。
+
+| 入口 | Chat Completions | Anthropic Messages | Responses |
+| --- | --- | --- | --- |
+| BigModel API | `https://open.bigmodel.cn/api/paas/v4` | 未纳入预设 | 未纳入预设 |
+| BigModel Coding Plan | `https://open.bigmodel.cn/api/coding/paas/v4` | `https://open.bigmodel.cn/api/anthropic` | `https://open.bigmodel.cn/api/v1` |
+| Z.AI API | `https://api.z.ai/api/paas/v4` | 未纳入预设 | 未纳入预设 |
+| Z.AI Coding Plan | `https://api.z.ai/api/coding/paas/v4` | `https://api.z.ai/api/anthropic` | `https://api.z.ai/api/v1` |
+
+标准 API 使用标准 API Key；套餐使用对应平台的个人或团队套餐 Key。目录无法判断 Key 类型或账号权益，入口名称本身不保证实际扣费来源。官方自 2026-10-16 起分类管理 Key，详见 [BigModel Key 分类公告](https://docs.bigmodel.cn/cn/coding-plan/notice/api-key-management) 与 [Z.AI 文档索引中的 Key 管理说明](https://docs.z.ai/llms.txt)。
+
+普通 API 以官方仍列出的通用编码与智能体型号为范围：两家均收录 `glm-5.3`、`glm-5.3-flash`、`glm-5.3-flashx`、`glm-5.2`、`glm-5.1`、`glm-5`、`glm-4.7`、`glm-4.6`；BigModel 另收录其官方目录中的 `glm-5-turbo`、`glm-4.7-flash`。不收录法律专属型号、图像生成、OCR、语音、向量及更早代际型号。这是预设选型范围，不代表被省略的模型都已下线。
+
+套餐白名单按协议保守收录：Chat Completions 为 `glm-5.3`、`glm-5.3-flash`、`glm-5.2`，Anthropic 为前两者，Responses 为 `glm-5.3`。不由普通 API 列表推断套餐权益，FlashX 官方尚未开放套餐。普通 API 只预设双方明确给出的标准 Chat 入口；不代表其余协议在服务端不受支持。
+
+5.3 系列使用 1,000,000 上下文、131,072 最大输出，推理等级为 `low/high/max`；5.2 使用相同窗口与输出，预设使用 `none/high/max` 三个实际档位。更早型号使用 200,000 上下文与 `thinking.type=enabled/disabled`。Chat 的 5.2/5.3 使用 `reasoning_effort`，套餐 Anthropic 使用 `output_config.effort`，Responses 使用 `reasoning.effort`。5.3 预设不提供关闭思考选项。Chat Adapter 对 `glm-` 模型将历史 thinking 按原顺序拼成 `reasoning_content` 回传，保留工具调用后的思考上下文。
+
+核对来源：[BigModel 模型概览](https://docs.bigmodel.cn/cn/guide/start/model-overview)、[深度思考参数](https://docs.bigmodel.cn/cn/guide/capabilities/thinking)、[套餐模型与协议](https://docs.bigmodel.cn/cn/coding-plan/latest-model)、[Responses](https://docs.bigmodel.cn/cn/guide/develop/responses/introduction)、[Z.AI 模型概览](https://docs.z.ai/guides/overview/overview)、[标准 API](https://docs.z.ai/api-reference/introduction)、[套餐协议](https://docs.z.ai/devpack/tool/others)、[套餐模型与 effort](https://docs.z.ai/devpack/latest-model)、[Flash/FlashX 权益](https://docs.z.ai/guides/vlm/glm-5.3-flash)。
+
+
+Responses 的官方兼容页与套餐切换页对低档 effort 的映射说明不同，因此 Responses 预设只暴露双方都明确支持的 `high/max`，不提供关闭思考或含义不一致的低档。
+
+### Anthropic 与 OpenRouter
+
+Anthropic 使用 `https://api.anthropic.com` 的 Messages 协议，收录 `claude-opus-5-5`、`claude-sonnet-5-5`、`claude-haiku-5-5`。三款模型的上下文均为 1,000,000，最大输出为 128,000，使用 `output_config.effort` 的 `low/medium/high/xhigh/max` 档位。
+
+OpenRouter 使用 `https://openrouter.ai/api/v1` 的 Chat Completions 协议，仅预设五款：`anthropic/claude-sonnet-5.5`、`anthropic/claude-opus-5.5`、`openai/gpt-6.1-sol`、`google/gemini-4-argon`、`moonshotai/kimi-k3.1-pro`。推理统一写入 `reasoning.effort`，按每款模型的平台能力声明提供档位；Gemini 仅 `low/medium/high`，Kimi 为 `none/low/high/max`，其余为 `low/medium/high/xhigh/max`。
+
+OpenRouter 的上下文窗口依据模型目录；Claude / GPT 最大输出为 128,000，Gemini / Kimi 的单次输出保守设为 65,536，避免平台接近整个上下文窗口的输出上限使当前 Summary 阈值失去可用输入余量。这是应用预设上限，不是服务端最大能力。上述资料只在创建供应商时使用，不自动覆盖已有供应商。
+
+源码：[anthropic.ts](../src/main/compatible-providers/anthropic.ts)、[openrouter.ts](../src/main/compatible-providers/openrouter.ts)。2026-11-02 核对来源：[Claude 模型规格](https://platform.claude.com/docs/en/models/overview)、[effort](https://platform.claude.com/docs/en/build-with-claude/effort)、[OpenRouter 模型目录](https://openrouter.ai/api/v1/models)、[统一推理配置](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens)、[模型榜单](https://openrouter.ai/rankings)。
+
+### Gemini 与 NVIDIA
+
+Gemini 使用 Google AI Studio API Key 和 `https://generativelanguage.googleapis.com/v1beta/openai/` 的 Chat Completions 兼容入口，收录 `gemini-4-argon`、`gemini-3.8-flash`。两款均配置 1,048,576 上下文、65,536 输出规格与 `reasoning_effort=low/medium/high`，不提供 `none/minimal`。不包含 Vertex AI 的项目、地区与 OAuth 入口。
+
+Gemini 模板目前只完成连接与模型资料配置。当前统一 Assistant 内容块和 Chat Adapter 未保存、回传 Gemini 的 thought signature；本次未扩展消息、流事件与持久化契约，因此不能将模板存在理解为已验证多轮工具调用完整兼容。完整签名支持需要独立决定其跨 Adapter、Agent、事件日志和恢复的数据流。
+
+NVIDIA 使用托管 NIM 的 `https://integrate.api.nvidia.com/v1`，仅提供 Chat Completions，收录 `openai/gpt-oss-120b` 与 `meta/llama-3.3-70b-instruct`。两款配置 131,072 上下文、4,096 输出规格，输出依据托管端点公布的限制。GPT-OSS 提供 `reasoning_effort=low/medium/high`；Llama 关闭推理配置发送。`supportsReasoning` 表示是否发送推理控制字段，不用厂商名称推断能力。
+
+当前 Chat Adapter 不发送 `max_tokens`，上述最大输出属于模型配置与上下文预算资料，实际生成仍使用端点默认值；其中 NVIDIA Llama 默认输出为 1,024。本次不更改这一现有请求行为，也不配置本地 GPU、自托管容器或新协议。
+
+源码：[gemini.ts](../src/main/compatible-providers/gemini.ts)、[nvidia.ts](../src/main/compatible-providers/nvidia.ts)。2026-11-02 核对来源：[Google OpenAI 兼容入口](https://ai.google.dev/gemini-api/docs/openai)、[Argon](https://ai.google.dev/gemini-api/docs/models/gemini-4-argon)、[Flash](https://ai.google.dev/gemini-api/docs/models/gemini-3.8-flash)、[Thinking](https://ai.google.dev/gemini-api/docs/thinking)、[NVIDIA GPT-OSS API](https://docs.api.nvidia.com/nim/reference/openai-gpt-oss-120b-infer)、[Llama API](https://docs.api.nvidia.com/nim/reference/meta-llama-3_3-70b-instruct-infer)。
+
 ## workspace.sqlite
 
 [workspace-store.ts](../src/main/workspace-store.ts) 持有三个 STRICT 表：

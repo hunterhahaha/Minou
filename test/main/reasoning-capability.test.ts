@@ -66,7 +66,7 @@ async function main(): Promise<void> {
     } finally { db.close() }
     assert.throws(() => initializeProviderDatabase(database), /不支持 Provider 数据库版本 2/)
     for (const definitions of Object.values(COMPATIBLE_PROVIDERS)) for (const definition of definitions) {
-      assert.ok(definition.models.every((entry) => entry.supportsReasoning === true))
+      assert.ok(definition.models.every((entry) => typeof entry.supportsReasoning === "boolean"))
     }
     console.log("reasoning-capability.test.ts: IPC、写库默认、重开恢复、Turn/CLI 和内置能力通过")
   } finally { await rm(directory, { recursive: true, force: true }) }

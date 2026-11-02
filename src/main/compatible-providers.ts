@@ -3,10 +3,26 @@
 import type {Protocol, ReasoningField} from "../../runtime/model/src/types.ts"
 import type {CompatibleProviderOption} from "../preload/session-api.ts"
 import {DEEPSEEK_PROVIDERS} from "./compatible-providers/deepseek.ts"
-import {KIMI_PROVIDERS} from "./compatible-providers/kimi.ts"
-import {BIGMODEL_PROVIDERS} from "./compatible-providers/bigmodel.ts"
-import {MINIMAX_PROVIDERS} from "./compatible-providers/minimax.ts";
+import {
+    KIMI_CN_API_PROVIDERS,
+    KIMI_CN_CODING_PLAN_PROVIDERS,
+    KIMI_INTERNATIONAL_API_PROVIDERS,
+    KIMI_INTERNATIONAL_CODING_PLAN_PROVIDERS
+} from "./compatible-providers/kimi.ts"
+import {BIGMODEL_API_PROVIDERS, BIGMODEL_CODING_PLAN_PROVIDERS} from "./compatible-providers/bigmodel.ts"
+import {ZAI_API_PROVIDERS, ZAI_CODING_PLAN_PROVIDERS} from "./compatible-providers/zai.ts"
+import {MINIMAX_CN_PROVIDERS, MINIMAX_INTERNATIONAL_PROVIDERS} from "./compatible-providers/minimax.ts";
 import {OPENAI_PROVIDERS} from "./compatible-providers/openai.ts"
+import {ANTHROPIC_PROVIDERS} from "./compatible-providers/anthropic.ts"
+import {OPENROUTER_PROVIDERS} from "./compatible-providers/openrouter.ts"
+import {GEMINI_PROVIDERS} from "./compatible-providers/gemini.ts"
+import {NVIDIA_PROVIDERS} from "./compatible-providers/nvidia.ts"
+import {
+    BAILIAN_BEIJING_PROVIDERS,
+    BAILIAN_SINGAPORE_PROVIDERS,
+    BAILIAN_VIRGINIA_PROVIDERS,
+    BAILIAN_HONG_KONG_PROVIDERS
+} from "./compatible-providers/bailian.ts"
 
 /** 一个已兼容供应商在指定协议下的完整创建资料。 */
 export interface CompatibleProviderDefinition {
@@ -31,11 +47,26 @@ export type CompatibleProviderCatalog = Readonly<Record<string, readonly Compati
 
 /** 汇总独立供应商文件的内置目录；供应商名称只保存在字典键中。 */
 export const COMPATIBLE_PROVIDERS: CompatibleProviderCatalog = {
-    DeepSeek: DEEPSEEK_PROVIDERS,
-    Kimi: KIMI_PROVIDERS,
-    BigModel: BIGMODEL_PROVIDERS,
-    MiniMax: MINIMAX_PROVIDERS,
-    OpenAI: OPENAI_PROVIDERS,
+    "DeepSeek": DEEPSEEK_PROVIDERS,
+    "Kimi 国内 API": KIMI_CN_API_PROVIDERS,
+    "Kimi 国内 Coding Plan": KIMI_CN_CODING_PLAN_PROVIDERS,
+    "Kimi 国际 API": KIMI_INTERNATIONAL_API_PROVIDERS,
+    "Kimi 国际 Coding Plan": KIMI_INTERNATIONAL_CODING_PLAN_PROVIDERS,
+    "BigModel API": BIGMODEL_API_PROVIDERS,
+    "BigModel Coding Plan": BIGMODEL_CODING_PLAN_PROVIDERS,
+    "Z.AI API": ZAI_API_PROVIDERS,
+    "Z.AI Coding Plan": ZAI_CODING_PLAN_PROVIDERS,
+    "MiniMax 国内": MINIMAX_CN_PROVIDERS,
+    "MiniMax 国际": MINIMAX_INTERNATIONAL_PROVIDERS,
+    "OpenAI": OPENAI_PROVIDERS,
+    "Anthropic": ANTHROPIC_PROVIDERS,
+    "OpenRouter": OPENROUTER_PROVIDERS,
+    "Gemini": GEMINI_PROVIDERS,
+    "NVIDIA": NVIDIA_PROVIDERS,
+    "阿里云百炼（北京）": BAILIAN_BEIJING_PROVIDERS,
+    "阿里云百炼（新加坡）": BAILIAN_SINGAPORE_PROVIDERS,
+    "阿里云百炼（弗吉尼亚）": BAILIAN_VIRGINIA_PROVIDERS,
+    "阿里云百炼（中国香港）": BAILIAN_HONG_KONG_PROVIDERS,
 }
 
 /**
