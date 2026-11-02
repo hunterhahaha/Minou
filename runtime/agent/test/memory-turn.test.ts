@@ -64,7 +64,7 @@ async function scenario(profile: string, projectId: string): Promise<void> {
       assert.ok(["memory_list", "memory_read", "memory_write"].every((name) => request.tools?.some((tool) => tool.name === name)))
       if (turn === 1 && step === 1) await gate
       if (step === 1) {
-        const block = { type: "tool_call" as const, toolCallId: `turn-${turn}-write`, name: "memory_write", arguments: { memories: [{ level1: "偏好", level2: "交流", content: `第 ${turn} 轮纠正` }], callDescription: "保存纠正" } }
+        const block = { type: "tool_call" as const, toolCallId: `turn-${turn}-write`, name: "memory_write", arguments: { memories: [{ level1: "偏好", level2: "交流", content: `第 ${turn} 轮纠正` }] } }
         yield { type: "block_start", index: 0, blockType: "tool_call" }
         yield { type: "block_end", index: 0, block }
         yield { type: "stream_end", completion: "tool_calls" }
@@ -73,7 +73,7 @@ async function scenario(profile: string, projectId: string): Promise<void> {
         assert.ok(result?.role === "tool" && !result.isError)
         assert.match(JSON.stringify(result.content), /成功写入 1 条/)
         const calls = [
-          { name: "memory_list", arguments: { callDescription: "查看分类" } },
+          { name: "memory_list", arguments: {} },
           { name: "memory_read", arguments: { sections: [{ level1: "偏好", level2: ["交流"] }] } },
         ]
         for (const [index, call] of calls.entries()) {

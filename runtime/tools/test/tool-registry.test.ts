@@ -17,7 +17,7 @@ import {
 import type { ToolResult } from "../src/types.ts"
 
 /**
- * 假 read 工具接受的业务参数，不包含 Runtime 调用说明。
+ * 假 read 工具接受的业务参数。
  */
 interface ReadArguments {
   /** 假 read 工具用于观察数据流的路径参数。 */

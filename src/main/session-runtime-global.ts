@@ -122,23 +122,14 @@ export class SessionRuntimeGlobal {
   }
 
   /**
-   * 组合基础内置工具和当前 Session 的有效 MCP 定义，再加入可选 callDescription。
+   * 组合基础内置工具和当前 Session 的有效 MCP 定义。
    *
    * @param mcpDefinitions 当前 Session 依据 Meta 和有效 Catalog 生成的定义；省略时只返回内置工具。
    * @returns 当前模型请求可使用的工具定义副本，不把全局 Catalog 自动暴露给其他 Session。
    */
   listToolDefinitions(mcpDefinitions: readonly UnifiedToolDefinition[] = []): UnifiedToolDefinition[] {
     const builtin = this.toolRegistry.listDefinitions().filter((tool) => this.toolRegistry.get(tool.name)?.kind === "builtin")
-    return [...builtin, ...mcpDefinitions].map((tool) => ({
-      ...tool,
-      inputSchema: {
-        ...tool.inputSchema,
-        properties: {
-          ...(tool.inputSchema.properties as Record<string, unknown>),
-          callDescription: { type: "string" },
-        },
-      },
-    }))
+    return [...builtin, ...mcpDefinitions].map((tool) => structuredClone(tool))
   }
 
   /**

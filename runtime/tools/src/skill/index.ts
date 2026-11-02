@@ -7,13 +7,12 @@ import { SkillManager } from "../../../skill/src/index.ts"
 import { isProjectId } from "../../../session/src/project-id.ts"
 import { registerTool, isPlainRecord } from "../tool-registry.ts"
 import type { ToolRegistry, RenderRegistry, ToolArgumentValidation } from "../tool-registry.ts"
-import type { ToolCallMeta } from "../types.ts"
 import { renderSkillLoad } from "../render/skill.ts"
 
 /**
  * skill_load 接受的业务参数；Session 和 Project 身份由 Runtime 提供。
  */
-export interface SkillLoadInput extends ToolCallMeta {
+export interface SkillLoadInput {
   /**
    * Skill 的完整文件夹名，用于匹配当前有效来源。
    */

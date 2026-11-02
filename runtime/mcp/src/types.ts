@@ -50,7 +50,7 @@ export interface MCPCatalogTool {
   /** 稳定且可直接作为模型名称使用的 mcp_ 标识。 */ name: `mcp_${string}`
   /** 所属配置 name。 */ serverId: string
   /** SDK tools/call 所需原始名称。 */ originalToolName: string
-  /** 当前模型定义，不含 Runtime 的 callDescription。 */ definition: UnifiedToolDefinition
+  /** 当前远端工具的模型定义。 */ definition: UnifiedToolDefinition
   /** 从远端 Schema 编译的业务参数检查器。 */ validate: JsonSchemaValidator<Record<string, unknown>>
 }
 

@@ -200,7 +200,7 @@ CLI 沿用现有权限规则，不等待 UI 审批。权限判断需要审批时
 | `sandbox-full-access` | 允许根内的文件工具操作直接允许；根外访问、Shell/PTY 和实际 MCP 调用需要审批。 |
 | `sandbox-read-only` | 允许根内的 `glob`、`grep`、`read` 直接允许；其他需要审批的访问使用自动批准名单。 |
 
-工具自身的参数校验、路径检查和模块权限仍然执行。`present`、Skill、Memory、MCP 发现等内部状态或上下文操作沿用各自规则，不能仅凭工具组推断是否触发审批。
+工具自身的参数校验、路径检查和模块权限仍然执行。Skill、Memory、MCP 发现等内部状态或上下文操作沿用各自规则，不能仅凭工具组推断是否触发审批。
 
 自动批准名单是“审批发生时如何回答”，不是工具允许列表。它不会隐藏工具，不会禁止原本无需审批的调用，也不能将模型不支持或未注册的工具变为可用。
 
@@ -208,7 +208,7 @@ CLI 沿用现有权限规则，不等待 UI 审批。权限判断需要审批时
 
 | 工具组 | 匹配内容 |
 | --- | --- |
-| `file` | `glob`、`grep`、`read`、`write`、`edit`、`present` |
+| `file` | `glob`、`grep`、`read`、`write`、`edit` |
 | `shell` | `shell` |
 | `terminal` | `terminal_open`、`terminal_input`、`terminal_close`、`terminal_list` |
 | `mcp` | `mcp_list_tools`、`mcp_load_tools`、`tool_search`，以及注册元数据为 `kind=mcp` 的远端工具 |

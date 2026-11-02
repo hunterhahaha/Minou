@@ -44,7 +44,7 @@ async function main(): Promise<void> {
     assert.equal(code(await execute("skill_load", { name: "review" }, { ...context, projectId: undefined })), "SKILL_PROJECT_INVALID")
     const registryPath = join(root, "skills", "registry.json")
     const before = await readFile(registryPath, "utf8")
-    const result = await execute("skill_load", { name: "review", callDescription: "载入审查规则" }, context)
+    const result = await execute("skill_load", { name: "review" }, context)
     assert.equal(result.status, "success")
     assert.equal(result.content[0].type, "text")
     assert.ok(JSON.stringify(result.content).includes(full.slice(-100)))

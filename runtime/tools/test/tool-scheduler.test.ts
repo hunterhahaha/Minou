@@ -409,7 +409,6 @@ function testScheduleGroups(): void {
   for (const toolName of [
     "write",
     "edit",
-    "present",
     "shell",
     "terminal_open",
     "terminal_input",

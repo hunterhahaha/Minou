@@ -16,7 +16,7 @@ const paths: ConfigFilePaths = {
   metaDatabasePath: join(rootDir, "meta.sqlite"),
 }
 
-/** 确认模型可见 Schema 增加描述参数，且注册表原定义不被修改。 */
+/** 确认模型可见 Schema 仅包含业务参数，且返回副本不影响注册表原定义。 */
 function testToolDefinitions(): void {
   const tools = new ToolRegistry()
   tools.register({
@@ -40,10 +40,10 @@ function testToolDefinitions(): void {
     type: "object",
     properties: {
       path: { type: "string" },
-      callDescription: { type: "string" },
     },
     required: ["path"],
   })
+  ;(definition.inputSchema.properties as Record<string, unknown>).path = { type: "number" }
   assert.deepEqual(tools.listDefinitions()[0].inputSchema.properties, {
     path: { type: "string" },
   })

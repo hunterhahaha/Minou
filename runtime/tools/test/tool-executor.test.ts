@@ -1,7 +1,7 @@
 /**
  * 统一工具调用入口的离线测试。
  *
- * 使用登记的假 read 工具覆盖查表、参数检查、调用说明分离、取消、异常归一化和结果整理回退。运行：
+ * 使用登记的假 read 工具覆盖查表、参数检查、取消、异常归一化和结果整理回退。运行：
  *   node --experimental-strip-types runtime/tools/test/tool-executor.test.ts
  */
 
@@ -34,7 +34,7 @@ import type {
 } from "../src/types.ts"
 
 /**
- * 假 read 工具接受的业务参数，不包含 Runtime 调用说明。
+ * 假 read 工具接受的业务参数。
  */
 interface ReadArguments {
   /** 假 read 工具用于观察数据流的路径参数。 */
@@ -212,7 +212,7 @@ function resultText(result: ToolResult): string {
 }
 
 /**
- * 验证成功调用分离 callDescription，并保留执行上下文与完整审批参数。
+ * 验证成功调用保留业务参数、执行上下文与完整审批参数。
  * @returns 当前场景全部断言及异步操作完成后解析。
  * @throws Error 断言或场景执行失败时传播，由测试入口报告失败。
  */
@@ -221,7 +221,6 @@ async function testSuccessfulExecutionAndContext(): Promise<void> {
   const callContext = context()
   const result = await executeTool("read", {
     path: "/workspace/a.ts",
-    callDescription: "读取实现",
   }, callContext)
 
   assert.deepEqual(result, {
@@ -233,7 +232,6 @@ async function testSuccessfulExecutionAndContext(): Promise<void> {
   assert.deepEqual(state.executions[0].input, { path: "/workspace/a.ts" })
   assert.deepEqual(state.executions[0].context.validatedArguments, {
     path: "/workspace/a.ts",
-    callDescription: "读取实现",
   })
   assert.equal(state.executions[0].context.turn, callContext.turn)
   assert.equal(state.executions[0].context.step, callContext.step)
@@ -252,14 +250,6 @@ async function testEnvelopeAndToolValidationFailures(): Promise<void> {
 
   const arrayResult = await executeTool("read", [], context())
   assert.equal(errorCode(arrayResult), INVALID_TOOL_ARGUMENTS)
-  assert.equal(state.validationInputs.length, 0)
-  assert.equal(state.executions.length, 0)
-
-  const metaResult = await executeTool("read", {
-    path: "/workspace/a.ts",
-    callDescription: 7,
-  }, context())
-  assert.equal(errorCode(metaResult), INVALID_TOOL_ARGUMENTS)
   assert.equal(state.validationInputs.length, 0)
   assert.equal(state.executions.length, 0)
 

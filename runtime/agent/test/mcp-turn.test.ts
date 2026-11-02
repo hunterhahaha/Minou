@@ -63,7 +63,7 @@ async function main(): Promise<void> {
       } else if ((turn === 1 && step === 4) || (turn > 1 && step === 1)) {
         assert.equal(names.includes(name), true, "下一 Step、Queue 和 Continue 均应看到已载入工具")
         assert.ok(request.tools?.find((tool) => tool.name === name)?.inputSchema.properties)
-        call = { name, arguments: { value: `turn-${turn}`, callDescription: "执行日历工具" } }
+        call = { name, arguments: { value: `turn-${turn}` } }
       }
       if (call) {
         yield { type: "block_start", index: 0, blockType: "tool_call" }

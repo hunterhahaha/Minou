@@ -44,7 +44,7 @@ async function main(): Promise<void> {
     const global = new SessionRuntimeGlobal(paths, tools, renders)
     for (const definition of global.listToolDefinitions()) {
       const properties = definition.inputSchema.properties as Record<string, unknown>
-      assert.deepEqual(properties.callDescription, { type: "string" })
+      assert.equal("callDescription" in properties, false)
       assert.equal("projectId" in properties, false)
       assert.equal("path" in properties, false)
     }
@@ -57,16 +57,15 @@ async function main(): Promise<void> {
     assert.equal(code(await execute("memory_list", {}, { ...context, projectId: undefined })), "MEMORY_PROJECT_MISSING")
     assert.equal(code(await execute("memory_list", {}, { ...context, projectId: "../outside" })), "MEMORY_PROJECT_INVALID")
     assert.equal(code(await execute("memory_list", { projectId: "default" }, context)), "INVALID_TOOL_ARGUMENTS")
-    assert.match(text(await execute("memory_list", { callDescription: "查看记忆" }, context)), /当前没有长期记忆/)
+    assert.match(text(await execute("memory_list", {}, context)), /当前没有长期记忆/)
     assert.match(text(await execute("memory_write", { memories: [] }, context)), /成功写入 0 条/)
     await assert.rejects(lstat(path), { code: "ENOENT" })
 
     const memory = { level1: "偏好", level2: "交流", content: "优先使用中文。" }
-    const written = await execute("memory_write", { memories: [memory, { ...memory, content: "用中文解释关键决策。" }], callDescription: "保存偏好" }, context)
+    const written = await execute("memory_write", { memories: [memory, { ...memory, content: "用中文解释关键决策。" }] }, context)
     assert.equal(written.status, "success", text(written))
     assert.equal(text(written), "成功写入 2 条长期记忆：\n\n偏好 / 交流\n偏好 / 交流")
     assert.equal(text(written).includes(memory.content), false)
-    assert.equal((await readFile(path, "utf8")).includes("保存偏好"), false)
     assert.equal(text(await execute("memory_list", {}, context)), "工具调用成功，当前长期记忆结构如下：\n\n偏好\n  - 交流")
     const read = await execute("memory_read", { sections: [{ level1: "偏好", level2: ["交流", "缺失"] }], limitPerSection: 1 }, context)
     assert.equal(text(read), "偏好 / 交流\n\n[2026-10-09T01:02:03.004Z]\n用中文解释关键决策。\n\n[More memories available in this section.]\n\n偏好 / 缺失\n\n当前分类没有长期记忆。")

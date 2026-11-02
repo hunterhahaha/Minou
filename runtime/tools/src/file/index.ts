@@ -1,4 +1,4 @@
-/** 六个文件工具的登记、参数检查与文件操作；路径和 ripgrep 设施位于 filesystem/。 */
+/** 五个文件工具的登记、参数检查与文件操作；路径和 ripgrep 设施位于 filesystem/。 */
 import { createReadStream } from "node:fs"
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises"
 import { dirname } from "node:path"
@@ -6,8 +6,7 @@ import { createInterface } from "node:readline"
 import type { AppError } from "../../../error/src/types.ts"
 import type { SandboxMode } from "../../../session/src/session-state.ts"
 import { canonicalPath, isWithinRoot, runRipgrep } from "../filesystem/index.ts"
-import { executePresent, type PresentInput, type PresentResult } from "../present/index.ts"
-import { renderEdit, renderGlob, renderGrep, renderPresent, renderRead, renderWrite } from "../render/index.ts"
+import { renderEdit, renderGlob, renderGrep, renderRead, renderWrite } from "../render/index.ts"
 import { fileAccessDecision } from "../security/index.ts"
 import { isPlainRecord, registerTool, type RenderRegistry, type ToolArgumentValidation, type ToolRegistry } from "../tool-registry.ts"
 import type { ToolExecutionContext } from "../types.ts"
@@ -37,12 +36,12 @@ export interface FileToolDependencies {
 }
 
 /**
- * 参与路径权限判断的文件工具名称，不包含只关联说明的 present。
+ * 参与路径权限判断的文件工具名称。
  */
 type FileToolName = "glob" | "grep" | "read" | "write" | "edit"
 
 /**
- * 将六个文件相关工具和各自 render 成对登记到现有注册表。
+ * 将五个文件相关工具和各自 render 成对登记到现有注册表。
  * @param tools 工具定义与执行业务注册表。
  * @param renders 专属结果整理器注册表。
  * @param dependencies 当前应用内 ripgrep 与实时数据库读取端口。
@@ -71,23 +70,16 @@ export function registerFileTools(
     execute: (input, context) => executeRead(input, context, dependencies), render: renderRead,
   })
   registerTool(tools, renders, {
-    kind: "builtin", definition: definition("write", "Write an entire file, creating the file and missing parent directories. After modifying files, call present before your final response.",
+    kind: "builtin", definition: definition("write", "Write an entire file, creating the file and missing parent directories.",
       { path: { type: "string" }, content: { type: "string" } }, ["path", "content"]),
     validateArguments: (value) => validateWrite(value),
     execute: (input, context) => executeWrite(input, context, dependencies), render: renderWrite,
   })
   registerTool(tools, renders, {
-    kind: "builtin", definition: definition("edit", "Read the target file first. Replace one exact, uniquely matching oldText in an existing file; expand oldText when ambiguous. Call present before your final response.",
+    kind: "builtin", definition: definition("edit", "Read the target file first. Replace one exact, uniquely matching oldText in an existing file; expand oldText when ambiguous.",
       { path: { type: "string" }, oldText: { type: "string" }, newText: { type: "string" } }, ["path", "oldText", "newText"]),
     validateArguments: (value) => validateEdit(value),
     execute: (input, context) => executeEdit(input, context, dependencies), render: renderEdit,
-  })
-  registerTool(tools, renders, {
-    kind: "builtin", definition: definition("present", "After modifying files with write or edit, you must call present before your final response. Pass existing regular files using absolute paths and provide a brief description for each file. Only paths also present in this turn's file changes are updated. Invalid or unmatched files are silently skipped; the result lists only files whose descriptions were written.",
-      { files: { type: "array", items: { type: "object", properties: { path: { type: "string" }, description: { type: "string" } } } } }, ["files"]),
-    validateArguments: (value): ToolArgumentValidation<PresentInput> => isPlainRecord(value) && Array.isArray(value.files)
-      ? { success: true, data: { files: value.files } } : invalid("files 必须是数组"),
-    execute: executePresent, render: renderPresent,
   })
 }
 
@@ -99,7 +91,7 @@ export function registerFileTools(
  * @param required 必填字段。
  * @returns JSON Schema 工具定义。
  */
-function definition(name: FileToolName | "present", description: string, properties: Record<string, unknown>, required: string[]) {
+function definition(name: FileToolName, description: string, properties: Record<string, unknown>, required: string[]) {
   return { name, description, inputSchema: { type: "object", properties, required, additionalProperties: false } }
 }
 

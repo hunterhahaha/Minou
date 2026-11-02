@@ -13,7 +13,7 @@ import { createMCPTestServer, testTool } from "../../runtime/mcp/test/helpers.ts
 import type { PublicEvent, RunResult } from "../../src/cli/protocol.ts"
 
 /** 可检查的 Chat Completions 请求。 */
-interface RequestBody { messages: Array<{ role: string; content: string }>; tools: Array<{ function: { name: string } }>; model: string; reasoning_effort: string }
+interface RequestBody { messages: Array<{ role: string; content: string }>; tools: Array<{ function: { name: string; description?: string; parameters: { properties?: Record<string, unknown> } } }>; model: string; reasoning_effort: string }
 /** 每个本地模型请求的脚本，挂起场景可保留 response 不结束。 */
 type Respond = (body: RequestBody, attempt: number, response: ServerResponse) => void
 /** 一次真实 CLI 子进程的输出。 */
@@ -53,6 +53,11 @@ async function main(): Promise<void> {
       const chunks: Buffer[] = []
       for await (const chunk of request) chunks.push(Buffer.from(chunk))
       const body = JSON.parse(Buffer.concat(chunks).toString()) as RequestBody
+      for (const tool of body.tools) {
+        assert.notEqual(tool.function.name, "present")
+        assert.equal(Object.hasOwn(tool.function.parameters.properties ?? {}, "callDescription"), false)
+        assert.doesNotMatch(tool.function.description ?? "", /\bpresent\b/)
+      }
       requests.push(body)
       respond(body, requests.length, response)
     })().catch((error) => { serverFailure = error; response.writeHead(500); response.end() })

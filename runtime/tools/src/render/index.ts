@@ -1,9 +1,8 @@
-/** 六个文件工具的专属结果整理器，输出模型可见的 ToolResult 文本。 */
+/** 五个文件工具的专属结果整理器，输出模型可见的 ToolResult 文本。 */
 import type { AppError } from "../../../error/src/types.ts"
 import type {
   GlobResult, GrepResult, ReadResult, WriteResult, EditResult,
 } from "../file/types.ts"
-import type { PresentResult } from "../present/index.ts"
 import { renderCommonError } from "../tool-executor.ts"
 import type { ToolResult } from "../types.ts"
 
@@ -85,13 +84,4 @@ export function renderWrite(value: WriteResult | AppError): ToolResult {
  */
 export function renderEdit(value: EditResult | AppError): ToolResult {
   return render(value, (result) => `${result.path}\n\nEdited successfully.\nReplacements: ${result.replacements}\nBytes written: ${result.bytesWritten}`)
-}
-
-/**
- * 整理成功关联说明的文件列表。
- * @param value present 结果或错误。
- * @returns 实际说明的文件列表。
- */
-export function renderPresent(value: PresentResult | AppError): ToolResult {
-  return render(value, (result) => `已展示 ${result.presented.length} 个文件：${result.presented.length === 0 ? "" : `\n\n${result.presented.join("\n")}`}`)
 }

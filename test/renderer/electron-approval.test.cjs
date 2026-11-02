@@ -80,7 +80,7 @@ async function main() {
         if (++requests === 1) {
           for (let index = 0; index < count; index++) {
             yield { type: "block_start", index, blockType: "tool_call" }
-            yield { type: "block_end", index, block: { type: "tool_call", toolCallId: "offline-" + index, name: "shell", arguments: { command: "检查 " + "长参数与路径/".repeat(40), callDescription: "本机工具审批验证" } } }
+            yield { type: "block_end", index, block: { type: "tool_call", toolCallId: "offline-" + index, name: "shell", arguments: { command: "检查 " + "长参数与路径/".repeat(40) } } }
           }
           yield { type: "stream_end", completion: "tool_calls" }
         } else {

@@ -173,20 +173,18 @@ export class MCPManager {
   }
 
   /**
-   * 给模型定义加入 Runtime 调用说明，保持远端业务 Schema 不变。
+   * 复制模型工具定义，保持远端业务 Schema 不变。
    * @param definition Catalog 的业务定义。
-   * @returns 包含 callDescription 的独立定义副本。
+   * @returns 独立的工具定义副本。
    */
   exposeDefinition(definition: UnifiedToolDefinition): UnifiedToolDefinition {
-    const copy = structuredClone(definition)
-    copy.inputSchema.properties = { ...(copy.inputSchema.properties as Record<string, unknown> | undefined), callDescription: { type: "string" } }
-    return copy
+    return structuredClone(definition)
   }
 
   /**
    * 在统一 execute 内检查 Session 载入状态、审批和取消，再调用唯一 Client。
    * @param name 当前模型侧工具名称。
-   * @param args 已检查且不含 callDescription 的业务参数。
+   * @param args 已检查的业务参数。
    * @param context 当前 Session 的状态端口、审批出口及调用身份。
    * @returns SDK 原始返回对象或不含内部详情的 AppError。
    */

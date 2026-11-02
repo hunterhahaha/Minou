@@ -62,9 +62,12 @@ async function testHTTP(): Promise<void> {
     assert.match(JSON.stringify(await execute("mcp_load_tools", { names: [names[0], names[0], "missing"] }, context)), /Loaded 1 MCP tools/)
     assert.match(JSON.stringify(await execute("mcp_load_tools", { names: [names[0]] }, context)), /Loaded 0 MCP tools/)
     assert.equal(loaded[0].lastCalledAt, 0)
+    const remoteDefinition = manager.getTool(names[0])!.definition
+    assert.deepEqual(manager.exposeDefinition(remoteDefinition), remoteDefinition)
+    assert.equal("callDescription" in (manager.exposeDefinition(remoteDefinition).inputSchema.properties as object), false)
     assert.equal((await execute(names[0], { value: 1 }, context)).status, "error")
     assert.equal(fixture.state.calls.length, 0)
-    assert.equal((await execute(names[0], { value: "ok", callDescription: "do not send" }, context)).status, "success")
+    assert.equal((await execute(names[0], { value: "ok" }, context)).status, "success")
     assert.deepEqual(fixture.state.calls[0].arguments, { value: "ok" })
     assert.ok(loaded[0].lastCalledAt > 0)
     assert.equal(approvals, 0)

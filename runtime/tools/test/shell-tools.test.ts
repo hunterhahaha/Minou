@@ -47,7 +47,7 @@ async function main(): Promise<void> {
     const invalid = await execute("shell", { command: "exit 0", cwd: directory }, context)
     assert.equal(invalid.status, "error")
     assert.equal(approvals, 0)
-    const denied = await execute("shell", { command: "[Console]::Write('must not run')", callDescription: "check" }, context)
+    const denied = await execute("shell", { command: "[Console]::Write('must not run')" }, context)
     assert.equal(denied.status, "error")
     if (denied.status === "error") assert.equal(denied.error.code, "APPROVAL_DENIED")
     assert.equal(JSON.stringify(denied.content).includes("must not run"), false)

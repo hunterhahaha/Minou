@@ -102,7 +102,7 @@ export function toolGroup(name: string, registry: ToolRegistry): ToolGroup | und
   const tool = registry.get(name)
   if (!tool) return undefined
   if (tool.kind === "mcp") return "mcp"
-  if (["glob", "grep", "read", "write", "edit", "present"].includes(name)) return "file"
+  if (["glob", "grep", "read", "write", "edit"].includes(name)) return "file"
   if (name === "shell") return "shell"
   if (["terminal_open", "terminal_input", "terminal_close", "terminal_list"].includes(name)) return "terminal"
   if (["mcp_list_tools", "mcp_load_tools", "tool_search"].includes(name)) return "mcp"
@@ -335,8 +335,6 @@ export async function runCli(argv: readonly string[]): Promise<number> {
         const definitions = mcp?.getDefinitions(loaded) ?? []
         loaded = loaded.filter((entry) => definitions.some((definition) => definition.name === entry.name))
         return [...tools.listDefinitions().filter((definition) => tools.get(definition.name)?.kind === "builtin"), ...definitions]
-          .map((definition) => ({ ...definition, inputSchema: { ...definition.inputSchema,
-            properties: { ...(definition.inputSchema.properties as Record<string, unknown>), callDescription: { type: "string" } } } }))
       },
       executeTool: async (name, args, context) => {
         if (finished) throw createAbortError()

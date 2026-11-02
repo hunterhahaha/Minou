@@ -16,7 +16,7 @@ NiCode 是本地运行的 Coding Agent 应用，提供 Electron 桌面工作区�
 | 桌面对话 | 流式回复、Markdown、工具结果、FIFO 消息队列、停止与审批 | [session-page.tsx](../src/renderer/session-page.tsx)、[SessionRuntime](../runtime/agent/src/session-runtime.ts) |
 | 模型配置 | Provider、模型、API Key、默认模型、推理等级和请求字段路径 | [provider-ipc.ts](../src/main/provider-ipc.ts)、[provider-store.ts](../src/main/provider-store.ts) |
 | 模型协议 | Anthropic Messages、Chat Completions、Responses 的请求与事件转换 | [adapter.ts](../runtime/model/src/adapter.ts) |
-| 文件与进程工具 | glob、grep、read、write、edit、present、Shell 与 PTY 终端 | [tools 模块入口](../runtime/tools/src/index.ts) |
+| 文件与进程工具 | glob、grep、read、write、edit、Shell 与 PTY 终端 | [tools 模块入口](../runtime/tools/src/index.ts) |
 | MCP | STDIO / Streamable HTTP 连接、目录发现、搜索、按需载入、调用和设置管理 | [MCPManager](../runtime/mcp/src/manager.ts)、[mcp-ipc.ts](../src/main/mcp-ipc.ts) |
 | Skill | Global / Project 来源同步、启停管理、描述注入及完整正文按需读取 | [SkillManager](../runtime/skill/src/manager.ts)、[skill-ipc.ts](../src/main/skill-ipc.ts) |
 | 项目记忆 | 按分类列索引、按需读正文、整批追加；同一 Project 的对话共用 | [MemoryManager](../runtime/memory/src/index.ts) |

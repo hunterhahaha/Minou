@@ -15,7 +15,6 @@ export const BUILTIN_TOOL_NAMES = [
   "read",
   "write",
   "edit",
-  "present",
   "shell",
   "terminal_open",
   "terminal_input",
@@ -54,7 +53,7 @@ export interface ToolDefinition {
   name: ToolName
   /** 给模型看的工具说明。 */
   description?: string
-  /** 工具自身的业务参数 JSON Schema；callDescription 在构建模型工具列表时统一加入。 */
+  /** 工具自身的业务参数 JSON Schema。 */
   inputSchema: Record<string, unknown>
 }
 
@@ -66,7 +65,7 @@ export type ToolArgumentValidation<TArguments extends object> =
 /**
  * 一个可执行工具在 ToolRegistry 中的完整登记信息。
  *
- * 参数检查器只接收已移除 `callDescription` 的业务参数。业务函数可以返回专属结果或 AppError；
+ * 参数检查器接收模型提交的业务参数。业务函数可以返回专属结果或 AppError；
  * 两者都由同名结果整理器解释。
  */
 export interface RegisteredTool<TArguments extends object = Record<string, unknown>, TOutput = unknown> {
@@ -78,14 +77,14 @@ export interface RegisteredTool<TArguments extends object = Record<string, unkno
   definition: ToolDefinition
   /**
    * 检查并按需要规范化业务参数。
-   * @param input 已移除 `callDescription`、但尚未检查的业务参数对象。
+   * @param input 尚未检查的业务参数对象。
    * @returns 检查成功后的业务参数，或应交给结果整理器的 AppError。
    */
   validateArguments(input: unknown): ToolArgumentValidation<TArguments>
   /**
    * 执行工具业务。
-   * @param input 已检查且不含 `callDescription` 的业务参数。
-   * @param context 调用身份、取消信号和包含调用说明的完整已检查参数。
+   * @param input 已检查的业务参数。
+   * @param context 调用身份、取消信号和完整的已检查业务参数。
    * @returns 工具专属结果或 AppError。
    */
   execute(input: TArguments, context: ToolExecutionContext<TArguments>): Promise<TOutput | AppError>

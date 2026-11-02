@@ -6,19 +6,19 @@ import { isProjectId } from "../../../session/src/project-id.ts"
 import { renderMemoryList, renderMemoryRead, renderMemoryWrite } from "../render/memory.ts"
 import { isPlainRecord, registerTool } from "../tool-registry.ts"
 import type { RenderRegistry, ToolArgumentValidation, ToolRegistry } from "../tool-registry.ts"
-import type { ToolCallMeta, ToolExecutionContext } from "../types.ts"
+import type { ToolExecutionContext } from "../types.ts"
 
-/** memory_list 没有业务参数，仅允许 Runtime 调用说明。 */
-export interface MemoryListInput extends ToolCallMeta {}
+/** memory_list 不接受模型参数。 */
+export type MemoryListInput = Record<string, never>
 /** memory_read 的分类请求和独立的每分类条数限制。 */
-export interface ReadMemoryInput extends ToolCallMeta {
+export interface ReadMemoryInput {
   /** 按请求顺序读取的二级分类；空 level2 不选择其他章节。 */
   sections: MemorySectionIndex[]
   /** 正安全整数，省略则返回全部记录。 */
   limitPerSection?: number
 }
 /** memory_write 的整批追加输入；时间和位置根目录由 Runtime 决定。 */
-export interface WriteMemoryInput extends ToolCallMeta {
+export interface WriteMemoryInput {
   /** 按顺序追加的记忆，空数组不创建文件。 */
   memories: NewMemory[]
 }
@@ -87,7 +87,7 @@ export function registerMemoryTools(tools: ToolRegistry, renders: RenderRegistry
 
 /**
  * 校验 read 的路径、起始行与行数限制，返回读取请求或参数错误。
- * @param input 已分离 callDescription 的业务参数。
+ * @param input 待检查的业务参数。
  * @returns 已复制的读取请求或参数错误。
  */
 function validateRead(input: unknown): ToolArgumentValidation<ReadMemoryInput> {
@@ -108,7 +108,7 @@ function validateRead(input: unknown): ToolArgumentValidation<ReadMemoryInput> {
 
 /**
  * 校验写入路径与完整文本，复制业务字段以排除额外参数。
- * @param input 已分离 callDescription 的业务参数。
+ * @param input 待检查的业务参数。
  * @returns 整批检查并复制的新增记忆或参数错误。
  */
 function validateWrite(input: unknown): ToolArgumentValidation<WriteMemoryInput> {

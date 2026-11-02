@@ -1,7 +1,7 @@
 /**
  * 工具调用身份、Session 资源、业务执行上下文和统一 ToolResult 的数据契约。
  *
- * 身份与权限资源由 Runtime 注入；模型只提供工具参数及可选调用说明。
+ * 身份与权限资源由 Runtime 注入；模型只提供工具业务参数。
  * 结果整理器将业务结果或 AppError 转为模型可见内容，运行层负责事件记录与上下文回填。
  */
 
@@ -11,12 +11,6 @@ import type { TurnFileChangeTracker } from "../../session/src/file-changes.ts"
 import type { SessionLoadedMCPTool } from "../../mcp/src/types.ts"
 import type { UnifiedToolDefinition } from "../../model/src/types.ts"
 import type { SandboxMode } from "../../session/src/session-state.ts"
-
-/** 模型附在工具参数上的 Runtime 调用说明；它不属于工具的业务参数。 */
-export interface ToolCallMeta {
-  /** 供 UI 描述本次调用用途的可选文本。 */
-  callDescription?: string
-}
 
 /**
  * AgentLoop 交给统一工具执行入口的调用身份。
@@ -119,13 +113,12 @@ export interface FileToolRuntimeContext {
 /**
  * 已完成参数检查后传给已登记工具的执行上下文。
  *
- * `validatedArguments` 保留完整业务参数和可选 `callDescription`，用于审批记录；
- * 工具业务函数自己的第一个参数不含 `callDescription`。
+ * `validatedArguments` 保留完整的已校验业务参数，用于审批记录。
  */
 export interface ToolExecutionContext<TArguments extends object = Record<string, unknown>>
   extends ToolCallContext {
-  /** 完整的已检查参数，包含可选的 Runtime 调用说明。 */
-  validatedArguments: TArguments & ToolCallMeta
+  /** 完整的已检查业务参数。 */
+  validatedArguments: TArguments
 }
 
 /**

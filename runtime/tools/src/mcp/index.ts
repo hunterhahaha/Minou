@@ -5,17 +5,17 @@ import type { AppError } from "../../../error/src/types.ts"
 import { isPlainRecord, registerTool } from "../tool-registry.ts"
 import type { RenderRegistry, ToolRegistry, ToolArgumentValidation } from "../tool-registry.ts"
 import { renderCommonError } from "../tool-executor.ts"
-import type { ToolCallMeta, ToolExecutionContext, ToolResult } from "../types.ts"
+import type { ToolExecutionContext, ToolResult } from "../types.ts"
 import { renderMCPResult } from "../render/mcp.ts"
 
 /** 名称查看没有业务字段。 */
-export interface MCPListToolsInput extends ToolCallMeta {}
+export type MCPListToolsInput = Record<string, never>
 /** 指定载入时传递发现工具返回的稳定名称。 */
-export interface MCPLoadToolsInput extends ToolCallMeta {
+export interface MCPLoadToolsInput {
   /** 未知名称被跳过，空列表载入 0 个。 */ names: string[]
 }
 /** BM25 搜索输入。 */
-export interface ToolSearchInput extends ToolCallMeta {
+export interface ToolSearchInput {
   /** 非空白查询。 */ query: string
 }
 /** 名称查看的轻量结果。 */

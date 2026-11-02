@@ -1,4 +1,4 @@
-/** 六个文件工具、权限与 render 的本机离线测试。 */
+/** 五个文件工具、权限与 render 的本机离线测试。 */
 import assert from "node:assert/strict"
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
@@ -106,19 +106,14 @@ async function main(): Promise<void> {
     assert.equal(code(await execute("edit", { path: sample, oldText: "missing", newText: "x" }, context)), "MATCH_NOT_FOUND")
     assert.equal((await execute("edit", { path: created, oldText: "first", newText: "second" }, context)).status, "success")
     assert.equal((await execute("write", { path: created, content: "third\n" }, context)).status, "success")
-    const presented = await execute("present", { files: [
-      { path: "relative.ts", description: "bad" },
-      { path: sample, description: "not tracked" },
-      { path: created },
-      { path: created, description: "Created a file" },
-      { path: created, description: "Final description" },
-    ] }, context)
-    assert.equal(presented.status, "success")
-    assert.match(content(presented), /已展示 1 个文件/)
+    assert.equal(tools.get("present"), undefined)
+    assert.equal(renders.get("present"), undefined)
+    assert.equal(code(await execute("present", {}, context)), "TOOL_NOT_FOUND")
+    assert.ok(tools.listDefinitions().every((tool) => !tool.description?.includes("present")))
     const changes = tracker.summarize()
     assert.equal(changes.length, 1)
     assert.equal(changes[0].changeType, "created")
-    assert.equal(changes[0].description, "Final description")
+    assert.equal(changes[0].description, undefined)
     assert.equal(changes[0].stats.additions, 1)
 
     const glob = await execute("glob", { path: workspace, pattern: "*.ts", limit: 1 }, context)

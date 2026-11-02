@@ -1,7 +1,6 @@
-import type { ToolCallMeta } from "../types.ts"
 import type { ProcessOutputResult } from "../process/types.ts"
 /** 一次性 PowerShell 命令；cwd 由 Runtime 提供。 */
-export interface ShellInput extends ToolCallMeta {
+export interface ShellInput {
   /** 原始 PowerShell 命令。 */
   command: string
 }

@@ -127,7 +127,7 @@ function testCompletedTurns(): void {
     event(6, { type: "assistant/block_end", turn: 1, step: 2, blockId: "b2", index: 0, block: { type: "text", text: "流式旧正文" } }),
     event(7, { type: "assistant/message", turn: 1, step: 2, model, message: { id: "a2", role: "assistant", content: [
       { type: "thinking", text: "最终思考" }, { type: "text", text: "最终第一段" },
-      { type: "tool_call", toolCallId: "t2", name: "present", arguments: {} }, { type: "text", text: "最终第二段" },
+      { type: "tool_call", toolCallId: "t2", name: "read", arguments: {} }, { type: "text", text: "最终第二段" },
     ] } }),
     event(8, { type: "turn/file_changes", turn: 1, files: [] }),
     event(9, { type: "turn/end", turn: 1, reason: "completed" }),

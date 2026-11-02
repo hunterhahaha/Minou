@@ -53,7 +53,7 @@ async function run(scenario: Scenario): Promise<SessionEvent[]> {
         yield { type: "stream_end", completion: "finished" }
         return
       }
-      const names = scenario === "normal" ? ["write", "present"] : [scenario.startsWith("approval") ? "read" : "write"]
+      const names = [scenario.startsWith("approval") ? "read" : "write"]
       for (const [index, name] of names.entries()) {
         yield { type: "block_start", index, blockType: "tool_call" }
         yield { type: "block_end", index, block: { type: "tool_call", toolCallId: `call-${index}`, name, arguments: { path: FILE } } }
@@ -78,8 +78,6 @@ async function run(scenario: Scenario): Promise<SessionEvent[]> {
           const validatedArguments = { path: FILE }
           const decision = await runtime.requestApproval(name, FILE, { ...context, validatedArguments })
           assert.equal(decision, scenario === "approval_stop" ? "cancelled" : "approved")
-        } else if (name === "present") {
-          assert.equal(runtime.tracker.describe(FILE, "Updated file"), true)
         } else {
           runtime.tracker.record(FILE, Buffer.from("old\n"), Buffer.from("new\n"))
           if (scenario === "stopped") ports.stop()
@@ -145,7 +143,9 @@ async function main(): Promise<void> {
   assert.deepEqual(normal.slice(-2).map((event) => event.type), ["turn/file_changes", "turn/end"])
   const changes = normal.find((event) => event.type === "turn/file_changes")
   assert.ok(changes?.type === "turn/file_changes")
-  assert.equal(changes.files[0].description, "Updated file")
+  assert.equal(changes.files[0].description, undefined)
+  assert.equal(changes.files[0].changeType, "modified")
+  assert.deepEqual(changes.files[0].stats, { additions: 1, deletions: 1 })
   const stopped = await run("stopped")
   assert.deepEqual(stopped.slice(-2).map((event) => event.type), ["turn/file_changes", "turn/end"])
   const stoppedEnd = stopped.at(-1)

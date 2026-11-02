@@ -291,7 +291,6 @@ export type ModelMessage =
 /**
  * 工具暴露层交给 Adapter 的统一定义。`inputSchema` 固定为 JSON Schema；Adapter 映射为
  * Anthropic `input_schema`、Chat Completions / Responses `parameters`。的可选
- * `callDescription` 由工具暴露层加入 schema 的 properties，不是本接口的独立字段。
  * 工具来源由 tools 模块管理；模型层只需要协议可见的名称、说明和参数结构。
  */
 export interface UnifiedToolDefinition {
