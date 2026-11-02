@@ -385,3 +385,22 @@
 
 - 最终回归：19 项相关 Node 脚本全部通过，涵盖模型、上下文压缩、Provider、启动装配、preload、会话与 CLI；CLI 集成包含 25 次真实子进程运行。最终再次执行类型检查与构建均通过。已复核浅色宽窗和深色窄窗截图中的非思考模型入口。
 - 图分析：执行了 upstream impact 与全工作区 detect_changes，核心模型类型/读取链被标为 CRITICAL，共用请求片段为 HIGH；差异分析包含原有用户改动。索引最初落后 3 次提交，刷新长期等待且环境报告图数据库被其它 GitNexus 进程占用，已停止本次刷新进程；未将旧索引结果视为完整安全证明，另以当前源码与上述测试验证。
+
+## 8. 工具调用区域内展示结果（2026-11-02）
+
+此项为用户单独授权的前端展示功能，已完成，不计作其它 UI 任务完成。
+
+- `src/renderer/session-page.tsx`：基于当前会话事件及现有展示投影，以 `[turn, step, toolCallId]` 唯一配对调用与结果。在原工具展开区域内依次展示调用参数、结果原文和适用的错误信息，入口显示真实完成/失败状态；未取得结果时不增加运行状态。结果不新增嵌套展开控件，已配对结果不再产生独立展示项或计入过程项数。无法唯一配对的结果保留原独立展示。
+- `src/renderer/conversation.css`：只增加参数与结果标签的局部样式，复用现有字号、行高、颜色及间距 Token。
+- `test/renderer/electron-session.test.cjs`：扩展本地事件及历史查询夹具，保留原有业务断言，新增真实页面合并展示验证。
+- 数据流：原始事件 → 原 `projectSessionEvents` 投影及页面结果索引 → 按身份唯一配对 → 工具区域显示结果、过滤已配对的独立结果项。新增页面内部结果事件类型别名、关联键函数与可选组件属性；不改变公共 API、Runtime、IPC、缓存、事件格式、持久化或最终回答提取。不增加依赖、架构层或新的架构决策。
+
+验证记录：
+
+- 自动化：`node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/renderer/session-state.test.ts` 通过，覆盖原缓存、流式与终态投影。
+- 隐藏窗口 Electron 会话脚本最终退出 0，覆盖成功/失败结果在调用区域内、无嵌套详情与无重复结果项、参数原文、流式到权威消息及结果到达后的原 DOM 节点/展开/焦点保持、默认不自动展开、同名多次调用和乱序返回、跨 Step/Turn 重用 ID、缺失/孤立/歧义结果、停止/失败/完成、过程项计数、历史 IPC 一次加载与实时增量一致，以及原有 Queue、停止、复制、Markdown、路由缓存、草稿和触屏模拟断言。日志为 `dist/tool-results-session.stdout.log` 与 `dist/tool-results-session.stderr.log`。
+- 隐藏窗口审批脚本退出 0，覆盖真实批准/拒绝/取消、顺序审批、防重复提交、失败重试、切换对话与持久化结果。日志为 `dist/tool-results-approval.stdout.log` 与 `dist/tool-results-approval.stderr.log`；注入审批提交失败的错误输出为预期场景。
+- 类型检查：`npm run typecheck` 通过。构建：`npm run build` 首次因进程启动 EPERM 失败，正常权限重试通过；保留 React Router 指令及大于 500kB 的产物警告。Electron 首次受本机进程通信权限阻止，正常权限下完成验证。测试历史夹具曾缺少快照数据，修正后完整重跑通过；未据首次失败声称通过。
+- 视觉：复核本轮 `dist/tool-results-merged-light.png` 与 `dist/tool-results-merged-dark-narrow.png`，涵盖浅色 1200×800、深色 640×760 内容尺寸、长结果、纯文本转义和窄窗无页面横向溢出。现有测试另覆盖长审批参数。使用 Impeccable 局部规范并运行改动 TSX/CSS 的 detector，结果 `[]`，不代表完整无障碍认证。
+- 图与差异：实施前工作区干净；upstream impact 显示 AssistantBlock、SessionPage、itemView 为 LOW，调用链在 Renderer 会话页面与路由；测试 main 为 UNKNOWN，已核对脚本实际入口与直接执行方式。全工作区 detect_changes 报告 MEDIUM，涉及会话展示流程，无 partial/truncated 标记；索引落后 HEAD 一次提交，旧行号映射还将未修改的复制/审批辅助符号列为 touched，已用当前实际 diff 核对，不把图结果当作完整安全证明。`git diff --check` 通过，未提交 Git。
+- 未覆盖：没有真人输入法、屏幕阅读器、实体触屏或本功能专门的 125%/150% 缩放检查；键盘/焦点与触屏证据来自程序化交互，截图复核不等同真人手工验证。未调用外部模型或工具服务；本次验证针对前端事件展示。

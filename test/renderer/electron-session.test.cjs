@@ -77,8 +77,10 @@ async function main() {
       yield { type: "stream_end", completion: "finished" }
     } }),
   }
+  const historyFixtures = new Map()
   const port = { handle(channel, listener) {
     ipcMain.handle(channel, (event, ...args) => {
+      if (channel === channels.getSessionData && args[0] === "default" && historyFixtures.has(args[1])) return historyFixtures.get(args[1])
       if (channel === channels.getSessionData) historyQueries++
       return listener(event, ...args)
     })
@@ -445,6 +447,118 @@ async function main() {
       await until(() => evaluate("document.documentElement.dataset.theme === 'light'"))
     }
   }
+  /** 本地事件夹具使用真实订阅入口；返回累计事件用于历史恢复验证。 */
+  const mergedToolHistory = []
+  const mergedToolSession = "merged-tool-display"
+  /** @param entries 当前批次事件。 @returns 页面已接收并绘制本批次事件。 */
+  async function pushToolEvents(entries) {
+    for (const entry of entries) {
+      const event = { ...entry, eventId: mergedToolSession + (mergedToolHistory.length + 1), sessionId: mergedToolSession,
+        seq: mergedToolHistory.length + 1, createdAt: "2026-11-02T00:00:00.000Z" }
+      mergedToolHistory.push(event)
+      window.webContents.send(channels.update, { kind: "event", projectId: "default", sessionId: mergedToolSession, event })
+    }
+    await evaluate("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))")
+  }
+  /** @param id 调用 ID。 @param path 参数路径。 @returns 同名工具调用块。 */
+  const toolBlock = (id, path) => ({ type: "tool_call", toolCallId: id, name: "read", arguments: { path } })
+  /** @param turn 轮次。 @param step 模型步骤。 @param id 调用 ID。 @param text 结果正文。 @returns 成功结果事件。 */
+  const toolResult = (turn, step, id, text) => ({ type: "tool/result", turn, step, toolCallId: id, toolCallEventId: "end-" + id,
+    blockId: "block-" + id, result: { status: "success", content: [{ type: "text", text }] } })
+  /** @returns 当前所有调用区域及独立结果区域的可比较展示快照。 */
+  async function toolSnapshot() {
+    return evaluate(`({ tools: [...document.querySelectorAll('.tool-detail')].map(node => ({
+      summary: node.querySelector('summary').textContent, content: [...node.querySelectorAll('code')].map(code => code.textContent),
+      nested: node.querySelectorAll('details').length, error: node.querySelector('.chat-error')?.textContent ?? null })),
+      standalone: [...document.querySelectorAll('.chat-detail:not(.tool-detail)')].filter(node => node.querySelector(':scope > summary')?.textContent.startsWith('工具结果')).map(node => node.textContent),
+      counts: [...document.querySelectorAll('.process-count')].map(node => node.textContent) })`)
+  }
+  await pushToolEvents([
+    { type: "turn/start", turn: 1, model },
+    { type: "assistant/block_start", turn: 1, step: 1, blockId: "block-shared", index: 0, blockType: "tool_call" },
+    { type: "assistant/block_delta", turn: 1, step: 1, blockId: "block-shared", delta: { type: "tool_call", toolCallId: "shared", nameDelta: "read", argumentsDelta: '{"path":' } },
+  ])
+  await evaluate("location.hash = " + JSON.stringify(route.replace(originalSession, mergedToolSession)))
+  await until(() => evaluate("document.querySelector('.chat-page')?.dataset.sessionId === 'merged-tool-display' && Boolean(document.querySelector('.tool-detail'))"))
+  assert.equal(await evaluate("document.querySelector('.tool-detail').open"), false)
+  await evaluate("window.originalToolNode = document.querySelector('.tool-detail'); window.originalToolNode.querySelector('summary').focus()")
+  for (const type of ["keyDown", "keyUp"]) window.webContents.sendInputEvent({ type, keyCode: "Space" })
+  await until(() => evaluate("window.originalToolNode.open"))
+  await pushToolEvents([
+    { type: "assistant/block_end", turn: 1, step: 1, blockId: "block-shared", index: 0, block: toolBlock("shared", "first.ts") },
+    { type: "assistant/message", turn: 1, step: 1, model, message: { id: "tools1", role: "assistant", content: [toolBlock("shared", "first.ts"), toolBlock("second", "second.ts")] } },
+    toolResult(1, 1, "second", "第二调用先返回"),
+  ])
+  assert.equal(await evaluate("document.querySelector('.tool-detail') === window.originalToolNode && window.originalToolNode.open"), true, "权威消息不重建已展开的调用区域")
+  assert.equal(await evaluate("document.querySelectorAll('.tool-detail')[1].open"), false, "结果不自动展开工具")
+  assert.deepEqual((await toolSnapshot()).tools.map(tool => tool.content), [
+    ['{\n  "path": "first.ts"\n}'], ['{\n  "path": "second.ts"\n}', "第二调用先返回"],
+  ])
+  const longResult = "第一调用原文 <script>window.toolInjected=true</script> **不解析**\n" + "长结果".repeat(500)
+  await pushToolEvents([toolResult(1, 1, "shared", longResult)])
+  assert.equal(await evaluate("document.querySelector('.tool-detail') === window.originalToolNode && window.originalToolNode.open && document.activeElement === window.originalToolNode.querySelector('summary')"), true, "追加结果保留原节点、展开状态及焦点")
+  assert.deepEqual((await toolSnapshot()).standalone, [], "配对结果没有独立展开项")
+  assert.equal(await evaluate("document.querySelector('.tool-detail .tool-result-content code').textContent"), longResult)
+  assert.equal(await evaluate("Boolean(window.toolInjected) || Boolean(document.querySelector('.tool-detail script, .tool-detail strong'))"), false, "结果保持纯文本")
+  assert.equal((await toolSnapshot()).tools.every(tool => tool.nested === 0), true, "结果不嵌套展开区域")
+  await copyScreenshot("tool-results-merged-light")
+  await evaluate("document.querySelector('[aria-label=\"切换深色外观\"]').click()")
+  await until(() => evaluate("document.documentElement.dataset.theme === 'dark'"))
+  window.setContentSize(640, 760)
+  await until(() => evaluate("innerWidth === 640"))
+  assert.equal(await evaluate("document.querySelector('.chat-scroll').scrollWidth <= document.querySelector('.chat-scroll').clientWidth"), true, "长结果在窄窗无页面横向溢出")
+  await copyScreenshot("tool-results-merged-dark-narrow")
+  window.setContentSize(1200, 800)
+  await evaluate("document.querySelector('[aria-label=\"切换浅色外观\"]').click()")
+  await until(() => evaluate("document.documentElement.dataset.theme === 'light' && innerWidth === 1200"))
+  await pushToolEvents([
+    { type: "assistant/message", turn: 1, step: 2, model, message: { id: "tools2", role: "assistant", content: [toolBlock("shared", "next-step.ts")] } },
+    { ...toolResult(1, 2, "shared", "失败结果正文"), result: { status: "error", content: [{ type: "text", text: "失败结果正文" }], error: { source: "tool", code: "TEST", message: "失败错误信息" } } },
+    { type: "assistant/message", turn: 1, step: 3, model, message: { id: "tools3", role: "assistant", content: [toolBlock("missing", "missing.ts")] } },
+    toolResult(1, 3, "orphan", "无法配对的结果"),
+    { type: "turn/end", turn: 1, reason: "stopped" },
+    { type: "turn/start", turn: 2, model },
+    { type: "assistant/message", turn: 2, step: 1, model, message: { id: "tools4", role: "assistant", content: [toolBlock("shared", "next-turn.ts")] } },
+    toolResult(2, 1, "shared", "第二轮独立结果"),
+    { type: "turn/end", turn: 2, reason: "error" },
+    { type: "turn/start", turn: 3, model },
+    { type: "assistant/message", turn: 3, step: 1, model, message: { id: "tools5", role: "assistant", content: [toolBlock("done", "done.ts")] } },
+    toolResult(3, 1, "done", "完成轮次结果"),
+    { type: "turn/end", turn: 3, reason: "completed" },
+  ])
+  const mergedSnapshot = await toolSnapshot()
+  assert.deepEqual(mergedSnapshot.tools.map(tool => tool.content.at(-1)), [longResult, "第二调用先返回", "失败结果正文", '{\n  "path": "missing.ts"\n}', "第二轮独立结果", "完成轮次结果"])
+  assert.equal(mergedSnapshot.tools[2].error, "失败错误信息")
+  assert.equal(mergedSnapshot.tools[3].summary, "工具：read", "无结果不虚构终态")
+  assert.equal(mergedSnapshot.standalone.length, 1)
+  assert.ok(mergedSnapshot.standalone[0].includes("无法配对的结果"))
+  assert.deepEqual(mergedSnapshot.counts, ["4 项", "1 项", "1 项"], "过程项计数不包含已经合并的结果")
+  await evaluate("location.hash = " + JSON.stringify(route))
+  await until(() => evaluate("document.querySelector('.chat-page')?.dataset.sessionId === " + JSON.stringify(originalSession)))
+  await evaluate("location.hash = " + JSON.stringify(route.replace(originalSession, mergedToolSession)))
+  await until(() => evaluate("document.querySelectorAll('.tool-detail').length === 6"))
+  assert.deepEqual(await toolSnapshot(), mergedSnapshot, "缓存恢复后的工具结果展示一致")
+  const historySession = "merged-tool-history"
+  historyFixtures.set(historySession, { projectId: "default", sessionId: historySession,
+    summary: { name: "工具合并历史", updatedAt: "2026-11-02T00:00:00.000Z", sessionId: historySession },
+    events: mergedToolHistory.map(event => ({ ...event, sessionId: historySession })), latestSeq: mergedToolHistory.length,
+    control: { phase: "idle", throughSeq: mergedToolHistory.length, currentTurn: 3, revision: 1, currentModel: model,
+      sandboxMode: "sandbox-full-access", pendingMessages: [], discardedMessages: [] } })
+  await evaluate("location.hash = " + JSON.stringify(route.replace(originalSession, historySession)))
+  await until(() => evaluate("document.querySelector('.chat-page')?.dataset.sessionId === 'merged-tool-history' && document.querySelectorAll('.tool-detail').length === 6"))
+  assert.deepEqual(await toolSnapshot(), mergedSnapshot, "历史 IPC 一次加载和实时逐条推送展示一致")
+  await evaluate("location.hash = " + JSON.stringify(route.replace(originalSession, mergedToolSession)))
+  await until(() => evaluate("document.querySelector('.chat-page')?.dataset.sessionId === 'merged-tool-display'"))
+  await pushToolEvents([
+    { type: "turn/start", turn: 4, model },
+    { type: "assistant/message", turn: 4, step: 1, model, message: { id: "ambiguous", role: "assistant", content: [toolBlock("duplicate", "a.ts"), toolBlock("duplicate", "b.ts"), toolBlock("duplicate-result", "c.ts")] } },
+    toolResult(4, 1, "duplicate", "调用身份歧义"),
+    toolResult(4, 1, "duplicate-result", "结果身份歧义一"),
+    toolResult(4, 1, "duplicate-result", "结果身份歧义二"),
+  ])
+  const ambiguousSnapshot = await toolSnapshot()
+  assert.equal(ambiguousSnapshot.standalone.length, 4, "歧义结果全部保留独立展示")
+  assert.equal(ambiguousSnapshot.tools.slice(-3).every(tool => tool.content.length === 1), true, "不把歧义结果挂到任一调用")
   const finalOnlySession = "final-only-display"
   const finalOnlyEvents = [
     { type: "turn/start", turn: 1, model },

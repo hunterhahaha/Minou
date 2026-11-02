@@ -30,15 +30,33 @@ export interface SessionPageProps {
  * @returns 人可读的文本。
  */
 function printable(value: unknown): string { return typeof value === "string" ? value : JSON.stringify(value, null, 2) ?? "" }
+/** 页面内使用的原始工具结果事件；不改变持久化事件结构。 */
+type ToolResultEvent = Extract<SessionEvent, { type: "tool/result" }>
 /**
- * 正文渲染 Markdown；思考与工具参数在展开后以纯文本代码块展示。
- * @param props 一个 Assistant 内容块。
- * @returns Markdown 正文或无外框的思考/工具展开入口及原文详情。
+ * 为当前会话内的工具调用生成无拼接歧义的展示关联键。
+ * @param turn 调用所属轮次。
+ * @param step 轮次内的模型请求编号。
+ * @param toolCallId 模型生成的工具调用 ID。
+ * @returns 仅供本次页面渲染使用的关联键。
  */
-function AssistantBlock({ block }: { block: AssistantContentBlock }) {
+function toolDisplayKey(turn: number, step: number, toolCallId: string): string { return JSON.stringify([turn, step, toolCallId]) }
+/**
+ * 正文渲染 Markdown；思考、工具参数和对应结果在展开后以纯文本代码块展示。
+ * @param props Assistant 内容块及可选的唯一对应工具结果事件。
+ * @returns Markdown 正文或思考/工具展开区域；结果不创建独立展开入口。
+ */
+function AssistantBlock({ block, toolResult }: { block: AssistantContentBlock; toolResult?: ToolResultEvent }) {
   if (block.type === "text") return <div className="assistant-text"><MarkdownContent text={block.text} /></div>
   if (block.type === "thinking") return <details className="chat-detail thinking-detail"><summary><IconBrain size={15} />思考过程</summary><pre className="process-content"><code className="language-text">{block.text}</code></pre></details>
-  return <details className="chat-detail tool-detail"><summary><IconTool size={15} />工具：{block.name || "准备调用…"}</summary><pre className="process-content"><code className="language-text">{printable(block.arguments)}</code></pre></details>
+  return <details className="chat-detail tool-detail"><summary><IconTool size={15} />工具：{block.name || "准备调用…"}{toolResult && (toolResult.result.status === "success" ? " · 完成" : " · 失败")}</summary>
+    <div className="tool-section-label">调用参数</div>
+    <pre className="process-content"><code className="language-text">{printable(block.arguments)}</code></pre>
+    {toolResult && <>
+      <div className="tool-section-label">工具结果</div>
+      <pre className="process-content tool-result-content"><code className="language-text">{toolResult.result.content.filter((content) => content.type === "text").map((content) => content.text).join("\n\n")}</code></pre>
+      {toolResult.result.status === "error" && <p className="chat-error">{toolResult.result.error.message}</p>}
+    </>}
+  </details>
 }
 /**
  * 复制单条消息的正文原文；反馈仅保留在当前按钮，不改写 Session 或消息内容。
@@ -94,6 +112,27 @@ export function SessionPage({ projectId, sessionId, state, providers }: SessionP
   const [showScrollToBottom, setShowScrollToBottom] = useState(false)
   const [submittedApprovalId, setSubmittedApprovalId] = useState<string | null>(null)
   const blocks = projectSessionEvents(events)
+  /** 每次从当前投影计数，避免流式块和权威消息被当作两次调用。 */
+  const toolCallCounts = new Map<string, number>()
+  for (const display of blocks) {
+    const items = display.kind === "completed-turn" ? display.process : [display]
+    for (const item of items) if (item.kind === "assistant") for (const content of item.blocks) {
+      if (content.type !== "tool_call" || !content.toolCallId) continue
+      const identity = toolDisplayKey(item.turn, item.step, content.toolCallId)
+      toolCallCounts.set(identity, (toolCallCounts.get(identity) ?? 0) + 1)
+    }
+  }
+  /** null 表示结果身份存在歧义；保留这些事件的独立展示。 */
+  const toolResults = new Map<string, ToolResultEvent | null>()
+  for (const event of events) if (event.type === "tool/result") {
+    const identity = toolDisplayKey(event.turn, event.step, event.toolCallId)
+    toolResults.set(identity, toolResults.has(identity) ? null : event)
+  }
+  const pairedResultIds = new Set<string>()
+  for (const [identity, result] of toolResults) {
+    if (result && toolCallCounts.get(identity) === 1) pairedResultIds.add(result.eventId)
+    else toolResults.set(identity, null)
+  }
   /** 未结束 Turn 的首个 Assistant Step 承担整轮标题；完成态由 Turn 容器承担。 */
   const firstAssistantByTurn = new Map<number, string>()
   for (const block of blocks) {
@@ -215,9 +254,11 @@ export function SessionPage({ projectId, sessionId, state, providers }: SessionP
    */
   function itemView(item: ChatItem, showAssistantLabel = false) {
     if (item.kind === "event" && item.event.type === "approval/request") return null
+    if (item.kind === "event" && pairedResultIds.has(item.id)) return null
     return <div className={"chat-entry " + (item.kind === "assistant" ? "assistant-entry" : "")} key={JSON.stringify([key, item.id])}>
       {item.kind === "assistant" && showAssistantLabel && <div className="message-label"><span className="assistant-avatar"><IconSparkles size={13} /></span><strong>NiCode</strong><span>协作伙伴</span></div>}
-      {item.kind === "assistant" ? item.blocks.map((content, index) => <AssistantBlock block={content} key={index} />) : eventView(item.event)}
+      {item.kind === "assistant" ? item.blocks.map((content, index) => <AssistantBlock block={content} key={index}
+        toolResult={content.type === "tool_call" ? toolResults.get(toolDisplayKey(item.turn, item.step, content.toolCallId)) ?? undefined : undefined} />) : eventView(item.event)}
     </div>
   }
   return <section className="chat-page" ref={pageRef} data-project-id={projectId} data-session-id={sessionId}>
@@ -231,7 +272,7 @@ export function SessionPage({ projectId, sessionId, state, providers }: SessionP
         {view.loadError && <p className="chat-error" role="alert">{view.loadError} <button onClick={() => void state.load(projectId, sessionId, true).catch(() => {})}>重试</button></p>}
         {blocks.map((block) => {
           if (block.kind !== "completed-turn") return itemView(block, block.kind === "assistant" && firstAssistantByTurn.get(block.turn) === block.id)
-          const process = block.process.filter((item) => item.kind !== "event" || (item.event.type !== "turn/end" && item.event.type !== "approval/request"))
+          const process = block.process.filter((item) => item.kind !== "event" || (item.event.type !== "turn/end" && item.event.type !== "approval/request" && !pairedResultIds.has(item.id)))
           return <div className="chat-entry assistant-entry" key={JSON.stringify([key, block.id])} data-turn={block.turn}>
             <div className="message-label"><span className="assistant-avatar"><IconSparkles size={13} /></span><strong>NiCode</strong><span>协作伙伴</span></div>
             {process.length > 0 && <details className="chat-detail turn-process"><summary><IconTool size={15} /><span className="process-title">执行过程</span><span className="process-count">{process.length} 项</span></summary>{process.map((item) => itemView(item))}</details>}

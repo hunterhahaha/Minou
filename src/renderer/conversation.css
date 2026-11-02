@@ -38,6 +38,7 @@
 /* 展开入口保持透明，只有详情代码块提供一层底色；原文不会再次被 Markdown 解析。 */
 .process-content { max-width: 100%; max-height: 320px; margin: 6px 0 12px; padding: 12px 14px; overflow: auto; border: 0; border-radius: 7px; color: var(--code-text); background: var(--code-background); white-space: pre-wrap; overflow-wrap: anywhere; font: var(--font-size-code)/var(--line-height-code) var(--font-code); }
 .process-content > code { padding: 0; border: 0; color: inherit; background: transparent; font: inherit; }
+.tool-section-label { margin-top: var(--space-2); color: var(--secondary); font-size: var(--font-size-note); line-height: var(--line-height-note); font-weight: 500; }
 .turn-process { margin: 0 0 17px; }
 .turn-process > summary { font-size: var(--font-size-note); line-height: var(--line-height-note); }
 .process-count { font-variant-numeric: tabular-nums; margin-left: 5px; font-size: var(--font-size-note); line-height: var(--line-height-note); color: inherit; }
