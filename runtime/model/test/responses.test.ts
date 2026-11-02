@@ -22,7 +22,7 @@ import { collect, collectError, sseData, startFakeProvider, streamOf } from "./h
 
 type ResponseStreamEvent = OpenAI.Responses.ResponseStreamEvent
 
-const MODEL: ModelConfig = {
+const MODEL: ModelConfig = { supportsReasoning: true,
   modelId: "model-record-3",
   name: "gpt-responses-test",
   providerId: "openai",

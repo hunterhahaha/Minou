@@ -21,7 +21,7 @@ import { collect, collectError, sseEvent, startFakeProvider, streamOf } from "./
 
 type RawMessageStreamEvent = Anthropic.Messages.RawMessageStreamEvent
 
-const MODEL: ModelConfig = {
+const MODEL: ModelConfig = { supportsReasoning: true,
   modelId: "model-record-1",
   name: "claude-test",
   providerId: "anthropic",

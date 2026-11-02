@@ -62,7 +62,7 @@ async function main(): Promise<void> {
   assert.ok(address && typeof address !== "string")
   const { paths } = await initializeConfigFilesSnapshot(profile)
   saveProvider(paths.providerDatabasePath, { id: "fixture", name: "fixture", type: "custom", protocol: "chat_completions", baseURL: `http://127.0.0.1:${address.port}/v1` })
-  saveModel(paths.providerDatabasePath, { providerId: "fixture", modelId: "fixture-model", name: "fake-api-model", contextWindow: 128000, maxOutputTokens: 4096, reasoningLevels: ["low", "high"], reasoningField: { path: ["reasoning_effort"] } })
+  saveModel(paths.providerDatabasePath, { supportsReasoning: true, providerId: "fixture", modelId: "fixture-model", name: "fake-api-model", contextWindow: 128000, maxOutputTokens: 4096, reasoningLevels: ["low", "high"], reasoningField: { path: ["reasoning_effort"] } })
   setProviderApiKey(paths.providerDatabasePath, "fixture", "top-secret-key")
   let serial = 0
   const cli = resolve("dist/src/cli/main.js")

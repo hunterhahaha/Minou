@@ -41,18 +41,18 @@ async function testCatalogAndDefaults(): Promise<void> {
       id: "second", name: "Second", protocol: "chat_completions", type: "custom",
       baseURL: "https://example.com/v1", defaultHeaders: { "X-Mode": "test" },
     })
-    saveModel(path, {
+    saveModel(path, { supportsReasoning: true,
       modelId: "model-b", name: "Model B", providerId: "first", contextWindow: 256000,
       maxOutputTokens: 32000,
           reasoningLevels: ["low", "medium", "high"],
       reasoningField: { path: ["reasoning", "effort"] },
     })
-    saveModel(path, {
+    saveModel(path, { supportsReasoning: true,
       modelId: "model-a", name: "Model A", providerId: "first", contextWindow: 128000, maxOutputTokens: 32000,
           reasoningLevels: ["low", "medium", "high"],
       reasoningField: { path: ["reasoning", "effort"] },
     })
-    saveModel(path, {
+    saveModel(path, { supportsReasoning: true,
       modelId: "model-c", name: "Model C", providerId: "second", contextWindow: 256000, maxOutputTokens: 32000,
           reasoningLevels: ["low", "medium", "high"],
       reasoningField: { path: ["reasoning_effort"] },
@@ -62,13 +62,13 @@ async function testCatalogAndDefaults(): Promise<void> {
       {
         id: "first", name: "First", protocol: "responses", type: "custom",
         models: [
-          {
+          { supportsReasoning: true,
             modelId: "model-b", name: "Model B", providerId: "first", contextWindow: 256000,
             maxOutputTokens: 32000,
                       reasoningLevels: ["low", "medium", "high"],
             reasoningField: { path: ["reasoning", "effort"] },
           },
-          {
+          { supportsReasoning: true,
             modelId: "model-a", name: "Model A", providerId: "first", contextWindow: 128000,
             maxOutputTokens: 32000,
                       reasoningLevels: ["low", "medium", "high"],
@@ -79,7 +79,7 @@ async function testCatalogAndDefaults(): Promise<void> {
       {
         id: "second", name: "Second", protocol: "chat_completions", type: "custom",
         baseURL: "https://example.com/v1", defaultHeaders: { "X-Mode": "test" },
-        models: [{
+        models: [{ supportsReasoning: true,
           modelId: "model-c", name: "Model C", providerId: "second", contextWindow: 256000, maxOutputTokens: 32000,
                   reasoningLevels: ["low", "medium", "high"],
           reasoningField: { path: ["reasoning_effort"] },
@@ -107,7 +107,7 @@ async function testCatalogAndDefaults(): Promise<void> {
       const columns = db.prepare("PRAGMA table_info(models)").all() as Array<{ name: string; notnull: number }>
       assert.deepEqual(columns.map(({ name }) => name), [
         "id", "name", "provider_id", "position", "context_window", "max_output_tokens",
-        "reasoning_levels_json", "reasoning_field_json",
+        "supports_reasoning", "reasoning_levels_json", "reasoning_field_json",
       ])
       assert.equal(columns.find(({ name }) => name === "context_window")?.notnull, 1)
       assert.equal(columns.find(({ name }) => name === "max_output_tokens")?.notnull, 1)
@@ -147,7 +147,7 @@ async function testReadAndRollback(): Promise<void> {
   await withDatabase((path) => {
     initializeProviderDatabase(path)
     saveProvider(path, { id: "configured", name: "Configured", protocol: "anthropic_messages", type: "custom" })
-    saveModel(path, {
+    saveModel(path, { supportsReasoning: true,
       modelId: "model-a", name: "claude-test", providerId: "configured", contextWindow: 256000,
       maxOutputTokens: 4096,
           reasoningLevels: ["low", "medium", "high"],
@@ -157,7 +157,7 @@ async function testReadAndRollback(): Promise<void> {
     const reference = { providerId: "configured", protocol: "anthropic_messages" as const, modelId: "model-a", name: "claude-test", reasoningLevel: "medium" }
     assert.deepEqual(readTurnProviderSnapshot(path, reference), {
       provider: { id: "configured", name: "Configured", protocol: "anthropic_messages", type: "custom" },
-      model: {
+      model: { supportsReasoning: true,
         modelId: "model-a", name: "claude-test", providerId: "configured", protocol: "anthropic_messages",
         contextWindow: 256000, maxOutputTokens: 4096,
               reasoningLevels: ["low", "medium", "high"],
@@ -167,13 +167,13 @@ async function testReadAndRollback(): Promise<void> {
     })
     setProviderApiKey(path, "configured", "second-secret")
     assert.equal(readTurnProviderSnapshot(path, reference).credential?.apiKey, "second-secret")
-    assert.throws(() => saveModel(path, {
+    assert.throws(() => saveModel(path, { supportsReasoning: true,
       modelId: "model-missing", name: "Model", providerId: "missing", contextWindow: 256000, maxOutputTokens: 32000,
           reasoningLevels: ["low", "medium", "high"],
       reasoningField: { path: ["reasoning", "effort"] },
     }), /Provider missing 不存在/)
     saveProvider(path, { id: "other", name: "Other", protocol: "responses", type: "custom" })
-    assert.throws(() => saveModel(path, {
+    assert.throws(() => saveModel(path, { supportsReasoning: true,
       modelId: "model-a", name: "Duplicate", providerId: "other", contextWindow: 256000, maxOutputTokens: 32000,
           reasoningLevels: ["low", "medium", "high"],
       reasoningField: { path: ["reasoning", "effort"] },
@@ -187,12 +187,12 @@ async function testReadAndRollback(): Promise<void> {
     assert.throws(() => updateModel(path, { providerId: "configured", modelId: "model-a" }, { name: "  " }), /name must not be empty/)
     updateModel(path, { providerId: "configured", modelId: "model-a" }, { maxOutputTokens: 2048 })
     assert.equal(listProviders(path)[0].models[0].name, "updated-claude-test")
-    assert.throws(() => saveModel(path, {
+    assert.throws(() => saveModel(path, { supportsReasoning: true,
       modelId: "invalid-context", name: "Invalid", providerId: "configured", contextWindow: 0, maxOutputTokens: 32000,
           reasoningLevels: ["low", "medium", "high"],
       reasoningField: { path: ["output_config", "effort"] },
     }), /contextWindow/)
-    assert.throws(() => saveModel(path, {
+    assert.throws(() => saveModel(path, { supportsReasoning: true,
       modelId: "invalid-output", name: "Invalid", providerId: "configured", contextWindow: 256000, maxOutputTokens: 0,
           reasoningLevels: ["low", "medium", "high"],
       reasoningField: { path: ["output_config", "effort"] },

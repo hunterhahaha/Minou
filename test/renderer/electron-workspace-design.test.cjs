@@ -17,7 +17,7 @@ const typographyReports = []
 const PROJECT = "a0000000-0000-4000-8000-000000000001"
 const updatedAt = "2026-10-22T03:00:00.000Z"
 const model = { providerId: "local-fixture", protocol: "responses", modelId: "model-fixture", name: "GPT-5.4", reasoningLevel: "medium" }
-const providers = [{ providerId: model.providerId, name: "OpenAI", type: "custom", protocol: model.protocol, models: [{ modelId: model.modelId, name: model.name, isDefault: true, contextWindow: 128000, maxOutputTokens: 16000,
+const providers = [{ providerId: model.providerId, name: "OpenAI", type: "custom", protocol: model.protocol, models: [{ supportsReasoning: true, modelId: model.modelId, name: model.name, isDefault: true, contextWindow: 128000, maxOutputTokens: 16000,
   reasoningLevels: ["low", "medium", "high"], reasoningField: { path: ["reasoning", "effort"] } }] }]
 const sessions = [
   { sessionId: "design", name: "梳理项目结构与核心工作流", updatedAt },

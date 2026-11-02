@@ -41,7 +41,7 @@ export async function resolveTurnModelAdapterSpecification(
 ): Promise<TurnModelAdapterSpecification> {
   const reference = formatModelRef(model)
   const snapshot = readTurnProviderSnapshot(paths.providerDatabasePath, model)
-  if (!snapshot.model.reasoningLevels.includes(model.reasoningLevel)) {
+  if (snapshot.model.supportsReasoning && !snapshot.model.reasoningLevels.includes(model.reasoningLevel)) {
     throw new Error(`无法为 ${reference} 创建 Adapter：推理等级 ${model.reasoningLevel} 不在模型支持列表中。`)
   }
   const credentialStore = new CredentialStore(snapshot.credential === undefined ? [] : [snapshot.credential])

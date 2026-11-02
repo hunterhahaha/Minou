@@ -15,7 +15,7 @@ import {
 } from "../../src/main/workspace-store.ts"
 import { STARTUP_DATA_IPC_CHANNELS } from "../../src/preload/session-api.ts"
 
-const REASONING = { reasoningLevels: ["low", "medium", "high"], reasoningField: { path: ["reasoning", "effort"] } }
+const REASONING = { supportsReasoning: true, reasoningLevels: ["low", "medium", "high"], reasoningField: { path: ["reasoning", "effort"] } }
 
 /** 保存 handler 并以 invoke 形态调用。 */
 class FakeIpcMain implements IpcMainHandlePort {
@@ -81,12 +81,12 @@ async function main(): Promise<void> {
     saveProvider(providerDatabasePath, {
       id: "provider-1", name: "Provider", protocol: "responses", type: "custom", baseURL: "https://example.com/v1",
     })
-    saveModel(providerDatabasePath, {
+    saveModel(providerDatabasePath, { supportsReasoning: true,
       modelId: "model-b", name: "Model B", providerId: "provider-1", contextWindow: 256000, maxOutputTokens: 32000,
           reasoningLevels: ["low", "medium", "high"],
       reasoningField: { path: ["reasoning", "effort"] },
     })
-    saveModel(providerDatabasePath, {
+    saveModel(providerDatabasePath, { supportsReasoning: true,
       modelId: "model-a", name: "Model A", providerId: "provider-1", contextWindow: 256000, maxOutputTokens: 32000,
           reasoningLevels: ["low", "medium", "high"],
       reasoningField: { path: ["reasoning", "effort"] },
@@ -109,8 +109,8 @@ async function main(): Promise<void> {
     assert.deepEqual(providers, [{
       providerId: "provider-1", name: "Provider", type: "custom", protocol: "responses", baseURL: "https://example.com/v1",
       models: [
-        { modelId: "model-b", name: "Model B", contextWindow: 256000, maxOutputTokens: 32000, isDefault: true, ...REASONING },
-        { modelId: "model-a", name: "Model A", contextWindow: 256000, maxOutputTokens: 32000, isDefault: false, ...REASONING },
+        {  modelId: "model-b", name: "Model B", contextWindow: 256000, maxOutputTokens: 32000, isDefault: true, ...REASONING },
+        {  modelId: "model-a", name: "Model A", contextWindow: 256000, maxOutputTokens: 32000, isDefault: false, ...REASONING },
       ],
     }])
     assert.equal(JSON.stringify(providers).includes("private-api-key"), false)
@@ -118,8 +118,8 @@ async function main(): Promise<void> {
     assert.deepEqual(ipc.invoke(STARTUP_DATA_IPC_CHANNELS.listProviders), [{
       providerId: "provider-1", name: "Provider", type: "custom", protocol: "responses", baseURL: "https://example.com/v1",
       models: [
-        { modelId: "model-b", name: "Model B", contextWindow: 256000, maxOutputTokens: 32000, isDefault: false, ...REASONING },
-        { modelId: "model-a", name: "Model A", contextWindow: 256000, maxOutputTokens: 32000, isDefault: true, ...REASONING },
+        {  modelId: "model-b", name: "Model B", contextWindow: 256000, maxOutputTokens: 32000, isDefault: false, ...REASONING },
+        {  modelId: "model-a", name: "Model A", contextWindow: 256000, maxOutputTokens: 32000, isDefault: true, ...REASONING },
       ],
     }])
     assert.throws(() => registerStartupDataIpcHandlers(ipc, { workspaceDatabasePath, providerDatabasePath }), /重复注册/)

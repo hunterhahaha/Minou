@@ -25,8 +25,8 @@ const MODEL: ModelRef = {
 }
 const CONTENT = [{ type: "text" as const, text: "你好" }]
 const PROJECT_ID = "00000000-0000-4000-8000-000000000017"
-const PROVIDER_MODEL = { name: "claude-test", contextWindow: 256000, maxOutputTokens: 4096 }
-const REASONING = { reasoningLevels: ["low", "medium", "high"], reasoningField: { path: ["reasoning", "effort"] } }
+const PROVIDER_MODEL = { supportsReasoning: true, name: "claude-test", contextWindow: 256000, maxOutputTokens: 4096 }
+const REASONING = { supportsReasoning: true, reasoningLevels: ["low", "medium", "high"], reasoningField: { path: ["reasoning", "effort"] } }
 const PROVIDER_REFERENCE = { providerId: "provider-1", modelId: "model-1" }
 const COMPATIBLE_OPTIONS = [
   { name: "Sample", protocol: ["responses", "chat_completions"] },
@@ -244,7 +244,7 @@ async function testRejectsInvalidMainResponse(): Promise<void> {
   await assert.rejects(invalidProviders.listProviders(), /无效的 Provider 列表/)
   const missingReasoning = createSessionApi({ invoke: async () => [{
     providerId: "p", name: "P", type: "custom", protocol: "responses",
-    models: [{ modelId: "m", name: "M", contextWindow: 256000, maxOutputTokens: 32000, isDefault: true }],
+    models: [{ supportsReasoning: true, modelId: "m", name: "M", contextWindow: 256000, maxOutputTokens: 32000, isDefault: true }],
   }] })
   await assert.rejects(missingReasoning.listProviders(), /无效的 Provider 列表/)
   const invalidModelAppend = createSessionApi({ invoke: async () => ({ providerId: "p", modelId: "m" }) })

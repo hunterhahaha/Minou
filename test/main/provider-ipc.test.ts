@@ -10,9 +10,9 @@ import { initializeProviderDatabase, listProviders, readDefaultModel } from "../
 import { registerModelIpcHandlers } from "../../src/main/provider-ipc.ts"
 import type { ModelAppend, ProviderSummary } from "../../src/preload/session-api.ts"
 import { PROVIDER_IPC_CHANNELS } from "../../src/preload/session-api.ts"
-import type { CompatibleProviderDefinition } from "../../src/main/compatible-providers.ts"
+import type { CompatibleProviderCatalog } from "../../src/main/compatible-providers.ts"
 
-const RESPONSE_REASONING = { reasoningLevels: ["low", "medium", "high"], reasoningField: { path: ["reasoning", "effort"] } }
+const RESPONSE_REASONING = { supportsReasoning: true, reasoningLevels: ["low", "medium", "high"], reasoningField: { path: ["reasoning", "effort"] } }
 
 /**
  * IPC handler signature accepted by Electron's invoke-shaped test helper.
@@ -64,13 +64,13 @@ async function testModelCreationReturnsGeneratedIdentity(): Promise<void> {
     const provider = ipc.invoke(
       PROVIDER_IPC_CHANNELS.createCustomProvider,
       { type: "custom", name: "Provider", apiKey: "api-key", protocol: "responses", url: "https://example.com/v1",
-        models: [{ name: "  model-api-name  ", contextWindow: null, maxOutputTokens: null }] },
+        models: [{ supportsReasoning: true, name: "  model-api-name  ", contextWindow: null, maxOutputTokens: null }] },
     ) as ProviderSummary
     const original = provider.models[0]
     assert.ok(original)
     assert.equal(provider.baseURL, "https://example.com/v1")
     assert.equal(provider.type, "custom")
-    assert.deepEqual({ reasoningLevels: original.reasoningLevels, reasoningField: original.reasoningField }, RESPONSE_REASONING)
+    assert.deepEqual({ supportsReasoning: true, reasoningLevels: original.reasoningLevels, reasoningField: original.reasoningField }, RESPONSE_REASONING)
     const uuidV4 = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
     assert.match(provider.providerId, uuidV4)
     assert.match(original.modelId, uuidV4)
@@ -90,7 +90,7 @@ async function testModelCreationReturnsGeneratedIdentity(): Promise<void> {
     const appended = ipc.invoke(
       PROVIDER_IPC_CHANNELS.createModel,
       provider.providerId,
-      { name: "  second-model  ", contextWindow: 64000 },
+      { supportsReasoning: true, name: "  second-model  ", contextWindow: 64000 },
     ) as ModelAppend
     assert.match(appended.modelId, uuidV4)
     assert.deepEqual(appended, {
@@ -106,18 +106,18 @@ async function testModelCreationReturnsGeneratedIdentity(): Promise<void> {
       { modelId: original.modelId, name: "model-api-name" },
       { modelId: appended.modelId, name: "second-model" },
     ])
-    assert.deepEqual(listProviders(providerDatabasePath)[0]?.models.map(({ contextWindow, maxOutputTokens }) => ({
+    assert.deepEqual(listProviders(providerDatabasePath)[0]?.models.map(({ contextWindow, maxOutputTokens }) => ({ supportsReasoning: true,
       contextWindow,
       maxOutputTokens,
     })), [
-      { contextWindow: 256000, maxOutputTokens: 32000 },
-      { contextWindow: 64000, maxOutputTokens: 32000 },
+      { supportsReasoning: true, contextWindow: 256000, maxOutputTokens: 32000 },
+      { supportsReasoning: true, contextWindow: 64000, maxOutputTokens: 32000 },
     ])
 
     const defaulted = ipc.invoke(
       PROVIDER_IPC_CHANNELS.createModel,
       provider.providerId,
-      { name: "  defaulted-model  " },
+      { supportsReasoning: true, name: "  defaulted-model  " },
     ) as ModelAppend
     assert.equal(defaulted.contextWindow, 256000)
     assert.equal(defaulted.maxOutputTokens, 32000)
@@ -159,22 +159,22 @@ async function testModelCreationReturnsGeneratedIdentity(): Promise<void> {
     assert.throws(() => ipc.invoke(
       PROVIDER_IPC_CHANNELS.createModel,
       provider.providerId,
-      { name: " ", contextWindow: 32000 },
+      { supportsReasoning: true, name: " ", contextWindow: 32000 },
     ), /模型配置错误/)
     assert.throws(() => ipc.invoke(
       PROVIDER_IPC_CHANNELS.createModel,
       provider.providerId,
-      { name: "invalid-context-window", contextWindow: 0 },
+      { supportsReasoning: true, name: "invalid-context-window", contextWindow: 0 },
     ), /模型配置错误/)
     assert.throws(() => ipc.invoke(
       PROVIDER_IPC_CHANNELS.createModel,
       provider.providerId,
-      { name: "invalid-output-limit", maxOutputTokens: 0 },
+      { supportsReasoning: true, name: "invalid-output-limit", maxOutputTokens: 0 },
     ), /模型配置错误/)
     assert.throws(() => ipc.invoke(
       PROVIDER_IPC_CHANNELS.createModel,
       provider.providerId,
-      { name: "unknown-field", extra: true },
+      { supportsReasoning: true, name: "unknown-field", extra: true },
     ), /模型配置错误/)
     assert.throws(() => ipc.invoke(
       PROVIDER_IPC_CHANNELS.updateProvider,
@@ -204,7 +204,7 @@ async function testProviderURLValidation(): Promise<void> {
 
     const provider = ipc.invoke(
       PROVIDER_IPC_CHANNELS.createCustomProvider,
-      { type: "custom", name: "Provider", apiKey: "test-key", protocol: "responses", url: "  https://example.com/v1  ", models: [{ name: "model" }] },
+      { type: "custom", name: "Provider", apiKey: "test-key", protocol: "responses", url: "  https://example.com/v1  ", models: [{ supportsReasoning: true, name: "model" }] },
     ) as ProviderSummary
     assert.equal(provider.baseURL, "https://example.com/v1")
     const baseline = listProviders(providerDatabasePath)
@@ -230,9 +230,9 @@ async function testDefaultModelPersistence(): Promise<void> {
     const ipc = new FakeIpcMain()
     registerModelIpcHandlers(ipc as unknown as Electron.IpcMain, { providerDatabasePath })
     const first = ipc.invoke(PROVIDER_IPC_CHANNELS.createCustomProvider,
-      { type: "custom", name: "First", apiKey: "test-key", protocol: "responses", url: "http://127.0.0.1:8080/v1", models: [{ name: "First model" }] }) as ProviderSummary
+      { type: "custom", name: "First", apiKey: "test-key", protocol: "responses", url: "http://127.0.0.1:8080/v1", models: [{ supportsReasoning: true, name: "First model" }] }) as ProviderSummary
     const second = ipc.invoke(PROVIDER_IPC_CHANNELS.createCustomProvider,
-      { type: "custom", name: "Second", apiKey: "test-key", protocol: "responses", url: "http://127.0.0.1:8080/v1", models: [{ name: "Second model" }] }) as ProviderSummary
+      { type: "custom", name: "Second", apiKey: "test-key", protocol: "responses", url: "http://127.0.0.1:8080/v1", models: [{ supportsReasoning: true, name: "Second model" }] }) as ProviderSummary
     const reference = { providerId: second.providerId, modelId: second.models[0]!.modelId }
     ipc.invoke(PROVIDER_IPC_CHANNELS.setDefaultModel, reference)
     initializeProviderDatabase(providerDatabasePath)
@@ -260,21 +260,21 @@ async function testDefaultModelPersistence(): Promise<void> {
 async function testCompatibleCatalogAndReasoning(): Promise<void> {
   await withDatabase((providerDatabasePath) => {
     const empty = new FakeIpcMain()
-    registerModelIpcHandlers(empty as unknown as Electron.IpcMain, { providerDatabasePath })
+    registerModelIpcHandlers(empty as unknown as Electron.IpcMain, { providerDatabasePath }, {})
     assert.deepEqual(empty.invoke(PROVIDER_IPC_CHANNELS.listCompatibleProviders), [])
     assert.throws(() => empty.invoke(PROVIDER_IPC_CHANNELS.createCompatibleProvider,
       { type: "compatible", name: "Sample", protocol: "responses", apiKey: "secret" }), /不在已兼容目录/)
 
-    const definitions: CompatibleProviderDefinition[] = [{
-      name: "Sample", protocol: "responses", url: "https://sample.example/v1",
-      models: [{ name: "sample-model", contextWindow: 64000, maxOutputTokens: 8192,
+    const sampleDefinitions: CompatibleProviderCatalog[string] = [{
+      protocol: "responses", url: "https://sample.example/v1",
+      models: [{ supportsReasoning: true, name: "sample-model", contextWindow: 64000, maxOutputTokens: 8192,
         reasoningLevels: ["minimal", "medium"], reasoningField: { path: ["reasoning", "effort"] } }],
     }, {
-      name: "Sample", protocol: "chat_completions", url: "https://sample.example/chat",
-      models: [{ name: "sample-chat-model", contextWindow: 32000, maxOutputTokens: 4096,
+      protocol: "chat_completions", url: "https://sample.example/chat",
+      models: [{ supportsReasoning: true, name: "sample-chat-model", contextWindow: 32000, maxOutputTokens: 4096,
         reasoningLevels: ["low", "high"], reasoningField: { path: ["reasoning_effort"] } }],
     }]
-    definitions.push({ ...definitions[0]! })
+    const definitions: CompatibleProviderCatalog = { Sample: [...sampleDefinitions, { ...sampleDefinitions[0]! }] }
     const ipc = new FakeIpcMain()
     registerModelIpcHandlers(ipc as unknown as Electron.IpcMain, { providerDatabasePath }, definitions)
     assert.deepEqual(ipc.invoke(PROVIDER_IPC_CHANNELS.listCompatibleProviders), [
@@ -289,12 +289,13 @@ async function testCompatibleCatalogAndReasoning(): Promise<void> {
     const created = ipc.invoke(PROVIDER_IPC_CHANNELS.createCompatibleProvider,
       { type: "compatible", name: "Sample", protocol: "responses", apiKey: "secret" }) as ProviderSummary
     assert.equal(created.type, "compatible")
+    assert.equal(created.name, "Sample")
     assert.equal(created.baseURL, "https://sample.example/v1")
     assert.deepEqual(created.models[0]?.reasoningLevels, ["minimal", "medium"])
     assert.deepEqual(listProviders(providerDatabasePath)[0]?.models[0]?.reasoningField, { path: ["reasoning", "effort"] })
     ipc.invoke(PROVIDER_IPC_CHANNELS.updateProvider, created.providerId, "Renamed sample", "https://new.example/v1")
     ipc.invoke(PROVIDER_IPC_CHANNELS.updateModel,
-      { providerId: created.providerId, modelId: created.models[0]?.modelId }, { reasoningLevels: ["light", "strong"] })
+      { providerId: created.providerId, modelId: created.models[0]?.modelId }, { supportsReasoning: true, reasoningLevels: ["light", "strong"] })
     assert.equal(listProviders(providerDatabasePath)[0]?.type, "compatible")
     assert.deepEqual(listProviders(providerDatabasePath)[0]?.models[0]?.reasoningLevels, ["light", "strong"])
     const sampleChat = ipc.invoke(PROVIDER_IPC_CHANNELS.createCompatibleProvider,
@@ -305,22 +306,24 @@ async function testCompatibleCatalogAndReasoning(): Promise<void> {
 
     const anthropic = ipc.invoke(PROVIDER_IPC_CHANNELS.createCustomProvider,
       { type: "custom", name: "Anthropic", protocol: "anthropic_messages", apiKey: "secret",
-        url: "https://anthropic.example", models: [{ name: "a" }] }) as ProviderSummary
+        url: "https://anthropic.example", models: [{ supportsReasoning: true, name: "a" }] }) as ProviderSummary
     assert.deepEqual(anthropic.models[0]?.reasoningField, { path: ["output_config", "effort"] })
     const chat = ipc.invoke(PROVIDER_IPC_CHANNELS.createCustomProvider,
       { type: "custom", name: "Chat", protocol: "chat_completions", apiKey: "secret",
-        url: "https://chat.example", models: [{ name: "c", reasoningLevels: ["economy", "deep"] }] }) as ProviderSummary
+        url: "https://chat.example", models: [{ supportsReasoning: true, name: "c", reasoningLevels: ["economy", "deep"] }] }) as ProviderSummary
     assert.deepEqual(chat.models[0]?.reasoningLevels, ["economy", "deep"])
     assert.deepEqual(chat.models[0]?.reasoningField, { path: ["reasoning_effort"] })
     assert.throws(() => ipc.invoke(PROVIDER_IPC_CHANNELS.createModel, chat.providerId,
-      { name: "invalid", reasoningField: { path: ["model"] } }), /模型配置错误/)
+      { supportsReasoning: true, name: "invalid", reasoningField: { path: ["model"] } }), /模型配置错误/)
     assert.throws(() => ipc.invoke(PROVIDER_IPC_CHANNELS.createModel, chat.providerId,
-      { name: "invalid", reasoningField: { path: ["__proto__"] } }), /模型配置错误/)
-    assert.throws(() => ipc.invoke(PROVIDER_IPC_CHANNELS.updateModel,
-      { providerId: chat.providerId, modelId: chat.models[0]?.modelId }, { reasoningLevels: [] }), /模型更新内容错误/)
+      { supportsReasoning: true, name: "invalid", reasoningField: { path: ["__proto__"] } }), /模型配置错误/)
+    ipc.invoke(PROVIDER_IPC_CHANNELS.updateModel,
+      { providerId: chat.providerId, modelId: chat.models[0]?.modelId }, { reasoningLevels: [] })
+    assert.deepEqual(listProviders(providerDatabasePath).find((entry) => entry.id === chat.providerId)?.models[0]?.reasoningLevels,
+      ["low", "medium", "high"])
     ipc.invoke(PROVIDER_IPC_CHANNELS.updateModel,
       { providerId: chat.providerId, modelId: chat.models[0]?.modelId },
-      { reasoningLevels: ["fast", "deep"], reasoningField: { path: ["effort"] } })
+      { supportsReasoning: true, reasoningLevels: ["fast", "deep"], reasoningField: { path: ["effort"] } })
     assert.deepEqual(listProviders(providerDatabasePath).find((entry) => entry.id === chat.providerId)?.models[0]?.reasoningLevels,
       ["fast", "deep"])
 
@@ -330,7 +333,7 @@ async function testCompatibleCatalogAndReasoning(): Promise<void> {
     const before = listProviders(providerDatabasePath)
     assert.throws(() => ipc.invoke(PROVIDER_IPC_CHANNELS.createCustomProvider,
       { type: "custom", name: "Fail", protocol: "responses", apiKey: "secret", url: "https://fail.example",
-        models: [{ name: "f" }] }), /injected failure/)
+        models: [{ supportsReasoning: true, name: "f" }] }), /injected failure/)
     assert.deepEqual(listProviders(providerDatabasePath), before)
   })
 }

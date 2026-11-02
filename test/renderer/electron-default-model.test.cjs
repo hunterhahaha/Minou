@@ -1,11 +1,11 @@
 /** 新聊天模型选择通过真实 preload、IPC 和 SQLite 持久化的回归测试。 */
 const assert = require("node:assert/strict")
-const { mkdtemp, rm } = require("node:fs/promises")
+const { mkdtemp, rm, writeFile } = require("node:fs/promises")
 const { tmpdir } = require("node:os")
 const { join, resolve, sep } = require("node:path")
 const { app, BrowserWindow, ipcMain } = require("electron")
 const { initializeConfigFiles } = require("../../dist/src/main/config-files.js")
-const { saveProvider, saveModel, readDefaultModel } = require("../../dist/src/main/provider-store.js")
+const { saveProvider, saveModel, readDefaultModel, listProviders } = require("../../dist/src/main/provider-store.js")
 const { registerModelIpcHandlers } = require("../../dist/src/main/provider-ipc.js")
 const { registerStartupDataIpcHandlers } = require("../../dist/src/main/startup-data-ipc.js")
 const { registerWindowIpcHandlers } = require("../../dist/src/main/window-ipc.js")
@@ -13,8 +13,9 @@ const { PROVIDER_IPC_CHANNELS, SESSION_IPC_CHANNELS } = require("../../dist/src/
 
 const first = { providerId: "first-provider", protocol: "responses", modelId: "first-model", name: "First model", reasoningLevel: "medium" }
 const second = { providerId: "second-provider", protocol: "responses", modelId: "second-model", name: "Second model", reasoningLevel: "medium" }
-const reasoning = { reasoningLevels: ["low", "medium", "high"], reasoningField: { path: ["reasoning", "effort"] } }
+const reasoning = { supportsReasoning: true, reasoningLevels: ["low", "medium", "high"], reasoningField: { path: ["reasoning", "effort"] } }
 let window, profile, releaseSave
+let failNextModelUpdate = false
 let pauseNextSave = false, failNextSave = false, saveCalls = 0
 const startedModels = [], rendererErrors = []
 app.on("window-all-closed", () => {})
@@ -67,6 +68,10 @@ async function main() {
           failNextSave = false
           throw new Error("注入默认模型保存失败")
         }
+      }
+      if (channel === PROVIDER_IPC_CHANNELS.updateModel && failNextModelUpdate) {
+        failNextModelUpdate = false
+        throw new Error("注入模型能力保存失败")
       }
       return listener(event, ...args)
     })
@@ -145,6 +150,75 @@ async function main() {
   await evaluate("document.querySelector('[aria-label=\"发送消息\"]').click()")
   await until(() => startedModels.length === 1)
   assert.deepEqual(startedModels, [{ ...first, reasoningLevel: "high" }], "首条消息使用成功保存的模型与页面选择的推理等级")
+  // 使用真实设置页面创建非思考模型，再编辑能力与默认配置。
+  await evaluate("document.querySelector('.sidebar-settings').click()")
+  await until(() => evaluate("Boolean(document.querySelector('.provider-models-section'))"))
+  await evaluate("[...document.querySelectorAll('.provider-list-item')].find(node => node.textContent.includes('first-provider')).click()")
+  await until(() => evaluate("document.querySelector('.provider-detail-heading h3')?.textContent === 'first-provider'"))
+  await evaluate("[...document.querySelectorAll('.provider-models-section button')].find(node => node.textContent.includes('新建模型')).click()")
+  await until(() => evaluate("Boolean(document.querySelector('.new-model-form'))"))
+  assert.equal(await evaluate("document.querySelector('.new-model-form [aria-label=支持思考]').checked"), false)
+  assert.equal(await evaluate("Boolean(document.querySelector('.new-model-form .reasoning-level-list'))"), false)
+  await evaluate(`(() => {
+    const input = document.querySelector('.new-model-form input[type=text]')
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, 'Plain model')
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+  })()`)
+  await until(() => evaluate("!document.querySelector('.new-model-form button[type=submit]').disabled"))
+  await evaluate("document.querySelector('.new-model-form button[type=submit]').click()")
+  await until(() => evaluate("!document.querySelector('.new-model-form')"))
+  const plain = listProviders(paths.providerDatabasePath).find(provider => provider.id === first.providerId).models.find(model => model.name === 'Plain model')
+  assert.equal(plain.supportsReasoning, false)
+  assert.deepEqual(plain.reasoningLevels, ['low', 'medium', 'high'])
+  await evaluate("[...document.querySelectorAll('.provider-model-editor summary')].find(node => node.textContent.includes('Plain model')).click()")
+  const editor = "[...document.querySelectorAll('.provider-model-editor')].find(node => node.querySelector('summary').textContent.includes('Plain model'))"
+  await until(() => evaluate(`Boolean(${editor}.querySelector('[aria-label="编辑支持思考"]'))`))
+  await evaluate(`${editor}.querySelector('[aria-label="编辑支持思考"]').click()`)
+  await until(() => evaluate(`Boolean(${editor}.querySelector('.reasoning-level-list'))`))
+  failNextModelUpdate = true
+  await evaluate(`[...${editor}.querySelectorAll('button')].find(node => node.textContent === '保存推理配置').click()`)
+  await until(() => evaluate(`${editor}.querySelector('[role=alert]')?.textContent.includes('模型操作失败')`))
+  assert.equal(listProviders(paths.providerDatabasePath).find(provider => provider.id === first.providerId).models.find(model => model.modelId === plain.modelId).supportsReasoning, false)
+  const expectedErrors = rendererErrors.splice(0)
+  assert.ok(expectedErrors.length > 0 && expectedErrors.every(message => /注入模型能力保存失败|更新模型推理配置失败/.test(message)))
+  await evaluate(`[...${editor}.querySelectorAll('button')].find(node => node.textContent === '保存推理配置').click()`)
+  await until(() => evaluate(`${editor}.querySelector('[role=status]')?.textContent === '已保存' || !${editor}.querySelector('.model-save-status')`))
+  assert.equal(listProviders(paths.providerDatabasePath).find(provider => provider.id === first.providerId).models.find(model => model.modelId === plain.modelId).supportsReasoning, true)
+  for (let remaining = 3; remaining > 0; remaining--) {
+    await evaluate(`${editor}.querySelector('[aria-label^="移除推理等级"]').click()`)
+    await until(() => evaluate(`${editor}.querySelectorAll('[aria-label^="移除推理等级"]').length === ${remaining - 1}`))
+  }
+  await evaluate(`(() => {
+    const root = ${editor}
+    const input = root.querySelector('[aria-label="编辑推理字段路径"]')
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, '')
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+  })()`)
+  await until(() => evaluate(`Boolean([...${editor}.querySelectorAll('button')].find(node => node.textContent === '保存推理配置'))`))
+  await evaluate(`[...${editor}.querySelectorAll('button')].find(node => node.textContent === '保存推理配置').click()`)
+  await until(() => evaluate(`${editor}.querySelector('[aria-label="编辑推理字段路径"]').value === 'reasoning.effort'`))
+  assert.deepEqual(listProviders(paths.providerDatabasePath).find(provider => provider.id === first.providerId).models.find(model => model.modelId === plain.modelId).reasoningLevels, ['low', 'medium', 'high'])
+  await evaluate(`${editor}.querySelector('[aria-label="编辑支持思考"]').click()`)
+  await until(() => evaluate(`!${editor}.querySelector('.reasoning-level-list')`))
+  await evaluate(`[...${editor}.querySelectorAll('button')].find(node => node.textContent === '保存推理配置').click()`)
+  await until(() => evaluate(`!${editor}.querySelector('.model-save-status')`))
+  await evaluate("document.querySelector('[aria-label=关闭设置]').click()")
+  await until(() => evaluate("!document.querySelector('.settings-dialog')"))
+  await selectModel(plain.name)
+  await selected(plain.name)
+  assert.equal(await evaluate("Boolean(document.querySelector('.composer-model-reasoning'))"), false)
+  await evaluate("document.querySelector('.model-trigger').click()")
+  await until(() => evaluate("Boolean(document.querySelector('.composer-model-panel:popover-open'))"))
+  assert.equal(await evaluate("Boolean(document.querySelector('[aria-label=设置推理等级]'))"), false)
+  assert.equal(await evaluate("document.querySelector('.model-trigger').title"), plain.name)
+  for (const [theme, width] of [['light', 1200], ['dark', 640]]) {
+    window.setContentSize(width, 800)
+    await evaluate(`document.documentElement.dataset.theme = '${theme}'`)
+    await until(() => evaluate(`innerWidth === ${width}`))
+    assert.equal(await evaluate("document.documentElement.scrollWidth <= innerWidth"), true)
+    await writeFile(join(process.cwd(), 'dist', 'reasoning-disabled-' + theme + '.png'), (await window.webContents.capturePage()).toPNG())
+  }
+  await evaluate("document.querySelector('.composer-model-panel').hidePopover()")
   assert.deepEqual(rendererErrors, [])
   console.log("electron-default-model: 真实 IPC 落盘、忙碌保护、失败保留与重试、重载恢复、首条消息模型通过")
 }

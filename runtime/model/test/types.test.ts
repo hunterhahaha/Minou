@@ -49,13 +49,13 @@ type _ModelConfigRequired = Expect<Equals<ModelConfig["modelId"] | ModelConfig["
 type _ModelConfigContextWindowRequired = Expect<Equals<ModelConfig["contextWindow"], number>>
 type _ModelConfigMaxOutputTokensRequired = Expect<Equals<ModelConfig["maxOutputTokens"], number>>
 /** @ts-expect-error 运行时模型配置必须提供已经解析的上下文窗口。 */
-const _missingContextWindow: ModelConfig = {
+const _missingContextWindow: ModelConfig = { supportsReasoning: true,
   modelId: "model-id", name: "model", providerId: "provider", protocol: "responses", maxOutputTokens: 32000,
   reasoningLevels: ["low", "medium", "high"], reasoningField: { path: ["reasoning", "effort"] },
 }
 void _missingContextWindow
 /** @ts-expect-error 运行时模型配置必须提供最大输出 Token 数。 */
-const _missingMaxOutputTokens: ModelConfig = {
+const _missingMaxOutputTokens: ModelConfig = { supportsReasoning: true,
   modelId: "model-id", name: "model", providerId: "provider", protocol: "responses", contextWindow: 256000,
   reasoningLevels: ["low", "medium", "high"], reasoningField: { path: ["reasoning", "effort"] },
 }

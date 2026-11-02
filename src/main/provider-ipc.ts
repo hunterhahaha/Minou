@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto"
 
 import type { ConfigFilePaths } from "./config-files.ts"
 import { listCompatibleProviders, resolveCompatibleProvider } from "./compatible-providers.ts"
-import type { CompatibleProviderDefinition } from "./compatible-providers.ts"
+import type { CompatibleProviderCatalog } from "./compatible-providers.ts"
 import {
   deleteModel,
   deleteProvider,
@@ -29,7 +29,7 @@ import type {
   ProviderSummary,
 } from "../preload/session-api.ts"
 import type { Protocol } from "../../runtime/model/src/types.ts"
-import { defaultReasoningConfig, isReasoningField, isReasoningLevels } from "../../runtime/model/src/reasoning.ts"
+import { completeReasoningConfig } from "../../runtime/model/src/reasoning.ts"
 
 /**
  * 创建 Provider 时随请求提供的模型配置数组。
@@ -67,10 +67,10 @@ function isProtocol(value: unknown): value is Protocol {
  */
 function isModelInput(value: unknown, protocol: Protocol): value is ProviderModelInput {
   if (!isRecord(value) || typeof value.name !== "string" || value.name.trim() === "") return false
+  if (typeof value.supportsReasoning !== "boolean") return false
   if (!isOptionalPositiveInteger(value.contextWindow) || !isOptionalPositiveInteger(value.maxOutputTokens)) return false
-  if (value.reasoningLevels !== undefined && value.reasoningLevels !== null && !isReasoningLevels(value.reasoningLevels)) return false
-  if (value.reasoningField !== undefined && value.reasoningField !== null && !isReasoningField(value.reasoningField, protocol)) return false
-  return Object.keys(value).every((key) => ["name", "contextWindow", "maxOutputTokens", "reasoningLevels", "reasoningField"].includes(key))
+  try { completeReasoningConfig(value, protocol) } catch { return false }
+  return Object.keys(value).every((key) => ["name", "contextWindow", "maxOutputTokens", "supportsReasoning", "reasoningLevels", "reasoningField"].includes(key))
 }
 
 /**
@@ -80,13 +80,12 @@ function isModelInput(value: unknown, protocol: Protocol): value is ProviderMode
  * @returns 包含限制值和推理配置的完整模型配置。
  */
 function completeModelInput(model: ProviderModelInput, protocol: Protocol): PersistableModelInput {
-  const defaults = defaultReasoningConfig(protocol)
   return {
     name: model.name,
     contextWindow: model.contextWindow ?? DEFAULT_MODEL_CONTEXT_WINDOW,
     maxOutputTokens: model.maxOutputTokens ?? DEFAULT_MODEL_MAX_OUTPUT_TOKENS,
-    reasoningLevels: model.reasoningLevels ?? defaults.reasoningLevels,
-    reasoningField: model.reasoningField ?? defaults.reasoningField,
+    supportsReasoning: model.supportsReasoning,
+    ...completeReasoningConfig(model, protocol),
   }
 }
 
@@ -108,7 +107,7 @@ function isModels(value: unknown, protocol: Protocol): value is Models {
  */
 function isModelUpdate(value: unknown, protocol: Protocol): value is ProviderModelUpdate {
   if (!isRecord(value)) return false
-  const fields = ["name", "contextWindow", "maxOutputTokens", "reasoningLevels", "reasoningField"] as const
+  const fields = ["name", "contextWindow", "maxOutputTokens", "supportsReasoning", "reasoningLevels", "reasoningField"] as const
   if (Object.keys(value).length === 0 || !Object.keys(value).every((key) => fields.includes(key as typeof fields[number]))) {
     return false
   }
@@ -119,8 +118,8 @@ function isModelUpdate(value: unknown, protocol: Protocol): value is ProviderMod
   for (const field of ["contextWindow", "maxOutputTokens"] as const) {
     if (field in value && !isPositiveInteger(value[field])) return false
   }
-  if ("reasoningLevels" in value && !isReasoningLevels(value.reasoningLevels)) return false
-  if ("reasoningField" in value && !isReasoningField(value.reasoningField, protocol)) return false
+  if ("supportsReasoning" in value && typeof value.supportsReasoning !== "boolean") return false
+  try { completeReasoningConfig(value, protocol) } catch { return false }
   return true
 }
 
@@ -144,7 +143,7 @@ function isProviderModelReference(value: unknown): value is ProviderModelReferen
 export function registerModelIpcHandlers(
   ipcMain: import("./session-ipc.ts").IpcMainHandlePort,
   paths: Pick<ConfigFilePaths, "providerDatabasePath">,
-  compatibleProviders?: readonly CompatibleProviderDefinition[],
+  compatibleProviders?: CompatibleProviderCatalog,
 ): void {
   const databasePath = paths.providerDatabasePath
 
@@ -212,7 +211,7 @@ export function registerModelIpcHandlers(
     if (definition === undefined) throw new TypeError(`供应商 ${name} 不在已兼容目录中，或不支持 ${input.protocol} 协议。`)
     if (!isModels(definition.models, input.protocol)) throw new Error(`已兼容供应商 ${name} 的模型资料无效。`)
     return createProviderRecords({
-      type: "compatible", name: definition.name, protocol: input.protocol, apiKey: input.apiKey,
+      type: "compatible", name, protocol: input.protocol, apiKey: input.apiKey,
       url: requireProviderURL(definition.url), models: definition.models,
     })
   })
@@ -280,6 +279,7 @@ export function registerModelIpcHandlers(
       name,
       contextWindow: completedModel.contextWindow,
       maxOutputTokens: completedModel.maxOutputTokens,
+      supportsReasoning: completedModel.supportsReasoning,
       reasoningLevels: completedModel.reasoningLevels,
       reasoningField: completedModel.reasoningField,
     }
@@ -329,6 +329,7 @@ function modelSummary(
     name: model.name,
     contextWindow: model.contextWindow,
     maxOutputTokens: model.maxOutputTokens,
+    supportsReasoning: model.supportsReasoning,
     reasoningLevels: model.reasoningLevels,
     reasoningField: model.reasoningField,
     isDefault,

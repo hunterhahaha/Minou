@@ -86,7 +86,7 @@ export function resolveModel(databasePath: string, request: Pick<RunRequest, "mo
     const model = provider.models.find((entry) => entry.modelId === id)
     if (!model) continue
     const reasoningLevel = request.reasoningLevel ?? model.reasoningLevels[0]
-    if (!model.reasoningLevels.includes(reasoningLevel)) throw new CliInputError("所选推理等级不属于模型的可选等级。")
+    if (model.supportsReasoning && !model.reasoningLevels.includes(reasoningLevel)) throw new CliInputError("所选推理等级不属于模型的可选等级。")
     return { providerId: provider.id, protocol: provider.protocol, modelId: model.modelId, name: model.name, reasoningLevel }
   }
   throw new CliInputError("未找到指定模型或有效默认模型；请先配置 NiCode 模型。")

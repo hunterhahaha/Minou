@@ -69,6 +69,7 @@ export function registerStartupDataIpcHandlers(
             name: model.name,
             contextWindow: model.contextWindow,
             maxOutputTokens: model.maxOutputTokens,
+            supportsReasoning: model.supportsReasoning,
             reasoningLevels: model.reasoningLevels,
             reasoningField: model.reasoningField,
             isDefault,

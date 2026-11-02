@@ -21,6 +21,8 @@ interface ComposerModelPickerProps {
   /** 当前模型名称；失效模型仍保留原名。 */
   modelName: string
   /** 当前实际选择的推理等级。 */
+  /** 当前模型是否支持思考，控制等级入口的可见性。 */
+  supportsReasoning: boolean
   reasoningLevel: string
   /** 当前模型支持的等级顺序；空数组禁用等级调整。 */
   reasoningLevels: string[]
@@ -39,12 +41,18 @@ interface ComposerModelPickerProps {
  * @param props 页面确认的模型、等级、忙碌状态和两个选择回调。
  * @returns 顶层原生 popover；窗口缩放、滚动及内容变化时重新定位，Escape 恢复入口焦点。
  */
-export function ComposerModelPicker({ options, selectedKey, modelName, reasoningLevel, reasoningLevels, disabled, label, onModelChange, onReasoningChange }: ComposerModelPickerProps) {
+export function ComposerModelPicker({ options, selectedKey, modelName, supportsReasoning, reasoningLevel, reasoningLevels, disabled, label, onModelChange, onReasoningChange }: ComposerModelPickerProps) {
   const id = useId()
   const trigger = useRef<HTMLButtonElement>(null)
   const panel = useRef<HTMLDivElement>(null)
   const [open, setOpen] = useState(false)
   const [page, setPage] = useState<"menu" | "reasoning" | "models">("menu")
+  useEffect(() => {
+    if (!supportsReasoning && page === "reasoning") {
+      setPage("menu")
+      requestAnimationFrame(() => panel.current?.querySelector<HTMLElement>('[data-model-setting="models"]')?.focus())
+    }
+  }, [supportsReasoning, page])
   const levelValid = reasoningLevels.includes(reasoningLevel)
   useEffect(() => { if (disabled) panel.current?.hidePopover() }, [disabled])
   useLayoutEffect(() => {
@@ -87,8 +95,8 @@ export function ComposerModelPicker({ options, selectedKey, modelName, reasoning
   }
   return <div className="selector-anchor composer-model-picker">
     <button ref={trigger} className="selector-trigger model-trigger" type="button" aria-label={label} aria-haspopup="dialog"
-      aria-expanded={open} aria-controls={id} disabled={disabled} popoverTarget={id} title={modelName + " · " + reasoningLevel}>
-      <span className="composer-model-name">{modelName}</span><span className="composer-model-reasoning">{reasoningLevel}</span>
+      aria-expanded={open} aria-controls={id} disabled={disabled} popoverTarget={id} title={supportsReasoning ? modelName + " · " + reasoningLevel : modelName}>
+      <span className="composer-model-name">{modelName}</span>{supportsReasoning && <span className="composer-model-reasoning">{reasoningLevel}</span>}
       <IconChevronDown size={12} className="composer-model-chevron" aria-hidden="true" />
     </button>
     <div ref={panel} id={id} popover="auto" role="dialog" aria-label="模型与推理设置" className="composer-model-panel"
@@ -122,10 +130,10 @@ export function ComposerModelPicker({ options, selectedKey, modelName, reasoning
         <button type="button" className="model-setting-row" role="menuitem" aria-haspopup="menu" aria-label="切换模型" data-model-setting="models" onClick={() => showPage("models")}>
           <span className="model-setting-label">模型</span><span className="model-setting-value">{modelName}</span><IconChevronRight size={13} aria-hidden="true" />
         </button>
-        <button type="button" className="model-setting-row" role="menuitem" aria-haspopup="menu" aria-label="设置推理等级" data-model-setting="reasoning" onClick={() => showPage("reasoning")}>
+        {supportsReasoning && <button type="button" className="model-setting-row" role="menuitem" aria-haspopup="menu" aria-label="设置推理等级" data-model-setting="reasoning" onClick={() => showPage("reasoning")}>
           <span className="model-setting-label">推理等级</span><span className="model-setting-value">{reasoningLevel}{!levelValid && "（已失效）"}</span><IconChevronRight size={13} aria-hidden="true" />
-        </button>
-      </div> : page === "reasoning" ? <>
+        </button>}
+      </div> : page === "reasoning" && supportsReasoning ? <>
         <button type="button" className="model-panel-back" aria-label="返回模型与推理菜单" onClick={() => showPage("menu", "reasoning")}><IconArrowLeft size={15} aria-hidden="true" />推理等级</button>
         <div className="model-option-list reasoning-menu" role="menu" aria-label="推理等级选项">{reasoningLevels.map((level) =>
           <button type="button" role="menuitemradio" aria-checked={level === reasoningLevel} disabled={disabled} key={level} onClick={() => { close(); if (level !== reasoningLevel) onReasoningChange(level) }}>

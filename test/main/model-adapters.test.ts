@@ -42,7 +42,7 @@ async function testResolvesCurrentDatabaseConfiguration(): Promise<void> {
       id: "configured", name: "Configured Provider", protocol: "chat_completions", type: "custom",
       baseURL: "https://api.example.com/v1", defaultHeaders: { "X-Test": "value" },
     })
-    saveModel(database, {
+    saveModel(database, { supportsReasoning: true,
       providerId: "configured", modelId: "model-a", name: "gpt-test", contextWindow: 128000,
       maxOutputTokens: 4096,
           reasoningLevels: ["low", "medium", "high"],
@@ -50,7 +50,7 @@ async function testResolvesCurrentDatabaseConfiguration(): Promise<void> {
     })
     setProviderApiKey(database, "configured", "first-secret")
     const first = await resolveTurnModelAdapterSpecification(paths, MODEL)
-    assert.deepEqual(first.modelConfig, {
+    assert.deepEqual(first.modelConfig, { supportsReasoning: true,
       modelId: "model-a", name: "gpt-test", providerId: "configured", protocol: "chat_completions",
       contextWindow: 128000, maxOutputTokens: 4096,
           reasoningLevels: ["low", "medium", "high"],
@@ -62,9 +62,9 @@ async function testResolvesCurrentDatabaseConfiguration(): Promise<void> {
     })
     await assert.rejects(resolveTurnModelAdapterSpecification(paths, { ...MODEL, reasoningLevel: "unsupported" }),
       /推理等级 unsupported 不在模型支持列表中/)
-    updateModel(database, { providerId: "configured", modelId: "model-a" }, { reasoningLevels: ["high"] })
+    updateModel(database, { providerId: "configured", modelId: "model-a" }, { supportsReasoning: true, reasoningLevels: ["high"] })
     await assert.rejects(resolveTurnModelAdapterSpecification(paths, MODEL), /推理等级 medium 不在模型支持列表中/)
-    updateModel(database, { providerId: "configured", modelId: "model-a" }, { reasoningLevels: ["low", "medium", "high"] })
+    updateModel(database, { providerId: "configured", modelId: "model-a" }, { supportsReasoning: true, reasoningLevels: ["low", "medium", "high"] })
 
     assert.throws(() => updateModel(database, { providerId: "configured", modelId: "model-a" }, {
       maxOutputTokens: null,
@@ -80,7 +80,7 @@ async function testResolvesCurrentDatabaseConfiguration(): Promise<void> {
     })
     setProviderApiKey(database, "configured", "second-secret")
     const second = await resolveTurnModelAdapterSpecification(paths, MODEL)
-    assert.deepEqual(second.modelConfig, {
+    assert.deepEqual(second.modelConfig, { supportsReasoning: true,
       modelId: "model-a", name: "gpt-updated", providerId: "configured", protocol: "chat_completions",
       contextWindow: 64000, maxOutputTokens: 4096,
           reasoningLevels: ["low", "medium", "high"],
@@ -95,7 +95,7 @@ async function testResolvesCurrentDatabaseConfiguration(): Promise<void> {
     const firstAdapter = await createTurnModelAdapter(paths, MODEL)
     assert.equal(firstAdapter.contextWindow, 64000)
     assert.equal(firstAdapter.maxOutputTokens, 4096)
-    updateModel(database, { providerId: "configured", modelId: "model-a" }, { contextWindow: 96000, maxOutputTokens: 8192 })
+    updateModel(database, { providerId: "configured", modelId: "model-a" }, { supportsReasoning: true, contextWindow: 96000, maxOutputTokens: 8192 })
     const secondAdapter = await createTurnModelAdapter(paths, MODEL)
     assert.notEqual(firstAdapter, secondAdapter)
     assert.equal(firstAdapter.contextWindow, 64000, "当前 Turn 的窗口快照不可变化")
@@ -110,7 +110,7 @@ async function testRejectsInvalidBindingsWithoutSecrets(): Promise<void> {
   await withPaths(async (paths) => {
     const database = paths.providerDatabasePath
     saveProvider(database, { id: "configured", name: "Configured", protocol: "chat_completions", type: "custom" })
-    saveModel(database, {
+    saveModel(database, { supportsReasoning: true,
       providerId: "configured", modelId: "model-a", name: "gpt-test", contextWindow: 256000,
       maxOutputTokens: 32000,
           reasoningLevels: ["low", "medium", "high"],

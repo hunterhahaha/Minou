@@ -18,13 +18,13 @@ const headers = [], rendererErrors = []
 const manager = new MCPManager(() => 1)
 const compatibleDefinitions = [
   { name: "Protocol fixture", protocol: "responses", url: "https://fixture.example/responses",
-    models: [{ name: "responses-fixture", contextWindow: 64000, maxOutputTokens: 8192,
+    models: [{ supportsReasoning: true, name: "responses-fixture", contextWindow: 64000, maxOutputTokens: 8192,
       reasoningLevels: ["medium"], reasoningField: { path: ["reasoning", "effort"] } }] },
   { name: "Protocol fixture", protocol: "chat_completions", url: "https://fixture.example/chat",
-    models: [{ name: "chat-fixture", contextWindow: 32000, maxOutputTokens: 4096,
+    models: [{ supportsReasoning: true, name: "chat-fixture", contextWindow: 32000, maxOutputTokens: 4096,
       reasoningLevels: ["medium"], reasoningField: { path: ["reasoning_effort"] } }] },
   { name: "Messages fixture", protocol: "anthropic_messages", url: "https://fixture.example/messages",
-    models: [{ name: "messages-fixture", contextWindow: 64000, maxOutputTokens: 8192,
+    models: [{ supportsReasoning: true, name: "messages-fixture", contextWindow: 64000, maxOutputTokens: 8192,
       reasoningLevels: ["medium"], reasoningField: { path: ["output_config", "effort"] } }] },
 ]
 app.disableHardwareAcceleration()

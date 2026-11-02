@@ -91,3 +91,23 @@ export function preferredReasoningLevel(levels: readonly string[], previous?: st
   if (previous !== undefined && levels.includes(previous)) return previous
   return levels.includes("medium") ? "medium" : levels[0]
 }
+
+/**
+ * 补齐空推理配置并校验非空输入；不修改输入对象。
+ * @param input 创建或更新时提交的可选推理字段。
+ * @param protocol 所属 Provider 协议，用于默认路径和安全校验。
+ * @returns 完整、有效的等级和字段路径。
+ * @throws TypeError 当非空等级或路径无效时抛出，调用方应拒绝写入。
+ */
+export function completeReasoningConfig(input: { reasoningLevels?: unknown; reasoningField?: unknown }, protocol: Protocol): { reasoningLevels: string[]; reasoningField: ReasoningField } {
+  const defaults = defaultReasoningConfig(protocol)
+  const levels = input.reasoningLevels
+  const field = input.reasoningField
+  const reasoningLevels = levels == null || (Array.isArray(levels) && levels.length === 0) ? defaults.reasoningLevels : levels
+  const emptyPath = field !== null && typeof field === "object" && !Array.isArray(field) &&
+    Object.keys(field).length === 1 && "path" in field && Array.isArray(field.path) && field.path.length === 0
+  const reasoningField = field == null || emptyPath ? defaults.reasoningField : field
+  if (!isReasoningLevels(reasoningLevels)) throw new TypeError("Model reasoningLevels 无效。")
+  if (!isReasoningField(reasoningField, protocol)) throw new TypeError("Model reasoningField 无效。")
+  return { reasoningLevels: [...reasoningLevels], reasoningField: { path: [...reasoningField.path] } }
+}

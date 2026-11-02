@@ -175,6 +175,8 @@ export interface ModelSummary {
   reasoningField: ReasoningField
   /** 是否是当前有效默认模型。 */
   isDefault: boolean
+  /** 是否支持发送思考模式配置，创建时必须显式提供。 */
+  supportsReasoning: boolean
 }
 
 /** 创建 Provider 或 Model 时提交的模型配置；主进程补入缺失的限制与推理字段并生成模型身份。 */
@@ -185,10 +187,12 @@ export interface ProviderModelInput {
   contextWindow?: number | null
   /** 请求允许的最大输出 Token；省略或传 null 时创建模型使用 32000。 */
   maxOutputTokens?: number | null
-  /** 省略或传 null 时采用协议默认等级。 */
+  /** 省略、null 或空数组时采用协议默认等级。 */
   reasoningLevels?: string[] | null
-  /** 省略或传 null 时采用协议默认字段路径。 */
+  /** 省略、null 或空路径时采用协议默认字段路径。 */
   reasoningField?: ReasoningField | null
+  /** 是否支持发送思考模式配置，创建时必须显式提供。 */
+  supportsReasoning: boolean
 }
 
 /** 按 Provider 与全局唯一 modelId 定位的模型引用。 */
@@ -207,10 +211,12 @@ export interface ProviderModelUpdate {
   contextWindow?: number
   /** 新最大输出 Token 数。 */
   maxOutputTokens?: number
-  /** 完整替换可选等级列表。 */
-  reasoningLevels?: string[]
-  /** 完整替换请求字段路径。 */
-  reasoningField?: ReasoningField
+  /** 完整替换等级列表；null 或空数组恢复默认。 */
+  reasoningLevels?: string[] | null
+  /** 完整替换请求字段路径；null 或空路径恢复默认。 */
+  reasoningField?: ReasoningField | null
+  /** 更新模型思考能力；省略时保持原值。 */
+  supportsReasoning?: boolean
 }
 
 /** 一个已兼容供应商的名称与协议数组；每个名称只返回一项。 */
@@ -271,6 +277,8 @@ export interface ModelAppend {
   reasoningLevels: string[]
   /** 已保存的请求字段路径。 */
   reasoningField: ReasoningField
+  /** 是否支持发送思考模式配置，创建时必须显式提供。 */
+  supportsReasoning: boolean
 }
 
 /** 首批 Turn 事件成功提交后即可返回前端的可序列化结果。 */
@@ -1314,7 +1322,7 @@ function requireProviderSummaries(value: unknown): ProviderSummary[] {
       isRecord(model) && typeof model.modelId === "string" && model.modelId.trim() !== "" && typeof model.name === "string" && model.name.trim() !== "" &&
       typeof model.contextWindow === "number" && Number.isSafeInteger(model.contextWindow) && model.contextWindow > 0 &&
       typeof model.maxOutputTokens === "number" && Number.isSafeInteger(model.maxOutputTokens) && model.maxOutputTokens > 0 &&
-      isReasoningLevels(model.reasoningLevels) && isReasoningField(model.reasoningField, item.protocol as Protocol) &&
+      typeof model.supportsReasoning === "boolean" && isReasoningLevels(model.reasoningLevels) && isReasoningField(model.reasoningField, item.protocol as Protocol) &&
       typeof model.isDefault === "boolean")
   )) throw new TypeError("主进程返回了无效的 Provider 列表")
   return value as ProviderSummary[]
@@ -1344,6 +1352,7 @@ function requireModelAppend(value: unknown): ModelAppend {
       typeof value.name !== "string" || value.name.trim() === "" ||
       typeof value.contextWindow !== "number" || !Number.isSafeInteger(value.contextWindow) || value.contextWindow <= 0 ||
       typeof value.maxOutputTokens !== "number" || !Number.isSafeInteger(value.maxOutputTokens) || value.maxOutputTokens <= 0 ||
+      typeof value.supportsReasoning !== "boolean" ||
       !isReasoningLevels(value.reasoningLevels) ||
       !(isReasoningField(value.reasoningField, "anthropic_messages") ||
         isReasoningField(value.reasoningField, "chat_completions") ||
@@ -1356,6 +1365,7 @@ function requireModelAppend(value: unknown): ModelAppend {
     name: value.name,
     contextWindow: value.contextWindow,
     maxOutputTokens: value.maxOutputTokens,
+    supportsReasoning: value.supportsReasoning,
     reasoningLevels: value.reasoningLevels,
     reasoningField: value.reasoningField,
   }

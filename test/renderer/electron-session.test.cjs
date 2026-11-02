@@ -12,6 +12,7 @@ const { registerSessionIpcHandlers } = require("../../dist/src/main/session-ipc.
 const { registerStartupDataIpcHandlers } = require("../../dist/src/main/startup-data-ipc.js")
 const { SESSION_IPC_CHANNELS: channels, STARTUP_DATA_IPC_CHANNELS } = require("../../dist/src/preload/session-api.js")
 const model = { providerId: "p", protocol: "responses", modelId: "m", name: "本机测试模型", reasoningLevel: "medium" }
+let providerSupportsReasoning = true
 let window, profile, failed = false
 const rendererErrors = []
 const failures = []
@@ -61,7 +62,7 @@ async function main() {
     estimateSkillTokens: () => 0, listToolDefinitions: () => [],
     executeTool: async () => { throw new Error("unexpected tool") },
     /** 对话展示测试使用足够大的窗口，避免进入另有专门测试的 Summary 压缩流程。 */
-    createTurnModelAdapter: async () => ({ contextWindow: 256000, maxOutputTokens: 32000, stream: async function* () {
+    createTurnModelAdapter: async () => ({  contextWindow: 256000, maxOutputTokens: 32000, stream: async function* () {
       await loopGate
       yield { type: "block_start", index: 0, blockType: "thinking" }
       yield { type: "block_delta", index: 0, delta: { type: "thinking", text: "本机思考过程" } }
@@ -91,7 +92,7 @@ async function main() {
   registerStartupDataIpcHandlers(port, paths)
   ipcMain.removeHandler(STARTUP_DATA_IPC_CHANNELS.listProviders)
   ipcMain.handle(STARTUP_DATA_IPC_CHANNELS.listProviders, () => [{ providerId: "p", name: "测试", type: "custom", protocol: "responses",
-    models: [{ modelId: "m", name: model.name, isDefault: true, contextWindow: 256000, maxOutputTokens: 32000,
+    models: [{ supportsReasoning: providerSupportsReasoning, modelId: "m", name: model.name, isDefault: true, contextWindow: 256000, maxOutputTokens: 32000,
       reasoningLevels: ["low", "medium", "high"], reasoningField: { path: ["reasoning", "effort"] } }] }])
   window = new BrowserWindow({ show: false, width: 1200, height: 800, webPreferences: {
     preload: join(process.cwd(), "dist/src/preload/index.js"), contextIsolation: true, nodeIntegration: false, sandbox: false, backgroundThrottling: false,
@@ -574,6 +575,14 @@ async function main() {
     await window.webContents.debugger.sendCommand("Emulation.setTouchEmulationEnabled", { enabled: false })
     window.webContents.debugger.detach()
   }
+  providerSupportsReasoning = false
+  await new Promise(resolve => { window.webContents.once('did-finish-load', resolve); window.webContents.reload() })
+  await until(() => evaluate("Boolean(document.querySelector('.chat-page .model-trigger:not(:disabled)'))"))
+  assert.equal(await evaluate("Boolean(document.querySelector('.composer-model-reasoning'))"), false, '会话隐藏非思考模型等级')
+  await evaluate("document.querySelector('.model-trigger').click()")
+  await until(() => evaluate("Boolean(document.querySelector('.composer-model-panel:popover-open'))"))
+  assert.equal(await evaluate("Boolean(document.querySelector('[aria-label=设置推理等级]'))"), false)
+  assert.equal(await evaluate("Boolean(document.querySelector('[aria-label=切换模型]'))"), true)
   assert.deepEqual(failures, [])
   assert.deepEqual(rendererErrors, [])
   console.log("electron-session.test.cjs: 每 Turn 单一助手标题、多步骤与审批继续运行无 AI 复制入口、仅最终回答复制、停止/失败/无正文、Markdown、用户复制反馈与重试、触屏常显、浅深色、窄窗口、新建、Queue、折叠交互、路由缓存与草稿验证通过；历史查询 " + historyQueries + " 次")

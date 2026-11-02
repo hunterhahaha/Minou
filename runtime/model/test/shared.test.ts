@@ -28,7 +28,7 @@ import type {
 
 import { collect, collectError } from "./helpers.ts"
 
-const MODEL: ModelConfig = {
+const MODEL: ModelConfig = { supportsReasoning: true,
   modelId: "model-record-1",
   name: "test-model",
   providerId: "test-provider",

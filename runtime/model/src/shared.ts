@@ -54,7 +54,7 @@ export function invalidRequest(message: string, details?: Record<string, unknown
 export function assertRequestMatchesModel(request: UnifiedModelRequest, config: ModelConfig): void {
   const { providerId, protocol, modelId, name, reasoningLevel } = request.model
   if (providerId === config.providerId && protocol === config.protocol && modelId === config.modelId && name === config.name) {
-    if (!isReasoningLevels(config.reasoningLevels) || !config.reasoningLevels.includes(reasoningLevel)) {
+    if (config.supportsReasoning && (!isReasoningLevels(config.reasoningLevels) || !config.reasoningLevels.includes(reasoningLevel))) {
       throw invalidRequest("当前推理等级不在模型支持的等级列表中", { reasoningLevel, modelId })
     }
     return
@@ -70,10 +70,11 @@ export function assertRequestMatchesModel(request: UnifiedModelRequest, config: 
  * 将模型配置中的字段路径与当前 Turn 的等级组合成请求片段。
  * @param request 当前模型请求，其选择已从 Session Meta 固定到 Turn。
  * @param config Adapter 绑定的完整模型配置。
- * @returns 只包含推理等级字段的嵌套请求对象。
- * @throws AppError 当等级或字段路径无效时拒绝发送请求。
+ * @returns 支持思考时返回推理字段对象，否则返回空对象。
+ * @throws AppError 支持思考且等级或字段路径无效时拒绝发送请求。
  */
 export function reasoningRequestFragment(request: UnifiedModelRequest, config: ModelConfig): Record<string, unknown> {
+  if (!config.supportsReasoning) return {}
   if (!isReasoningLevels(config.reasoningLevels) || !config.reasoningLevels.includes(request.model.reasoningLevel)) {
     throw invalidRequest("当前推理等级不在模型支持的等级列表中", {
       reasoningLevel: request.model.reasoningLevel, modelId: request.model.modelId,

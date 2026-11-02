@@ -108,6 +108,7 @@ export function SessionPage({ projectId, sessionId, state, providers }: SessionP
     ? [...approvalRequests.values()].find((event) => event.turn === control.currentTurn && !approvalResults.has(event.approvalId)) : undefined
   const modelOptions = providers.flatMap((provider) => provider.models.map((model) => ({
     providerId: provider.providerId, protocol: provider.protocol, modelId: model.modelId, name: model.name,
+    supportsReasoning: model.supportsReasoning,
     reasoningLevels: model.reasoningLevels,
     providerName: provider.name,
   })))
@@ -274,10 +275,10 @@ export function SessionPage({ projectId, sessionId, state, providers }: SessionP
           <div className="composer-controls">
             <ComposerModelPicker key={key} label="对话模型" options={modelOptions.map((model) => ({ key: JSON.stringify([model.providerId, model.modelId]), name: model.name, providerName: model.providerName }))}
               selectedKey={selectedKey} modelName={control?.currentModel.name ?? "选择模型"} reasoningLevel={control?.currentModel.reasoningLevel ?? ""}
-              reasoningLevels={reasoningOptions} disabled={!control || Boolean(view.busy)}
+              supportsReasoning={currentModelOption?.supportsReasoning ?? false} reasoningLevels={reasoningOptions} disabled={!control || Boolean(view.busy)}
               onModelChange={(selection) => {
                 const model = modelOptions.find((item) => JSON.stringify([item.providerId, item.modelId]) === selection)
-                if (model) { const { providerName: _provider, reasoningLevels, ...reference } = model; void settings({ model: {
+                if (model) { const { providerName: _provider, supportsReasoning: _supportsReasoning, reasoningLevels, ...reference } = model; void settings({ model: {
                   ...reference, reasoningLevel: preferredReasoningLevel(reasoningLevels, control?.currentModel.reasoningLevel),
                 } }) }
               }} onReasoningChange={(reasoningLevel) => { if (control) void settings({ model: { ...control.currentModel, reasoningLevel } }) }} />

@@ -22,7 +22,7 @@ import { collect, collectError, sseData, startFakeProvider, streamOf } from "./h
 
 type ChatCompletionChunk = OpenAI.ChatCompletionChunk
 
-const MODEL: ModelConfig = {
+const MODEL: ModelConfig = { supportsReasoning: true,
   modelId: "model-record-2",
   name: "gpt-test",
   providerId: "openai",

@@ -14,7 +14,7 @@ import type {
 } from "../preload/session-api.ts"
 import { PROTOCOLS } from "../../runtime/model/src/types.ts"
 import type { Protocol, ReasoningField } from "../../runtime/model/src/types.ts"
-import { defaultReasoningConfig, isReasoningField, isReasoningLevels, renderReasoningField } from "../../runtime/model/src/reasoning.ts"
+import { completeReasoningConfig, defaultReasoningConfig, isReasoningField, isReasoningLevels, renderReasoningField } from "../../runtime/model/src/reasoning.ts"
 import { McpSettings } from "./mcp-settings.tsx"
 import { SkillSettings } from "./skill-settings.tsx"
 import type { SkillSettingsProps } from "./skill-settings.tsx"
@@ -33,6 +33,8 @@ interface SettingsDialogProps extends Omit<SkillSettingsProps, "onBusyChange"> {
 interface ModelDraft {
   /** 当前表单行的稳定身份。 */
   draftId: number
+  /** 手动创建时默认不支持思考。 */
+  supportsReasoning: boolean
   /** Provider API 请求中使用的模型名称。 */
   name: string
   /** 声明的上下文窗口 Token 数。 */
@@ -63,6 +65,7 @@ function createModelDraft(): ModelDraft {
   nextModelDraftId += 1
   return {
     draftId: nextModelDraftId,
+    supportsReasoning: false,
     name: "",
     contextWindow: "256000",
     maxOutputTokens: "32000",
@@ -87,15 +90,15 @@ function parsePositiveInteger(value: string): number | null {
  * @param protocol 模型所属 Provider 的协议，用于校验字段路径。
  * @returns 符合 Provider 创建接口的模型配置；任一必填字段无效时为 null。
  */
-function parseModelDraft(draft: Pick<ModelDraft, "name" | "contextWindow" | "maxOutputTokens" | "reasoningLevels" | "reasoningFieldPath">, protocol: Protocol): ProviderModelInput | null {
+function parseModelDraft(draft: Pick<ModelDraft, "name" | "supportsReasoning" | "contextWindow" | "maxOutputTokens" | "reasoningLevels" | "reasoningFieldPath">, protocol: Protocol): ProviderModelInput | null {
   const name = draft.name.trim()
   const contextWindow = parsePositiveInteger(draft.contextWindow)
   const maxOutputTokens = parsePositiveInteger(draft.maxOutputTokens)
-  const reasoningLevels = parseReasoningLevelsDraft(draft.reasoningLevels)
-  const reasoningField = parseReasoningFieldDraft(draft.reasoningFieldPath, protocol)
+  const reasoningLevels = draft.supportsReasoning ? parseReasoningLevelsDraft(draft.reasoningLevels) : undefined
+  const reasoningField = draft.supportsReasoning ? parseReasoningFieldDraft(draft.reasoningFieldPath, protocol) : undefined
   if (name === "" || contextWindow === null || maxOutputTokens === null ||
       reasoningLevels === null || reasoningField === null) return null
-  return { name, contextWindow, maxOutputTokens,
+  return { name, supportsReasoning: draft.supportsReasoning, contextWindow, maxOutputTokens,
     ...(reasoningLevels === undefined ? {} : { reasoningLevels }),
     ...(reasoningField === undefined ? {} : { reasoningField }) }
 }
@@ -175,7 +178,7 @@ function ReasoningLevelInputs({ levels, defaults, disabled, onChange }: {
     requestAnimationFrame(() => container.current?.querySelector<HTMLInputElement>(".reasoning-level-item:last-of-type input")?.focus())
   }
   return <div className="settings-field settings-field-wide">
-    <span className="settings-field-label">推理等级<FieldHelp label="推理等级">逐项填写，按从低到高排列，等级不能为空或重复。新建模型时移除全部等级可使用协议默认值。</FieldHelp></span>
+    <span className="settings-field-label">推理等级<FieldHelp label="推理等级">逐项填写，按从低到高排列，等级不能为空或重复。移除全部等级后保存可使用协议默认值。</FieldHelp></span>
     <div className="reasoning-level-list" ref={container}>
       {levels.map((level, index) => <div className="reasoning-level-item" key={index}>
         <input type="text" aria-label={"推理等级 " + (index + 1)} value={level} disabled={disabled} placeholder={defaults[index] ?? "等级"}
@@ -361,7 +364,10 @@ export function SettingsDialog({ initialSection = "models", onClose, onProviders
     if (provider === undefined) return
     patchProvider(providerId, {
       models: provider.models.map((model) => model.modelId === modelId
-        ? { ...model, ...update }
+        ? { ...model, ...update, ...completeReasoningConfig({
+            reasoningLevels: update.reasoningLevels === undefined ? model.reasoningLevels : update.reasoningLevels,
+            reasoningField: update.reasoningField === undefined ? model.reasoningField : update.reasoningField,
+          }, provider.protocol) }
         : model),
     })
   }
@@ -380,6 +386,7 @@ export function SettingsDialog({ initialSection = "models", onClose, onProviders
       name: appended.name,
       contextWindow: appended.contextWindow,
       maxOutputTokens: appended.maxOutputTokens,
+      supportsReasoning: appended.supportsReasoning,
       reasoningLevels: appended.reasoningLevels,
       reasoningField: appended.reasoningField,
       isDefault: !hasDefault,
@@ -697,7 +704,11 @@ function CreateProviderForm({
                   <input type="number" min={1} step={1} inputMode="numeric" value={model.maxOutputTokens} disabled={creating}
                     onChange={(event) => updateModelDraft(model.draftId, { maxOutputTokens: event.target.value })} />
                 </label>
-                {protocol !== "" && <ReasoningDraftInputs protocol={protocol} levels={model.reasoningLevels}
+                <label className="mcp-enabled settings-field-wide"><span>支持思考</span>
+                  <input type="checkbox" aria-label="支持思考" checked={model.supportsReasoning} disabled={creating}
+                    onChange={(event) => updateModelDraft(model.draftId, { supportsReasoning: event.target.checked })} />
+                </label>
+                {protocol !== "" && model.supportsReasoning && <ReasoningDraftInputs protocol={protocol} levels={model.reasoningLevels}
                   fieldPath={model.reasoningFieldPath} disabled={creating}
                   onLevelsChange={(value) => updateModelDraft(model.draftId, { reasoningLevels: value })}
                   onFieldPathChange={(value) => updateModelDraft(model.draftId, { reasoningFieldPath: value })} />}
@@ -954,6 +965,7 @@ function ModelEditor({
   const [name, setName] = useState(model.name)
   const [contextWindow, setContextWindow] = useState(String(model.contextWindow))
   const [maxOutputTokens, setMaxOutputTokens] = useState(String(model.maxOutputTokens))
+  const [supportsReasoning, setSupportsReasoning] = useState(model.supportsReasoning)
   const [reasoningLevels, setReasoningLevels] = useState(model.reasoningLevels)
   const [reasoningFieldPath, setReasoningFieldPath] = useState(model.reasoningField.path.join("."))
   const [saveState, setSaveState] = useState<"saved" | "saving" | "error">("saved")
@@ -963,18 +975,19 @@ function ModelEditor({
     name: model.name,
     contextWindow: model.contextWindow,
     maxOutputTokens: model.maxOutputTokens,
+    supportsReasoning: model.supportsReasoning,
     reasoningLevels: model.reasoningLevels,
     reasoningFieldPath: model.reasoningField.path.join("."),
   })
   const nameDirty = name !== lastSaved.current.name
   const contextDirty = contextWindow !== String(lastSaved.current.contextWindow)
   const outputDirty = maxOutputTokens !== String(lastSaved.current.maxOutputTokens)
-  const reasoningDirty = JSON.stringify(reasoningLevels) !== JSON.stringify(lastSaved.current.reasoningLevels) ||
-    reasoningFieldPath !== lastSaved.current.reasoningFieldPath
+  const reasoningDirty = supportsReasoning !== lastSaved.current.supportsReasoning || (supportsReasoning &&
+    (JSON.stringify(reasoningLevels) !== JSON.stringify(lastSaved.current.reasoningLevels) || reasoningFieldPath !== lastSaved.current.reasoningFieldPath))
   const parsedReasoningLevels = parseReasoningLevelsDraft(reasoningLevels)
   const parsedReasoningField = parseReasoningFieldDraft(reasoningFieldPath, protocol)
-  const reasoningValid = parsedReasoningLevels !== null && parsedReasoningLevels !== undefined &&
-    parsedReasoningField !== null && parsedReasoningField !== undefined
+  const reasoningValid = !supportsReasoning || (parsedReasoningLevels !== null && parsedReasoningField !== null)
+  const effectiveReasoning = reasoningValid ? completeReasoningConfig({ reasoningLevels: parsedReasoningLevels, reasoningField: parsedReasoningField }, protocol) : defaultReasoningConfig(protocol)
   const contextValid = parsePositiveInteger(contextWindow) !== null
   const outputValid = parsePositiveInteger(maxOutputTokens) !== null
   const busy = saveState === "saving" || deleting
@@ -1014,12 +1027,17 @@ function ModelEditor({
    */
   async function saveReasoning(): Promise<void> {
     if (busy || !reasoningValid) return
-    const update = { reasoningLevels: parsedReasoningLevels, reasoningField: parsedReasoningField }
+    const update = supportsReasoning ? { supportsReasoning, ...effectiveReasoning } : { supportsReasoning }
     setSaveState("saving")
     try {
       await window.nicode.updateModel({ providerId, modelId: model.modelId }, update)
-      lastSaved.current.reasoningLevels = reasoningLevels
-      lastSaved.current.reasoningFieldPath = reasoningFieldPath
+      lastSaved.current.supportsReasoning = supportsReasoning
+      if (supportsReasoning) {
+        lastSaved.current.reasoningLevels = effectiveReasoning.reasoningLevels
+        lastSaved.current.reasoningFieldPath = effectiveReasoning.reasoningField.path.join(".")
+      }
+      setReasoningLevels(lastSaved.current.reasoningLevels)
+      setReasoningFieldPath(lastSaved.current.reasoningFieldPath)
       onModelSaved(model.modelId, update)
       setSaveState("saved")
     } catch (error) {
@@ -1116,26 +1134,32 @@ function ModelEditor({
         </div>}
         {outputDirty && !outputValid && <span className="settings-inline-error">最大输出必须为正整数。</span>}
       </label>
-      <ReasoningLevelInputs levels={reasoningLevels} defaults={defaultReasoningConfig(protocol).reasoningLevels} disabled={busy} onChange={setReasoningLevels} />
+      <label className="mcp-enabled settings-field-wide"><span>支持思考</span>
+        <input type="checkbox" aria-label="编辑支持思考" checked={supportsReasoning} disabled={busy}
+          onChange={(event) => setSupportsReasoning(event.target.checked)} />
+      </label>
+      {supportsReasoning && <><ReasoningLevelInputs levels={reasoningLevels} defaults={defaultReasoningConfig(protocol).reasoningLevels} disabled={busy} onChange={setReasoningLevels} />
       <label className="settings-field settings-field-wide">
-        <span className="settings-field-label">推理字段路径<FieldHelp label="推理字段路径">使用点号分隔请求字段路径；保存时不能为空，也不能覆盖协议固定字段。</FieldHelp></span>
+        <span className="settings-field-label">推理字段路径<FieldHelp label="推理字段路径">使用点号分隔请求字段路径；留空使用协议默认值，不能覆盖协议固定字段。</FieldHelp></span>
         <input type="text" aria-label="编辑推理字段路径" disabled={busy} value={reasoningFieldPath}
           onChange={(event) => setReasoningFieldPath(event.target.value)} />
       </label>
+      </>}
       <div className="settings-field settings-field-wide">
-        <details className="reasoning-preview"><summary>请求预览</summary><code>{reasoningValid
-          ? JSON.stringify(renderReasoningField(parsedReasoningField!, parsedReasoningLevels!.includes("medium") ? "medium" : parsedReasoningLevels![0], protocol))
-          : "字段或等级格式无效"}</code></details>
+        {supportsReasoning && <details className="reasoning-preview"><summary>请求预览</summary><code>{reasoningValid
+          ? JSON.stringify(renderReasoningField(effectiveReasoning.reasoningField, effectiveReasoning.reasoningLevels.includes("medium") ? "medium" : effectiveReasoning.reasoningLevels[0], protocol))
+          : "字段或等级格式无效"}</code></details>}
         {reasoningDirty && <div className="settings-field-actions">
           <button className="settings-primary-button" type="button" disabled={busy || !reasoningValid}
             onClick={() => { void saveReasoning() }}>保存推理配置</button>
           <button className="settings-secondary-button" type="button" disabled={busy} onClick={() => {
+            setSupportsReasoning(lastSaved.current.supportsReasoning)
             setReasoningLevels(lastSaved.current.reasoningLevels)
             setReasoningFieldPath(lastSaved.current.reasoningFieldPath)
             setSaveState("saved")
           }}>取消</button>
         </div>}
-        {reasoningDirty && !reasoningValid && <span className="settings-inline-error">推理等级和字段路径均不能为空，且必须是有效格式。</span>}
+        {reasoningDirty && !reasoningValid && <span className="settings-inline-error">推理等级和字段路径必须是有效格式；留空使用默认配置。</span>}
       </div>
     </div>
     {(saveState !== "saved" || nameDirty || contextDirty || outputDirty || reasoningDirty) && <p className={saveState === "error" ? "model-save-status model-save-status-error" : "model-save-status"} role={saveState === "error" ? "alert" : "status"}>
@@ -1170,13 +1194,14 @@ function CreateModelDialog({
   const [name, setName] = useState("")
   const [contextWindow, setContextWindow] = useState("256000")
   const [maxOutputTokens, setMaxOutputTokens] = useState("32000")
+  const [supportsReasoning, setSupportsReasoning] = useState(false)
   const [reasoningLevels, setReasoningLevels] = useState<string[]>(defaultReasoningConfig(provider.protocol).reasoningLevels)
   const [reasoningFieldPath, setReasoningFieldPath] = useState("")
   const [creating, setCreating] = useState(false)
   /** 请求发出前同步上锁，保证 Escape 和重复提交使用同一个进行中状态。 */
   const creatingRef = useRef(false)
   const [error, setError] = useState<string | null>(null)
-  const parsed = parseModelDraft({ name, contextWindow, maxOutputTokens, reasoningLevels, reasoningFieldPath }, provider.protocol)
+  const parsed = parseModelDraft({ name, supportsReasoning, contextWindow, maxOutputTokens, reasoningLevels, reasoningFieldPath }, provider.protocol)
 
   /**
    * 创建模型后由 Provider 详情页追加并展示新模型。
@@ -1271,8 +1296,12 @@ function CreateModelDialog({
               onChange={(event) => setMaxOutputTokens(event.target.value)}
             />
           </label>
-          <ReasoningDraftInputs protocol={provider.protocol} levels={reasoningLevels} fieldPath={reasoningFieldPath}
-            disabled={creating} onLevelsChange={setReasoningLevels} onFieldPathChange={setReasoningFieldPath} />
+          <label className="mcp-enabled settings-field-wide"><span>支持思考</span>
+            <input type="checkbox" aria-label="支持思考" checked={supportsReasoning} disabled={creating}
+              onChange={(event) => setSupportsReasoning(event.target.checked)} />
+          </label>
+          {supportsReasoning && <ReasoningDraftInputs protocol={provider.protocol} levels={reasoningLevels} fieldPath={reasoningFieldPath}
+            disabled={creating} onLevelsChange={setReasoningLevels} onFieldPathChange={setReasoningFieldPath} />}
         </div>
         {error !== null && <p className="settings-inline-error" role="alert">{error}</p>}
         <footer className="settings-form-footer">

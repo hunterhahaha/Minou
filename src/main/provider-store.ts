@@ -7,7 +7,7 @@ import { DatabaseSync } from "node:sqlite"
 import type { ProviderCredential } from "../../runtime/credential/src/index.ts"
 import { PROTOCOLS } from "../../runtime/model/src/types.ts"
 import type { ModelConfig, ModelRef, Protocol } from "../../runtime/model/src/types.ts"
-import { isReasoningField, isReasoningLevels } from "../../runtime/model/src/reasoning.ts"
+import { completeReasoningConfig, isReasoningField, isReasoningLevels } from "../../runtime/model/src/reasoning.ts"
 
 /** Provider 创建来源；两个值都必须由创建 IPC 显式提供。 */
 export type ProviderType = "compatible" | "custom"
@@ -47,10 +47,12 @@ export interface ProviderModelUpdate {
   contextWindow?: number
   /** 新的最大输出 Token 数。 */
   maxOutputTokens?: number
-  /** 完整替换可选等级列表。 */
-  reasoningLevels?: string[]
-  /** 完整替换请求字段路径。 */
-  reasoningField?: ModelConfig["reasoningField"]
+  /** 更新思考能力；省略时保持原值。 */
+  supportsReasoning?: boolean
+  /** 完整替换等级；空值恢复默认。 */
+  reasoningLevels?: string[] | null
+  /** 完整替换请求字段路径；空值恢复协议默认。 */
+  reasoningField?: ModelConfig["reasoningField"] | null
 }
 
 /** 不含凭据的 Provider 与模型列表项。 */
@@ -90,6 +92,7 @@ interface ModelRow {
   provider_id: string
   context_window: number
   max_output_tokens: number
+  supports_reasoning: number
   reasoning_levels_json: string
   reasoning_field_json: string
 }
@@ -110,6 +113,7 @@ const CREATE_MODELS = `CREATE TABLE models (
   position INTEGER NOT NULL CHECK (position >= 0),
   context_window INTEGER NOT NULL CHECK (context_window > 0),
   max_output_tokens INTEGER NOT NULL CHECK (max_output_tokens > 0),
+  supports_reasoning INTEGER NOT NULL CHECK (supports_reasoning IN (0, 1)),
   reasoning_levels_json TEXT NOT NULL,
   reasoning_field_json TEXT NOT NULL,
   UNIQUE (provider_id, position)
@@ -171,15 +175,15 @@ function withDatabase<T>(databasePath: string, readOnly: boolean, operation: (db
 }
 
 /**
- * 要求数据库采用 V2，Provider 类型和模型能力列具有必需的非空约束。
+ * 要求数据库采用 V3，Provider 类型和模型能力列具有必需的非空约束。
  * @param db 已打开的数据库。
  * @throws Error 当版本不受支持或必需列允许 null 时抛出。
  */
 function requireVersion(db: DatabaseSync): void {
   const version = db.prepare("PRAGMA user_version").get() as { user_version: number }
-  if (version.user_version !== 2) throw new Error(`不支持 Provider 数据库版本 ${version.user_version}。`)
+  if (version.user_version !== 3) throw new Error(`不支持 Provider 数据库版本 ${version.user_version}。`)
   const columns = db.prepare("PRAGMA table_info(models)").all() as Array<{ name: string; notnull: number }>
-  for (const name of ["context_window", "max_output_tokens", "reasoning_levels_json", "reasoning_field_json"] as const) {
+  for (const name of ["context_window", "max_output_tokens", "supports_reasoning", "reasoning_levels_json", "reasoning_field_json"] as const) {
     if (!columns.some((column) => column.name === name && column.notnull === 1)) {
       throw new Error(`Provider 数据库字段 models.${name} 必须定义为 NOT NULL。`)
     }
@@ -210,7 +214,7 @@ function transaction<T>(db: DatabaseSync, operation: () => T): T {
 }
 
 /**
- * 缺失时创建空 Provider 数据库；已有数据库校验 V2 版本与必需列约束，不执行迁移。
+ * 缺失时创建空 Provider 数据库；已有数据库校验 V3 版本与必需列约束，不执行迁移。
  * @param databasePath `.nicode/providers.sqlite` 的绝对路径。
  * @throws Error 当路径无效、目标不是普通文件、已有结构不兼容或数据库无法创建时抛出。
  */
@@ -232,7 +236,7 @@ export function initializeProviderDatabase(databasePath: string): void {
         db.exec(CREATE_CREDENTIALS)
         db.exec(CREATE_SETTINGS)
         db.prepare("INSERT INTO provider_settings (id, default_provider_id, default_model_id) VALUES (1, NULL, NULL)").run()
-        db.exec("PRAGMA user_version = 2")
+        db.exec("PRAGMA user_version = 3")
       })
     } finally {
       db.close()
@@ -310,12 +314,14 @@ function modelFromRow(row: ModelRow, protocol: Protocol): ProviderModelRecord {
   nonEmpty(row.id, "Model id")
   nonEmpty(row.name, "Model Name")
   nonEmpty(row.provider_id, "Model providerId")
+  if (row.supports_reasoning !== 0 && row.supports_reasoning !== 1) throw new Error("Model supportsReasoning 无效。")
   const model: ProviderModelRecord = {
     modelId: row.id,
     name: row.name,
     providerId: row.provider_id,
     contextWindow: row.context_window,
     maxOutputTokens: row.max_output_tokens,
+    supportsReasoning: row.supports_reasoning === 1,
     reasoningLevels: JSON.parse(row.reasoning_levels_json) as unknown as string[],
     reasoningField: JSON.parse(row.reasoning_field_json) as unknown as ModelConfig["reasoningField"],
   }
@@ -338,7 +344,7 @@ function modelFromRow(row: ModelRow, protocol: Protocol): ProviderModelRecord {
 function listProvidersInDatabase(db: DatabaseSync): ProviderCatalogEntry[] {
   const providerRows = db.prepare(`SELECT id, name, type, protocol, base_url, default_headers_json
     FROM providers ORDER BY position, id`).all() as unknown as ProviderRow[]
-  const modelRows = db.prepare(`SELECT id, name, provider_id, context_window, max_output_tokens,
+  const modelRows = db.prepare(`SELECT id, name, provider_id, context_window, max_output_tokens, supports_reasoning,
     reasoning_levels_json, reasoning_field_json
     FROM models ORDER BY provider_id, position, id`).all() as unknown as ModelRow[]
   const providers = providerRows.map(providerFromRow)
@@ -434,10 +440,10 @@ export function deleteProvider(databasePath: string, providerId: string): void {
 /**
  * 在 Provider 模型列表末尾新增一条全局唯一 modelId 的记录。
  * @param databasePath Provider 数据库绝对路径。
- * @param model 模型字段与所属 Provider。
+ * @param model 模型字段与所属 Provider；空推理配置在写入前按协议补齐。
  * @throws Error 当 Provider 不存在或模型字段无效时抛出。
  */
-export function saveModel(databasePath: string, model: ProviderModelRecord): void {
+export function saveModel(databasePath: string, model: Omit<ProviderModelRecord, "reasoningLevels" | "reasoningField"> & { reasoningLevels?: string[] | null; reasoningField?: ModelConfig["reasoningField"] | null }): void {
   const id = nonEmpty(model.modelId, "Model id")
   const name = nonEmpty(model.name, "Model Name")
   const providerId = nonEmpty(model.providerId, "Model providerId")
@@ -447,17 +453,17 @@ export function saveModel(databasePath: string, model: ProviderModelRecord): voi
       throw new Error(`Model ${field} 必须是正整数。`)
     }
   }
-  if (!isReasoningLevels(model.reasoningLevels)) throw new Error("Model reasoningLevels 无效。")
+  if (typeof model.supportsReasoning !== "boolean") throw new Error("Model supportsReasoning 必须为布尔值。")
   withDatabase(databasePath, false, (db) => transaction(db, () => {
     const provider = db.prepare("SELECT protocol FROM providers WHERE id = ?").get(providerId) as { protocol: Protocol } | undefined
     if (provider === undefined) throw new Error(`Provider ${providerId} 不存在。`)
-    if (!isReasoningField(model.reasoningField, provider.protocol)) throw new Error("Model reasoningField 无效。")
+    const reasoning = completeReasoningConfig(model, provider.protocol)
     const position = db.prepare("SELECT COALESCE(MAX(position) + 1, 0) AS next FROM models WHERE provider_id = ?")
       .get(providerId) as { next: number }
-    db.prepare(`INSERT INTO models (id, name, provider_id, position, context_window, max_output_tokens,
-      reasoning_levels_json, reasoning_field_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run(id, name, providerId, position.next, model.contextWindow, model.maxOutputTokens,
-        JSON.stringify(model.reasoningLevels), JSON.stringify(model.reasoningField))
+    db.prepare(`INSERT INTO models (id, name, provider_id, position, context_window, max_output_tokens, supports_reasoning,
+      reasoning_levels_json, reasoning_field_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(id, name, providerId, position.next, model.contextWindow, model.maxOutputTokens, Number(model.supportsReasoning),
+        JSON.stringify(reasoning.reasoningLevels), JSON.stringify(reasoning.reasoningField))
   }))
 }
 
@@ -485,18 +491,14 @@ export function updateModel(
       throw new Error(`Model ${field} 必须是正整数。`)
     }
   }
-  if (update.reasoningLevels !== undefined && !isReasoningLevels(update.reasoningLevels)) {
-    throw new Error("Model reasoningLevels 无效。")
-  }
+  if (update.supportsReasoning !== undefined && typeof update.supportsReasoning !== "boolean") throw new Error("Model supportsReasoning 必须为布尔值。")
   withDatabase(databasePath, false, (db) => transaction(db, () => {
     const row = db.prepare(`SELECT models.id, providers.protocol FROM models
       JOIN providers ON providers.id = models.provider_id
       WHERE models.provider_id = ? AND models.id = ? LIMIT 1`)
       .get(providerId, modelId) as { id: string; protocol: Protocol } | undefined
     if (row === undefined) throw new Error(`Provider ${providerId} 不包含模型 ${modelId}。`)
-    if (update.reasoningField !== undefined && !isReasoningField(update.reasoningField, row.protocol)) {
-      throw new Error("Model reasoningField 无效。")
-    }
+    const reasoning = completeReasoningConfig(update, row.protocol)
 
     const assignments: string[] = []
     const values: (number | string | null)[] = []
@@ -512,13 +514,17 @@ export function updateModel(
       assignments.push("max_output_tokens = ?")
       values.push(update.maxOutputTokens)
     }
+    if (update.supportsReasoning !== undefined) {
+      assignments.push("supports_reasoning = ?")
+      values.push(Number(update.supportsReasoning))
+    }
     if (update.reasoningLevels !== undefined) {
       assignments.push("reasoning_levels_json = ?")
-      values.push(JSON.stringify(update.reasoningLevels))
+      values.push(JSON.stringify(reasoning.reasoningLevels))
     }
     if (update.reasoningField !== undefined) {
       assignments.push("reasoning_field_json = ?")
-      values.push(JSON.stringify(update.reasoningField))
+      values.push(JSON.stringify(reasoning.reasoningField))
     }
     if (assignments.length === 0) return
     const result = db.prepare(`UPDATE models SET ${assignments.join(", ")} WHERE id = ?`)
@@ -608,7 +614,7 @@ export function readTurnProviderSnapshot(databasePath: string, reference: ModelR
       if (provider.protocol !== reference.protocol) {
         throw new Error(`Provider ${provider.id} 的唯一协议 ${provider.protocol} 与 Session 协议不一致。`)
       }
-      const modelRow = db.prepare(`SELECT id, name, provider_id, context_window, max_output_tokens,
+      const modelRow = db.prepare(`SELECT id, name, provider_id, context_window, max_output_tokens, supports_reasoning,
         reasoning_levels_json, reasoning_field_json
         FROM models WHERE id = ? AND provider_id = ? ORDER BY position, id LIMIT 1`)
         .get(reference.modelId, reference.providerId) as ModelRow | undefined

@@ -22,4 +22,13 @@ Thumbs.db
 
 .impeccable/
 .claude/
-/docs/
+# Track published project guides; keep other local notes out of Git.
+/docs/*
+!/docs/cli-usage.md
+!/docs/project-overview.md
+!/docs/architecture.md
+!/docs/configuration-and-storage.md
+!/docs/development.md
+!/docs/design-system.md
+!/docs/ui-roadmap.md
+!/docs/memory.md
