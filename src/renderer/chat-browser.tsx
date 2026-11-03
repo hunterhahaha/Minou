@@ -1,17 +1,20 @@
 import { Component, lazy, Suspense, useLayoutEffect, useRef, useState, type ReactNode } from "react"
-import { IconArrowLeft, IconArrowRight, IconPlus, IconRefresh, IconX } from "@tabler/icons-react"
+import { IconArrowLeft, IconArrowRight, IconFileDiff, IconMaximize, IconMessage, IconMinimize, IconPlus, IconRefresh, IconWorld, IconX } from "@tabler/icons-react"
 import type { FileChange } from "../../runtime/session/src/events.ts"
 import type { BrowserPresentation, WebTagRef, WebTagState } from "../preload/browser-api.ts"
 import "./chat-browser.css"
 
 const PatchDiff = lazy(async () => ({ default: (await import("@pierre/diffs/react")).PatchDiff }))
+const minimumSplitPercent = 25
+const maximumSplitPercent = 100 - minimumSplitPercent
 
 /** 标签只持有重新渲染所需的数据。 */
 export type BrowserTag =
+  | { kind: "blank"; id: string }
   | { kind: "diff"; id: string; eventId: string; file: FileChange }
   | ({ kind: "web"; id: string } & Omit<WebTagState, "ref" | "opened" | "closed">)
 
-/** 一个对话中的标签顺序、选中项和窄窗面板。 */
+/** 一个浏览器工作区的标签顺序、选中项和面板可见状态。 */
 export interface ConversationBrowserState {
   tags: BrowserTag[]
   activeTagId: string | null
@@ -47,6 +50,22 @@ export class TagManager {
     this.set(sessionId, { tags, activeTagId: tag.id, narrowPanel: "browser" })
   }
 
+  /** 移除标签，选中邻项，并在最后一个标签关闭时收起面板。
+   * @param sessionId 浏览器所属工作区。
+   * @param tagId 要移除的标签身份。
+   */
+  remove(sessionId: string, tagId: string): void {
+    const state = this.get(sessionId)
+    const index = state.tags.findIndex((tag) => tag.id === tagId)
+    if (index === -1) return
+    const tags = state.tags.filter((tag) => tag.id !== tagId)
+    this.set(sessionId, {
+      tags,
+      activeTagId: state.activeTagId === tagId ? (tags[index] ?? tags[index - 1])?.id ?? null : state.activeTagId,
+      narrowPanel: tags.length === 0 ? "chat" : state.narrowPanel,
+    })
+  }
+
   /** 将主进程状态合并到仍存在的网页标签。
    * @param update 网页实例的导航状态
    */
@@ -54,9 +73,7 @@ export class TagManager {
     const state = this.get(ref.sessionId)
     const index = state.tags.findIndex((tag) => tag.kind === "web" && tag.id === ref.tagId)
     if (closed && index !== -1) {
-      const tags = state.tags.filter((tag) => tag.id !== ref.tagId)
-      this.set(ref.sessionId, { ...state, tags, activeTagId: state.activeTagId === ref.tagId
-        ? (tags[index] ?? tags[index - 1])?.id ?? null : state.activeTagId })
+      this.remove(ref.sessionId, ref.tagId)
       return
     }
     if (index === -1) {
@@ -112,6 +129,8 @@ interface BrowserWorkspaceProps {
   sessionId: string
   obscured: boolean
   theme: "light" | "dark"
+  /** 工作台提供的浏览器开关，展开和收起时共用同一按钮。 */
+  toggle: ReactNode
   children: ReactNode
 }
 
@@ -119,10 +138,16 @@ interface BrowserWorkspaceProps {
  * @param props 对话、标签状态和聊天节点
  * @returns 聊天与内置浏览器工作区。
  */
-export function BrowserWorkspace({ manager, sessionId, obscured, theme, children }: BrowserWorkspaceProps) {
+export function BrowserWorkspace({ manager, sessionId, obscured, theme, toggle, children }: BrowserWorkspaceProps) {
   const browser = manager.get(sessionId)
   const workspace = useRef<HTMLDivElement>(null)
+  const split = useRef<HTMLDivElement>(null)
+  const [chatPercent, setChatPercent] = useState(50)
+  const [dragPercent, setDragPercent] = useState<number | null>(null)
+  const [browserMaximized, setBrowserMaximized] = useState(false)
+  const [chatTabSelected, setChatTabSelected] = useState(false)
   const slot = useRef<HTMLDivElement>(null)
+  const tabList = useRef<HTMLDivElement>(null)
   const [narrow, setNarrow] = useState(true)
   const [address, setAddress] = useState("")
   const [error, setError] = useState("")
@@ -130,13 +155,29 @@ export function BrowserWorkspace({ manager, sessionId, obscured, theme, children
   const web = active?.kind === "web" ? active : undefined
   const webId = web?.id
   const webUrl = web?.url
-  const showBrowser = !narrow || browser.narrowPanel === "browser"
+  const showBrowser = browser.narrowPanel === "browser"
+  const showDivider = showBrowser && !narrow && !browserMaximized
+  const previewBrowserOnly = showDivider && dragPercent !== null && dragPercent < minimumSplitPercent
+  const previewChatOnly = showDivider && dragPercent !== null && dragPercent > maximumSplitPercent
+  const browserVisible = showBrowser && !previewChatOnly
+  const chatHidden = (showBrowser && !showDivider) || previewBrowserOnly
+  const showChatTabContent = chatHidden && chatTabSelected
+  const visibleChatPercent = dragPercent ?? chatPercent
+  const maximizeLabel = browserMaximized ? "恢复分栏" : "铺满工作区"
   const api = window.nicodeBrowser
+
+  useLayoutEffect(() => {
+    setBrowserMaximized(false)
+  }, [sessionId, showBrowser])
+
+  useLayoutEffect(() => {
+    setChatTabSelected(false)
+  }, [sessionId, showBrowser, showDivider, browser.activeTagId])
 
   useLayoutEffect(() => {
     const element = workspace.current
     if (!element) return
-    const measure = () => setNarrow(element.getBoundingClientRect().width < 960)
+    const measure = () => setNarrow(element.getBoundingClientRect().width < 640)
     measure()
     let frame = 0
     const observer = new ResizeObserver(() => {
@@ -153,11 +194,17 @@ export function BrowserWorkspace({ manager, sessionId, obscured, theme, children
   useLayoutEffect(() => {
     setAddress(webUrl ?? "")
     setError("")
-  }, [sessionId, webId, webUrl])
+  }, [sessionId, browser.activeTagId, webId, webUrl])
+
+  useLayoutEffect(() => {
+    if (browserVisible) {
+      tabList.current?.querySelector('[data-active="true"]')?.scrollIntoView({ block: "nearest", inline: "nearest" })
+    }
+  }, [browserVisible, browser.activeTagId, showChatTabContent])
 
   useLayoutEffect(() => {
     const element = slot.current
-    if (!webId || !showBrowser || obscured || !element || web?.status === "error") {
+    if (!webId || !browserVisible || showChatTabContent || obscured || !element || web?.status === "error") {
       manager.present(null)
       return
     }
@@ -175,7 +222,7 @@ export function BrowserWorkspace({ manager, sessionId, obscured, theme, children
       window.removeEventListener("resize", measure)
       manager.present(null)
     }
-  }, [manager, sessionId, webId, web?.status, showBrowser, obscured])
+  }, [manager, sessionId, webId, web?.status, browserVisible, showChatTabContent, obscured])
 
   /** 提交网页操作并展示命令失败。 @param task 已发出的 IPC 请求。 */
   function run(task: Promise<void>): void {
@@ -185,12 +232,7 @@ export function BrowserWorkspace({ manager, sessionId, obscured, theme, children
 
   /** 关闭标签并选择邻项。 @param tag 要关闭的标签。 */
   function close(tag: BrowserTag): void {
-    const index = browser.tags.findIndex((item) => item.id === tag.id)
-    const tags = browser.tags.filter((item) => item.id !== tag.id)
-    manager.set(sessionId, {
-      ...browser, tags,
-      activeTagId: active?.id === tag.id ? (tags[index] ?? tags[index - 1])?.id ?? null : browser.activeTagId,
-    })
+    manager.remove(sessionId, tag.id)
     if (tag.kind === "web") run(api.closeWebTag({ sessionId, tagId: tag.id }))
   }
 
@@ -207,49 +249,117 @@ export function BrowserWorkspace({ manager, sessionId, obscured, theme, children
       run(api.navigateWebTag({ sessionId, tagId: web.id }, url.href))
       return
     }
-    const id = crypto.randomUUID()
+    if (active?.kind !== "blank") return
+    const id = active.id
     const ref = { sessionId, tagId: id }
-    manager.open(sessionId, { kind: "web", id, url: url.href, title: "", status: "loading", canGoBack: false, canGoForward: false })
+    const tag: BrowserTag = { kind: "web", id, url: url.href, title: "", status: "loading", canGoBack: false, canGoForward: false }
+    manager.set(sessionId, { ...browser, tags: browser.tags.map((item) => item.id === id ? tag : item) })
     void api.createWebTag(ref, url.href).catch((cause: unknown) => manager.receive({
       ref, url: url.href, title: "", status: "error", canGoBack: false, canGoForward: false,
       error: cause instanceof Error ? cause.message : String(cause),
     }))
   }
 
+  /** 更新聊天区宽度，给两侧保留可操作空间。
+   * @param percent 聊天区占分栏的百分比。
+   */
+  function resizeChat(percent: number): void {
+    setChatPercent(Math.min(maximumSplitPercent, Math.max(minimumSplitPercent, Math.round(percent))))
+  }
+
+  /** 将指针位置转换为当前分栏比例。
+   * @param clientX 指针在视口中的横坐标。
+   * @param dividerWidth 分隔线热区宽度。
+   * @returns 聊天栏预览比例。
+   */
+  function pointerPercent(clientX: number, dividerWidth: number): number {
+    const bounds = split.current?.getBoundingClientRect()
+    if (!bounds || bounds.width <= dividerWidth) return visibleChatPercent
+    const percent = (clientX - bounds.left - dividerWidth / 2) / (bounds.width - dividerWidth) * 100
+    return Math.min(100, Math.max(0, Math.round(percent)))
+  }
+
   const ref: WebTagRef | undefined = web && { sessionId, tagId: web.id }
-  return <div className="chat-browser-workspace" ref={workspace} data-narrow={narrow}>
-    {narrow && <div className="chat-browser-switch">
-      <button type="button" aria-pressed={!showBrowser} onClick={() => manager.set(sessionId, { ...browser, narrowPanel: "chat" })}>聊天</button>
-      <button type="button" aria-pressed={showBrowser} onClick={() => manager.set(sessionId, { ...browser, narrowPanel: "browser" })}>浏览器{browser.tags.length > 0 && " · " + browser.tags.length}</button>
-    </div>}
-    <div className="chat-browser-split">
-      <div className="chat-browser-chat" hidden={narrow && showBrowser}>{children}</div>
-      <section className="chat-browser-pane" aria-label="内置浏览器" hidden={!showBrowser}>
+  return <div className="chat-browser-workspace" ref={workspace} data-narrow={narrow} data-expanded={browserVisible}
+    data-chat-tab-selected={showChatTabContent}>
+    <div className="chat-browser-split" ref={split}>
+      <div id="chat-browser-chat" className="chat-browser-chat" hidden={chatHidden && !showChatTabContent}
+        style={showDivider ? { flexGrow: visibleChatPercent } : undefined}>{children}</div>
+      {showDivider && <div className="chat-browser-divider" role="separator" tabIndex={0}
+        data-snapped={previewBrowserOnly || previewChatOnly}
+        aria-label="调整聊天与浏览器宽度" aria-orientation="vertical" aria-controls="chat-browser-pane"
+        aria-valuemin={dragPercent === null ? minimumSplitPercent : 0}
+        aria-valuemax={dragPercent === null ? maximumSplitPercent : 100} aria-valuenow={visibleChatPercent}
+        onPointerDown={(event) => {
+          if (event.button !== 0 || !event.isPrimary) return
+          event.currentTarget.focus()
+          event.currentTarget.setPointerCapture(event.pointerId)
+        }}
+        onPointerMove={(event) => {
+          if (!event.currentTarget.hasPointerCapture(event.pointerId)) return
+          setDragPercent(pointerPercent(event.clientX, event.currentTarget.offsetWidth))
+        }}
+        onPointerUp={(event) => {
+          if (!event.currentTarget.hasPointerCapture(event.pointerId)) return
+          const percent = pointerPercent(event.clientX, event.currentTarget.offsetWidth)
+          setDragPercent(null)
+          if (percent < minimumSplitPercent) setBrowserMaximized(true)
+          else if (percent > maximumSplitPercent) manager.set(sessionId, { ...browser, narrowPanel: "chat" })
+          else resizeChat(percent)
+        }}
+        onLostPointerCapture={() => setDragPercent(null)}
+        onKeyDown={(event) => {
+          const percent = { ArrowLeft: chatPercent - 5, ArrowRight: chatPercent + 5, Home: minimumSplitPercent, End: maximumSplitPercent }[event.key]
+          if (typeof percent !== "number") return
+          event.preventDefault()
+          resizeChat(percent)
+        }}
+      />}
+      <section id="chat-browser-pane" className="chat-browser-pane" aria-label="内置浏览器" hidden={!browserVisible}
+        style={showDivider ? { flexGrow: 100 - visibleChatPercent } : undefined}>
         <div className="chat-browser-tabs">
-          <div className="chat-browser-tab-list" aria-label="已打开的标签">
+          <div className="chat-browser-tab-list" ref={tabList} aria-label="已打开的标签">
+          {chatHidden && <div className="chat-browser-tab-item" data-active={showChatTabContent}>
+            <button className="chat-browser-chat-tab" type="button" aria-controls="chat-browser-chat"
+            aria-pressed={showChatTabContent} onClick={() => setChatTabSelected(true)}>
+            <IconMessage size={15} aria-hidden="true" />
+            <span>聊天</span>
+          </button></div>}
             {browser.tags.map((tag) => {
-              const label = tag.kind === "diff" ? tag.file.path : tag.title || tag.url
-              return <div className="chat-browser-tab" data-active={active?.id === tag.id} key={tag.id}>
-                <button type="button" title={label} aria-pressed={active?.id === tag.id} onClick={() => manager.open(sessionId, tag)}>{label}</button>
+              const label = tag.kind === "diff" ? tag.file.path : tag.kind === "web" ? tag.title || tag.url : "新标签页"
+              return <div className="chat-browser-tab chat-browser-tab-item" data-active={!showChatTabContent && active?.id === tag.id} key={tag.id}>
+                <button type="button" title={label} aria-pressed={!showChatTabContent && active?.id === tag.id} onClick={() => {
+                  setChatTabSelected(false)
+                  manager.open(sessionId, tag)
+                }}>
+                  {tag.kind === "diff" ? <IconFileDiff size={15} aria-hidden="true" /> : <IconWorld size={15} aria-hidden="true" />}
+                  <span>{label}</span>
+                </button>
                 <button type="button" aria-label={"关闭 " + label} onClick={() => close(tag)}><IconX size={14} /></button>
               </div>
             })}
           </div>
           <button type="button" aria-label="新建网页" title="新建网页" onClick={() => {
-            manager.set(sessionId, { ...browser, activeTagId: null })
+            setChatTabSelected(false)
+            manager.open(sessionId, { kind: "blank", id: crypto.randomUUID() })
             setAddress("")
             setError("")
             requestAnimationFrame(() => workspace.current?.querySelector<HTMLInputElement>(".chat-browser-address")?.focus())
           }}><IconPlus size={16} /></button>
+          {!narrow && <button className="chat-browser-maximize" type="button"
+            aria-label={maximizeLabel} title={maximizeLabel} aria-controls="chat-browser-pane"
+            onClick={() => setBrowserMaximized(!browserMaximized)}>
+            {browserMaximized ? <IconMinimize size={16} aria-hidden="true" /> : <IconMaximize size={16} aria-hidden="true" />}
+          </button>}
         </div>
-        {(!active || web) && <form className="chat-browser-toolbar" onSubmit={(event) => { event.preventDefault(); openAddress() }}>
-          {ref && <>
+        {active?.kind !== "diff" && <form className="chat-browser-toolbar" onSubmit={(event) => { event.preventDefault(); openAddress() }}>
+          {ref && <div className="chat-browser-navigation" role="group" aria-label="网页导航">
             <button type="button" aria-label="后退" disabled={!web?.canGoBack} onClick={() => run(api.goBack(ref))}><IconArrowLeft size={16} /></button>
             <button type="button" aria-label="前进" disabled={!web?.canGoForward} onClick={() => run(api.goForward(ref))}><IconArrowRight size={16} /></button>
             <button type="button" aria-label="刷新" onClick={() => run(api.reload(ref))}><IconRefresh size={16} /></button>
-          </>}
+          </div>}
           <input className="chat-browser-address" aria-label="网页地址" placeholder="输入网页地址" value={address} onChange={(event) => setAddress(event.target.value)} />
-          <button type="submit" disabled={!address.trim() || !api}>打开</button>
+          <button className="chat-browser-submit" type="submit" aria-label="打开" title="打开网址" disabled={!address.trim() || !api}><IconArrowRight size={16} aria-hidden="true" /></button>
         </form>}
         {error && <p className="chat-browser-message" role="alert">{error}</p>}
         {active?.kind === "diff" ? <div className="chat-browser-diff">
@@ -261,10 +371,15 @@ export function BrowserWorkspace({ manager, sessionId, obscured, theme, children
               </Suspense>
             </DiffBoundary>}
         </div> : <div className="chat-browser-slot" ref={slot}>
-          {!web && <p className="chat-browser-message">输入网址，或点击聊天回复下方的文件查看差异。</p>}
+          {!web && <div className="chat-browser-start">
+            <IconWorld size={32} stroke={1.4} aria-hidden="true" />
+            <h2>新标签页</h2>
+            <p>在上方输入网址，按 Enter 打开。</p>
+          </div>}
           {web?.status === "error" && <p className="chat-browser-message" role="alert">网页加载失败。{web.error}</p>}
         </div>}
       </section>
     </div>
+    {toggle}
   </div>
 }

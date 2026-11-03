@@ -8,6 +8,7 @@ import {
   IconFolder,
   IconFolderPlus,
   IconLayoutSidebar,
+  IconLayoutSidebarRight,
   IconPlus,
   IconAdjustmentsHorizontal,
   IconX,
@@ -85,17 +86,15 @@ function SessionList({
  */
 function SessionRoute() {
   const { projectId, sessionId } = useParams<"projectId" | "sessionId">()
-  const { state, providers, browserTags, browserObscured, theme } = useOutletContext<{ state: WorkspaceSessionState; providers: ProviderSummary[]; browserTags: TagManager; browserObscured: boolean; theme: "light" | "dark" }>()
+  const { state, providers, browserTags } = useOutletContext<{ state: WorkspaceSessionState; providers: ProviderSummary[]; browserTags: TagManager }>()
   useEffect(() => {
     if (projectId === undefined || sessionId === undefined) return
     if (state.has(sessionKey(projectId, sessionId))) return
     void state.load(projectId, sessionId).catch(() => {})
   }, [state, projectId, sessionId])
   if (projectId === undefined || sessionId === undefined) return null
-  return <BrowserWorkspace manager={browserTags} sessionId={sessionId} obscured={browserObscured} theme={theme}>
-    <SessionPage projectId={projectId} sessionId={sessionId} state={state} providers={providers}
+  return <SessionPage projectId={projectId} sessionId={sessionId} state={state} providers={providers}
       onOpenDiff={(eventId, file) => browserTags.open(sessionId, { kind: "diff", id: JSON.stringify([eventId, file.path]), eventId, file })} />
-  </BrowserWorkspace>
 }
 
 /**
@@ -482,6 +481,10 @@ function Workspace() {
   const currentSessions = groupId === "default"
     ? defaultSessions.status === "ready" ? defaultSessions.value : []
     : activeProject?.sessions ?? []
+  // Draft routes share a browser owner distinct from persisted session UUIDs.
+  const browserOwner = workspaceRoute.page === "session" ? workspaceRoute.sessionId : "new-chat"
+  const browserState = browserTags.get(browserOwner)
+  const browserExpanded = browserState.narrowPanel === "browser"
   const currentSession = workspaceRoute.page === "session" ? currentSessions.find((session) => session.sessionId === workspaceRoute.sessionId) : undefined
   const runningCount = Object.values(sessionsState.sessionViewsByKey).filter((view) => view.control?.phase === "running" || view.control?.phase === "stopping").length
 
@@ -587,15 +590,29 @@ function Workspace() {
         </div>
       </aside>}
       <main className="main-panel">
+        <BrowserWorkspace manager={browserTags} sessionId={browserOwner} theme={theme}
+          obscured={settingsDialogOpen || projectDialogOpen || searchOpen || openMenu !== null}
+          toggle={<button className="settings-icon-button browser-toggle" type="button" aria-expanded={browserExpanded} aria-controls="chat-browser-pane"
+              aria-label={browserExpanded ? "收起内置浏览器" : "展开内置浏览器"} title={browserExpanded ? "收起内置浏览器" : "展开内置浏览器"}
+              onClick={() => {
+                if (!browserExpanded && browserState.activeTagId === null) {
+                  browserTags.open(browserOwner, { kind: "blank", id: crypto.randomUUID() })
+                  return
+                }
+                browserTags.set(browserOwner, { ...browserState, narrowPanel: browserExpanded ? "chat" : "browser" })
+              }}>
+              <IconLayoutSidebarRight size={17} stroke={1.6} aria-hidden="true" />
+            </button>}>
         <header className="panel-header">
           {!sidebarOpen && <button className="settings-icon-button" type="button" aria-label="展开侧栏" title="展开侧栏 · Ctrl B" onClick={() => setSidebarOpen(true)}><IconLayoutSidebar size={17} stroke={1.6} aria-hidden="true" /></button>}
           <div className="breadcrumb">{activeProject && <><span title={activeProject.directories.join(" · ") || activeProject.name}>{activeProject.name}</span><span className="breadcrumb-divider">/</span></>}<strong title={currentSession?.name}>{workspaceRoute.page === "new-chat" ? "新聊天" : currentSession?.name ?? "对话"}</strong></div>
           <div className="panel-header-actions">{!sidebarOpen && <>
             <button className="settings-icon-button" type="button" aria-label="设置" title="设置 · Ctrl ," onClick={() => openSettingsDialog()}><IconAdjustmentsHorizontal size={17} stroke={1.6} aria-hidden="true" /></button>
             <button className="settings-icon-button" type="button" aria-label={theme === "light" ? "切换深色外观" : "切换浅色外观"} title={theme === "light" ? "深色外观" : "浅色外观"} onClick={() => setTheme((current) => current === "light" ? "dark" : "light")}>{theme === "light" ? <IconMoon size={17} stroke={1.6} aria-hidden="true" /> : <IconSun size={17} stroke={1.6} aria-hidden="true" />}</button>
-          </>}{(workspaceRoute.page === "session" || !sidebarOpen) && <button className="settings-icon-button" type="button" aria-label="在当前空间新建聊天" title="新聊天" onClick={() => focusNewChatComposer(groupId === "default" ? undefined : groupId)}><IconPlus size={17} stroke={1.6} aria-hidden="true" /></button>}</div>
+          </>}{(workspaceRoute.page === "session" || !sidebarOpen) && <button className="settings-icon-button" type="button" aria-label="在当前空间新建聊天" title="新聊天" onClick={() => focusNewChatComposer(groupId === "default" ? undefined : groupId)}><IconPlus size={17} stroke={1.6} aria-hidden="true" /></button>}
+          </div>
         </header>
-        {workspaceRoute.page === "session" ? <Outlet context={{ state: sessionsState, browserTags, theme, browserObscured: settingsDialogOpen || projectDialogOpen || searchOpen, providers: providers.status === "ready" ? providers.value : [] }} /> : <div className="welcome-scroll"><div className="welcome">
+        {workspaceRoute.page === "session" ? <Outlet context={{ state: sessionsState, browserTags, providers: providers.status === "ready" ? providers.value : [] }} /> : <div className="welcome-scroll"><div className="welcome">
           <div className="welcome-intro"><h1>有什么想一起完成？</h1></div>
           {newChatView.operationError && <p className="chat-error" role="alert">{newChatView.operationError}</p>}
           {defaultModelError && <p className="chat-error" role="alert">{defaultModelError}</p>}
@@ -621,6 +638,7 @@ function Workspace() {
           </div>
           <div className="composer-caption"><span>Enter 发送 · Shift + Enter 换行</span></div>
         </div></div>}
+        </BrowserWorkspace>
       </main>
     </div>
     <footer className="app-statusbar"><span><i className="status-dot" />{runningCount > 0 ? `${runningCount} 个对话运行中` : "本地工作台"}</span></footer>
