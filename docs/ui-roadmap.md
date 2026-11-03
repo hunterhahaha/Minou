@@ -404,3 +404,13 @@
 - 视觉：复核本轮 `dist/tool-results-merged-light.png` 与 `dist/tool-results-merged-dark-narrow.png`，涵盖浅色 1200×800、深色 640×760 内容尺寸、长结果、纯文本转义和窄窗无页面横向溢出。现有测试另覆盖长审批参数。使用 Impeccable 局部规范并运行改动 TSX/CSS 的 detector，结果 `[]`，不代表完整无障碍认证。
 - 图与差异：实施前工作区干净；upstream impact 显示 AssistantBlock、SessionPage、itemView 为 LOW，调用链在 Renderer 会话页面与路由；测试 main 为 UNKNOWN，已核对脚本实际入口与直接执行方式。全工作区 detect_changes 报告 MEDIUM，涉及会话展示流程，无 partial/truncated 标记；索引落后 HEAD 一次提交，旧行号映射还将未修改的复制/审批辅助符号列为 touched，已用当前实际 diff 核对，不把图结果当作完整安全证明。`git diff --check` 通过，未提交 Git。
 - 未覆盖：没有真人输入法、屏幕阅读器、实体触屏或本功能专门的 125%/150% 缩放检查；键盘/焦点与触屏证据来自程序化交互，截图复核不等同真人手工验证。未调用外部模型或工具服务；本次验证针对前端事件展示。
+
+## 9. 聊天内置浏览器 V1（2026-11-03）
+
+- 宽窗在聊天内容区左右平分，低于 960 CSS px 时通过聊天与浏览器切换按钮访问，原聊天节点保留挂载。最终回复下方的文件列表读取已提交的 `turn/file_changes`。点击文件以事件和路径标识标签，使用事件 hunks 构建单文件 patch，再交由 `@pierre/diffs` 渲染。
+- React 工作台持有按对话索引的标签数据。网页命令与布局通过 `window.nicodeBrowser` 传给主进程。主进程按宿主与标签索引 `WebContentsView`，在持久化分区中共享站点存储。切换标签、对话或打开工作台弹层时隐藏原视图，重新选中复用实例，关闭时销毁。
+- 仅增加 `@pierre/diffs` 直接依赖。事件格式、Runtime 与会话存储契约沿用既有实现。
+- Diff 渲染器按需加载，沿用工作台浅色和深色外观。Renderer CSP 允许 Diff 库生成的内联样式，脚本和资源来源仍沿用原约束。
+- 验证：`npm run typecheck`、`npm run build`、Renderer 会话状态测试与隐藏窗口 Electron 会话和审批测试通过。真实浏览器夹具覆盖单文件差异、标签复用与销毁、地址栏导航和后退、加载失败后刷新、搜索遮挡、跨对话隔离、同源 Cookie 和 Local Storage 共享，以及 100% / 125% / 150% 页面缩放下的视图边界。日志见 `dist/browser-v1-*.stdout.log` 和 `dist/browser-v1-*.stderr.log`。
+- 未覆盖：本次未进行外部站点手工测试、跨应用重启的站点存储复测，以及下载和权限请求的端到端验证。
+- 工作台 Electron 回归在并行运行时模型菜单的原生点击等待超时，单独重跑退出 0，覆盖主题、键鼠、设置、输入自适应、窄窗及窗口按钮。日志见 `dist/browser-workspace-solo.*.log`。

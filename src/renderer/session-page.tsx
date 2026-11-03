@@ -3,7 +3,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react"
 import { IconArrowDown, IconArrowUp, IconBrain, IconCheck, IconCopy, IconPlayerStop, IconShieldCheck, IconSparkles, IconTool } from "@tabler/icons-react"
 import type { AssistantContentBlock } from "../../runtime/model/src/types.ts"
 import { preferredReasoningLevel } from "../../runtime/model/src/reasoning.ts"
-import type { SessionEvent } from "../../runtime/session/src/events.ts"
+import type { FileChange, SessionEvent } from "../../runtime/session/src/events.ts"
 import type { ProviderSummary, SandboxMode, SessionSettingsPatch } from "../preload/session-api.ts"
 import { errorMessage, projectSessionEvents, sessionKey, WorkspaceSessionState, type ChatItem } from "./session-state.ts"
 import { MarkdownContent } from "./markdown-content.tsx"
@@ -24,6 +24,8 @@ export interface SessionPageProps {
   state: WorkspaceSessionState
   /** 已有 Provider 的模型选项。 */
   providers: ProviderSummary[]
+  /** 打开已提交文件变更的差异。 */
+  onOpenDiff(eventId: string, file: FileChange): void
 }
 /**
  * @param value 工具参数或结果。
@@ -97,7 +99,7 @@ function MessageCopyButton({ text, label }: { text: string; label: "复制AI回�
  * @param props 联合身份、工作区状态与可选模型。
  * @returns 消息、审批、Queue、权限与固定在底部的输入区。
  */
-export function SessionPage({ projectId, sessionId, state, providers }: SessionPageProps) {
+export function SessionPage({ projectId, sessionId, state, providers, onOpenDiff }: SessionPageProps) {
   const key = sessionKey(projectId, sessionId)
   const events = state.sessionEventsByKey[key] ?? []
   const view = state.view(key)
@@ -242,7 +244,14 @@ export function SessionPage({ projectId, sessionId, state, providers }: SessionP
       <pre className="process-content"><code className="language-text">{event.result.content.filter((block) => block.type === "text").map((block) => block.text).join("\n\n")}</code></pre>
       {event.result.status === "error" && <p className="chat-error">{event.result.error.message}</p>}
     </details>
-    if (event.type === "turn/file_changes") return <details className="chat-detail"><summary>文件变化</summary><pre className="process-content"><code className="language-text">{printable(event.files)}</code></pre></details>
+    if (event.type === "turn/file_changes" && event.files.length > 0) return <div className="turn-file-changes" aria-label="本轮变更文件">
+      <span>本轮变更文件</span>
+      <ul>{event.files.map((file) => <li key={file.path}>
+        <button type="button" title={file.path} onClick={() => onOpenDiff(event.eventId, file)}>
+          <span>{file.path}</span><small>+{file.stats.additions} / −{file.stats.deletions}</small>
+        </button>
+      </li>)}</ul>
+    </div>
     if (event.type === "context_update") return <details className="chat-detail"><summary>上下文更新</summary><pre className="process-content"><code className="language-text">{event.content}</code></pre></details>
     return null
   }
@@ -272,13 +281,15 @@ export function SessionPage({ projectId, sessionId, state, providers }: SessionP
         {view.loadError && <p className="chat-error" role="alert">{view.loadError} <button onClick={() => void state.load(projectId, sessionId, true).catch(() => {})}>重试</button></p>}
         {blocks.map((block) => {
           if (block.kind !== "completed-turn") return itemView(block, block.kind === "assistant" && firstAssistantByTurn.get(block.turn) === block.id)
-          const process = block.process.filter((item) => item.kind !== "event" || (item.event.type !== "turn/end" && item.event.type !== "approval/request" && !pairedResultIds.has(item.id)))
+          const fileChanges = block.process.filter((item) => item.kind === "event" && item.event.type === "turn/file_changes")
+          const process = block.process.filter((item) => item.kind !== "event" || (item.event.type !== "turn/end" && item.event.type !== "turn/file_changes" && item.event.type !== "approval/request" && !pairedResultIds.has(item.id)))
           return <div className="chat-entry assistant-entry" key={JSON.stringify([key, block.id])} data-turn={block.turn}>
             <div className="message-label"><span className="assistant-avatar"><IconSparkles size={13} /></span><strong>NiCode</strong><span>协作伙伴</span></div>
             {process.length > 0 && <details className="chat-detail turn-process"><summary><IconTool size={15} /><span className="process-title">执行过程</span><span className="process-count">{process.length} 项</span></summary>{process.map((item) => itemView(item))}</details>}
             {block.finalAnswer.length > 0 && <div className="final-answer">
               {block.finalAnswer.map((content, index) => <AssistantBlock block={content} key={index} />)}
             </div>}
+            {fileChanges.map((item) => itemView(item))}
             {block.finalAnswer.some((content) => content.text.trim()) && <div className="message-actions"><MessageCopyButton text={block.finalAnswer.map((content) => content.text).join("\n\n")} label="复制AI回复" /></div>}
           </div>
         })}

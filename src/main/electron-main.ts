@@ -19,6 +19,7 @@ import {
   ToolRegistry,
 } from "../../runtime/tools/src/index.ts"
 import { initializeConfigFilesSnapshot } from "./config-files.ts"
+import { TagManager } from "./tag-manager.ts"
 import { createElectronWindowManager } from "./electron-windows.ts"
 import { startElectronApp } from "./index.ts"
 import { SessionRuntimeGlobal } from "./session-runtime-global.ts"
@@ -52,6 +53,7 @@ async function main(): Promise<void> {
   }
   registerWindowIpcHandlers(ipcMain, BrowserWindow)
   const windows = createElectronWindowManager(BrowserWindow, {
+    browserTags: new TagManager(ipcMain),
     preloadPath: join(__dirname, "../preload/index.js"),
     rendererHtmlPath: join(__dirname, "../renderer/index.html"),
     rendererUrl: process.env.NICODE_RENDERER_URL,

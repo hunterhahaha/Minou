@@ -3,6 +3,8 @@ const assert = require("node:assert/strict")
 const { mkdtemp, rm, writeFile } = require("node:fs/promises")
 const { tmpdir } = require("node:os")
 const { join, resolve, sep } = require("node:path")
+const { createServer } = require("node:http")
+const { TagManager } = require("../../dist/src/main/tag-manager.js")
 const { app, BrowserWindow, ipcMain } = require("electron")
 const { registerWindowIpcHandlers } = require("../../dist/src/main/window-ipc.js")
 const { initializeConfigFiles } = require("../../dist/src/main/config-files.js")
@@ -100,6 +102,7 @@ async function main() {
     preload: join(process.cwd(), "dist/src/preload/index.js"), contextIsolation: true, nodeIntegration: false, sandbox: false, backgroundThrottling: false,
   } })
   window.webContents.on("console-message", (details) => { if (details.level === "error") rendererErrors.push(details.message) })
+  new TagManager(ipcMain).register(window)
   await window.loadFile(join(process.cwd(), "dist/src/renderer/index.html"))
   assert.equal(await evaluate("isSecureContext && typeof navigator.clipboard?.writeText === 'function'"), true, "实际 Electron 页面提供剪贴板写入能力")
   /** 隔离剪贴板写入结果与失败场景，避免测试覆盖用户的系统剪贴板。 */
@@ -573,6 +576,112 @@ async function main() {
   await until(() => evaluate("document.querySelector('.final-answer')?.textContent === '只有最终正文'"))
   assert.equal(await evaluate("document.querySelectorAll('.turn-process, .turn-status').length"), 0, "只有最终正文时不显示空执行过程或结束提示")
   assert.equal(await evaluate("document.querySelectorAll('[aria-label=\"复制AI回复\"]').length"), 1, "删除结束提示不影响最终回答的识别与复制入口")
+  const changes = [
+    { path: "src/example.ts", changeType: "modified", stats: { additions: 1, deletions: 1 },
+      hunks: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ["-const before = 1", "+const after = 2", "\\ No newline at end of file"] }] },
+    { path: "empty.txt", changeType: "created", stats: { additions: 0, deletions: 0 }, hunks: [] },
+    { path: "created.txt", changeType: "created", stats: { additions: 1, deletions: 0 },
+      hunks: [{ oldStart: 1, oldLines: 0, newStart: 1, newLines: 1, lines: ["+new fixture text"] }] },
+    { path: "deleted.txt", changeType: "deleted", stats: { additions: 0, deletions: 1 },
+      hunks: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 0, lines: ["-old fixture text"] }] },
+  ]
+  window.webContents.send(channels.update, { kind: "event", projectId: "default", sessionId: finalOnlySession,
+    event: { type: "turn/file_changes", turn: 1, files: changes, eventId: "browser-file-event", sessionId: finalOnlySession, seq: 5, createdAt: "2026-10-24T00:00:00.000Z" } })
+  await until(() => evaluate("document.querySelectorAll('.turn-file-changes button').length === 4"))
+  assert.equal(await evaluate("document.querySelector('.final-answer').nextElementSibling.querySelector('.turn-file-changes') !== null"), true)
+  await evaluate("document.querySelector('.turn-file-changes button').click()")
+  await until(() => evaluate("document.querySelector('.chat-browser-diff diffs-container')?.shadowRoot?.textContent.includes('const after')"))
+  await evaluate("document.querySelector('.turn-file-changes button').click()")
+  assert.equal(await evaluate("document.querySelectorAll('.chat-browser-tab').length"), 1)
+  await evaluate("document.querySelectorAll('.turn-file-changes button')[1].click()")
+  await until(() => evaluate("document.querySelector('.chat-browser-diff')?.textContent.includes('无文本差异')"))
+  for (const [index, expected] of [[2, "new fixture text"], [3, "old fixture text"]]) {
+    await evaluate("document.querySelectorAll('.turn-file-changes button')[" + index + "].click()")
+    await until(() => evaluate("document.querySelector('.chat-browser-diff diffs-container')?.shadowRoot?.textContent.includes(" + JSON.stringify(expected) + ")"))
+  }
+
+  const server = createServer((request, response) => {
+    if (request.url === "/retry" && !allowRetry) {
+      request.socket.destroy()
+      return
+    }
+    response.setHeader("Content-Type", "text/html; charset=utf-8")
+    response.end("<title>本机网页" + request.url + "</title><a href='/next'>Next</a>")
+  })
+  let allowRetry = false
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve))
+  try {
+    const base = "http://127.0.0.1:" + server.address().port
+    const enterAddress = async (url) => {
+      await evaluate(`(() => {
+        const input = document.querySelector('.chat-browser-address')
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, ${JSON.stringify(url)})
+        input.dispatchEvent(new Event('input', { bubbles: true }))
+      })()`)
+      await evaluate("document.querySelector('.chat-browser-toolbar').requestSubmit()")
+    }
+    await evaluate("document.querySelector('[aria-label=新建网页]').click()")
+    await enterAddress(base)
+    const views = () => window.contentView.children.filter((view) => view.webContents && view.webContents !== window.webContents)
+    await until(() => views().some((view) => view.getVisible() && view.webContents.getTitle() === "本机网页/"))
+    const first = views()[0]
+    const contents = first.webContents
+    assert.equal(await contents.executeJavaScript("typeof window.nicodeBrowser"), "undefined")
+    assert.equal(await contents.executeJavaScript("window.open('/popup') === null"), true)
+    await contents.executeJavaScript("document.cookie = 'browser=shared'; localStorage.setItem('browser','shared')")
+    await enterAddress(base + "/next")
+    await until(async () => contents.getURL().endsWith("/next") && await evaluate("!document.querySelector('[aria-label=后退]')?.disabled"))
+    await evaluate("document.querySelector('[aria-label=后退]').click()")
+    await until(() => contents.getURL() === base + "/")
+    await enterAddress(base + "/retry")
+    await until(() => evaluate("document.querySelector('.chat-browser-slot [role=alert]')?.textContent.includes('网页加载失败')"))
+    await until(() => !first.getVisible())
+    allowRetry = true
+    await evaluate("document.querySelector('[aria-label=刷新]').click()")
+    await until(() => first.getVisible() && contents.getTitle() === "本机网页/retry")
+    await evaluate("document.querySelector('.chat-browser-tab button').click()")
+    await until(() => !first.getVisible())
+    await evaluate("document.querySelectorAll('.chat-browser-tab:last-child button')[0].click()")
+    await until(() => first.getVisible())
+    await evaluate("document.querySelector('[aria-label=搜索工作区]').click()")
+    await until(() => !first.getVisible())
+    await evaluate("document.querySelector('.search-dialog').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))")
+    await until(() => first.getVisible())
+    for (const zoom of [1, 1.25, 1.5]) {
+      window.webContents.setZoomFactor(zoom)
+      await evaluate("window.dispatchEvent(new Event('resize'))")
+      await until(async () => {
+        const [x, y, width, height] = await evaluate("(() => { const {x,y,width,height} = document.querySelector('.chat-browser-slot').getBoundingClientRect(); return [x,y,width,height] })()")
+        const rect = first.getBounds()
+        return Math.abs(rect.x - x * zoom) <= 1 && Math.abs(rect.y - y * zoom) <= 1
+          && Math.abs(rect.width - width * zoom) <= 1 && Math.abs(rect.height - height * zoom) <= 1
+      })
+    }
+    window.webContents.setZoomFactor(1)
+    const secondSession = "browser-second-session"
+    const historyFixture = historyFixtures.get(historySession)
+    historyFixtures.set(secondSession, { ...historyFixture, sessionId: secondSession,
+      summary: { ...historyFixture.summary, sessionId: secondSession },
+      events: [], latestSeq: 0, control: { ...historyFixture.control, throughSeq: 0, currentTurn: 0 } })
+    await evaluate("location.hash = " + JSON.stringify(route.replace(originalSession, secondSession)))
+    await until(() => !first.getVisible())
+    await until(() => evaluate("document.querySelector('.chat-page')?.dataset.sessionId === 'browser-second-session'"))
+    assert.equal(await evaluate("document.querySelectorAll('.chat-browser-tab').length"), 0)
+    await evaluate("document.querySelector('.chat-browser-switch button:last-child')?.click()")
+    await enterAddress(base)
+    await until(() => views().length === 2 && views()[1].getVisible() && views()[1].webContents.getTitle() === "本机网页/")
+    assert.equal(await views()[1].webContents.executeJavaScript("document.cookie + ' ' + localStorage.getItem('browser')"), "browser=shared shared")
+    await evaluate("document.querySelector('.chat-browser-tab button:last-child').click()")
+    await until(() => views().length === 1)
+    await evaluate("location.hash = " + JSON.stringify(route.replace(originalSession, finalOnlySession)))
+    await until(() => first.getVisible())
+    await evaluate("document.querySelector('.chat-browser-tab:last-child button:last-child').click()")
+    await until(() => contents.isDestroyed())
+    console.log("内置浏览器：Diff、导航、视图复用、对话隔离、共享存储、布局缩放与销毁通过")
+  } finally {
+    server.closeAllConnections()
+    await new Promise((resolve) => server.close(resolve))
+  }
   const markdownSession = "markdown-display"
   const thinkingMarkdown = "**规划**\n\n- 检查 `src`\n- 验证渲染"
   const codeText = 'const value = "' + "x".repeat(180) + '"\n  console.log(value)'

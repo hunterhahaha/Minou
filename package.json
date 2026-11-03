@@ -19,6 +19,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.126.0",
     "@modelcontextprotocol/sdk": "^1.32.1",
+    "@pierre/diffs": "1.0.11",
     "@tabler/icons-react": "^3.48.0",
     "@vscode/ripgrep": "1.18.0",
     "diff": "9.0.0",

@@ -1,5 +1,6 @@
 /** Electron 工作区：读取启动摘要，并由 hash 路由管理工作区与 Session 身份。 */
 import { useEffect, useRef, useState } from "react"
+import { BrowserWorkspace, TagManager } from "./chat-browser.tsx"
 import { createRoot } from "react-dom/client"
 import { HashRouter, Navigate, Outlet, Route, Routes, useMatch, useNavigate, useParams, useOutletContext } from "react-router"
 import {
@@ -84,14 +85,17 @@ function SessionList({
  */
 function SessionRoute() {
   const { projectId, sessionId } = useParams<"projectId" | "sessionId">()
-  const { state, providers } = useOutletContext<{ state: WorkspaceSessionState; providers: ProviderSummary[] }>()
+  const { state, providers, browserTags, browserObscured, theme } = useOutletContext<{ state: WorkspaceSessionState; providers: ProviderSummary[]; browserTags: TagManager; browserObscured: boolean; theme: "light" | "dark" }>()
   useEffect(() => {
     if (projectId === undefined || sessionId === undefined) return
     if (state.has(sessionKey(projectId, sessionId))) return
     void state.load(projectId, sessionId).catch(() => {})
   }, [state, projectId, sessionId])
   if (projectId === undefined || sessionId === undefined) return null
-  return <SessionPage projectId={projectId} sessionId={sessionId} state={state} providers={providers} />
+  return <BrowserWorkspace manager={browserTags} sessionId={sessionId} obscured={browserObscured} theme={theme}>
+    <SessionPage projectId={projectId} sessionId={sessionId} state={state} providers={providers}
+      onOpenDiff={(eventId, file) => browserTags.open(sessionId, { kind: "diff", id: JSON.stringify([eventId, file.path]), eventId, file })} />
+  </BrowserWorkspace>
 }
 
 /**
@@ -132,6 +136,9 @@ function Workspace() {
   const [sessionsState] = useState(() => new WorkspaceSessionState(window.nicode, () => setSessionVersion((version) => version + 1)))
   const groupId = workspaceRoute.group === "project" ? workspaceRoute.projectId : "default"
   const newDraftKey = sessionKey(groupId, "$new-chat")
+  const [, setBrowserVersion] = useState(0)
+  const [browserTags] = useState(() => new TagManager(() => setBrowserVersion((version) => version + 1)))
+  useEffect(() => window.nicodeBrowser?.onWebTagState((update) => browserTags.receive(update)), [browserTags])
   const newChatView = sessionsState.view(newDraftKey)
   const [savingDefaultModel, setSavingDefaultModel] = useState(false)
   const [defaultModelError, setDefaultModelError] = useState<string | undefined>()
@@ -588,7 +595,7 @@ function Workspace() {
             <button className="settings-icon-button" type="button" aria-label={theme === "light" ? "切换深色外观" : "切换浅色外观"} title={theme === "light" ? "深色外观" : "浅色外观"} onClick={() => setTheme((current) => current === "light" ? "dark" : "light")}>{theme === "light" ? <IconMoon size={17} stroke={1.6} aria-hidden="true" /> : <IconSun size={17} stroke={1.6} aria-hidden="true" />}</button>
           </>}{(workspaceRoute.page === "session" || !sidebarOpen) && <button className="settings-icon-button" type="button" aria-label="在当前空间新建聊天" title="新聊天" onClick={() => focusNewChatComposer(groupId === "default" ? undefined : groupId)}><IconPlus size={17} stroke={1.6} aria-hidden="true" /></button>}</div>
         </header>
-        {workspaceRoute.page === "session" ? <Outlet context={{ state: sessionsState, providers: providers.status === "ready" ? providers.value : [] }} /> : <div className="welcome-scroll"><div className="welcome">
+        {workspaceRoute.page === "session" ? <Outlet context={{ state: sessionsState, browserTags, theme, browserObscured: settingsDialogOpen || projectDialogOpen || searchOpen, providers: providers.status === "ready" ? providers.value : [] }} /> : <div className="welcome-scroll"><div className="welcome">
           <div className="welcome-intro"><h1>有什么想一起完成？</h1></div>
           {newChatView.operationError && <p className="chat-error" role="alert">{newChatView.operationError}</p>}
           {defaultModelError && <p className="chat-error" role="alert">{defaultModelError}</p>}

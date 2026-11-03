@@ -1,0 +1,56 @@
+.chat-browser-workspace,
+.chat-browser-split,
+.chat-browser-chat,
+.chat-browser-pane {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+.chat-browser-workspace, .chat-browser-pane { flex-direction: column; }
+.chat-browser-chat, .chat-browser-pane { flex-basis: 0; }
+.chat-browser-split > [hidden] { display: none; }
+.chat-browser-pane { border-inline-start: 1px solid var(--border); }
+.chat-browser-workspace[data-narrow="true"] .chat-browser-pane { border-inline-start: 0; }
+.chat-browser-switch, .chat-browser-tabs, .chat-browser-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  border-bottom: 1px solid var(--border);
+}
+.chat-browser-tab-list { display: flex; flex: 1; min-width: 0; overflow: auto; gap: var(--space-1); }
+.chat-browser-tab { display: flex; min-width: 0; flex: 0 0 auto; max-width: 200px; }
+.chat-browser-tab button:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-browser-workspace :is(.chat-browser-switch, .chat-browser-pane, .turn-file-changes) button {
+  min-height: var(--size-control);
+  padding: 0 var(--space-2);
+  border: 0;
+  border-radius: var(--radius-xs);
+  color: var(--text);
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+.chat-browser-workspace :is(.chat-browser-switch, .chat-browser-pane, .turn-file-changes) button:hover:not(:disabled),
+.chat-browser-switch button[aria-pressed="true"],
+.chat-browser-tab[data-active="true"] { background: var(--surface-muted); }
+.chat-browser-pane button:disabled { opacity: .5; cursor: default; }
+.chat-browser-address {
+  flex: 1;
+  min-width: 0;
+  min-height: var(--size-control);
+  padding-inline: var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xs);
+  color: var(--text);
+  background: var(--canvas);
+  font: inherit;
+}
+.chat-browser-slot, .chat-browser-diff { flex: 1; min-height: 0; min-width: 0; overflow: auto; }
+.chat-browser-message { margin: var(--space-4); color: var(--secondary); }
+.turn-file-changes { color: var(--secondary); font-size: var(--font-size-ui); }
+.turn-file-changes ul { list-style: none; margin: var(--space-1) 0 0; padding: 0; }
+.turn-file-changes button { display: flex; gap: var(--space-2); align-items: baseline; max-width: 100%; text-align: left; }
+.turn-file-changes button span { overflow-wrap: anywhere; }
+.turn-file-changes button small { flex: none; color: var(--secondary); }

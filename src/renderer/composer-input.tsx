@@ -35,13 +35,19 @@ export function ComposerInput({ inputRef, value, ...props }: ComposerInputProps)
       node.style.overflowY = naturalHeight > limit ? "auto" : "hidden"
     }
     resize()
+    let frame = 0
     const observer = new ResizeObserver(() => {
-      if (node.clientWidth === width) return
-      width = node.clientWidth
-      resize()
+      const nextWidth = node.clientWidth
+      if (nextWidth === 0 || nextWidth === width) return
+      width = nextWidth
+      cancelAnimationFrame(frame)
+      frame = requestAnimationFrame(() => { if (node.clientWidth > 0) resize() })
     })
     observer.observe(node)
-    return () => observer.disconnect()
+    return () => {
+      observer.disconnect()
+      cancelAnimationFrame(frame)
+    }
   }, [ref, value])
   return <textarea {...props} ref={ref} rows={1} value={value} />
 }

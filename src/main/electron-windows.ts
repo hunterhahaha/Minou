@@ -27,6 +27,8 @@ export interface BrowserWindowConstructorPort {
 export interface ElectronWindowOptions {
   /** 编译后的 preload 入口绝对路径。 */
   preloadPath: string
+  /** 登记允许调用浏览器 IPC 的窗口。 */
+  browserTags?: import("./tag-manager.ts").TagManager
   /** Vite 构建后的 Renderer HTML 绝对路径。 */
   rendererHtmlPath: string
   /** 开发时 Vite Renderer 地址；未提供时从构建后的 HTML 加载。 */
@@ -100,6 +102,7 @@ export function createElectronWindowManager(
         },
       })
       retainedWindows.add(window)
+      options.browserTags?.register(window)
       /** 同步系统触发的最大化/还原；尺寸和拖动仍由 Electron 管理。 */
       const sendWindowState = (): void => {
         if (!window.isDestroyed() && !window.webContents.isDestroyed()) window.webContents.send(WINDOW_IPC_CHANNELS.stateChanged, { maximized: window.isMaximized() })

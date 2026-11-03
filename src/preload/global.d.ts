@@ -1,3 +1,4 @@
+import type { NiCodeBrowserApi } from "./browser-api.ts"
 import type { NiCodePreloadApi } from "./session-api.ts"
 import type { NiCodeWindowApi } from "./window-api.ts"
 
@@ -7,6 +8,8 @@ declare global {
    */
   interface Window {
     nicode: NiCodePreloadApi
+    /** 内置浏览器命令与网页状态订阅。 */
+    nicodeBrowser: NiCodeBrowserApi
     /** 独立于业务 IPC 的当前窗口控制入口。 */
     nicodeWindow: NiCodeWindowApi
   }
