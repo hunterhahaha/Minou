@@ -74,6 +74,9 @@ async function testCallsFixedChannels(): Promise<void> {
         return { projectId: PROJECT_ID, name: "Project", updatedAt: "2026-09-04T00:00:00Z",
           directories: [], sessions: [] }
       }
+      if (channel === PROJECT_IPC_CHANNELS.renameProject) {
+        return { projectId: PROJECT_ID, name: args[1], updatedAt: "2026-09-04T00:00:00Z", directories: [], sessions: [] }
+      }
       if (channel === PROJECT_IPC_CHANNELS.addProjectDirectory) return { success: true }
       if (channel === PROJECT_IPC_CHANNELS.removeProjectDirectory) return { success: false, error: "不存在" }
       if (channel === SESSION_IPC_CHANNELS.startNewSession) {
@@ -96,6 +99,8 @@ async function testCallsFixedChannels(): Promise<void> {
     projectId: PROJECT_ID, name: "Project", updatedAt: "2026-09-04T00:00:00Z",
     directories: [], sessions: [],
   })
+  assert.equal((await api.renameProject(PROJECT_ID, "Renamed")).name, "Renamed")
+  await assert.rejects(api.renameProject("00000000-0000-4000-8000-000000000018", "Renamed"), /身份无效/)
   assert.deepEqual(await api.addProjectDirectory(PROJECT_ID, "C:\\Work"), { success: true })
   assert.deepEqual(await api.removeProjectDirectory(PROJECT_ID, "C:\\Work"), {
     success: false, error: "不存在",
@@ -151,6 +156,8 @@ async function testCallsFixedChannels(): Promise<void> {
   assert.deepEqual(calls, [
     { channel: PROJECT_IPC_CHANNELS.selectDirectory, args: [] },
     { channel: PROJECT_IPC_CHANNELS.createProject, args: ["Project", undefined] },
+    { channel: PROJECT_IPC_CHANNELS.renameProject, args: [PROJECT_ID, "Renamed"] },
+    { channel: PROJECT_IPC_CHANNELS.renameProject, args: ["00000000-0000-4000-8000-000000000018", "Renamed"] },
     { channel: PROJECT_IPC_CHANNELS.addProjectDirectory, args: [PROJECT_ID, "C:\\Work"] },
     { channel: PROJECT_IPC_CHANNELS.removeProjectDirectory, args: [PROJECT_ID, "C:\\Work"] },
     { channel: STARTUP_DATA_IPC_CHANNELS.listProjects, args: [] },
@@ -207,7 +214,7 @@ async function testExposesOnlyNiCodeApi(): Promise<void> {
   assert.equal(exposedApi, api)
   assert.deepEqual(
     Object.keys(exposedApi as NiCodePreloadApi).sort(),
-    ["getSessionData", "onSessionUpdate", "updateSessionSettings", "decideSessionApproval", "addProjectDirectory", "continueSession", "createModel", "createProject", "createCompatibleProvider", "createCustomProvider", "listCompatibleProviders", "deleteModel", "deleteProvider", "enqueueSessionMessage", "listDefaultSessions", "listProjects", "listProviders", "removeProjectDirectory", "selectDirectory", "setDefaultModel", "startNewSession", "stopSession", "updateApiKey", "updateModel", "updateProvider",
+    ["getSessionData", "onSessionUpdate", "renameProject", "renameSession", "exportSessionMarkdown", "updateSessionSettings", "decideSessionApproval", "addProjectDirectory", "continueSession", "createModel", "createProject", "createCompatibleProvider", "createCustomProvider", "listCompatibleProviders", "deleteModel", "deleteProvider", "enqueueSessionMessage", "listDefaultSessions", "listProjects", "listProviders", "removeProjectDirectory", "selectDirectory", "setDefaultModel", "startNewSession", "stopSession", "updateApiKey", "updateModel", "updateProvider",
       "listMcpServers", "createMcpServer", "updateMcpServer", "deleteMcpServer", "reloadMcpServers", "listSkills", "setSkillEnabled"].sort(),
   )
 }

@@ -688,7 +688,7 @@ export class SessionRuntime implements SessionRepairPorts {
 
   /**
    * 等待首次设置初始化后修改 Meta；模型选择不影响当前 Turn 的 Adapter。
-   * @param patch 模型或沙箱模式的部分更新。
+   * @param patch 名称、模型或沙箱模式的部分更新。
    * @throws Error 当初始化或设置写入失败时抛出。
    * @returns 设置保存并通知宿主后解析。
    */

@@ -86,7 +86,7 @@ async function directoryResult(operation: () => Promise<void>): Promise<ProjectD
 }
 
 /**
- * 注册目录选择、项目创建和目录关联变更的四个 IPC handler。
+ * 注册目录选择、项目创建、重命名和目录关联变更的 IPC。
  * @param ipcMain 主进程 IPC 注册端口。
  * @param dialog 系统目录选择窗口端口。
  * @param paths 启动时已初始化的配置路径。
@@ -155,6 +155,15 @@ export function registerProjectIpcHandlers(
     }
   })
 
+  ipcMain.handle(PROJECT_IPC_CHANNELS.renameProject, (_event, projectId, name): ProjectSummary => {
+    if (projectId === "default") throw new TypeError("Project ID 不能是 default")
+    if (typeof name !== "string" || name.trim() === "") throw new TypeError("项目名称不能为空")
+    const project = readProjectWorkspace(paths.workspaceDatabasePath, requireProjectId(projectId))
+    const updated = { ...project, name: name.trim(), updatedAt: new Date().toISOString() }
+    saveProjectWorkspace(paths.workspaceDatabasePath, updated)
+    return summarizeProject(updated)
+  })
+
   ipcMain.handle(PROJECT_IPC_CHANNELS.addProjectDirectory, (_event, projectId: unknown, value: unknown) =>
     directoryResult(async () => {
       if (projectId === "default") throw new TypeError("Project ID 不能是 default")
@@ -175,7 +184,8 @@ export function registerProjectIpcHandlers(
     directoryResult(async () => {
       if (projectId === "default") throw new TypeError("Project ID 不能是 default")
       const checkedProjectId = requireProjectId(projectId)
-      const directory = await requireDirectory(value)
+      if (typeof value !== "string" || !isAbsolute(value)) throw new TypeError("关联目录必须是绝对路径")
+      const directory = normalize(value)
       const project = readProjectWorkspace(paths.workspaceDatabasePath, checkedProjectId)
       const remaining = project.directories.filter((item) => directoryKey(item) !== directoryKey(directory))
       if (remaining.length === project.directories.length) {

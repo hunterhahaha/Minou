@@ -127,8 +127,8 @@ kbd { font: var(--font-size-caption)/var(--line-height-caption) var(--font-ui); 
 .chevron { display: flex; transition: transform .15s, opacity .15s; }
 .sidebar .chevron svg { width: 10px; height: 10px; }
 .chevron.collapsed, .project-chevron.collapsed { transform: rotate(-90deg); }
-.section-action-button, .project-action-button { display: grid; place-items: center; flex: none; width: var(--sidebar-row-height); min-height: var(--sidebar-row-height); padding: 0; border: 0; border-radius: var(--sidebar-radius); color: var(--muted); background: transparent; }
-.section-action-button:hover, .project-action-button:hover { background: var(--hover); color: var(--text); }
+.section-action-button, .project-action-button, .sidebar-more { display: grid; place-items: center; flex: none; width: var(--sidebar-row-height); min-height: var(--sidebar-row-height); padding: 0; border: 0; border-radius: var(--sidebar-radius); color: var(--muted); background: transparent; }
+.section-action-button:hover, .project-action-button:hover, .sidebar-more:hover { background: var(--hover); color: var(--text); }
 /* 仅淡出次要操作；保留命中区域与 Tab 顺序，聚焦和触屏时恢复可见。 */
 .section-action-button, .project-action-button, .section-count, .chevron, .project-chevron { opacity: 0; transition: opacity .15s, transform .15s, background .18s, color .18s; }
 .section-heading-row:hover .section-action-button, .section-heading-row:focus-within .section-action-button,
@@ -301,3 +301,36 @@ kbd { font: var(--font-size-caption)/var(--line-height-caption) var(--font-ui); 
 .window-controls > button:hover { color: var(--text); background: var(--hover); }
 .window-controls > .window-close:hover { color: var(--error); background: var(--error-bg); }
 .window-control-error { position: absolute; top: 47px; right: 12px; max-width: 260px; padding: 8px 12px; border: 0; border-radius: 7px; background: var(--surface); color: var(--error); font-size: var(--font-size-note); line-height: var(--line-height-note); box-shadow: var(--shadow-small); }
+
+.sidebar-session-row { display: flex; align-items: center; border-radius: var(--sidebar-radius); }
+.sidebar-session-row:hover { background: var(--hover); }
+.sidebar-session-row:has(.session-name[aria-current="page"]) { background: var(--selected); }
+.sidebar-session-row .session-name { flex: 1; }
+.sidebar-more { flex: none; opacity: 0; }
+.project-row:hover .sidebar-more, .project-row:focus-within .sidebar-more,
+.sidebar-session-row:hover .sidebar-more, .sidebar-session-row:focus-within .sidebar-more,
+.sidebar-more[aria-expanded="true"] { opacity: 1; }
+@media (hover: none), (pointer: coarse) {
+  .project-row .sidebar-more, .sidebar-session-row .sidebar-more { opacity: 1; }
+}
+.selector-menu.sidebar-action-menu {
+  position: fixed;
+  right: auto;
+  bottom: auto;
+  width: 160px;
+  min-width: 0;
+  z-index: 22;
+}
+.sidebar-menu-backdrop { z-index: 21; }
+.sidebar-copy-status {
+  position: fixed;
+  left: var(--space-3);
+  bottom: var(--space-3);
+  z-index: 22;
+  max-width: min(32rem, calc(100vw - 2 * var(--space-3)));
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-control);
+  background: var(--popover);
+  color: var(--text);
+}

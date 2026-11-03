@@ -35,6 +35,8 @@ export const SESSION_IPC_CHANNELS = {
   stopSession: "nicode:session:stop",
   getSessionData: "nicode:session:get-data",
   update: "nicode:session:update",
+  renameSession: "nicode:session:rename",
+  exportSessionMarkdown: "nicode:session:export-markdown",
   updateSessionSettings: "nicode:session:update-settings",
   decideSessionApproval: "nicode:session:decide-approval",
 } as const
@@ -68,7 +70,7 @@ export interface SessionData {
 /** 主进程统一推送；内存控制状态不写入 Event Log。 */
 export type SessionUpdate = { projectId: string; sessionId: string } & (
   | { kind: "event"; event: SessionEvent }
-  | { kind: "state"; control: SessionControl }
+  | { kind: "state"; control: SessionControl; summary?: SessionSummary }
   | { kind: "error"; stage: "runtime" | "index" | "transport"; error: AppError }
 )
 
@@ -85,6 +87,7 @@ export const STARTUP_DATA_IPC_CHANNELS = {
 export const PROJECT_IPC_CHANNELS = {
   selectDirectory: "nicode:project:select-directory",
   createProject: "nicode:project:create",
+  renameProject: "nicode:project:rename",
   addProjectDirectory: "nicode:project:add-directory",
   removeProjectDirectory: "nicode:project:remove-directory",
 } as const
@@ -317,7 +320,7 @@ export interface NiCodePreloadApi {
    * @returns 后端确认的控制状态。
    * @throws Error 当更新或存储无效时抛出。
    */
-  updateSessionSettings(projectId: string, sessionId: string, patch: SessionSettingsPatch): Promise<SessionControl>
+  updateSessionSettings(projectId: string, sessionId: string, patch: Omit<SessionSettingsPatch, "name">): Promise<SessionControl>
   /**
    * 提交当前等待中的审批决定。
    * @param projectId 所属分组。
@@ -354,11 +357,36 @@ export interface NiCodePreloadApi {
   /**
    * 从 Project 的关联列表中移除目录。
    * @param projectId Project UUID。
-   * @param directory 现存目录的绝对路径。
+   * @param directory 已关联的绝对路径。
    * @returns 成功确认或失败原因。
    * @throws Error IPC 调用、后端处理或返回值校验失败时拒绝，页面负责保留当前状态并报告失败。
    */
   removeProjectDirectory(projectId: string, directory: string): Promise<ProjectDirectoryResult>
+  /**
+   * 保存项目名称。
+   * @param projectId 项目 UUID。
+   * @param name 非空名称。
+   * @returns 已提交的项目摘要。
+   * @throws Error 保存失败或摘要无效。
+   */
+  renameProject(projectId: string, name: string): Promise<ProjectSummary>
+  /**
+   * 保存指定分组下的对话名称。
+   * @param projectId 所属分组。
+   * @param sessionId 对话身份。
+   * @param name 非空名称。
+   * @returns 已提交的对话摘要。
+   * @throws Error 保存失败或摘要无效。
+   */
+  renameSession(projectId: string, sessionId: string, name: string): Promise<SessionSummary>
+  /**
+   * 读取已提交的对话正文并生成 Markdown。
+   * @param projectId 所属分组。
+   * @param sessionId 对话身份。
+   * @returns 用户和助手正文。
+   * @throws Error 日志无法读取、没有正文或返回值无效。
+   */
+  exportSessionMarkdown(projectId: string, sessionId: string): Promise<string>
   /**
    * 读取非 default Project 的当前页面摘要。
    * @returns Project 及其目录和对话索引摘要。
@@ -641,7 +669,17 @@ export function createSessionApi(ipcRenderer: IpcRendererInvokePort): NiCodePrel
      * @returns 后端确认的控制状态。
      * @throws Error 当更新或存储无效时抛出。
      */
-    async updateSessionSettings(projectId: string, sessionId: string, patch: SessionSettingsPatch): Promise<SessionControl> {
+    async renameSession(projectId: string, sessionId: string, name: string): Promise<SessionSummary> {
+      const [summary] = requireSessionSummaries([await ipcRenderer.invoke(SESSION_IPC_CHANNELS.renameSession, projectId, sessionId, name)])
+      if (summary.sessionId !== sessionId) throw new TypeError("对话摘要身份无效")
+      return summary
+    },
+    async exportSessionMarkdown(projectId: string, sessionId: string): Promise<string> {
+      const markdown = await ipcRenderer.invoke(SESSION_IPC_CHANNELS.exportSessionMarkdown, projectId, sessionId)
+      if (typeof markdown !== "string") throw new TypeError("对话 Markdown 无效")
+      return markdown
+    },
+    async updateSessionSettings(projectId: string, sessionId: string, patch: Omit<SessionSettingsPatch, "name">): Promise<SessionControl> {
       return requireSessionControl(await ipcRenderer.invoke(SESSION_IPC_CHANNELS.updateSessionSettings, projectId, sessionId, patch))
     },
     /**
@@ -684,6 +722,11 @@ export function createSessionApi(ipcRenderer: IpcRendererInvokePort): NiCodePrel
      * @returns 成功确认或失败原因。
      * @throws Error IPC 调用、后端处理或返回值校验失败时拒绝，页面负责保留当前状态并报告失败。
      */
+    async renameProject(projectId: string, name: string): Promise<ProjectSummary> {
+      const summary = requireProjectSummary(await ipcRenderer.invoke(PROJECT_IPC_CHANNELS.renameProject, projectId, name))
+      if (summary.projectId !== projectId) throw new TypeError("项目摘要身份无效")
+      return summary
+    },
     async addProjectDirectory(projectId: string, directory: string): Promise<ProjectDirectoryResult> {
       return requireProjectDirectoryResult(await ipcRenderer.invoke(PROJECT_IPC_CHANNELS.addProjectDirectory, projectId, directory))
     },
@@ -1203,8 +1246,13 @@ function requireSessionUpdate(value: unknown): SessionUpdate {
   if (value.kind === "event" && isSessionEvent(value.event) && value.event.sessionId === value.sessionId) {
     return value as unknown as SessionUpdate
   }
-  if (value.kind === "state") return { projectId: value.projectId, sessionId: value.sessionId,
-    kind: "state", control: requireSessionControl(value.control) }
+  if (value.kind === "state") {
+    const control = requireSessionControl(value.control)
+    if (value.summary === undefined) return { projectId: value.projectId, sessionId: value.sessionId, kind: "state", control }
+    const [summary] = requireSessionSummaries([value.summary])
+    if (summary.sessionId !== value.sessionId) throw new TypeError("对话摘要身份无效")
+    return { projectId: value.projectId, sessionId: value.sessionId, kind: "state", control, summary }
+  }
   if (value.kind === "error" && ["runtime", "index", "transport"].includes(value.stage as string) &&
       isRecord(value.error) && typeof value.error.source === "string" && typeof value.error.code === "string" &&
       typeof value.error.message === "string") return value as unknown as SessionUpdate

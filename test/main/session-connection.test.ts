@@ -6,7 +6,7 @@ import { join, resolve, sep } from "node:path"
 import { DatabaseSync } from "node:sqlite"
 import { SessionRuntime } from "../../runtime/agent/src/session-runtime.ts"
 import { createAbortError } from "../../runtime/error/src/abort.ts"
-import { readSessionMeta, updateSessionMetaName } from "../../runtime/session/src/meta-store.ts"
+import { readSessionMeta } from "../../runtime/session/src/meta-store.ts"
 import type { SessionMeta } from "../../runtime/session/src/session-state.ts"
 import type { ModelAdapter, ModelRef } from "../../runtime/model/src/types.ts"
 import type { ToolCallContext } from "../../runtime/tools/src/types.ts"
@@ -19,7 +19,7 @@ import { SESSION_IPC_CHANNELS as channels, STARTUP_DATA_IPC_CHANNELS } from "../
 import type { SessionControl, SessionData, SessionSummary, SessionUpdate, StartedSessionResponse } from "../../src/preload/session-api.ts"
 const model: ModelRef = { providerId: "p", protocol: "responses", modelId: "first", name: "First", reasoningLevel: "medium" }
 const nextModel: ModelRef = { ...model, modelId: "second", name: "Second" }
-const content = [{ type: "text" as const, text: "相同内容" }]
+const content = [{ type: "text" as const, text: "**相同内容**" }]
 /** 无 Electron 依赖的真实 handler 调用入口。 */
 class Ipc implements IpcMainHandlePort {
   readonly handlers = new Map<string, (event: unknown, ...args: unknown[]) => unknown>()
@@ -140,6 +140,13 @@ async function testHistoryQueueSettings(profile: string): Promise<void> {
   assert.equal(item.repairs.length, 0, "活动查询不能执行恢复")
   assert.equal(snapshot.events.some((event) => event.type === "turn/end"), false)
   await item.ipc.invoke(channels.updateSessionSettings, "default", started.sessionId, { model: nextModel, sandboxMode: "full-access" })
+  const renamed = await item.ipc.invoke<SessionSummary>(channels.renameSession, "default", started.sessionId, "  保留名称  ")
+  assert.equal(renamed.name, "保留名称")
+  assert.ok(item.updates.some((update) => update.kind === "state" && update.summary?.name === renamed.name))
+  await assert.rejects(item.ipc.invoke(channels.renameSession, "default", started.sessionId, " "), /对话名称/)
+  await assert.rejects(item.ipc.invoke(channels.renameSession, "default", "missing", "Missing"))
+  await assert.rejects(item.ipc.invoke(channels.exportSessionMarkdown, "a0000000-0000-4000-8000-000000000001", started.sessionId))
+  assert.equal(await item.ipc.invoke(channels.exportSessionMarkdown, "default", started.sessionId), "## 用户\n\n**相同内容**")
   const firstQueue = await item.ipc.invoke<{ messageId: string }>(channels.enqueueSessionMessage, "default", started.sessionId, { content })
   const secondQueue = await item.ipc.invoke<{ messageId: string }>(channels.enqueueSessionMessage, "default", started.sessionId, { content })
   assert.notEqual(firstQueue.messageId, secondQueue.messageId)
@@ -154,7 +161,10 @@ async function testHistoryQueueSettings(profile: string): Promise<void> {
   assert.deepEqual(final.events.filter((event) => event.type === "assistant/message").map((event) => event.message.content), [
     [{ type: "text", text: "First" }], [{ type: "text", text: "Second" }], [{ type: "text", text: "Second" }],
   ])
-  updateSessionMetaName(item.paths.metaDatabasePath, "default", started.sessionId, "保留名称")
+  const beforeExport = item.repairs.length
+  assert.equal(await item.ipc.invoke(channels.exportSessionMarkdown, "default", started.sessionId),
+    ["First", "Second", "Second"].map((text) => `## 用户\n\n**相同内容**\n\n## 助手\n\n${text}`).join("\n\n"))
+  assert.equal(item.repairs.length, beforeExport, "导出历史不执行修复")
   const db = new DatabaseSync(item.paths.workspaceDatabasePath)
   try { db.prepare("DELETE FROM workspace_sessions WHERE session_id = ?").run(started.sessionId) } finally { db.close() }
   const sessions = await item.ipc.invoke<SessionSummary[]>(STARTUP_DATA_IPC_CHANNELS.listDefaultSessions)
@@ -186,6 +196,11 @@ async function testApproval(profile: string, decision: "approved" | "denied" | "
   await until(() => latest(item, started.sessionId)?.phase === "idle")
   const history = await item.ipc.invoke<SessionData>(channels.getSessionData, "default", started.sessionId)
   assert.deepEqual(history.events.filter((event) => event.type === "approval/result").map((event) => event.decision), [decision])
+  if (decision === "approved") {
+    assert.ok(history.events.some((event) => event.type === "tool/result"))
+    assert.equal(await item.ipc.invoke(channels.exportSessionMarkdown, "default", started.sessionId),
+      "## 用户\n\n**相同内容**\n\n## 助手\n\nFirst")
+  }
   assert.deepEqual(await item.ipc.invoke(channels.decideSessionApproval, "default", started.sessionId, "unknown", "approved"), { accepted: false })
   assert.deepEqual(item.failures, [])
 }

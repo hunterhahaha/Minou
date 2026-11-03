@@ -665,6 +665,11 @@ async function main() {
     await until(() => !first.getVisible())
     await evaluate("document.querySelector('.search-dialog').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))")
     await until(() => first.getVisible())
+    await evaluate("document.querySelector('.sidebar-more').click()")
+    await until(() => evaluate("Boolean(document.querySelector('.sidebar-action-menu'))"))
+    await until(() => !first.getVisible())
+    await evaluate("document.querySelector('.sidebar-action-menu button').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))")
+    await until(() => first.getVisible())
     for (const zoom of [1, 1.25, 1.5]) {
       window.webContents.setZoomFactor(zoom)
       await evaluate("window.dispatchEvent(new Event('resize'))")

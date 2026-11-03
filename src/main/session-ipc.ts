@@ -9,7 +9,7 @@ import { SessionRuntime } from "../../runtime/agent/src/session-runtime.ts"
 import type { ContinueSessionInput, SessionRuntimeSnapshot, StartNewSessionInput, StartedSessionTurn } from "../../runtime/agent/src/session-runtime.ts"
 import { INITIAL_SESSION_NAME } from "../../runtime/session/src/meta-store.ts"
 import { SESSION_IPC_CHANNELS } from "../preload/session-api.ts"
-import type { SessionControl, SessionData, SessionUpdate } from "../preload/session-api.ts"
+import type { SessionControl, SessionData, SessionSummary, SessionUpdate } from "../preload/session-api.ts"
 import type { ConfigFilePaths } from "./config-files.ts"
 import { reconcileWorkspaceSessions } from "./workspace-store.ts"
 
@@ -286,6 +286,41 @@ export function registerSessionIpcHandlers(
         control: controlOf(key, snapshot) }
     }))
   })
+  ipcMain.handle(SESSION_IPC_CHANNELS.renameSession, async (_event, rawProjectId, rawSessionId, name): Promise<SessionSummary> => {
+    const projectId = requireProjectId(rawProjectId), sessionId = requireSessionId(rawSessionId)
+    if (typeof name !== "string" || name.trim() === "") throw new TypeError("对话名称不能为空")
+    const key = keyOf(projectId, sessionId)
+    return serial(key, () => withRuntime(projectId, sessionId, async (runtime) => {
+      await runtime.updateSettings({ name: name.trim() })
+      const snapshot = await runtime.readSnapshot()
+      if (paths) reconcileWorkspaceSessions(paths, projectId)
+      const summary = { sessionId, name: snapshot.settings.name, updatedAt: snapshot.events.at(-1)?.createdAt ?? new Date().toISOString() }
+      await send({ kind: "state", projectId, sessionId, control: controlOf(key, snapshot), summary })
+      return summary
+    }))
+  })
+  ipcMain.handle(SESSION_IPC_CHANNELS.exportSessionMarkdown, async (_event, rawProjectId, rawSessionId): Promise<string> => {
+    const projectId = requireProjectId(rawProjectId), sessionId = requireSessionId(rawSessionId)
+    const key = keyOf(projectId, sessionId)
+    return serial(key, async () => {
+      const active = activeSessions.get(key)
+      const runtime = active ?? createRuntime(projectId, sessionId)
+      try {
+        if (runtime.sessionId !== sessionId) throw new Error("SessionRuntime 工厂返回了错误实例")
+        const { events } = await runtime.readSnapshot()
+        const messages: string[] = []
+        for (const event of events) {
+          if (event.type !== "user/message" && event.type !== "assistant/message") continue
+          const body = event.message.content.flatMap((block) => block.type === "text" ? [block.text] : []).join("\n\n")
+          if (body.trim()) messages.push(`## ${event.type === "user/message" ? "用户" : "助手"}\n\n${body}`)
+        }
+        if (messages.length === 0) throw new Error("对话没有可复制的正文")
+        return messages.join("\n\n")
+      } finally {
+        if (!active) runtime.close()
+      }
+    })
+  })
   ipcMain.handle(SESSION_IPC_CHANNELS.updateSessionSettings, async (_event, rawProjectId, rawSessionId, rawPatch) => {
     const projectId = requireProjectId(rawProjectId), sessionId = requireSessionId(rawSessionId)
     const patch = requireSettingsPatch(rawPatch)
@@ -335,10 +370,10 @@ function requireContinueSessionInput(value: unknown): ContinueSessionInput {
  * @returns 仅含已知设置字段的 patch。
  * @throws TypeError 空 patch 或未知字段。
  */
-function requireSettingsPatch(value: unknown): SessionSettingsPatch {
+function requireSettingsPatch(value: unknown): Omit<SessionSettingsPatch, "name"> {
   if (!isRecord(value) || Object.keys(value).length === 0 || Object.keys(value).some((key) => key !== "model" && key !== "sandboxMode") ||
     ("model" in value && !isModelRef(value.model)) || ("sandboxMode" in value && !isSandboxMode(value.sandboxMode))) throw new TypeError("Session 设置无效")
-  return value as SessionSettingsPatch
+  return value as Omit<SessionSettingsPatch, "name">
 }
 /**
  * @param value 待校验身份。

@@ -435,3 +435,12 @@
 - 工作台 Electron 回归在并行运行时模型菜单的原生点击等待超时，单独重跑退出 0，覆盖主题、键鼠、设置、输入自适应、窄窗及窗口按钮。日志见 `dist/browser-workspace-solo.*.log`。
 - 网页发起的新窗口接入同一对话的网页标签，支持 HTTP(S) 与用于站点跳转的初始 `about:blank`。Electron 已创建子内容时直接接管，保留原生 opener 关系。后台打开请求保留当前选中项，网页自行关闭时同步移除标签。
 - 新窗口回归：`npm run typecheck`、`npm run build` 与隐藏窗口 Electron 会话脚本通过，覆盖前台链接子标签、同源 opener、网页自行关闭、手动关闭回到来源标签及拒绝 `file:` 请求。完整日志见 `dist/popup-regression.*.log`。
+
+## 10. 侧栏项目与对话操作（2026-11-03）
+
+- 项目与对话各有独立的更多操作按钮。项目支持重命名和管理有序关联目录。对话支持重命名和复制 Markdown，复制只包含已提交的用户消息和助手文本。
+- Renderer 通过 preload 调用主进程。新增项目重命名、对话重命名、Markdown 导出 IPC。关联目录继续使用现有的选择、添加与移除接口。会话名称经 Runtime 的串行设置写入保存到 Meta，并同步侧栏索引。目录设置在下一次创建 Runtime 时生效。
+- 复用现有主题、弹窗焦点和浏览器面板避让规则。沿用现有依赖和数据库结构。
+- 验证：`npm run typecheck`、`npm run build` 和 `git diff --check` 通过。项目 IPC、工作区存储、真实 Runtime 与 SQLite、preload 和 Renderer 会话状态断言通过。覆盖关联目录选择取消、重复及失效路径移除、运行中重命名、索引恢复、Markdown 多轮顺序与工具结果过滤。
+- 隐藏窗口工作台及会话回归通过，内置网页视图在菜单打开时隐藏并在关闭后恢复。工作台覆盖键盘焦点、触屏入口模拟、窄窗定位、目录增删、重命名失败重试和后台复制。复核 `dist/workspace-sidebar-menu-narrow.png`，菜单保持在窗口内并越过侧栏边界。Impeccable 静态检查返回空列表。
+- 剪贴板成功与失败使用替身验证，实体触屏和系统剪贴板未做手工复测。独立的模拟 Session IPC 脚本在本次代码和 HEAD 基线上均未输出完成标记，未计入通过项。

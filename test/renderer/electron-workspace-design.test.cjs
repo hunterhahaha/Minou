@@ -5,7 +5,7 @@ const { tmpdir } = require("node:os")
 const { join, resolve, sep } = require("node:path")
 const { app, BrowserWindow, ipcMain } = require("electron")
 const { registerWindowIpcHandlers } = require("../../dist/src/main/window-ipc.js")
-const { STARTUP_DATA_IPC_CHANNELS: startup, SESSION_IPC_CHANNELS: session, SKILL_IPC_CHANNELS: skill, MCP_IPC_CHANNELS: mcp, PROVIDER_IPC_CHANNELS: provider } = require("../../dist/src/preload/session-api.js")
+const { STARTUP_DATA_IPC_CHANNELS: startup, SESSION_IPC_CHANNELS: session, PROJECT_IPC_CHANNELS: projectChannels, SKILL_IPC_CHANNELS: skill, MCP_IPC_CHANNELS: mcp, PROVIDER_IPC_CHANNELS: provider } = require("../../dist/src/preload/session-api.js")
 const { createElectronWindowManager } = require("../../dist/src/main/electron-windows.js")
 let window, profile, failed = false, historyReads = 0, skillReads = 0, mcpReads = 0
 const errors = []
@@ -339,6 +339,40 @@ async function main() {
   registerWindowIpcHandlers(ipcMain, BrowserWindow)
   profile = await mkdtemp(join(tmpdir(), "nicode-workspace-design-"))
   app.setPath("userData", join(profile, "electron"))
+  let renameFails = true
+  let pickDirectory = false
+  const folder = join(profile, "associated")
+  const transcript = "## 用户\n\n**原文**\n\n## 助手\n\n回复"
+  ipcMain.handle(projectChannels.renameProject, (_event, id, name) => {
+    const project = projects.find((item) => item.projectId === id)
+    assert.equal(id, PROJECT)
+    project.name = name
+    return project
+  })
+  ipcMain.handle(projectChannels.selectDirectory, () => pickDirectory ? { path: folder, name: "associated" } : null)
+  ipcMain.handle(projectChannels.addProjectDirectory, (_event, id, path) => {
+    assert.equal(id, PROJECT)
+    assert.equal(path, folder)
+    projects[0].directories.push(path)
+    return { success: true }
+  })
+  ipcMain.handle(projectChannels.removeProjectDirectory, (_event, id, path) => {
+    assert.equal(id, PROJECT)
+    projects[0].directories = projects[0].directories.filter((directory) => directory !== path)
+    return { success: true }
+  })
+  ipcMain.handle(session.renameSession, (_event, id, sessionId, name) => {
+    assert.equal(id, PROJECT)
+    assert.equal(sessionId, "project-session")
+    if (renameFails) { renameFails = false; throw new Error("保存失败，请重试") }
+    projects[0].sessions[0].name = name
+    return projects[0].sessions[0]
+  })
+  ipcMain.handle(session.exportSessionMarkdown, (_event, id, sessionId) => {
+    assert.equal(id, "default")
+    assert.equal(sessionId, "design")
+    return transcript
+  })
   ipcMain.handle(startup.listProjects, () => projects)
   ipcMain.handle(startup.listDefaultSessions, () => sessions)
   ipcMain.handle(startup.listProviders, () => providers)
@@ -810,6 +844,7 @@ async function main() {
     await until(() => evaluate("matchMedia('(pointer: coarse)').matches"))
     await evaluate("document.activeElement.blur()")
     await until(() => evaluate("[...document.querySelectorAll('.section-action-button, .project-action-button')].every(node => getComputedStyle(node).opacity === '1')"))
+    await until(() => evaluate("[...document.querySelectorAll('.sidebar-more')].every(node => getComputedStyle(node).opacity === '1')"))
     await screenshot("workspace-touch")
   } finally {
     await window.webContents.debugger.sendCommand("Emulation.setTouchEmulationEnabled", { enabled: false })
@@ -825,6 +860,71 @@ async function main() {
   assert.notEqual(await evaluate("getComputedStyle(document.querySelector('.project-sessions .session-name[aria-current=\"page\"]')).backgroundColor"), "rgba(0, 0, 0, 0)", "只为选中的对话保留高亮")
   assert.equal(await evaluate("document.querySelector('.project-name').hasAttribute('aria-current')"), false, "项目分组不同时标记为当前页面")
   await screenshot('workspace-project-session-centered')
+  const originalRoute = await evaluate("location.hash")
+  const historyBeforeCopy = historyReads
+  const projectMore = ".project-row .sidebar-more"
+  const projectSessionMore = ".project-sessions .sidebar-more"
+  const defaultMore = ".chats-section .sidebar-more"
+  const menu = ".sidebar-action-menu"
+  const dialog = "[aria-labelledby=sidebar-dialog-title]"
+  const nameField = "#sidebar-target-name"
+  await click(projectMore)
+  await until(() => evaluate("document.activeElement.textContent === '设置关联目录'"))
+  await key("ArrowDown")
+  assert.equal(await evaluate("document.activeElement.textContent"), "重命名")
+  await key("Escape")
+  await until(() => evaluate("document.activeElement.matches('.project-row .sidebar-more') && !document.querySelector('.sidebar-action-menu')"))
+  await click(projectMore)
+  await click(menu + " button:first-child")
+  await until(() => evaluate("document.activeElement.matches('.project-directory-add')"))
+  await click(dialog + " .project-directory-add")
+  await until(() => evaluate("!document.querySelector('.project-directory-add').disabled"))
+  assert.equal(await evaluate("document.querySelectorAll('[aria-labelledby=sidebar-dialog-title] .project-directory-row').length"), 1)
+  pickDirectory = true
+  await click(dialog + " .project-directory-add")
+  await until(() => evaluate("document.querySelectorAll('[aria-labelledby=sidebar-dialog-title] .project-directory-row').length === 2"))
+  await click(dialog + " .project-directory-row:nth-child(2) button")
+  await until(() => evaluate("document.querySelectorAll('[aria-labelledby=sidebar-dialog-title] .project-directory-row').length === 1"))
+  await click(dialog + " .project-dialog-close")
+  await click(projectMore)
+  await click(menu + " button:last-child")
+  await until(() => evaluate("document.activeElement.id === 'sidebar-target-name'"))
+  assert.equal(await evaluate("document.querySelector('#sidebar-target-name').value"), "NiCode")
+  await input(nameField, "  NiCode Workspace  ")
+  await click(dialog + " button[type=submit]")
+  await until(() => evaluate("document.querySelector('.breadcrumb > span').textContent === 'NiCode Workspace'"))
+  await click(projectSessionMore)
+  await click(menu + " button:first-child")
+  await until(() => evaluate("document.activeElement.id === 'sidebar-target-name'"))
+  await input(nameField, "  已重命名的项目对话  ")
+  await click(dialog + " button[type=submit]")
+  await until(() => evaluate("document.querySelector('.project-dialog-error')?.textContent.includes('保存失败')"))
+  assert.equal(await evaluate("document.querySelector('#sidebar-target-name').value"), "  已重命名的项目对话  ")
+  await click(dialog + " button[type=submit]")
+  await until(() => evaluate("document.querySelector('.breadcrumb strong').textContent === '已重命名的项目对话'"))
+  const originalSize = window.getContentSize()
+  window.setContentSize(480, 520)
+  await until(() => evaluate("innerWidth <= 480"))
+  await click(projectSessionMore)
+  await until(() => evaluate("Boolean(document.querySelector('.sidebar-action-menu'))"))
+  assert.equal(await evaluate("(() => { const r = document.querySelector('.sidebar-action-menu').getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight })()"), true)
+  await screenshot("workspace-sidebar-menu-narrow")
+  assert.equal(await evaluate("document.querySelectorAll('.sidebar-action-menu [role=menuitem]').length"), 2)
+  await key("Escape")
+  window.setContentSize(...originalSize)
+  await evaluate("Object.defineProperty(navigator.clipboard, 'writeText', { configurable: true, value: async (text) => { window.copiedSidebarText = text } })")
+  await click(defaultMore)
+  await click(menu + " button:last-child")
+  await until(() => evaluate("document.querySelector('.sidebar-copy-status')?.textContent === '已复制对话'"))
+  assert.equal(await evaluate("window.copiedSidebarText"), transcript)
+  await evaluate("Object.defineProperty(navigator.clipboard, 'writeText', { configurable: true, value: async () => { throw new Error('剪贴板不可用') } })")
+  await click(defaultMore)
+  await click(menu + " button:last-child")
+  await until(() => evaluate("document.querySelector('.sidebar-copy-status[role=alert]')?.textContent.includes('剪贴板不可用')"))
+  await evaluate("delete navigator.clipboard.writeText; document.querySelector('.sidebar-copy-status').getAnimations().forEach(animation => animation.finish())")
+  assert.equal(await evaluate("location.hash"), originalRoute)
+  assert.equal(historyReads, historyBeforeCopy, "后台复制和重命名均不导航或重新读取对话")
+
   await click('.project-name')
   await until(() => evaluate("!document.querySelector('.project-sessions')"))
   assert.equal(await evaluate("document.querySelector('.project-row').classList.contains('project-row-active')"), false, "收起当前对话所属项目不恢复项目行高亮")

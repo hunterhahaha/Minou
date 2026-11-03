@@ -1,7 +1,7 @@
 /** 目录选择、Project 创建与关联目录变更的主进程 IPC 测试。 */
 
 import assert from "node:assert/strict"
-import { mkdtemp, mkdir, readFile, readdir, rm, stat } from "node:fs/promises"
+import { mkdtemp, mkdir, readFile, readdir, rm, rmdir, stat } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, parse, resolve, sep } from "node:path"
 
@@ -91,6 +91,14 @@ async function main(): Promise<void> {
       updatedAt: "2026-09-24T03:00:00.000Z", directories: project.directories,
       sessions: [session],
     })
+    const renamed = await ipc.invoke<ProjectSummary>(PROJECT_IPC_CHANNELS.renameProject, project.projectId, "  Renamed  ")
+    assert.equal(renamed.name, "Renamed")
+    assert.deepEqual(renamed.directories, project.directories)
+    assert.deepEqual(readProjectWorkspace(databasePath, project.projectId).sessions, [session])
+    assert.equal(readProjectWorkspace(databasePath, project.projectId).name, "Renamed")
+    await assert.rejects(ipc.invoke(PROJECT_IPC_CHANNELS.renameProject, project.projectId, " "), /项目名称/)
+    await assert.rejects(ipc.invoke(PROJECT_IPC_CHANNELS.renameProject, UNKNOWN_PROJECT_ID, "Missing"))
+    await assert.rejects(ipc.invoke(PROJECT_IPC_CHANNELS.renameProject, "default", "Default"))
     assert.deepEqual(await ipc.invoke(PROJECT_IPC_CHANNELS.addProjectDirectory, project.projectId, firstDirectory), {
       success: false, error: `关联目录已存在：${firstDirectory}`,
     })
@@ -112,6 +120,7 @@ async function main(): Promise<void> {
     assert.equal(new Date(saved.updatedAt).toISOString(), saved.updatedAt)
     assert.notEqual(saved.updatedAt, "2026-09-24T03:00:00.000Z")
 
+    await rmdir(secondDirectory)
     assert.deepEqual(await ipc.invoke(PROJECT_IPC_CHANNELS.removeProjectDirectory, project.projectId, secondDirectory), {
       success: true,
     })

@@ -14,7 +14,7 @@ import { isDeepStrictEqual } from "node:util"
 import { PROTOCOLS } from "../../model/src/types.ts"
 import type { ModelRef, UnifiedToolDefinition } from "../../model/src/types.ts"
 import type { ContextUpdateEvent, SessionEvent, SkillContextChange, SkillScope, SummaryEndEvent } from "./events.ts"
-import { INITIAL_SESSION_NAME, readSessionMeta, saveSessionMeta } from "./meta-store.ts"
+import { INITIAL_SESSION_NAME, readSessionMeta, saveSessionMeta, updateSessionMetaName } from "./meta-store.ts"
 import { requireProjectId } from "./project-id.ts"
 import { skillSourceKey } from "../../skill/src/context.ts"
 import type { ProjectId } from "./project-id.ts"
@@ -37,6 +37,8 @@ export type SandboxMode = (typeof SANDBOX_MODES)[number]
 
 /** 对话设置的部分更新；不包含 Usage、Skills 或其他派生状态。 */
 export interface SessionSettingsPatch {
+  /** 用户设置的对话名称。 */
+  name?: string
   /** 后续 Turn 开始时读取的模型。 */
   model?: ModelRef
   /** 后续文件工具检查权限时读取的沙箱模式。 */
@@ -580,9 +582,10 @@ export function createFileSessionState(options: FileSessionStateOptions): FileSe
       const meta = readRequiredMeta(paths)
       return structuredClone({ name: meta.name, currentModel: meta.currentModel, sandboxMode: meta.sandboxMode })
     }),
-    /** @param patch 已确定的模型与权限部分更新；串行重读 Meta 后只改指定字段。 @throws Error patch 无效或 Meta 写入失败。 */
+    /** @param patch 名称、模型与权限的部分更新；串行重读 Meta 后只改指定字段。 @throws Error patch 无效或 Meta 写入失败。 */
     writeSettings: async (patch) => {
-      if ((patch.model === undefined && patch.sandboxMode === undefined) ||
+      if ((patch.name === undefined && patch.model === undefined && patch.sandboxMode === undefined) ||
+          (patch.name !== undefined && (typeof patch.name !== "string" || patch.name.trim() === "")) ||
           (patch.model !== undefined && !isModelRef(patch.model)) ||
           (patch.sandboxMode !== undefined && !isSandboxMode(patch.sandboxMode))) {
         throw new Error("Session 设置更新无效。")
@@ -590,11 +593,16 @@ export function createFileSessionState(options: FileSessionStateOptions): FileSe
       const update = structuredClone(patch)
       await runSerialized(queue, async () => {
         const meta = readRequiredMeta(paths)
-        saveSessionMeta(paths.metaDatabasePath, {
-          ...meta,
-          currentModel: update.model ?? meta.currentModel,
-          sandboxMode: update.sandboxMode ?? meta.sandboxMode,
-        })
+        if (update.model !== undefined || update.sandboxMode !== undefined) {
+          saveSessionMeta(paths.metaDatabasePath, {
+            ...meta,
+            currentModel: update.model ?? meta.currentModel,
+            sandboxMode: update.sandboxMode ?? meta.sandboxMode,
+          })
+        }
+        if (update.name !== undefined) {
+          updateSessionMetaName(paths.metaDatabasePath, meta.projectId, meta.sessionId, update.name.trim())
+        }
       })
     },
     repairDerivedState,

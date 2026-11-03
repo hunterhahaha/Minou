@@ -159,8 +159,12 @@ export class WorkspaceSessionState {
         this.pendingEventsRef.set(key, mergeSessionEvents(this.pendingEventsRef.get(key) ?? [], [update.event]))
       }
       this.releaseControl(key)
-    } else if (update.kind === "state") this.acceptControl(key, update.control)
-    else this.view(key).operationError = update.error.message
+    } else if (update.kind === "state") {
+      if (update.summary && update.control.revision > Math.max(this.view(key).control?.revision ?? -1, this.view(key).pendingControl?.revision ?? -1)) {
+        this.view(key).summary = update.summary
+      }
+      this.acceptControl(key, update.control)
+    } else this.view(key).operationError = update.error.message
     this.changed()
     if (this.needsRepair(key)) void this.load(update.projectId, update.sessionId, true).catch(() => {})
   }

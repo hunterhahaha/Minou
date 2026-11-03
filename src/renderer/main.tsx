@@ -1,10 +1,12 @@
 /** Electron 工作区：读取启动摘要，并由 hash 路由管理工作区与 Session 身份。 */
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useLayoutEffect, useRef, useState } from "react"
 import { BrowserWorkspace, TagManager } from "./chat-browser.tsx"
+import { createPortal } from "react-dom"
 import { createRoot } from "react-dom/client"
 import { HashRouter, Navigate, Outlet, Route, Routes, useMatch, useNavigate, useParams, useOutletContext } from "react-router"
 import {
   IconChevronDown,
+  IconDots,
   IconFolder,
   IconFolderPlus,
   IconLayoutSidebar,
@@ -41,6 +43,26 @@ type WorkspaceRoute =
   | { page: "new-chat"; group: "project"; projectId: string }
   | { page: "session"; group: "default"; sessionId: string }
   | { page: "session"; group: "project"; projectId: string; sessionId: string }
+/** 菜单操作固定使用打开时的项目及对话身份。 */
+type SidebarTarget = { projectId: string; name: string; sessionId?: string }
+type SidebarDialog = { kind: "rename" | "directories"; target: SidebarTarget }
+
+/**
+ * 显示独立于导航按钮的更多操作入口。
+ * @param props 目标、展开状态及打开菜单的回调。
+ * @returns 可通过键盘或指针操作的按钮。
+ */
+function SidebarMore({ target, expanded, onOpen }: {
+  target: SidebarTarget
+  expanded: boolean
+  onOpen: (target: SidebarTarget, anchor: HTMLButtonElement) => void
+}) {
+  return <button type="button" className="sidebar-more" aria-label={`${target.name}的更多操作`}
+    aria-haspopup="menu" aria-expanded={expanded} onClick={(event) => onOpen(target, event.currentTarget)}>
+    <IconDots size={16} aria-hidden="true" />
+  </button>
+}
+
 /** 本页可切换的权限展示状态；对话创建前仅保存在渲染进程。 */
 type Permission = "default" | "workspace-read-only" | "workspace-read-write" | "full-access"
 const permissionLabels: Record<Permission, string> = {
@@ -59,14 +81,18 @@ function SessionList({
   sessions,
   activeSessionId,
   onOpenSession,
+  menuAnchor,
+  onMore,
 }: {
   projectId: string
   sessions: SessionSummary[]
   activeSessionId?: string
+  menuAnchor: SidebarTarget | undefined
+  onMore: (target: SidebarTarget, anchor: HTMLButtonElement) => void
   onOpenSession: (projectId: string, sessionId: string) => void
 }) {
   return <ul className="session-list">{sessions.map((session) =>
-    <li key={session.sessionId}>
+    <li key={session.sessionId} className="sidebar-session-row">
       <button
         className="session-name"
         type="button"
@@ -76,6 +102,8 @@ function SessionList({
       >
         <span>{session.name}</span>
       </button>
+      <SidebarMore target={{ projectId, sessionId: session.sessionId, name: session.name }}
+        expanded={menuAnchor?.projectId === projectId && menuAnchor.sessionId === session.sessionId} onOpen={onMore} />
     </li>,
   )}</ul>
 }
@@ -143,6 +171,45 @@ function Workspace() {
   const [defaultModelError, setDefaultModelError] = useState<string | undefined>()
   const [permission, setPermission] = useState<Permission>("default")
   const [newChatReasoningLevel, setNewChatReasoningLevel] = useState("medium")
+  const [sidebarMenu, setSidebarMenu] = useState<{ target: SidebarTarget; anchor: HTMLButtonElement } | null>(null)
+  const [sidebarDialog, setSidebarDialog] = useState<SidebarDialog | null>(null)
+  const [sidebarName, setSidebarName] = useState("")
+  const [sidebarBusy, setSidebarBusy] = useState(false)
+  const [sidebarError, setSidebarError] = useState<string | null>(null)
+  const [copyStatus, setCopyStatus] = useState<{ text: string; error: boolean } | null>(null)
+  const sidebarMenuRef = useRef<HTMLDivElement>(null)
+  const sidebarDialogRef = useRef<HTMLElement>(null)
+  useDialogFocus(sidebarDialogRef, sidebarDialog !== null)
+
+  useLayoutEffect(() => {
+    const menu = sidebarMenuRef.current
+    if (!sidebarMenu || !menu) return
+    const anchor = sidebarMenu.anchor
+    /** 根据按钮与菜单的实际尺寸定位，在空间不足时向上展开。 */
+    function positionMenu(): void {
+      if (!menu) return
+      const rect = anchor.getBoundingClientRect()
+      const { width, height } = menu.getBoundingClientRect()
+      const top = rect.bottom + 4 + height <= window.innerHeight - 8 ? rect.bottom + 4 : rect.top - height - 4
+      menu.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - width - 8))}px`
+      menu.style.top = `${Math.max(8, Math.min(top, window.innerHeight - height - 8))}px`
+    }
+    positionMenu()
+    menu.querySelector("button")?.focus({ preventScroll: true })
+    window.addEventListener("resize", positionMenu)
+    window.addEventListener("scroll", positionMenu, true)
+    return () => {
+      window.removeEventListener("resize", positionMenu)
+      window.removeEventListener("scroll", positionMenu, true)
+    }
+  }, [sidebarMenu])
+
+  useEffect(() => {
+    if (!copyStatus) return
+    const timer = window.setTimeout(() => setCopyStatus(null), 4500)
+    return () => window.clearTimeout(timer)
+  }, [copyStatus])
+
   const [openMenu, setOpenMenu] = useState<"permission" | null>(null)
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [projectsOpen, setProjectsOpen] = useState(true)
@@ -181,10 +248,101 @@ function Workspace() {
       else setProjects({ status: "ready", value: await window.nicode.listProjects() })
     } catch (error) { console.error("更新对话列表失败", error) }
   }
+  /**
+   * 打开行菜单并保留用于键盘焦点恢复的按钮。
+   * @param target 项目或对话身份。
+   * @param anchor 触发菜单的按钮。
+   */
+  function openSidebarMenu(target: SidebarTarget, anchor: HTMLButtonElement): void {
+    setOpenMenu(null)
+    setSidebarMenu((current) => current?.anchor === anchor ? null : { target, anchor })
+  }
+
+  /**
+   * 从菜单打开对应弹窗。
+   * @param kind 弹窗操作。
+   */
+  function openSidebarDialog(kind: SidebarDialog["kind"]): void {
+    if (!sidebarMenu) return
+    sidebarMenu.anchor.focus()
+    setSidebarName(sidebarMenu.target.name)
+    setSidebarError(null)
+    setSidebarDialog({ kind, target: sidebarMenu.target })
+    setSidebarMenu(null)
+  }
+
+  /**
+   * 提交名称并同步侧栏及对话缓存。
+   * @returns 保存或错误提示完成。
+   */
+  async function renameSidebarTarget(): Promise<void> {
+    const name = sidebarName.trim()
+    if (!sidebarDialog || sidebarBusy || !name) return
+    const { projectId, sessionId } = sidebarDialog.target
+    setSidebarBusy(true)
+    setSidebarError(null)
+    try {
+      if (sessionId === undefined) {
+        const project = await window.nicode.renameProject(projectId, name)
+        setProjects((current) => current.status === "ready"
+          ? { status: "ready", value: current.value.map((item) => item.projectId === projectId ? { ...item, name: project.name, updatedAt: project.updatedAt } : item) }
+          : current)
+      } else {
+        const summary = await window.nicode.renameSession(projectId, sessionId, name)
+        const key = sessionKey(projectId, sessionId)
+        if (sessionsState.has(key)) sessionsState.setView(key, { summary })
+        await refreshSessionSummaries(projectId)
+      }
+      setSidebarDialog(null)
+    } catch (error) { setSidebarError(errorMessage(error)) }
+    finally { setSidebarBusy(false) }
+  }
+
+  /**
+   * 增加或移除一项关联目录。
+   * @param directory 传入已关联路径时移除，省略时通过系统窗口选择新目录。
+   * @returns 目录保存、取消选择或错误提示完成。
+   */
+  async function changeSidebarDirectory(directory?: string): Promise<void> {
+    if (!sidebarDialog || sidebarBusy) return
+    const { projectId } = sidebarDialog.target
+    setSidebarBusy(true)
+    setSidebarError(null)
+    try {
+      const path = directory ?? (await window.nicode.selectDirectory())?.path
+      if (path === undefined) return
+      const result = directory === undefined
+        ? await window.nicode.addProjectDirectory(projectId, path)
+        : await window.nicode.removeProjectDirectory(projectId, path)
+      if (!result.success) throw new Error(result.error)
+      setProjects({ status: "ready", value: await window.nicode.listProjects() })
+    } catch (error) { setSidebarError(errorMessage(error)) }
+    finally { setSidebarBusy(false) }
+  }
+
+  /**
+   * 将菜单目标的对话正文写入剪贴板。
+   * @returns 复制成功或失败提示完成。
+   */
+  async function copySidebarConversation(): Promise<void> {
+    if (!sidebarMenu || sidebarMenu.target.sessionId === undefined) return
+    const { projectId, sessionId } = sidebarMenu.target
+    sidebarMenu.anchor.focus()
+    setSidebarMenu(null)
+    setCopyStatus(null)
+    try {
+      const markdown = await window.nicode.exportSessionMarkdown(projectId, sessionId)
+      await navigator.clipboard.writeText(markdown)
+      setCopyStatus({ text: "已复制对话", error: false })
+    } catch (error) {
+      setCopyStatus({ text: `复制对话失败：${errorMessage(error)}`, error: true })
+    }
+  }
+
   useEffect(() => window.nicode.onSessionUpdate((update) => {
     try { sessionsState.receive(update) }
     catch (error) { sessionsState.setView(sessionKey(update.projectId, update.sessionId), { operationError: errorMessage(error) }) }
-    if (update.kind === "event" && update.event.type === "turn/end") void refreshSessionSummaries(update.projectId)
+    if ((update.kind === "event" && update.event.type === "turn/end") || (update.kind === "state" && update.summary)) void refreshSessionSummaries(update.projectId)
   }), [sessionsState])
 
   /**
@@ -567,8 +725,9 @@ function Workspace() {
                     <div className={workspaceRoute.page === "new-chat" && workspaceRoute.group === "project" && workspaceRoute.projectId === project.projectId ? "project-row project-row-active" : "project-row"}>
                       <button className="project-name" type="button" title={project.name} aria-expanded={expandedProjects.has(project.projectId)} aria-current={workspaceRoute.page === "new-chat" && workspaceRoute.group === "project" && workspaceRoute.projectId === project.projectId ? "page" : undefined} onClick={() => toggleProject(project.projectId)}><IconChevronDown className={expandedProjects.has(project.projectId) ? "project-chevron" : "project-chevron collapsed"} size={13} stroke={1.6} aria-hidden="true" /><span>{project.name}</span></button>
                       <button className="project-action-button" type="button" aria-label={`在 ${project.name} 中新建聊天`} title={`在 ${project.name} 中新建聊天`} onClick={() => focusNewChatComposer(project.projectId)}><IconPlus size={16} stroke={1.6} aria-hidden="true" /></button>
+                      <SidebarMore target={project} expanded={sidebarMenu?.target.projectId === project.projectId && sidebarMenu.target.sessionId === undefined} onOpen={openSidebarMenu} />
                     </div>
-                    {expandedProjects.has(project.projectId) && <div className="project-sessions"><SessionList projectId={project.projectId} sessions={project.sessions} activeSessionId={workspaceRoute.page === "session" && workspaceRoute.group === "project" && workspaceRoute.projectId === project.projectId ? workspaceRoute.sessionId : undefined} onOpenSession={navigateToSession} />
+                    {expandedProjects.has(project.projectId) && <div className="project-sessions"><SessionList projectId={project.projectId} sessions={project.sessions} activeSessionId={workspaceRoute.page === "session" && workspaceRoute.group === "project" && workspaceRoute.projectId === project.projectId ? workspaceRoute.sessionId : undefined} onOpenSession={navigateToSession} menuAnchor={sidebarMenu?.target} onMore={openSidebarMenu} />
                       {project.sessions.length === 0 && <button className="project-first-chat" type="button" onClick={() => focusNewChatComposer(project.projectId)}>开始第一段对话 <IconArrowUpRight size={12} /></button>}
                     </div>}
                   </li>)}</ul>)}
@@ -580,7 +739,7 @@ function Workspace() {
               <button className="section-action section-action-button" type="button" aria-label="新建聊天" title="新建聊天" onClick={() => focusNewChatComposer()}><IconPlus size={16} stroke={1.6} aria-hidden="true" /></button>
             </div>
             {chatsOpen && <><DataStatus state={defaultSessions} retry={() => { void loadDefaultSessions() }} />
-              {defaultSessions.status === "ready" && (defaultSessions.value.length === 0 ? <p className="empty-list">你的下一段对话，从这里开始。</p> : <SessionList projectId="default" sessions={defaultSessions.value} activeSessionId={workspaceRoute.page === "session" && workspaceRoute.group === "default" ? workspaceRoute.sessionId : undefined} onOpenSession={navigateToSession} />)}
+              {defaultSessions.status === "ready" && (defaultSessions.value.length === 0 ? <p className="empty-list">你的下一段对话，从这里开始。</p> : <SessionList projectId="default" sessions={defaultSessions.value} activeSessionId={workspaceRoute.page === "session" && workspaceRoute.group === "default" ? workspaceRoute.sessionId : undefined} onOpenSession={navigateToSession} menuAnchor={sidebarMenu?.target} onMore={openSidebarMenu} />)}
             </>}
           </section>
         </nav>
@@ -591,7 +750,7 @@ function Workspace() {
       </aside>}
       <main className="main-panel">
         <BrowserWorkspace manager={browserTags} sessionId={browserOwner} theme={theme}
-          obscured={settingsDialogOpen || projectDialogOpen || searchOpen || openMenu !== null}
+          obscured={settingsDialogOpen || projectDialogOpen || searchOpen || openMenu !== null || sidebarMenu !== null || sidebarDialog !== null}
           toggle={<button className="settings-icon-button browser-toggle" type="button" aria-expanded={browserExpanded} aria-controls="chat-browser-pane"
               aria-label={browserExpanded ? "收起内置浏览器" : "展开内置浏览器"} title={browserExpanded ? "收起内置浏览器" : "展开内置浏览器"}
               onClick={() => {
@@ -644,6 +803,71 @@ function Workspace() {
     <footer className="app-statusbar"><span><i className="status-dot" />{runningCount > 0 ? `${runningCount} 个对话运行中` : "本地工作台"}</span></footer>
     {openMenu !== null && <div className="menu-backdrop" role="presentation" onClick={() => setOpenMenu(null)} />}
     {searchOpen && <WorkspaceSearch projects={projects.status === "ready" ? projects.value : []} sessions={defaultSessions.status === "ready" ? defaultSessions.value : []} status={projects.status === "error" || defaultSessions.status === "error" ? "部分摘要加载失败，可在侧栏重试；下方显示已加载结果。" : projects.status === "loading" || defaultSessions.status === "loading" ? "正在加载更多摘要…" : undefined} onClose={() => setSearchOpen(false)} onProject={navigateToNewChat} onSession={navigateToSession} />}
+    {sidebarMenu && createPortal(<>
+      <div className="menu-backdrop sidebar-menu-backdrop" onPointerDown={() => setSidebarMenu(null)} />
+      <div ref={sidebarMenuRef} className="selector-menu sidebar-action-menu" role="menu" aria-label="更多操作"
+        onKeyDown={(event) => {
+          if (event.key === "Escape" || event.key === "Tab") {
+            event.stopPropagation()
+            if (event.key === "Escape") event.preventDefault()
+            sidebarMenu.anchor.focus()
+            setSidebarMenu(null)
+          } else if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
+            event.preventDefault()
+            const items = Array.from(event.currentTarget.querySelectorAll("button"))
+            const index = items.indexOf(document.activeElement as HTMLButtonElement)
+            const next = event.key === "Home" ? 0 : event.key === "End" ? items.length - 1
+              : (index + items.length + (event.key === "ArrowDown" ? 1 : -1)) % items.length
+            items[next]?.focus()
+          }
+        }}>
+        {sidebarMenu.target.sessionId === undefined && <button type="button" role="menuitem" onClick={() => openSidebarDialog("directories")}>设置关联目录</button>}
+        <button type="button" role="menuitem" onClick={() => openSidebarDialog("rename")}>重命名</button>
+        {sidebarMenu.target.sessionId !== undefined && <button type="button" role="menuitem" onClick={() => void copySidebarConversation()}>复制对话</button>}
+      </div>
+    </>, document.body)}
+    {sidebarDialog && <div className="project-dialog-backdrop" role="presentation" onMouseDown={(event) => {
+      if (event.target === event.currentTarget && !sidebarBusy) setSidebarDialog(null)
+    }}>
+      <section className="project-dialog" role="dialog" aria-modal="true" aria-labelledby="sidebar-dialog-title"
+        aria-busy={sidebarBusy} ref={sidebarDialogRef} tabIndex={-1} onKeyDown={(event) => {
+          if (event.key === "Escape" && !event.nativeEvent.isComposing) {
+            event.stopPropagation()
+            if (!sidebarBusy) setSidebarDialog(null)
+          }
+        }}>
+        <header className="project-dialog-header">
+          <h2 id="sidebar-dialog-title">{sidebarDialog.kind === "directories" ? "设置关联目录" : sidebarDialog.target.sessionId === undefined ? "重命名项目" : "重命名对话"}</h2>
+          <button type="button" className="project-dialog-close" aria-label="关闭" disabled={sidebarBusy} onClick={() => setSidebarDialog(null)}><IconX size={20} aria-hidden="true" /></button>
+        </header>
+        {sidebarDialog.kind === "rename" ? <form className="project-dialog-form" onSubmit={(event) => { event.preventDefault(); void renameSidebarTarget() }}>
+          <div className="project-dialog-field">
+            <label htmlFor="sidebar-target-name">名称</label>
+            <div className="project-name-input"><input id="sidebar-target-name" data-dialog-autofocus value={sidebarName} disabled={sidebarBusy} onChange={(event) => setSidebarName(event.target.value)} /></div>
+          </div>
+          {sidebarError && <p className="project-dialog-error" role="alert">{sidebarError}</p>}
+          <footer className="project-dialog-footer">
+            <button type="button" className="settings-secondary-button" disabled={sidebarBusy} onClick={() => setSidebarDialog(null)}>取消</button>
+            <button type="submit" className="create-project-button" disabled={sidebarBusy || !sidebarName.trim()}>保存</button>
+          </footer>
+        </form> : <div className="project-dialog-form">
+          <p className="project-dialog-description">首个关联目录用作工作目录。没有关联目录时使用内置工作区。</p>
+          <div className="project-directory-list">
+            {(projects.status === "ready" ? projects.value.find((project) => project.projectId === sidebarDialog.target.projectId)?.directories ?? [] : []).map((directory) =>
+              <div className="project-directory-row" key={directory} title={directory}>
+                <span className="project-directory-name">{directory}</span>
+                <button type="button" className="project-directory-remove" aria-label={`移除目录 ${directory}`} disabled={sidebarBusy}
+                  onClick={() => void changeSidebarDirectory(directory)}><IconX size={16} aria-hidden="true" /></button>
+              </div>)}
+            <button type="button" className="project-directory-add" data-dialog-autofocus disabled={sidebarBusy} onClick={() => void changeSidebarDirectory()}>
+              <IconPlus size={16} aria-hidden="true" /> 添加目录
+            </button>
+          </div>
+          {sidebarError && <p className="project-dialog-error" role="alert">{sidebarError}</p>}
+        </div>}
+      </section>
+    </div>}
+    {copyStatus && <div className="sidebar-copy-status" role={copyStatus.error ? "alert" : "status"}>{copyStatus.text}</div>}
     {projectDialogOpen && <div className="project-dialog-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) closeProjectDialog() }}>
       <section ref={projectDialogRef} tabIndex={-1} className="project-dialog" role="dialog" aria-modal="true" aria-labelledby="project-dialog-title" aria-busy={creatingProject || selectingProjectDirectory}>
         <header className="project-dialog-header">

@@ -16,6 +16,8 @@ async function main(): Promise<void> {
   const api = createSessionApi({
     invoke: async (channel, ...args) => {
       calls.push({ channel, args })
+      if (channel === SESSION_IPC_CHANNELS.renameSession) return history.summary
+      if (channel === SESSION_IPC_CHANNELS.exportSessionMarkdown) return "## 用户\n\n**原文**"
       if (channel === SESSION_IPC_CHANNELS.getSessionData) return history
       if (channel === SESSION_IPC_CHANNELS.updateSessionSettings) return control
       return { accepted: false }
@@ -27,9 +29,18 @@ async function main(): Promise<void> {
   assert.deepEqual(await api.updateSessionSettings("default", "s", { sandboxMode: "sandbox-read-only" }), control)
   assert.deepEqual(await api.decideSessionApproval("default", "s", "approval-1", "denied"), { accepted: false })
   assert.deepEqual(calls.map((call) => call.channel), [SESSION_IPC_CHANNELS.getSessionData, SESSION_IPC_CHANNELS.updateSessionSettings, SESSION_IPC_CHANNELS.decideSessionApproval])
+  assert.deepEqual(await api.renameSession("default", "s", history.summary.name), history.summary)
+  assert.equal(await api.exportSessionMarkdown("default", "s"), "## 用户\n\n**原文**")
+  assert.deepEqual(calls.slice(-2), [
+    { channel: SESSION_IPC_CHANNELS.renameSession, args: ["default", "s", history.summary.name] },
+    { channel: SESSION_IPC_CHANNELS.exportSessionMarkdown, args: ["default", "s"] },
+  ])
+  await assert.rejects(api.renameSession("default", "other", "Name"), /身份无效/)
+  const invalidExport = createSessionApi({ invoke: async () => ({ text: "markdown" }) })
+  await assert.rejects(invalidExport.exportSessionMarkdown("default", "s"), /Markdown 无效/)
   const updates: SessionUpdate[] = []
   const cancel = api.onSessionUpdate((update) => updates.push(update))
-  const update: SessionUpdate = { kind: "state", projectId: "default", sessionId: "s", control }
+  const update: SessionUpdate = { kind: "state", projectId: "default", sessionId: "s", control, summary: history.summary }
   for (const handler of handlers) handler({ secret: "electron event" }, update)
   assert.deepEqual(updates, [update])
   const summary: SummaryEndEvent = {
