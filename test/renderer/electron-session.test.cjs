@@ -627,7 +627,25 @@ async function main() {
     const first = views()[0]
     const contents = first.webContents
     assert.equal(await contents.executeJavaScript("typeof window.nicodeBrowser"), "undefined")
-    assert.equal(await contents.executeJavaScript("window.open('/popup') === null"), true)
+    assert.equal(await contents.executeJavaScript("window.open('file:///blocked') === null", true), true)
+    assert.equal(await contents.executeJavaScript("window.open('/popup') !== null", true), true)
+    await until(() => views().some((view) => view !== first && view.webContents.getTitle() === "本机网页/popup"))
+    const popup = views().find((view) => view !== first)
+    await until(() => evaluate("document.querySelector('.chat-browser-tab:last-child button')?.title === '本机网页/popup'"))
+    if (!popup.getVisible()) await evaluate("document.querySelector('.chat-browser-tab:last-child button').click()")
+    await until(() => popup.getVisible())
+    assert.equal(await popup.webContents.executeJavaScript("window.opener.location.pathname"), "/")
+    assert.equal(await popup.webContents.executeJavaScript("typeof window.nicodeBrowser"), "undefined")
+    await popup.webContents.executeJavaScript("setTimeout(() => window.close(), 100); true")
+    await until(() => views().length === 1 && first.getVisible())
+    await contents.executeJavaScript(`(() => {
+      const link = document.querySelector('a')
+      link.target = '_blank'
+      link.click()
+    })()`, true)
+    await until(() => views().some((view) => view !== first && view.getVisible() && view.webContents.getTitle() === "本机网页/next"))
+    await evaluate("document.querySelector('.chat-browser-tab:last-child button:last-child').click()")
+    await until(() => views().length === 1 && first.getVisible())
     await contents.executeJavaScript("document.cookie = 'browser=shared'; localStorage.setItem('browser','shared')")
     await enterAddress(base + "/next")
     await until(async () => contents.getURL().endsWith("/next") && await evaluate("!document.querySelector('[aria-label=后退]')?.disabled"))

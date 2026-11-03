@@ -414,3 +414,5 @@
 - 验证：`npm run typecheck`、`npm run build`、Renderer 会话状态测试与隐藏窗口 Electron 会话和审批测试通过。真实浏览器夹具覆盖单文件差异、标签复用与销毁、地址栏导航和后退、加载失败后刷新、搜索遮挡、跨对话隔离、同源 Cookie 和 Local Storage 共享，以及 100% / 125% / 150% 页面缩放下的视图边界。日志见 `dist/browser-v1-*.stdout.log` 和 `dist/browser-v1-*.stderr.log`。
 - 未覆盖：本次未进行外部站点手工测试、跨应用重启的站点存储复测，以及下载和权限请求的端到端验证。
 - 工作台 Electron 回归在并行运行时模型菜单的原生点击等待超时，单独重跑退出 0，覆盖主题、键鼠、设置、输入自适应、窄窗及窗口按钮。日志见 `dist/browser-workspace-solo.*.log`。
+- 网页发起的新窗口接入同一对话的网页标签，支持 HTTP(S) 与用于站点跳转的初始 `about:blank`。Electron 已创建子内容时直接接管，保留原生 opener 关系。后台打开请求保留当前选中项，网页自行关闭时同步移除标签。
+- 新窗口回归：`npm run typecheck`、`npm run build` 与隐藏窗口 Electron 会话脚本通过，覆盖前台链接子标签、同源 opener、网页自行关闭、手动关闭回到来源标签及拒绝 `file:` 请求。完整日志见 `dist/popup-regression.*.log`。

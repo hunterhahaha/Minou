@@ -21,6 +21,10 @@ export interface BrowserPresentation {
 /** 网页导航状态，按标签身份回传。 */
 export interface WebTagState {
   ref: WebTagRef
+  /** 一次性通知前端登记 Chromium 创建的子标签。 */
+  opened?: "foreground" | "background"
+  /** 网页自行关闭时移除标签。 */
+  closed?: true
   url: string
   title: string
   status: "loading" | "ready" | "error"

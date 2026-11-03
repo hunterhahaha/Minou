@@ -9,7 +9,7 @@ const PatchDiff = lazy(async () => ({ default: (await import("@pierre/diffs/reac
 /** 标签只持有重新渲染所需的数据。 */
 export type BrowserTag =
   | { kind: "diff"; id: string; eventId: string; file: FileChange }
-  | ({ kind: "web"; id: string } & Omit<WebTagState, "ref">)
+  | ({ kind: "web"; id: string } & Omit<WebTagState, "ref" | "opened" | "closed">)
 
 /** 一个对话中的标签顺序、选中项和窄窗面板。 */
 export interface ConversationBrowserState {
@@ -50,9 +50,22 @@ export class TagManager {
   /** 将主进程状态合并到仍存在的网页标签。
    * @param update 网页实例的导航状态
    */
-  receive({ ref, ...update }: WebTagState): void {
+  receive({ ref, opened, closed, ...update }: WebTagState): void {
     const state = this.get(ref.sessionId)
-    if (!state.tags.some((tag) => tag.kind === "web" && tag.id === ref.tagId)) return
+    const index = state.tags.findIndex((tag) => tag.kind === "web" && tag.id === ref.tagId)
+    if (closed && index !== -1) {
+      const tags = state.tags.filter((tag) => tag.id !== ref.tagId)
+      this.set(ref.sessionId, { ...state, tags, activeTagId: state.activeTagId === ref.tagId
+        ? (tags[index] ?? tags[index - 1])?.id ?? null : state.activeTagId })
+      return
+    }
+    if (index === -1) {
+      if (!opened || closed) return
+      const tag: BrowserTag = { kind: "web", id: ref.tagId, ...update }
+      if (opened === "foreground") this.open(ref.sessionId, tag)
+      else this.set(ref.sessionId, { ...state, tags: [...state.tags, tag] })
+      return
+    }
     this.set(ref.sessionId, { ...state, tags: state.tags.map((tag) =>
       tag.kind === "web" && tag.id === ref.tagId ? { ...tag, ...update } : tag) })
   }

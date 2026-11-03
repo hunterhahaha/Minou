@@ -1,4 +1,5 @@
 import { WebContentsView, session, type BrowserWindow, type IpcMain } from "electron"
+import { randomUUID } from "node:crypto"
 import { BROWSER_COMMAND, BROWSER_STATE, type BrowserCommand, type WebTagRef, type WebTagState } from "../preload/browser-api.ts"
 
 /** 单个宿主拥有的网页实例及上一次布局版本。 */
@@ -80,7 +81,8 @@ export class TagManager {
     host.views.delete(key)
     if (host.visible === entry.view) host.visible = undefined
     if (!host.window.isDestroyed()) host.window.contentView.removeChildView(entry.view)
-    if (!entry.view.webContents.isDestroyed()) entry.view.webContents.close()
+    const contents = entry.view.webContents
+    if (contents && !contents.isDestroyed()) contents.close()
   }
 
   /** 创建隐藏的网页，并绑定与实例生命周期一致的状态通知。
@@ -88,23 +90,44 @@ export class TagManager {
    * @param key 网页索引
    * @param ref 网页标签身份
    * @param url 初始网页地址
+   * @param child Chromium 为新窗口提供的视图选项与选中方式
+   * @returns 新标签的视图。
    */
-  private create(host: Host, key: string, ref: WebTagRef, url: string): void {
-    if (host.views.has(key)) return
+  private create(host: Host, key: string, ref: WebTagRef, url: string, child?: {
+    // Electron supplies the Chromium-created contents at runtime; its public callback type omits it.
+    options: Electron.BrowserWindowConstructorOptions & { webContents?: Electron.WebContents }
+    opened: NonNullable<WebTagState["opened"]>
+  }): WebContentsView {
+    const existing = host.views.get(key)
+    if (existing) return existing.view
     if (!this.browserSession) {
       this.browserSession = session.fromPartition("persist:nicode-browser")
       this.browserSession.setPermissionCheckHandler(() => false)
       this.browserSession.setPermissionRequestHandler((_contents, _permission, respond) => respond(false))
       this.browserSession.on("will-download", (event) => event.preventDefault())
     }
-    const view = new WebContentsView({ webPreferences: {
+    const view = new WebContentsView(child?.options.webContents ? { webContents: child.options.webContents } : { webPreferences: {
       session: this.browserSession, sandbox: true, contextIsolation: true, nodeIntegration: false,
     } })
     view.setVisible(false)
     const state: WebTagState = { ref, url, title: "", status: "loading", canGoBack: false, canGoForward: false }
     host.window.contentView.addChildView(view)
     const contents = view.webContents
-    contents.setWindowOpenHandler(() => ({ action: "deny" }))
+    contents.setWindowOpenHandler(({ url, disposition }) => {
+      if (!isWebUrl(url) && url !== "about:blank") return { action: "deny" }
+      return {
+        action: "allow",
+        outlivesOpener: true,
+        overrideBrowserWindowOptions: { webPreferences: {
+          session: this.browserSession, sandbox: true, contextIsolation: true, nodeIntegration: false,
+        } },
+        createWindow: (options) => {
+          const childRef = { sessionId: ref.sessionId, tagId: randomUUID() }
+          const opened = host.visible === view && disposition !== "background-tab" ? "foreground" : "background"
+          return this.create(host, tagKey(childRef), childRef, url, { options, opened }).webContents
+        },
+      }
+    })
     contents.on("will-navigate", (details, url) => { if (!isWebUrl(details.url ?? url)) details.preventDefault() })
     contents.on("will-redirect", (details, url) => { if (!isWebUrl(details.url ?? url)) details.preventDefault() })
 
@@ -167,7 +190,20 @@ export class TagManager {
       })
     }
     host.views.set(key, { view, state, load })
-    load(url)
+    contents.once("destroyed", () => {
+      if (!host.views.has(key)) return
+      this.close(host, key)
+      if (!host.window.isDestroyed() && !host.window.webContents.isDestroyed()) {
+        host.window.webContents.send(BROWSER_STATE, { ...state, closed: true })
+      }
+    })
+    if (child) {
+      state.opened = child.opened
+      publish()
+      delete state.opened
+      if (!child.options.webContents) load(url)
+    } else load(url)
+    return view
   }
 
   /** 校验并执行窗口级浏览器命令。
