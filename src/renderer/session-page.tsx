@@ -1,6 +1,6 @@
 /** 从工作区事件字典派生聊天页面；输入操作仅走 preload 的固定 Session API。 */
 import { useEffect, useLayoutEffect, useRef, useState } from "react"
-import { IconArrowDown, IconArrowUp, IconBrain, IconCheck, IconCopy, IconPlayerStop, IconShieldCheck, IconSparkles, IconTool } from "@tabler/icons-react"
+import { IconArrowDown, IconArrowUp, IconBrain, IconCheck, IconCode, IconCopy, IconGitCompare, IconPlayerStop, IconShieldCheck, IconSparkles, IconTool } from "@tabler/icons-react"
 import type { AssistantContentBlock } from "../../runtime/model/src/types.ts"
 import { preferredReasoningLevel } from "../../runtime/model/src/reasoning.ts"
 import type { FileChange, SessionEvent } from "../../runtime/session/src/events.ts"
@@ -245,12 +245,23 @@ export function SessionPage({ projectId, sessionId, state, providers, onOpenDiff
       {event.result.status === "error" && <p className="chat-error">{event.result.error.message}</p>}
     </details>
     if (event.type === "turn/file_changes" && event.files.length > 0) return <div className="turn-file-changes" aria-label="本轮变更文件">
-      <span>本轮变更文件</span>
+      <div className="turn-file-changes-heading">
+        <IconGitCompare size={16} aria-hidden="true" />
+        <strong>本轮变更</strong>
+        <span>{event.files.length} 个文件</span>
+      </div>
       <ul>{event.files.map((file) => <li key={file.path}>
         <button type="button" title={file.path} onClick={() => onOpenDiff(event.eventId, file)}>
-          <span>{file.path}</span><small>+{file.stats.additions} / −{file.stats.deletions}</small>
+          <IconCode size={16} aria-hidden="true" />
+          <span className="turn-file-name">{/^(?:[A-Za-z]:|[/\\])/.test(file.path) ? file.path.split(/[/\\]/).at(-1) || file.path : file.path}</span>
+          <span className="turn-file-stats">
+            {file.stats.additions > 0 && <span className="turn-file-added">+{file.stats.additions}</span>}
+            {file.stats.deletions > 0 && <span className="turn-file-removed">−{file.stats.deletions}</span>}
+          </span>
+          <span className="turn-file-status">{{ created: "新增", modified: "修改", deleted: "删除" }[file.changeType]}</span>
         </button>
       </li>)}</ul>
+      <p>点击文件查看差异</p>
     </div>
     if (event.type === "context_update") return <details className="chat-detail"><summary>上下文更新</summary><pre className="process-content"><code className="language-text">{event.content}</code></pre></details>
     return null

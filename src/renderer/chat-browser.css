@@ -108,7 +108,7 @@
 .chat-browser-tab-item button:first-child { flex: 1; min-width: 0; }
 .chat-browser-tab-item span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .chat-browser-tab-item svg, .chat-browser-tab-item button:nth-child(2) { flex: none; }
-.chat-browser-workspace :is(.chat-browser-pane, .turn-file-changes) button {
+.chat-browser-workspace .chat-browser-pane button {
   min-height: var(--size-control);
   padding: 0 var(--space-2);
   border: 0;
@@ -118,7 +118,7 @@
   font: inherit;
   cursor: pointer;
 }
-.chat-browser-workspace :is(.chat-browser-pane, .turn-file-changes) button:hover:not(:disabled, .chat-browser-tab-item button) {
+.chat-browser-workspace .chat-browser-pane button:hover:not(:disabled, .chat-browser-tab-item button) {
   background: var(--canvas);
 }
 .chat-browser-tab-item[data-active="false"]:hover {
@@ -162,8 +162,3 @@
 }
 .chat-browser-start h2 { margin: var(--space-2) 0; color: var(--text-strong); font-size: 18px; }
 .chat-browser-start p { margin: 0; font-size: var(--font-size-ui); }
-.turn-file-changes { color: var(--secondary); font-size: var(--font-size-ui); }
-.turn-file-changes ul { list-style: none; margin: var(--space-1) 0 0; padding: 0; }
-.turn-file-changes button { display: flex; gap: var(--space-2); align-items: baseline; max-width: 100%; text-align: left; }
-.turn-file-changes button span { overflow-wrap: anywhere; }
-.turn-file-changes button small { flex: none; color: var(--secondary); }
