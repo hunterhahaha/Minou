@@ -24,7 +24,7 @@
 
 ## 现有工程命令
 
-命令从仓库根目录运行。当前说明使用 Windows、Node.js 24 与 npm；进程工具及相关测试需要 PowerShell 7 `pwsh`。
+命令从仓库根目录运行。当前说明使用 Windows、Node.js 24 与 npm。进程工具及相关测试使用仓库的 `resources/powershell` 中的 PowerShell 7。Windows x64 可用 `scripts/setup-pwsh.ps1` 准备资源。Windows 的入口是 `pwsh.exe`，macOS 和 Linux 使用对应发行包中的可执行文件 `pwsh`。
 
 | 命令 | 实际作用 |
 | --- | --- |

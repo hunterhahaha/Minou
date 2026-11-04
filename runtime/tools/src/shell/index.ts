@@ -16,7 +16,7 @@ export * from "./backend.ts"
 export function registerShellTools(tools: ToolRegistry, renders: RenderRegistry, router: ShellRouter, loadAccess: LoadProcessAccess): void {
   registerTool(tools, renders, {
     kind: "builtin",
-    definition: { name: "shell", description: "Run one PowerShell command in the current project working directory. Waits for process exit. Output is limited to the last 64 KB; use read with the saved absolute path for full output.", inputSchema: { type: "object", properties: { command: { type: "string" } }, required: ["command"], additionalProperties: false } },
+    definition: { name: "shell", description: `Run one command with the bundled PowerShell 7 in the current project working directory. Current platform: ${process.platform}. Use PowerShell 7 syntax. Waits for process exit. Output is limited to the last 64 KB; use read with the saved absolute path for full output.`, inputSchema: { type: "object", properties: { command: { type: "string" } }, required: ["command"], additionalProperties: false } },
     validateArguments: (value) => isPlainRecord(value) && Object.keys(value).every((key) => key === "command") && typeof value.command === "string" && value.command.trim().length > 0
       ? { success: true, data: { command: value.command } } : { success: false, error: { source: "tool", code: "INVALID_TOOL_ARGUMENTS", message: "shell 只接受非空 command" } },
     execute: async (input, context) => {

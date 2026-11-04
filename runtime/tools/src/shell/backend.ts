@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process"
 import { join } from "node:path"
 import { ToolOutputStore } from "../process/output-store.ts"
 import { processException } from "../process/access.ts"
+import { resolvePwsh } from "../process/pwsh.ts"
 import type { ShellResult } from "./types.ts"
 
 /**
@@ -19,15 +20,15 @@ export async function terminateProcess(child: ChildProcess): Promise<void> {
     killer.once("close", () => resolve())
   })
 }
-/** Windows V1 pwsh 后端，收集一次性进程的 stdout/stderr。 */
+/** PowerShell 7 后端，收集一次性进程的 stdout/stderr。 */
 export class PwshShellBackend {
-  private readonly executable: string
+  private readonly executable?: string
   private readonly processes = new Map<ChildProcess, { cancel: () => void; done: Promise<void> }>()
   /**
    * 绑定一次性 Shell 使用的可执行文件，构造时不创建进程。
-   * @param executable - PowerShell 7 可执行文件名或路径，默认使用 pwsh。
+   * @param executable - 可选的绝对路径，默认使用内置 PowerShell 7。
    */
-  constructor(executable = "pwsh") { this.executable = executable }
+  constructor(executable?: string) { this.executable = executable }
 
   /**
    * 以一次性 PowerShell 进程运行命令，按接收顺序合并 stdout/stderr，等待流关闭后发布本次输出。取消时请求终止进程树；无论成功或失败均释放本次缓冲资源。
@@ -41,9 +42,12 @@ export class PwshShellBackend {
    */
   async execute(command: string, cwd: string, directory: string, callId: string, signal: AbortSignal): Promise<ShellResult> {
     if (signal.aborted) throw processException("CANCELLED", "工具调用已取消")
+    let executable: string
+    try { executable = resolvePwsh(this.executable) }
+    catch (error) { throw processException("SHELL_START_FAILED", String(error)) }
     const output = new ToolOutputStore(directory)
     const script = "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); $OutputEncoding = [Console]::OutputEncoding;\n" + command
-    const child = spawn(this.executable, ["-NoLogo", "-NoProfile", "-NonInteractive", "-OutputFormat", "Text", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], { cwd, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] })
+    const child = spawn(executable, ["-NoLogo", "-NoProfile", "-NonInteractive", "-OutputFormat", "Text", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], { cwd, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] })
     let failure: unknown
     let termination: Promise<void> | undefined
     const kill = () => { termination ??= terminateProcess(child) }

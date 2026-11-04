@@ -16,7 +16,7 @@ npm run build:cli
 
 已有依赖时直接执行 `npm run build:cli` 即可。此命令运行 TypeScript 编译器，产物入口为 `dist/src/cli/main.js`，不启动 Electron 或 Vite。使用完整源码编译产物和项目依赖运行，不能只复制 `main.js` 一个文件。
 
-运行环境需要支持项目使用的 `node:sqlite`；本文命令以 Node.js 24 为例。现有 Shell 和 Terminal 工具使用 PowerShell 7，执行这些工具需要本机可运行 `pwsh`。
+运行环境需要支持项目使用的 `node:sqlite`；本文命令以 Node.js 24 为例。Shell 和 Terminal 工具使用 NiCode 的 `resources/powershell` 中的 PowerShell 7。Windows 的入口是 `pwsh.exe`，macOS 和 Linux 的入口是 `pwsh`。
 
 CLI 复用当前用户的 NiCode 配置。启动时使用 `USERPROFILE`，未设置时使用 Node 的用户主目录，在其下初始化或检查 `.nicode`。运行任务前，先通过 NiCode 的模型配置功能保存 Provider、模型、协议参数和 API Key。首次创建的 Provider 数据库为空，CLI 不会自动添加模型或凭据，也没有配置模型的子命令。
 
@@ -453,7 +453,7 @@ $runExitCode
 | 参数冲突 | Request 模式将任务配置放入 JSON，命令行仅保留 `--request`、`--output`、`--format`。 |
 | 工具被拒绝 | 检查沙箱模式、是否触发审批，以及组或精确工具名是否命中自动批准名单。 |
 | MCP 服务连接失败或没有工具 | 检查 `enabled`、传输配置、服务进程/地址和启动超时；确认未隔离 MCP；远端工具仍需发现和载入。 |
-| Shell / Terminal 无法启动 | 检查 `pwsh` 是否可运行，以及本机是否允许创建进程、PTY。 |
+| Shell / Terminal 无法启动 | 检查错误中的绝对路径是否指向当前平台的 PowerShell 7 可执行文件，以及本机是否允许创建进程和 PTY。Windows x64 可用 `scripts/setup-pwsh.ps1` 准备资源。 |
 | `OUTPUT_FAILED` | 检查输出父目录、文件写权限、stdout 管道状态及读取端是否持续消费。 |
 | `RUN_FAILED`、`CLEANUP_FAILED`、`EVENT_WRITE_FAILED` | 查看 `error.stage`、stderr 和本次 `record_directory` 中的记录。 |
 | 达到 Step 上限或超时 | 根据任务调整 `--max-steps`、`--timeout`，结合本地事件确认时间消耗位置。 |

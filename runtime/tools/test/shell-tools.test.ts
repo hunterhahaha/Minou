@@ -15,6 +15,10 @@ async function main(): Promise<void> {
   const router = new ShellRouter()
   try {
     const signal = new AbortController().signal
+    const host = await router.execute("[Console]::Write($PSVersionTable.PSVersion.Major); [Console]::Write('|'); [Console]::Write($PSHOME)", directory, directory, "host", signal)
+    const [major, home] = host.output.split("|")
+    assert.equal(major, "7")
+    assert.equal(await realpath(home), await realpath("resources/powershell"))
     const mixed = await router.execute("[Console]::Out.Write('你好'); [Console]::Error.Write('error'); exit 7", directory, directory, "mixed", signal)
     assert.equal(mixed.exitCode, 7)
     assert.ok(mixed.output.includes("你好") && mixed.output.includes("error"))
@@ -26,7 +30,9 @@ async function main(): Promise<void> {
     const large = await router.execute("[Console]::Write(('x' * 100000))", directory, directory, "large", signal)
     assert.equal(large.totalBytes, 100000)
     assert.equal((await readFile(large.fullOutputPath!)).length, 100000)
-    await assert.rejects(() => new ShellRouter("missing-pwsh-nicode").execute("x", directory, directory, "bad", signal), /ENOENT|spawn/)
+    const missing = join(directory, "missing-pwsh")
+    await assert.rejects(() => new ShellRouter(missing).execute("x", directory, directory, "bad", signal), (error: unknown) =>
+      error instanceof Error && "code" in error && error.code === "SHELL_START_FAILED" && error.message.includes(missing))
     const controller = new AbortController()
     const stopped = router.execute("[Console]::Write('partial'); Start-Sleep -Seconds 30", directory, directory, "stop", controller.signal)
     setTimeout(() => controller.abort(), 300)
@@ -41,6 +47,7 @@ async function main(): Promise<void> {
     let approval = "denied" as "approved" | "denied" | "cancelled"
     let approvals = 0
     registerShellTools(tools, renders, router, () => ({ sandboxMode: "sandbox-read-only", cwd: directory }))
+    assert.ok(tools.listDefinitions()[0].description?.includes(`Current platform: ${process.platform}. Use PowerShell 7 syntax.`))
     const execute = createExecuteToolCall(tools, renders)
     const context: ToolCallContext = { turn: 1, step: 1, blockId: "block", toolCallId: "call", signal,
       processRuntime: { projectId: "default", sessionId: "session", outputDirectory: directory, requestApproval: async () => { approvals++; return approval } } }

@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { TerminalRouter } from "../src/terminal/router.ts"
+import { PwshPtyBackend } from "../src/terminal/backend.ts"
 
 /**
  * 运行本文件的离线断言或本机临时进程验证，并在结束时释放测试资源。
@@ -14,16 +15,25 @@ async function main(): Promise<void> {
   const router = new TerminalRouter()
   const signal = new AbortController().signal
   try {
+    const missing = join(directory, "missing-pwsh")
+    const unavailable = new TerminalRouter(new PwshPtyBackend(missing))
+    try {
+      await assert.rejects(() => unavailable.open("default", "missing", directory, directory, signal), (error: unknown) =>
+        error instanceof Error && "code" in error && error.code === "TERMINAL_START_FAILED" && error.message.includes(missing))
+    } finally { await unavailable.dispose() }
     const terminal = await router.open("default", "one", directory, directory, signal)
     assert.equal(terminal.status, "idle")
-    const result = await router.input("default", "one", terminal.id, "[Console]::WriteLine('PTY_OK_你好')\r", "first", signal)
+    const result = await router.input("default", "one", terminal.id, "[Console]::WriteLine('PTY_OK_你好|' + $PSVersionTable.PSVersion.Major + '|' + $PSHOME + '|')\r", "first", signal)
     assert.equal(result.status, "idle")
     let initialOutput = result.output
-    for (let attempt = 0; attempt < 20 && !initialOutput.includes("PTY_OK_你好"); attempt++) {
+    const host = /PTY_OK_你好\|7\|([^|\r\n]+)\|/
+    for (let attempt = 0; attempt < 20 && !host.test(initialOutput); attempt++) {
       await new Promise((resolve) => setTimeout(resolve, 20))
       initialOutput += (await router.input("default", "one", terminal.id, "", `initial-late-${attempt}`, signal)).output
     }
-    assert.ok(initialOutput.includes("PTY_OK_你好"), JSON.stringify(initialOutput))
+    const home = host.exec(initialOutput)?.[1]
+    assert.ok(home, JSON.stringify(initialOutput))
+    assert.equal(await realpath(home), await realpath("resources/powershell"))
     assert.equal(result.output.includes("NiCode;"), false)
     const childDirectory = join(directory, "cwd-test")
     await mkdir(childDirectory)

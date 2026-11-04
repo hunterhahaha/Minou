@@ -18,7 +18,7 @@ NiCode 是一个本地运行的编程智能体，提供 Electron 桌面应用和
 
 ## 快速开始
 
-以下命令面向 Windows，需要 Node.js 24、npm 和 PowerShell 7（`pwsh`）。Shell 与终端工具要求本机可以运行 `pwsh`。本说明未验证其他操作系统。
+以下命令面向 Windows，需要 Node.js 24 和 npm。Shell 与终端工具使用 `resources/powershell` 中的 PowerShell 7。Windows x64 可在仓库根目录运行 `scripts/setup-pwsh.ps1` 准备资源。本说明未验证其他操作系统。
 
 在本地仓库目录执行：
 

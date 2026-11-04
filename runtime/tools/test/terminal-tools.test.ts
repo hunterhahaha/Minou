@@ -103,6 +103,9 @@ async function main(): Promise<void> {
     const tools = new ToolRegistry(), renders = new RenderRegistry()
     let approvals = 0
     registerTerminalTools(tools, renders, router, () => ({ sandboxMode: "sandbox-full-access", cwd: directory }))
+    for (const name of ["terminal_open", "terminal_input"]) {
+      assert.ok(tools.listDefinitions().find((tool) => tool.name === name)?.description?.includes(`Current platform: ${process.platform}. Use PowerShell 7 syntax`))
+    }
     const execute = createExecuteToolCall(tools, renders)
     const context: ToolCallContext = { turn: 1, step: 1, blockId: "block", toolCallId: "tool", signal,
       processRuntime: { projectId: "default", sessionId: "two", outputDirectory: directory, requestApproval: async () => { approvals++; return "denied" } } }

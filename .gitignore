@@ -32,3 +32,6 @@ Thumbs.db
 !/docs/design-system.md
 !/docs/ui-roadmap.md
 !/docs/memory.md
+
+resources/powershell/
+!resources/powershell/README

@@ -18,7 +18,7 @@ The app runs locally; model requests are sent to the provider you configure. NiC
 
 ## Getting started
 
-The commands below target Windows with Node.js 24, npm, and PowerShell 7 (`pwsh`). Shell and terminal tools require `pwsh` to be available locally. Other operating systems have not been verified here.
+The commands below target Windows with Node.js 24 and npm. Shell and terminal tools use PowerShell 7 from `resources/powershell`. On Windows x64, run `scripts/setup-pwsh.ps1` from the repository root to prepare the resource. Other operating systems have not been verified here.
 
 From your local checkout:
 

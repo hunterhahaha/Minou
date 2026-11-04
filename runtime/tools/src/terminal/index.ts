@@ -16,8 +16,8 @@ export * from "./router.ts"
  */
 export function registerTerminalTools(tools: ToolRegistry, renders: RenderRegistry, router: TerminalRouter, loadAccess: LoadProcessAccess): void {
   const descriptions = {
-    terminal_open: "Open a persistent PowerShell terminal in the current project working directory. Reuse existing terminals when possible.",
-    terminal_input: "Write input verbatim to a terminal. Include \\r to submit a command; use an empty string to poll unread output. Collects up to 3 seconds or until a command completion marker. A running status after timeout does not mean the command has finished. Large output is saved to an absolute path readable with read.",
+    terminal_open: `Open a persistent terminal with the bundled PowerShell 7 in the current project working directory. Current platform: ${process.platform}. Use PowerShell 7 syntax for commands. Reuse existing terminals when possible.`,
+    terminal_input: `Write input verbatim to a terminal. Current platform: ${process.platform}. Use PowerShell 7 syntax for shell commands. Include \\r to submit a command; use an empty string to poll unread output. Collects up to 3 seconds or until a command completion marker. A running status after timeout does not mean the command has finished. Large output is saved to an absolute path readable with read.`,
     terminal_close: "Terminate a terminal and discard unread output. Close terminals that are no longer needed.",
     terminal_list: "List this session's active terminals with their current working directories and marker-driven running/idle status. Query before choosing a terminal when its state is uncertain.",
   }

@@ -87,16 +87,16 @@ export class PtyMarkerParser {
 }
 
 /**
- * PowerShell 7 的真实 ConPTY 后端。PSConsoleHostReadLine 接受一条命令后报告开始，
+ * PowerShell 7 的真实 PTY 后端。PSConsoleHostReadLine 接受一条命令后报告开始，
  * prompt 报告相同执行序号的完成；交互程序绕过 ReadLine，不制造新命令标记。
  */
 export class PwshPtyBackend implements PtyBackend {
-  private readonly executable: string
+  private readonly executable?: string
   /**
-   * 绑定 PowerShell 7 后端的可执行文件名或路径，构造时不加载 node-pty 或创建终端。
-   * @param executable - PowerShell 7 可执行文件名或路径，默认使用 pwsh。
+   * 绑定 PowerShell 7 后端的可执行文件，构造时不加载 node-pty 或创建终端。
+   * @param executable - 可选的绝对路径，默认使用内置 PowerShell 7。
    */
-  constructor(executable = "pwsh") { this.executable = executable }
+  constructor(executable?: string) { this.executable = executable }
   /**
    * 加载真实 node-pty 后端并启动持久 PowerShell，注入随机身份和执行序号标记，挂接跨块解析与退出监听。该方法返回句柄，不等待首次就绪标记。
    * @param cwd - 本次新终端的初始工作目录。
@@ -130,9 +130,10 @@ function global:prompt {
 }
 $ErrorActionPreference = 'Continue'
 `
+    const executable = resolvePwsh(this.executable)
     const require = createRequire(typeof __filename === "string" ? __filename : `${process.cwd()}/package.json`)
     const pty = require("node-pty") as { spawn(file: string, args: string[], options: object): IPty }
-    const child = pty.spawn(resolvePwsh(this.executable), ["-NoLogo", "-NoProfile", "-NoExit", "-OutputFormat", "Text", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], { cwd, cols: 120, rows: 30, name: "xterm-256color", env: { ...process.env, TERM: "xterm-256color" } })
+    const child = pty.spawn(executable, ["-NoLogo", "-NoProfile", "-NoExit", "-OutputFormat", "Text", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], { cwd, cols: 120, rows: 30, name: "xterm-256color", env: { ...process.env, TERM: "xterm-256color" } })
     let disposed = false
     let resolveExit!: () => void
     const exitedPromise = new Promise<void>((resolve) => { resolveExit = resolve })
