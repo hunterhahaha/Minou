@@ -16,6 +16,7 @@
 | 配置与模型持久化 | [config-files.ts](../src/main/config-files.ts)、[config-schema.ts](../src/main/config-schema.ts)、[provider-store.ts](../src/main/provider-store.ts) |
 | 对话命令、队列与停止 | [session-ipc.ts](../src/main/session-ipc.ts)、[SessionRuntime](../runtime/agent/src/session-runtime.ts) |
 | 模型调用与工具小轮 | [loop.ts](../runtime/agent/src/loop.ts)、[model 模块入口](../runtime/model/src/index.ts)、[tool-executor.ts](../runtime/tools/src/tool-executor.ts) |
+| 网页搜索与配置库 | [搜索工具](../runtime/tools/src/web-search/index.ts)、[搜索存储](../runtime/tools/src/web-search/store.ts)、[结果整理](../runtime/tools/src/render/web-search.ts) |
 | 会话恢复与 Usage | [session-state.ts](../runtime/session/src/session-state.ts)、[event-log.ts](../runtime/session/src/event-log.ts)、[usage.ts](../runtime/model/src/usage.ts) |
 | 页面与展示缓存 | [main.tsx](../src/renderer/main.tsx)、[session-page.tsx](../src/renderer/session-page.tsx)、[Renderer session-state.ts](../src/renderer/session-state.ts) |
 | Headless CLI | [main.ts](../src/cli/main.ts)、[protocol.ts](../src/cli/protocol.ts)、[CLI 使用说明](cli-usage.md) |
@@ -52,6 +53,17 @@ node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types t
 ```
 
 `--experimental-strip-types` 只处理执行时类型剥离，不替代 `tsc` 类型检查。`node --check <file>.ts` 也不是本项目可靠的 TypeScript 检查方式。
+
+搜索工具的定向验证入口如下，全部使用临时数据库、本地假搜索服务或假模型，不需要真实 API Key。CLI 搜索测试运行实际编译入口，先执行 `npm run build:cli` 或完整构建：
+
+```powershell
+node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types runtime/tools/test/web-search-store.test.ts
+node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types runtime/tools/test/web-search.test.ts
+node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types runtime/agent/test/web-search-turn.test.ts
+node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/cli/web-search.test.ts
+```
+
+分别覆盖配置持久化与事务、请求字符串替换与 fetch 透传及错误边界、桌面 Session 事件关联与回填，以及真实 CLI 子进程的工具注册与调用。超时测试临时缩短底层计时，同时断言生产代码传入的默认值仍为 30 秒。
 
 | 范围 | 已有测试位置和关注点 |
 | --- | --- |

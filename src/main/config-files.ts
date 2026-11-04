@@ -11,6 +11,7 @@ import type { MCPConfig } from "../../runtime/mcp/src/types.ts"
 import { initializeProviderDatabase } from "./provider-store.ts"
 import { initializeSkillSource, synchronizeSkillSource } from "../../runtime/skill/src/index.ts"
 import { initializeWorkspaceDatabase, listProjectWorkspaces } from "./workspace-store.ts"
+import { initializeWebSearchDatabase, WEB_SEARCH_DATABASE_FILE } from "../../runtime/tools/src/web-search/store.ts"
 
 const INITIAL_CONFIG = `${JSON.stringify({
   version: 2,
@@ -219,6 +220,7 @@ export async function initializeConfigFilesSnapshot(
   await mkdir(defaultDir, { recursive: true })
   await mkdir(join(defaultDir, "workspace"), { recursive: true })
   initializeProviderDatabase(providerDatabasePath)
+  initializeWebSearchDatabase(join(rootDir, WEB_SEARCH_DATABASE_FILE))
   initializeWorkspaceDatabase(workspaceDatabasePath)
   const sources = options.skipSkills ? [] : [
     { directory: join(rootDir, "skills"), scope: "global" as const },

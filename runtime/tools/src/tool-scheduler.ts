@@ -23,6 +23,7 @@ export const SHARED_READ_ONLY_TOOLS = [
   "memory_list",
   "memory_read",
   "mcp_list_tools",
+  "web_search",
 ] as const
 
 const SHARED_READ_ONLY_TOOL_SET: ReadonlySet<string> = new Set(SHARED_READ_ONLY_TOOLS)

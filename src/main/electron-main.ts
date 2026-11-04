@@ -14,6 +14,8 @@ import { MemoryManager } from "../../runtime/memory/src/index.ts"
 import {
   registerFileTools,
   registerMemoryTools,
+  registerWebSearchTool,
+  WEB_SEARCH_DATABASE_FILE,
   bundledRipgrepPath,
   RenderRegistry,
   ToolRegistry,
@@ -46,6 +48,7 @@ async function main(): Promise<void> {
   })
   const memoryManager = new MemoryManager(paths.rootDir)
   registerMemoryTools(toolRegistry, renderRegistry, memoryManager)
+  registerWebSearchTool(toolRegistry, renderRegistry, join(paths.rootDir, WEB_SEARCH_DATABASE_FILE))
   const sessionRuntimeGlobal = new SessionRuntimeGlobal(paths, toolRegistry, renderRegistry)
   await sessionRuntimeGlobal.mcpManager.initialize(config.mcpServers)
   for (const state of sessionRuntimeGlobal.mcpManager.getConnectionStates()) {

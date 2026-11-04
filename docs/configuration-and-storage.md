@@ -10,6 +10,7 @@
 .nicode/
 ├─ config.json                    全局普通配置 V2
 ├─ providers.sqlite               Provider、Model、API Key 与默认模型
+├─ web-search.sqlite              搜索服务商、启用状态、fetch 请求原文与 JMESPath
 ├─ workspace.sqlite               Project/default 分组、关联目录、对话索引
 ├─ meta.sqlite                    桌面对话 Meta
 ├─ events.sqlite                  桌面对话共享事件日志
@@ -151,6 +152,39 @@ NVIDIA 使用托管 NIM 的 `https://integrate.api.nvidia.com/v1`，仅提供 Ch
 当前 Chat Adapter 不发送 `max_tokens`，上述最大输出属于模型配置与上下文预算资料，实际生成仍使用端点默认值；其中 NVIDIA Llama 默认输出为 1,024。本次不更改这一现有请求行为，也不配置本地 GPU、自托管容器或新协议。
 
 源码：[gemini.ts](../src/main/compatible-providers/gemini.ts)、[nvidia.ts](../src/main/compatible-providers/nvidia.ts)。2026-11-02 核对来源：[Google OpenAI 兼容入口](https://ai.google.dev/gemini-api/docs/openai)、[Argon](https://ai.google.dev/gemini-api/docs/models/gemini-4-argon)、[Flash](https://ai.google.dev/gemini-api/docs/models/gemini-3.8-flash)、[Thinking](https://ai.google.dev/gemini-api/docs/thinking)、[NVIDIA GPT-OSS API](https://docs.api.nvidia.com/nim/reference/openai-gpt-oss-120b-infer)、[Llama API](https://docs.api.nvidia.com/nim/reference/meta-llama-3_3-70b-instruct-infer)。
+
+## web-search.sqlite
+
+[store.ts](../runtime/tools/src/web-search/store.ts) 使用 `node:sqlite` 创建 V1 独立数据库，`PRAGMA user_version = 1`。STRICT 表 `web_search_providers` 包含：
+
+| 字段 | 类型与用途 |
+| --- | --- |
+| `id` | 非空字符串主键，服务商唯一身份 |
+| `enabled` | 非空整数 `0/1`，新增默认禁用 |
+| `request_json` | 非空合法 JSON 字符串，按原文保存完整 fetch 请求配置 |
+| `response_jmespath` | 非空 JMESPath，负责将响应映射成 `WebSearchItem[]` |
+
+`web_search_single_enabled` 是 `enabled = 1` 的部分唯一索引，保证全库最多启用一个服务商。启动创建空库，不预置凭据。内部接口支持列表、读取启用配置、新增或更新、启停和删除；新增默认禁用，更新保留启用状态。切换启用项采用事务，失败保留原状态；`null` 禁用全部，删除启用项不自动选替代项。已有数据库只检查版本、表和索引存在，不迁移或覆盖。
+
+请求配置示例（数据库中的 `request_json` 保存以下 JSON 的完整字符串）：
+
+```json
+{
+  "url": "https://google.serper.dev/search",
+  "method": "POST",
+  "headers": {
+    "X-API-KEY": "YOUR_API_KEY",
+    "Content-Type": "application/json"
+  },
+  "body": "{\"q\":\"${query}\",\"num\":10}"
+}
+```
+
+执行时先替换整段请求字符串中的 `${query}`，再 `JSON.parse`，分离 `url` 后直接向 fetch 传入其余配置；只由 Runtime 覆盖取消信号。完整的 `"${query}"` 字符串占位符使用 `JSON.stringify(query)` 替换；如上述 body 中的 `\"${query}\"` 则再多编码一层，保证查询中的引号、反斜杠、换行等字符在外层配置与内层 JSON body 中均可正确还原。替换只执行一遍，query 自身包含 `${query}` 时不再次展开。
+
+工具不读取服务商业务字段，不补请求头或重新组装 body。URL 等字符串内的嵌入占位符（如 `?q=${query}`）仍按原文字面量替换，不做 URL 编码；这类嵌入替换若使配置 JSON 无效则返回请求错误。保存接口只检查必要字符串及 JSON、JMESPath 语法，不检查服务商请求字段。每次搜索重新读配置并在网络请求前关闭数据库连接。
+
+JMESPath 输出只检查顶层为数组，直接包装成 `{ results }`；条目结构由表达式保证，不逐项校验、补字段、筛选、排序或转换日期。配置与请求可能包含明文凭据，仅供后端消费，不应公开数据库。本次未增加搜索配置页面、IPC 或管理命令，可由内部存储函数配置。
 
 ## workspace.sqlite
 

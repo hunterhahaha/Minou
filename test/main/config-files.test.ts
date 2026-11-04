@@ -10,6 +10,7 @@ import { initializeConfigFiles } from "../../src/main/index.ts"
 import type { ConfigFilePaths } from "../../src/main/index.ts"
 import { listProviders, saveProvider } from "../../src/main/provider-store.ts"
 import { readDefaultWorkspace, saveDefaultWorkspace } from "../../src/main/workspace-store.ts"
+import { listWebSearchProviders, WEB_SEARCH_DATABASE_FILE } from "../../runtime/tools/src/web-search/store.ts"
 
 /** 在独立用户目录运行断言并删除测试数据。 */
 async function withTempProfile(test: (profile: string) => Promise<void>): Promise<void> {
@@ -67,6 +68,9 @@ async function main(): Promise<void> {
     ]) assert.equal((await stat(directory)).isDirectory(), true)
     assert.equal((await stat(join(paths.rootDir, "events.sqlite"))).isFile(), true)
     assert.equal((await stat(paths.metaDatabasePath)).isFile(), true)
+    const searchDatabasePath = join(paths.rootDir, WEB_SEARCH_DATABASE_FILE)
+    assert.equal((await stat(searchDatabasePath)).isFile(), true)
+    assert.deepEqual(listWebSearchProviders(searchDatabasePath), [])
     assert.deepEqual(JSON.parse(await readFile(paths.configPath, "utf8")), {
       version: 2, mcpServers: [], runtime: { userMessageMode: "queue" },
     })
