@@ -33,5 +33,6 @@ Thumbs.db
 !/docs/ui-roadmap.md
 !/docs/memory.md
 
-resources/powershell/
-!resources/powershell/README.md
+# Keep the bundled PowerShell files local; track only the setup guide.
+/resources/powershell/*
+!/resources/powershell/README.md
