@@ -2,6 +2,11 @@
 import assert from "node:assert/strict"
 import { createServer } from "node:http"
 import type { ServerResponse } from "node:http"
+import { mkdtemp, readFile, readdir, rm, writeFile, open } from "node:fs/promises"
+import type { FileHandle } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join, dirname, basename } from "node:path"
+import { renderWebFetch } from "../src/render/web-fetch.ts"
 import { gzipSync } from "node:zlib"
 import TurndownService from "turndown"
 import { executeWebFetch, WEB_FETCH_MAX_BYTES, WEB_FETCH_TIMEOUT_MS, registerWebFetchTool, ToolRegistry, RenderRegistry, createExecuteToolCall, toolScheduleGroup, planToolRounds } from "../src/index.ts"
@@ -29,8 +34,10 @@ function assertError(result: WebFetchResult | AppError, code: string): void {
 async function main(): Promise<void> {
   let respond = (_response: ServerResponse): void => {}
   let calls = 0
+  const directory = await mkdtemp(join(tmpdir(), "nicode-fetch-output-"))
+  let requestPath = ""
   let method: string | undefined
-  const server = createServer((request, response) => { calls++; method = request.method; respond(response) })
+  const server = createServer((request, response) => { calls++; requestPath = request.url ?? ""; method = request.method; respond(response) })
   await new Promise<void>((done) => server.listen(0, "127.0.0.1", done))
   const address = server.address()
   assert.ok(address && typeof address !== "string")
@@ -40,7 +47,7 @@ async function main(): Promise<void> {
   const originalTurndown = TurndownService.prototype.turndown
   const controller = new AbortController()
   /** @returns 使用生产入口抓取当前本地响应。 */
-  const fetchPage = () => executeWebFetch({ url }, controller.signal)
+  const fetchPage = () => executeWebFetch({ url }, controller.signal, directory)
   try {
     respond = (response) => {
       response.setHeader("Content-Type", "Text/HTML; charset=UTF-8")
@@ -71,8 +78,128 @@ async function main(): Promise<void> {
       respond = (response) => { response.setHeader("Content-Type", "text/plain"); response.end(Buffer.alloc(size, "x")) }
       const result = await fetchPage()
       if (size > WEB_FETCH_MAX_BYTES) assertError(result, "WEB_FETCH_TOO_LARGE")
-      else { assert.ok("text" in result); assert.equal(result.text.length, size) }
+      else { assert.ok("text" in result && result.truncated); assert.equal(result.totalBytes, size); assert.equal(result.text.length, 32768); assert.equal((await readFile(result.fullOutputPath)).length, size) }
     }
+    for (const size of [32767, 32768, 32769]) {
+      const text = "x".repeat(size)
+      respond = (response) => { response.setHeader("Content-Type", "text/plain"); response.end(text) }
+      const beforeFiles = await readdir(directory)
+      const result = await fetchPage()
+      assert.ok("text" in result)
+      if (size <= 32768) {
+        assert.deepEqual(result, { text })
+        assert.deepEqual(await readdir(directory), beforeFiles)
+        assert.deepEqual(renderWebFetch(result), { status: "success", content: [{ type: "text", text }] })
+      } else {
+        assert.ok(result.truncated)
+        assert.equal(result.text, text.slice(0, 32768))
+        assert.equal(result.totalBytes, size)
+        assert.equal(dirname(result.fullOutputPath), directory)
+        assert.match(basename(result.fullOutputPath), /^web_fetch_[0-9a-f-]{36}\.md$/)
+        assert.equal(await readFile(result.fullOutputPath, "utf8"), text)
+        const rendered = renderWebFetch(result)
+        assert.equal(rendered.content[0].type, "text")
+        if (rendered.content[0].type === "text") assert.equal(rendered.content[0].text, result.text + `\n…\n\n[Output truncated: 32769 bytes total, showing the first 32 KiB or less.]\nFull output saved to:\n${result.fullOutputPath}\nUse read with this path to inspect the saved content.`)
+      }
+    }
+    for (const text of ["中".repeat(12000), "x".repeat(32767) + "😀tail"]) {
+      respond = (response) => { response.setHeader("Content-Type", "text/markdown"); response.end(text) }
+      const results = await Promise.all([fetchPage(), fetchPage()])
+      const paths = new Set<string>()
+      for (const result of results) {
+        assert.ok("text" in result && result.truncated)
+        assert.ok(Buffer.byteLength(result.text) <= 32768)
+        assert.equal(Buffer.from(result.text, "utf8").toString("utf8") === result.text, true)
+        assert.ok(text.startsWith(result.text))
+        assert.equal(result.totalBytes, Buffer.byteLength(text))
+        assert.equal(await readFile(result.fullOutputPath, "utf8"), text)
+        paths.add(result.fullOutputPath)
+      }
+      assert.equal(paths.size, 2)
+    }
+    respond = (response) => response.end("<script>" + "x".repeat(40000) + "</script><p>small</p>")
+    const beforeConversion = await readdir(directory)
+    assert.deepEqual(await fetchPage(), { text: "small" })
+    assert.deepEqual(await readdir(directory), beforeConversion)
+    const markdown = "converted ".repeat(4000)
+    respond = (response) => response.end(`<p>${markdown}</p>`)
+    const converted = await fetchPage()
+    assert.ok("text" in converted && converted.truncated)
+    assert.equal(await readFile(converted.fullOutputPath, "utf8"), markdown.trim())
+    assert.equal(converted.totalBytes, Buffer.byteLength(markdown.trim()))
+    const occupied = join(directory, "occupied")
+    await writeFile(occupied, "keep")
+    const beforeFailure = await readdir(directory)
+    for (const output of [undefined, "relative", join(directory, "missing"), occupied]) {
+      assertError(await executeWebFetch({ url }, controller.signal, output), "WEB_FETCH_OUTPUT_WRITE_FAILED")
+    }
+    assert.deepEqual(await readdir(directory), beforeFailure)
+    assert.equal(await readFile(occupied, "utf8"), "keep")
+    const probe = await open(occupied, "r")
+    const prototype = Object.getPrototypeOf(probe)
+    const originalWrite = prototype.writeFile
+    await probe.close()
+    try {
+      /**
+       * 模拟部分写入后磁盘失败，检查未交付文件已删除。
+       * @throws Error 固定的磁盘故障，由抓取工具转换并清理。
+       */
+      prototype.writeFile = async function (this: FileHandle): Promise<void> {
+        await this.write(Buffer.from("partial"))
+        throw new Error("模拟磁盘写入失败")
+      }
+      assertError(await fetchPage(), "WEB_FETCH_OUTPUT_WRITE_FAILED")
+      assert.deepEqual(await readdir(directory), beforeFailure)
+      const duringOutput = new AbortController()
+      /**
+       * 全文写入完成时取消，检查文件不会作为成功结果交付。
+       * @param data 待写入的完整字节。
+       * @returns 写入并触发取消后完成。
+       * @throws Error 底层写入失败。
+       */
+      prototype.writeFile = async function (this: FileHandle, data: Buffer): Promise<void> {
+        await originalWrite.call(this, data)
+        duringOutput.abort()
+      }
+      assertError(await executeWebFetch({ url }, duringOutput.signal, directory), "CANCELLED")
+      assert.deepEqual(await readdir(directory), beforeFailure)
+    } finally { prototype.writeFile = originalWrite }
+
+    for (const status of [301, 302, 303, 307, 308]) {
+      for (const hops of [0, 5, 6]) {
+        const beforeCalls = calls
+        respond = (response) => {
+          const count = requestPath === "/page" ? 0 : Number(requestPath.slice(1))
+          if (count < hops) { response.writeHead(status, { Location: `/${count + 1}` }); response.end() }
+          else { response.setHeader("Content-Type", "text/plain"); response.end("redirected") }
+        }
+        const result = await fetchPage()
+        if (hops <= 5) assert.deepEqual(result, { text: "redirected" })
+        else assertError(result, "WEB_FETCH_TOO_MANY_REDIRECTS")
+        assert.equal(calls - beforeCalls, Math.min(hops + 1, 6))
+      }
+    }
+    respond = (response) => { response.writeHead(302, { Location: "/page" }); response.end() }
+    assertError(await fetchPage(), "WEB_FETCH_TOO_MANY_REDIRECTS")
+    for (const location of ["file:///private", "http://[", "ftp://example.com"]) {
+      respond = (response) => { response.writeHead(302, { Location: location }); response.end() }
+      assertError(await fetchPage(), "WEB_FETCH_INVALID_REDIRECT")
+    }
+    respond = (response) => { response.writeHead(302); response.end() }
+    assertError(await fetchPage(), "WEB_FETCH_HTTP_ERROR")
+    let timeoutCalls = 0
+    AbortSignal.timeout = (milliseconds) => { assert.equal(milliseconds, 30000); timeoutCalls++; return originalTimeout(80) }
+    respond = (response) => { setTimeout(() => { if (!response.destroyed) { response.writeHead(302, { Location: "/page" }); response.end() } }, 50) }
+    assertError(await fetchPage(), "WEB_FETCH_TIMEOUT")
+    assert.equal(timeoutCalls, 1, "跳转链共用一个超时")
+    AbortSignal.timeout = originalTimeout
+    const redirectAbort = new AbortController()
+    respond = (response) => {
+      if (requestPath === "/page") { response.writeHead(302, { Location: "/hold" }); response.end() }
+      else setTimeout(() => redirectAbort.abort(), 10)
+    }
+    assertError(await executeWebFetch({ url }, redirectAbort.signal, directory), "CANCELLED")
+
     /** 声明过大的长度时不发送正文，验证不会等待服务器传完。 */
     respond = (response) => { response.writeHead(200, { "Content-Length": WEB_FETCH_MAX_BYTES + 1 }); response.flushHeaders() }
     assertError(await fetchPage(), "WEB_FETCH_TOO_LARGE")
@@ -140,11 +267,19 @@ async function main(): Promise<void> {
     assert.doesNotMatch(JSON.stringify(failure), /private-body/)
     assert.equal(toolScheduleGroup("web_fetch"), "shared")
     assert.equal(planToolRounds([{ toolName: "web_fetch" }, { toolName: "read" }, { toolName: "web_fetch" }]).length, 1)
-    console.log("web-fetch.test.ts: 转换、大小、压缩、超时、取消、错误和统一入口通过")
+    respond = (response) => { response.setHeader("Content-Type", "text/plain"); response.end("z".repeat(40000)) }
+    const integrated = await execute("web_fetch", { url }, { ...context, processRuntime: { projectId: "default", sessionId: "test", outputDirectory: directory, requestApproval: async () => { throw new Error("不应审批") } } })
+    assert.equal(integrated.status, "success")
+    assert.match(JSON.stringify(integrated), /Output truncated.*Full output saved to/)
+    const missing = await execute("web_fetch", { url }, context)
+    assert.equal(missing.status, "error")
+    if (missing.status === "error") assert.equal(missing.error.code, "WEB_FETCH_OUTPUT_WRITE_FAILED")
+    console.log("web-fetch.test.ts: 转换、跳转、UTF-8 截断、全文存储及清理、大小、压缩、超时、取消和统一入口通过")
   } finally {
     globalThis.fetch = originalFetch
     AbortSignal.timeout = originalTimeout
     TurndownService.prototype.turndown = originalTurndown
+    await rm(directory, { recursive: true, force: true })
     server.closeAllConnections()
     await new Promise<void>((done) => server.close(() => done()))
   }

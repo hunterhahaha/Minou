@@ -274,7 +274,7 @@ export async function runCli(argv: readonly string[]): Promise<number> {
     /** 编译入口位于 dist/src/cli；源码导入仅供仓库内的离线测试。 */
     const applicationRoot = typeof __dirname === "string" ? resolve(__dirname, "../../..") : cwd
     registerFileTools(tools, renders, { rgPath: bundledRipgrepPath(applicationRoot), loadAccess: () => ({ sandboxMode: mode, roots }) })
-    registerWebSearchTool(tools, renders, join(paths.rootDir, WEB_SEARCH_DATABASE_FILE))
+    registerWebSearchTool(tools, renders, join(paths.rootDir, WEB_SEARCH_DATABASE_FILE), estimateLocalTokens)
     registerWebFetchTool(tools, renders)
     shell = new ShellRouter()
     terminal = new TerminalRouter()

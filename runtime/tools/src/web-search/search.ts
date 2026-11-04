@@ -9,13 +9,14 @@ import type { WebSearchInput, WebSearchItem, WebSearchResult } from "./types.ts"
 export const WEB_SEARCH_TIMEOUT_MS = 30_000
 
 /**
- * 从当前配置执行一次搜索，不重试或改写请求字段、JMESPath 条目。
+ * 从当前配置执行一次搜索，仅限制映射后字符串摘要的本地 token 预算，不重试。
  * @param databasePath 已初始化的配置数据库绝对路径。
  * @param input 已校验的模型 query。
  * @param signal 当前工具调用的取消信号。
- * @returns 原样包装的条目数组，或不包含请求、凭据与原始响应的统一错误。
+ * @param estimateTokens 宿主提供的单调文本 token 粗估函数。
+ * @returns 摘要至多 800 token 的条目数组，或不包含请求、凭据与原始响应的统一错误。
  */
-export async function executeWebSearch(databasePath: string, input: WebSearchInput, signal: AbortSignal): Promise<WebSearchResult | AppError> {
+export async function executeWebSearch(databasePath: string, input: WebSearchInput, signal: AbortSignal, estimateTokens: (text: string) => number): Promise<WebSearchResult | AppError> {
   if (signal.aborted) return failure("CANCELLED", "搜索已取消。")
   let provider
   try { provider = readActiveWebSearchProvider(databasePath) }
@@ -45,7 +46,19 @@ export async function executeWebSearch(databasePath: string, input: WebSearchInp
     stage = "mapping"
     const items: unknown = search(data, provider.responseJmespath)
     if (!Array.isArray(items)) return failure("WEB_SEARCH_RESULT_INVALID", "搜索响应的 JMESPath 输出必须是数组。")
-    return { results: items as WebSearchItem[] }
+    return { results: items.map((item) => {
+      if (!isPlainRecord(item) || typeof item.snippet !== "string" || estimateTokens(item.snippet) <= 800) return item
+      const snippet = item.snippet
+      let low = 0, high = snippet.length
+      while (low < high) {
+        const middle = Math.ceil((low + high) / 2)
+        if (estimateTokens(snippet.slice(0, middle) + "…") <= 800) low = middle
+        else high = middle - 1
+      }
+      /** 避免在高、低代理项之间截断；省略号计入预算。 */
+      if (low > 0 && /[\uD800-\uDBFF]/.test(snippet[low - 1]) && /[\uDC00-\uDFFF]/.test(snippet[low] ?? "")) low--
+      return { ...item, snippet: snippet.slice(0, low) + "…" }
+    }) as WebSearchItem[] }
   } catch {
     if (signal.aborted) return failure("CANCELLED", "搜索已取消。")
     if (timeout.aborted) return failure("WEB_SEARCH_TIMEOUT", "搜索请求超时。")

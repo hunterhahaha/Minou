@@ -1,8 +1,9 @@
 /** 搜索工具的真实 HTTP、配置透传、JMESPath、错误脱敏和取消测试。 */
+import { estimateLocalTokens } from "../../../src/main/token-estimator.ts"
 import assert from "node:assert/strict"
 import { createServer } from "node:http"
 import type { ServerResponse } from "node:http"
-import { mkdtemp, rm } from "node:fs/promises"
+import { mkdtemp, readdir, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { DatabaseSync } from "node:sqlite"
@@ -65,7 +66,7 @@ async function main(): Promise<void> {
     }), responseJmespath: "items[].{title: name, url: link, snippet: summary, publishedAt: date}",
   }
   const signal = new AbortController().signal
-  const search = (query = "coding-agent") => executeWebSearch(database, { query }, signal)
+  const search = (query = "coding-agent") => executeWebSearch(database, { query }, signal, estimateLocalTokens)
   /** @param patch 完整配置的覆盖值。保存并启用当前测试配置。 */
   const configure = (patch: Partial<WebSearchProviderInput> = {}): void => {
     saveWebSearchProvider(database, { ...provider, ...patch })
@@ -98,6 +99,29 @@ async function main(): Promise<void> {
     configure({ requestJson: JSON.stringify({ url: `${endpoint}/safe`, method: "POST", body: JSON.stringify({ q: '"${query}"' }) }) })
     assert.ok("results" in await search("literal"))
     assert.deepEqual(JSON.parse(body), { q: '"literal"' }, "嵌入值中的字面量引号不能被误认作占位符边界")
+
+    configure({ responseJmespath: "items" })
+    const snippets = [null, "", "a".repeat(3199), "a".repeat(3200), "a".repeat(3201), "中".repeat(3201), "a".repeat(3198) + "😀tail", "😀".repeat(1700)]
+    const entries = snippets.map((snippet, index) => ({ title: `Result ${index}`, url: `https://example.com/${index}`, snippet, publishedAt: "date", extra: index }))
+    respond = (response) => response.end(JSON.stringify({ items: entries }))
+    const filesBeforeSearch = await readdir(directory)
+    const limited = await search()
+    assert.deepEqual(await readdir(directory), filesBeforeSearch, "摘要截断不生成完整输出文件")
+    assert.ok("results" in limited)
+    for (const [index, item] of limited.results.entries()) {
+      const original = entries[index]
+      assert.deepEqual({ ...item, snippet: original.snippet }, original)
+      if (typeof original.snippet !== "string" || estimateLocalTokens(original.snippet) <= 800) assert.equal(item.snippet, original.snippet)
+      else {
+        assert.ok(typeof item.snippet === "string")
+        assert.ok(estimateLocalTokens(item.snippet) <= 800)
+        assert.ok(item.snippet.endsWith("…"))
+        assert.ok(original.snippet.startsWith(item.snippet.slice(0, -1)))
+        assert.equal(Buffer.from(item.snippet, "utf8").toString("utf8") === item.snippet, true)
+      }
+    }
+    assert.equal(limited.results[4].snippet, "a".repeat(3199) + "…")
+    assert.equal(limited.results[6].snippet, "a".repeat(3198) + "…")
 
     const originalFetch = globalThis.fetch
     try {
@@ -136,12 +160,12 @@ async function main(): Promise<void> {
     configure()
     const abort = new AbortController()
     abort.abort()
-    assertError(await executeWebSearch(database, { query: "private-query" }, abort.signal), "CANCELLED")
+    assertError(await executeWebSearch(database, { query: "private-query" }, abort.signal, estimateLocalTokens), "CANCELLED")
     let releaseHeaders!: () => void
     const headersSent = new Promise<void>((done) => { releaseHeaders = done })
     respond = (response) => { response.writeHead(200, { "Content-Type": "application/json" }); response.flushHeaders(); releaseHeaders() }
     const duringRead = new AbortController()
-    const cancelled = executeWebSearch(database, { query: "private-query" }, duringRead.signal)
+    const cancelled = executeWebSearch(database, { query: "private-query" }, duringRead.signal, estimateLocalTokens)
     await headersSent
     duringRead.abort()
     assertError(await cancelled, "CANCELLED")
@@ -153,7 +177,7 @@ async function main(): Promise<void> {
     } finally { AbortSignal.timeout = originalTimeout }
 
     const tools = new ToolRegistry(), renders = new RenderRegistry()
-    registerWebSearchTool(tools, renders, database)
+    registerWebSearchTool(tools, renders, database, estimateLocalTokens)
     assert.equal(toolScheduleGroup("web_search"), "shared")
     assert.deepEqual(tools.listDefinitions()[0].inputSchema, { type: "object", properties: { query: { type: "string", minLength: 1 } }, required: ["query"], additionalProperties: false })
     const execute = createExecuteToolCall(tools, renders)

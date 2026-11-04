@@ -6,7 +6,7 @@ import { executeWebFetch } from "./fetch.ts"
 import type { WebFetchInput } from "./types.ts"
 
 export * from "./types.ts"
-export { executeWebFetch, WEB_FETCH_TIMEOUT_MS, WEB_FETCH_MAX_BYTES } from "./fetch.ts"
+export { executeWebFetch, WEB_FETCH_TIMEOUT_MS, WEB_FETCH_MAX_BYTES, WEB_FETCH_OUTPUT_LIMIT, WEB_FETCH_MAX_REDIRECTS } from "./fetch.ts"
 
 /**
  * 登记只接收 URL 的抓取工具和结果整理器，不在登记时发起网络请求。
@@ -19,11 +19,11 @@ export function registerWebFetchTool(tools: ToolRegistry, renders: RenderRegistr
     kind: "builtin",
     definition: {
       name: "web_fetch",
-      description: "Fetch an HTTP/HTTPS URL. Converts HTML to Markdown and returns plain text or Markdown unchanged. Fails after 30 seconds or when the decoded response body exceeds 5 MiB; partial content is discarded.",
+      description: "Fetch an HTTP/HTTPS URL, following at most 5 redirects. Converts HTML to Markdown and returns plain text or Markdown unchanged. Text over 32 KiB is truncated at the end; full text is saved to the returned absolute path for read. Fails after 30 seconds or when the decoded response body exceeds 5 MiB; partial content is discarded.",
       inputSchema: { type: "object", properties: { url: { type: "string", minLength: 1 } }, required: ["url"], additionalProperties: false },
     },
     validateArguments: validateInput,
-    execute: (input, context) => executeWebFetch(input, context.signal),
+    execute: (input, context) => executeWebFetch(input, context.signal, context.processRuntime?.outputDirectory),
     render: renderWebFetch,
   })
 }

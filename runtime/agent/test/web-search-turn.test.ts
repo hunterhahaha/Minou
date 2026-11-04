@@ -1,4 +1,5 @@
 /** 真实 Session、数据库与搜索工具的事件关联和模型上下文回填测试。 */
+import { estimateLocalTokens } from "../../../src/main/token-estimator.ts"
 import assert from "node:assert/strict"
 import { createServer } from "node:http"
 import { mkdtemp, rm } from "node:fs/promises"
@@ -30,7 +31,7 @@ async function main(): Promise<void> {
     saveWebSearchProvider(database, { id: "local", requestJson: JSON.stringify({ url: `http://127.0.0.1:${address.port}/?q=\${query}` }), responseJmespath: "hits" })
     setActiveWebSearchProvider(database, "local")
     const tools = new ToolRegistry(), renders = new RenderRegistry()
-    registerWebSearchTool(tools, renders, database)
+    registerWebSearchTool(tools, renders, database, estimateLocalTokens)
     global = new SessionRuntimeGlobal(paths, tools, renders)
     let requests = 0
     const adapter: ModelAdapter = { contextWindow: 128000, maxOutputTokens: 4096, stream: async function* (request) {

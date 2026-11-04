@@ -17,8 +17,8 @@ NiCode 是本地运行的 Coding Agent 应用，提供 Electron 桌面工作区�
 | 模型配置 | Provider、模型、API Key、默认模型、推理等级和请求字段路径 | [provider-ipc.ts](../src/main/provider-ipc.ts)、[provider-store.ts](../src/main/provider-store.ts) |
 | 模型协议 | Anthropic Messages、Chat Completions、Responses 的请求与事件转换 | [adapter.ts](../runtime/model/src/adapter.ts) |
 | 文件与进程工具 | glob、grep、read、write、edit、Shell 与 PTY 终端 | [tools 模块入口](../runtime/tools/src/index.ts) |
-| 网页搜索 | `web_search` 接收 query，以本地启用配置执行 fetch 请求，通过 JMESPath 统一响应；桌面与 CLI 共用 | [搜索工具](../runtime/tools/src/web-search/index.ts) |
-| 网页抓取 | `web_fetch` 接收 URL，30 秒内读取最多 5 MiB 解压后正文，超限丢弃；HTML 转 Markdown，纯文本与 Markdown 原样返回，桌面与 CLI 共用 | [抓取工具](../runtime/tools/src/web-fetch/index.ts) |
+| 网页搜索 | `web_search` 接收 query，以本地启用配置执行 fetch 请求，通过 JMESPath 统一响应，每条摘要限制 800 粗估 token；桌面与 CLI 共用 | [搜索工具](../runtime/tools/src/web-search/index.ts) |
+| 网页抓取 | `web_fetch` 接收 URL，最多五次跳转，共用 30 秒超时；最多读取 5 MiB 解压后正文，超限丢弃；HTML 转 Markdown，最终文本超过 32 KiB 时返回开头、保存全文并在末尾提供路径，桌面与 CLI 共用 | [抓取工具](../runtime/tools/src/web-fetch/index.ts) |
 | MCP | STDIO / Streamable HTTP 连接、目录发现、搜索、按需载入、调用和设置管理 | [MCPManager](../runtime/mcp/src/manager.ts)、[mcp-ipc.ts](../src/main/mcp-ipc.ts) |
 | Skill | Global / Project 来源同步、启停管理、描述注入及完整正文按需读取 | [SkillManager](../runtime/skill/src/manager.ts)、[skill-ipc.ts](../src/main/skill-ipc.ts) |
 | 项目记忆 | 按分类列索引、按需读正文、整批追加；同一 Project 的对话共用 | [MemoryManager](../runtime/memory/src/index.ts) |

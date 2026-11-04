@@ -64,7 +64,7 @@ node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types r
 node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/cli/web-search.test.ts
 ```
 
-分别覆盖配置持久化与事务、请求字符串替换与 fetch 透传及错误边界、桌面 Session 事件关联与回填，以及真实 CLI 子进程的工具注册与调用。超时测试临时缩短底层计时，同时断言生产代码传入的默认值仍为 30 秒。
+分别覆盖配置持久化与事务、请求字符串替换与 fetch 透传、每条摘要 800 token 边界及代理对保护、错误边界、桌面 Session 事件关联与回填，以及真实 CLI 子进程的工具注册与调用。超时测试临时缩短底层计时，同时断言生产代码传入的默认值仍为 30 秒。
 
 网页抓取使用以下定向测试入口，均使用本地 HTTP 服务或假模型，不访问远端网页。CLI 测试运行编译后的入口，需先构建：
 
@@ -75,7 +75,7 @@ node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types t
 node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/renderer/web-fetch.test.ts
 ```
 
-分别覆盖转换、原文保持、5 MiB 字节边界、分块断流与压缩响应、超时与取消、普通错误、工具注册与分组，以及真实 Session/CLI 的结果回填、事件关联和 Renderer 历史/增量投影。超时测试缩短底层计时并断言默认参数仍为 30 秒。真实页面测试为 `test/renderer/electron-web-fetch.test.cjs`，按下文隐藏窗口方式运行；覆盖成功与超限失败卡片、Markdown 原文展示，并保存 `dist/web-fetch-renderer.png`。定向工具测试之外，调度回归仍用 start/end 与并发峰值断言。
+分别覆盖转换、原文保持、5 MiB 字节边界、分块断流与压缩响应、五次跳转限制、相对与无效目标、跳转链共享超时及取消、转换后 32 KiB UTF-8 截断、并发独立文件、目录错误与部分写入失败清理、写入期间取消、工具注册与分组，以及真实 Session/CLI 的全文文件、结果回填、事件关联和 Renderer 历史/增量投影。超时测试缩短底层计时并断言默认参数仍为 30 秒。真实页面测试为 `test/renderer/electron-web-fetch.test.cjs`，按下文隐藏窗口方式运行；覆盖普通成功、截断成功与超限失败卡片、Markdown 原文及末尾截断说明和全文路径展示，并保存 `dist/web-fetch-renderer.png` 与 `dist/web-fetch-truncated-renderer.png`。定向工具测试之外，调度回归仍用 start/end 与并发峰值断言。
 
 | 范围 | 已有测试位置和关注点 |
 | --- | --- |

@@ -1,11 +1,12 @@
 /** 编译后的真实 CLI 子进程，通过假模型调用本地抓取服务并检查内部日志。 */
+import TurndownService from "turndown"
 import assert from "node:assert/strict"
 import { spawn } from "node:child_process"
 import { createServer } from "node:http"
 import type { ServerResponse } from "node:http"
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join, resolve } from "node:path"
+import { join, resolve, dirname } from "node:path"
 import { DatabaseSync } from "node:sqlite"
 import { initializeConfigFilesSnapshot } from "../../src/main/config-files.ts"
 import { saveModel, saveProvider, setProviderApiKey } from "../../src/main/provider-store.ts"
@@ -34,6 +35,8 @@ function reply(response: ServerResponse, first: boolean, url: string): void {
 async function main(): Promise<void> {
   const directory = await mkdtemp(join(tmpdir(), "nicode-cli-web-"))
   let fetchCalls = 0, modelCalls = 0
+  const fullText = new TurndownService().turndown("<p>CLI fetched <strong>content</strong></p><pre>" + "完整正文😀\n".repeat(4000) + "</pre>")
+  let modelText = ""
   let endpoint = ""
   let serverError: unknown
   const server = createServer((request, response) => {
@@ -42,7 +45,7 @@ async function main(): Promise<void> {
         fetchCalls += 1
         assert.equal(request.method, "GET")
         response.setHeader("Content-Type", "text/html")
-        response.end("<p>CLI fetched <strong>content</strong></p>")
+        response.end("<p>CLI fetched <strong>content</strong></p><pre>" + "完整正文😀\n".repeat(4000) + "</pre>")
         return
       }
       modelCalls += 1
@@ -58,6 +61,8 @@ async function main(): Promise<void> {
       if (modelCalls === 2) {
         const result = body.messages.find((message) => message.role === "tool" && message.tool_call_id === "fetch-call")
         assert.ok(result)
+        modelText = result.content
+        assert.match(modelText, /Output truncated:/)
         assert.match(result.content, /CLI fetched \*\*content\*\*/)
       }
       reply(response, modelCalls === 1, `${endpoint}/page`)
@@ -102,6 +107,11 @@ async function main(): Promise<void> {
       assert.equal(event.result.status, "success")
       assert.equal(event.toolCallId, "fetch-call")
       assert.match(JSON.stringify(event.result), /CLI fetched/)
+      assert.equal(event.result.content[0].text, modelText)
+      const outputPath = /Full output saved to:\n([^\n]+)/.exec(modelText)?.[1]
+      assert.ok(outputPath)
+      assert.equal(dirname(outputPath), join(result.record_directory, "tool_output"))
+      assert.equal(await readFile(outputPath, "utf8"), fullText)
     } finally { db.close() }
     console.log("CLI web-fetch: 真实子进程注册、HTTP 抓取、结果回填和内部日志通过")
   } finally {

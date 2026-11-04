@@ -23,6 +23,7 @@ import {
 } from "../../runtime/tools/src/index.ts"
 import { initializeConfigFilesSnapshot } from "./config-files.ts"
 import { TagManager } from "./tag-manager.ts"
+import { estimateLocalTokens } from "./token-estimator.ts"
 import { createElectronWindowManager } from "./electron-windows.ts"
 import { startElectronApp } from "./index.ts"
 import { SessionRuntimeGlobal } from "./session-runtime-global.ts"
@@ -49,7 +50,7 @@ async function main(): Promise<void> {
   })
   const memoryManager = new MemoryManager(paths.rootDir)
   registerMemoryTools(toolRegistry, renderRegistry, memoryManager)
-  registerWebSearchTool(toolRegistry, renderRegistry, join(paths.rootDir, WEB_SEARCH_DATABASE_FILE))
+  registerWebSearchTool(toolRegistry, renderRegistry, join(paths.rootDir, WEB_SEARCH_DATABASE_FILE), estimateLocalTokens)
   registerWebFetchTool(toolRegistry, renderRegistry)
   const sessionRuntimeGlobal = new SessionRuntimeGlobal(paths, toolRegistry, renderRegistry)
   await sessionRuntimeGlobal.mcpManager.initialize(config.mcpServers)

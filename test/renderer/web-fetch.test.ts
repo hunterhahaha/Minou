@@ -1,10 +1,12 @@
 /** 验证通用 Renderer 投影保留抓取成功与失败结果，不引入专属状态。 */
+import { renderWebFetch } from "../../runtime/tools/src/render/web-fetch.ts"
 import assert from "node:assert/strict"
 import { projectSessionEvents, mergeSessionEvents } from "../../src/renderer/session-state.ts"
 import type { SessionEvent } from "../../runtime/session/src/events.ts"
 import type { ToolResult } from "../../runtime/tools/src/types.ts"
 
 for (const result of [
+  renderWebFetch({ text: "# Truncated Markdown", truncated: true, totalBytes: 40000, fullOutputPath: "C:\\profile\\.nicode\\sessions\\default\\fetch-session\\tool_output\\web_fetch_00000000-0000-4000-8000-000000000001.md" }),
   { status: "success", content: [{ type: "text", text: "# Markdown\n\n**原文**" }] },
   { status: "error", content: [{ type: "text", text: "网页正文超过 5 MiB，已丢弃全部内容。" }], error: { source: "tool", code: "WEB_FETCH_TOO_LARGE", message: "网页正文超过 5 MiB，已丢弃全部内容。" } },
 ] satisfies ToolResult[]) {

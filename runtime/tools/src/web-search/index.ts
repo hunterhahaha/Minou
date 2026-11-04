@@ -14,9 +14,10 @@ export { executeWebSearch, WEB_SEARCH_TIMEOUT_MS } from "./search.ts"
  * @param tools 宿主共享工具注册表。
  * @param renders 同名结果整理器注册表。
  * @param databasePath 用户 .nicode 下的搜索配置数据库绝对路径。
+ * @param estimateTokens 宿主现有的本地 token 粗估函数，用于限制摘要。
  * @throws Error 名称冲突或工具定义登记失败。
  */
-export function registerWebSearchTool(tools: ToolRegistry, renders: RenderRegistry, databasePath: string): void {
+export function registerWebSearchTool(tools: ToolRegistry, renders: RenderRegistry, databasePath: string, estimateTokens: (text: string) => number): void {
   registerTool(tools, renders, {
     kind: "builtin",
     definition: {
@@ -25,7 +26,7 @@ export function registerWebSearchTool(tools: ToolRegistry, renders: RenderRegist
       inputSchema: { type: "object", properties: { query: { type: "string", minLength: 1 } }, required: ["query"], additionalProperties: false },
     },
     validateArguments: validateInput,
-    execute: (input, context) => executeWebSearch(databasePath, input, context.signal),
+    execute: (input, context) => executeWebSearch(databasePath, input, context.signal, estimateTokens),
     render: renderWebSearch,
   })
 }

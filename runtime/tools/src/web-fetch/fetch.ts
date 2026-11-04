@@ -1,5 +1,8 @@
 /** 网页抓取执行：共享取消与超时、流式限量读取和 HTML 转换。 */
 import TurndownService from "turndown"
+import { randomUUID } from "node:crypto"
+import { lstat, open, unlink } from "node:fs/promises"
+import { isAbsolute, join } from "node:path"
 import type { AppError } from "../../../error/src/types.ts"
 import type { WebFetchInput, WebFetchResult } from "./types.ts"
 
@@ -7,14 +10,19 @@ import type { WebFetchInput, WebFetchResult } from "./types.ts"
 export const WEB_FETCH_TIMEOUT_MS = 30_000
 /** 解压后正文的字节上限；等于上限允许，超过则丢弃全部正文。 */
 export const WEB_FETCH_MAX_BYTES = 5 * 1024 * 1024
+/** 最终文本正文的 UTF-8 输出上限，截断提示另计。 */
+export const WEB_FETCH_OUTPUT_LIMIT = 32 * 1024
+/** 初始请求之后最多跟随的跳转次数。 */
+export const WEB_FETCH_MAX_REDIRECTS = 5
 
 /**
- * 获取一次网页，完整读取后转换 HTML 或原样返回文本；不重试、不返回部分正文。
+ * 最多跟随五次跳转抓取网页，转换后超限则保存全文并返回开头；网络失败不返回部分正文。
  * @param input 已由工具入口校验的 HTTP/HTTPS URL。
  * @param signal 当前工具调用的取消信号。
- * @returns 完整处理后的文本，或不包含原始响应及底层异常的统一错误。
+ * @param outputDirectory 宿主已创建的 tool_output 绝对目录，仅超限时需要。
+ * @returns 完整小文本或带全文路径的截断结果；失败返回不包含正文和底层异常的统一错误。
  */
-export async function executeWebFetch(input: WebFetchInput, signal: AbortSignal): Promise<WebFetchResult | AppError> {
+export async function executeWebFetch(input: WebFetchInput, signal: AbortSignal, outputDirectory?: string): Promise<WebFetchResult | AppError> {
   if (signal.aborted) return failure("CANCELLED", "网页抓取已取消。")
   const timeout = AbortSignal.timeout(WEB_FETCH_TIMEOUT_MS)
   const controller = new AbortController()
@@ -22,9 +30,23 @@ export async function executeWebFetch(input: WebFetchInput, signal: AbortSignal)
   let response: Response | undefined
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined
   const chunks: Uint8Array[] = []
-  let stage: "request" | "read" | "conversion" = "request"
+  let stage: "request" | "read" | "conversion" | "output" = "request"
   try {
-    response = await fetch(input.url, { method: "GET", signal: requestSignal })
+    let url = input.url
+    for (let redirects = 0; ; redirects++) {
+      response = await fetch(url, { method: "GET", redirect: "manual", signal: requestSignal })
+      requestSignal.throwIfAborted()
+      if (![301, 302, 303, 307, 308].includes(response.status)) break
+      const location = response.headers.get("location")
+      if (location === null) break
+      if (redirects >= WEB_FETCH_MAX_REDIRECTS) return failure("WEB_FETCH_TOO_MANY_REDIRECTS", "网页重定向超过 5 次。")
+      try {
+        const target = new URL(location, url)
+        if (target.protocol !== "http:" && target.protocol !== "https:") throw new Error()
+        url = target.href
+      } catch { return failure("WEB_FETCH_INVALID_REDIRECT", "网页重定向地址不是有效的 HTTP/HTTPS URL。") }
+      if (response.body) await response.body.cancel()
+    }
     requestSignal.throwIfAborted()
     if (!response.ok) return failure("WEB_FETCH_HTTP_ERROR", `网页返回 HTTP ${response.status}。`)
 
@@ -54,15 +76,19 @@ export async function executeWebFetch(input: WebFetchInput, signal: AbortSignal)
       }
     }
     requestSignal.throwIfAborted()
-    const text = Buffer.concat(chunks, size).toString("utf8")
+    let text = Buffer.concat(chunks, size).toString("utf8")
     chunks.length = 0
-    if (contentType === "text/plain" || contentType === "text/markdown") return { text }
-    stage = "conversion"
-    const converter = new TurndownService()
-    converter.remove(["script", "style"])
-    return { text: converter.turndown(text) }
+    if (contentType !== "text/plain" && contentType !== "text/markdown") {
+      stage = "conversion"
+      const converter = new TurndownService()
+      converter.remove(["script", "style"])
+      text = converter.turndown(text)
+    }
+    stage = "output"
+    return await prepareOutput(text, outputDirectory, signal)
   } catch {
     if (signal.aborted) return failure("CANCELLED", "网页抓取已取消。")
+    if (stage === "output") return failure("WEB_FETCH_OUTPUT_WRITE_FAILED", "无法将完整网页内容保存到工具输出目录。")
     if (timeout.aborted) return failure("WEB_FETCH_TIMEOUT", "网页抓取超时（30 秒）。")
     if (stage === "read") return failure("WEB_FETCH_READ_FAILED", "无法完整读取网页正文。")
     if (stage === "conversion") return failure("WEB_FETCH_CONVERSION_FAILED", "无法将网页 HTML 转换为 Markdown。")
@@ -78,6 +104,35 @@ export async function executeWebFetch(input: WebFetchInput, signal: AbortSignal)
       await response.body.cancel().catch(() => undefined)
     }
   }
+}
+
+/**
+ * 按 UTF-8 字节保留正文开头；超限时独占写入完整文本，成功后才交付路径。
+ * @param text 转换后的完整正文。
+ * @param directory 已存在的宿主输出目录；缺失、相对路径或非目录均不能保存。
+ * @param signal 当前调用取消信号，取消时清理本次文件。
+ * @returns 小结果原文，或不拆分 UTF-8 字符的前缀及完整文件元数据。
+ * @throws Error 目录无效、写入失败或取消；调用方按工具错误转换。
+ */
+async function prepareOutput(text: string, directory: string | undefined, signal: AbortSignal): Promise<WebFetchResult> {
+  signal.throwIfAborted()
+  const bytes = Buffer.from(text, "utf8")
+  if (bytes.length <= WEB_FETCH_OUTPUT_LIMIT) return { text }
+  if (!directory || !isAbsolute(directory) || !(await lstat(directory)).isDirectory()) throw new Error("工具输出目录不可用")
+  const fullOutputPath = join(directory, `web_fetch_${randomUUID()}.md`)
+  const file = await open(fullOutputPath, "wx", 0o600)
+  try {
+    await file.writeFile(bytes)
+    await file.close()
+    signal.throwIfAborted()
+  } catch (error) {
+    await file.close().catch(() => undefined)
+    await unlink(fullOutputPath).catch(() => undefined)
+    throw error
+  }
+  let end = WEB_FETCH_OUTPUT_LIMIT
+  while ((bytes[end] & 0xc0) === 0x80) end--
+  return { text: bytes.subarray(0, end).toString("utf8"), truncated: true, totalBytes: bytes.length, fullOutputPath }
 }
 
 /**

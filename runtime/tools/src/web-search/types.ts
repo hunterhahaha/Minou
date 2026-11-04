@@ -27,14 +27,14 @@ export interface WebSearchItem {
   title: string
   /** 结果地址。 */
   url: string
-  /** 摘要。 */
+  /** 摘要；执行后字符串粗估不超过 800 token，超限尾部为省略号。 */
   snippet: string | null
   /** 可选发布时间，工具不转换格式。 */
   publishedAt?: string | null
 }
 
-/** 搜索业务成功结果，不改变 JMESPath 返回的条目。 */
+/** 搜索业务成功结果，仅对 JMESPath 返回条目的字符串摘要限制长度。 */
 export interface WebSearchResult {
-  /** JMESPath 返回的原始条目数组。 */
+  /** 保持 JMESPath 顺序及其它字段的条目数组。 */
   results: WebSearchItem[]
 }

@@ -1,9 +1,9 @@
 /** 真实 Session 与抓取工具的事件关联和模型上下文回填测试。 */
 import assert from "node:assert/strict"
 import { createServer } from "node:http"
-import { mkdtemp, rm } from "node:fs/promises"
+import { mkdtemp, readFile, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { join, dirname } from "node:path"
 import { initializeConfigFilesSnapshot } from "../../../src/main/config-files.ts"
 import { SessionRuntimeGlobal } from "../../../src/main/session-runtime-global.ts"
 import type { ModelAdapter, ModelRef } from "../../model/src/types.ts"
@@ -18,7 +18,12 @@ import { SessionRuntime } from "../src/session-runtime.ts"
  */
 async function main(): Promise<void> {
   const profile = await mkdtemp(join(tmpdir(), "nicode-web-turn-"))
-  const server = createServer((_request, response) => { response.setHeader("Content-Type", "text/html"); response.end("<p>Session fetched <strong>context</strong></p>") })
+  const fullText = "Session full content 中文😀\n".repeat(3000)
+  let modelText = ""
+  const server = createServer((request, response) => {
+    if (request.url === "/large") { response.setHeader("Content-Type", "text/plain"); response.end(fullText) }
+    else { response.setHeader("Content-Type", "text/html"); response.end("<p>Session fetched <strong>context</strong></p>") }
+  })
   await new Promise<void>((done) => server.listen(0, "127.0.0.1", done))
   const address = server.address()
   assert.ok(address && typeof address !== "string")
@@ -38,11 +43,17 @@ async function main(): Promise<void> {
       if (requests === 1) {
         yield { type: "block_start", index: 0, blockType: "tool_call" }
         yield { type: "block_end", index: 0, block: { type: "tool_call", toolCallId: "fetch-call", name: "web_fetch", arguments: { url: `http://127.0.0.1:${address.port}/page` } } }
+        yield { type: "block_start", index: 1, blockType: "tool_call" }
+        yield { type: "block_end", index: 1, block: { type: "tool_call", toolCallId: "fetch-large", name: "web_fetch", arguments: { url: `http://127.0.0.1:${address.port}/large` } } }
         yield { type: "stream_end", completion: "tool_calls" }
       } else {
         const tool = request.context.messages.find((message) => message.role === "tool" && message.toolCallId === "fetch-call")
         assert.ok(tool?.role === "tool" && !tool.isError)
         assert.match(JSON.stringify(tool.content), /Session fetched \*\*context\*\*/)
+        const large = request.context.messages.find((message) => message.role === "tool" && message.toolCallId === "fetch-large")
+        assert.ok(large?.role === "tool" && !large.isError)
+        modelText = large.content.filter((content) => content.type === "text").map((content) => content.text).join("\n")
+        assert.match(modelText, /\n…\n\n\[Output truncated:/)
         yield { type: "block_start", index: 0, blockType: "text" }
         yield { type: "block_end", index: 0, block: { type: "text", text: "Fetch consumed" } }
         yield { type: "stream_end", completion: "finished" }
@@ -56,8 +67,8 @@ async function main(): Promise<void> {
     assert.equal(requests, 2)
     const events = await session.readEvents() as readonly SessionEvent[]
     const results = events.filter((event) => event.type === "tool/result")
-    assert.equal(results.length, 1)
-    const result = results[0]
+    assert.equal(results.length, 2)
+    const result = results.find((event) => event.toolCallId === "fetch-call")!
     assert.equal(result.result.status, "success")
     const call = events.find((event) => event.eventId === result.toolCallEventId)
     assert.ok(call?.type === "assistant/block_end" && call.block.type === "tool_call")
@@ -65,6 +76,13 @@ async function main(): Promise<void> {
     assert.equal(result.blockId, call.blockId)
     assert.equal(events.some((event) => event.type === "approval/request"), false)
     assert.ok(events.some((event) => event.type === "turn/end" && event.reason === "completed"))
+    const largeResult = results.find((event) => event.toolCallId === "fetch-large")!
+    assert.equal(largeResult.result.content[0].type, "text")
+    if (largeResult.result.content[0].type === "text") assert.equal(largeResult.result.content[0].text, modelText)
+    const outputPath = /Full output saved to:\n([^\n]+)/.exec(modelText)?.[1]
+    assert.ok(outputPath)
+    assert.equal(dirname(outputPath), join(paths.rootDir, "sessions", "default", "fetch-session", "tool_output"))
+    assert.equal(await readFile(outputPath, "utf8"), fullText)
     console.log("web-fetch-turn.test.ts: 桌面 Session 工具暴露、事件关联和模型回填通过")
   } finally {
     session?.close()
