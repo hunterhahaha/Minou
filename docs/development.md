@@ -17,6 +17,7 @@
 | 对话命令、队列与停止 | [session-ipc.ts](../src/main/session-ipc.ts)、[SessionRuntime](../runtime/agent/src/session-runtime.ts) |
 | 模型调用与工具小轮 | [loop.ts](../runtime/agent/src/loop.ts)、[model 模块入口](../runtime/model/src/index.ts)、[tool-executor.ts](../runtime/tools/src/tool-executor.ts) |
 | 网页搜索与配置库 | [搜索工具](../runtime/tools/src/web-search/index.ts)、[搜索存储](../runtime/tools/src/web-search/store.ts)、[结果整理](../runtime/tools/src/render/web-search.ts) |
+| 网页抓取 | [抓取工具](../runtime/tools/src/web-fetch/index.ts)、[流式限量读取](../runtime/tools/src/web-fetch/fetch.ts)、[结果整理](../runtime/tools/src/render/web-fetch.ts) |
 | 会话恢复与 Usage | [session-state.ts](../runtime/session/src/session-state.ts)、[event-log.ts](../runtime/session/src/event-log.ts)、[usage.ts](../runtime/model/src/usage.ts) |
 | 页面与展示缓存 | [main.tsx](../src/renderer/main.tsx)、[session-page.tsx](../src/renderer/session-page.tsx)、[Renderer session-state.ts](../src/renderer/session-state.ts) |
 | Headless CLI | [main.ts](../src/cli/main.ts)、[protocol.ts](../src/cli/protocol.ts)、[CLI 使用说明](cli-usage.md) |
@@ -64,6 +65,17 @@ node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types t
 ```
 
 分别覆盖配置持久化与事务、请求字符串替换与 fetch 透传及错误边界、桌面 Session 事件关联与回填，以及真实 CLI 子进程的工具注册与调用。超时测试临时缩短底层计时，同时断言生产代码传入的默认值仍为 30 秒。
+
+网页抓取使用以下定向测试入口，均使用本地 HTTP 服务或假模型，不访问远端网页。CLI 测试运行编译后的入口，需先构建：
+
+```powershell
+node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types runtime/tools/test/web-fetch.test.ts
+node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types runtime/agent/test/web-fetch-turn.test.ts
+node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/cli/web-fetch.test.ts
+node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/renderer/web-fetch.test.ts
+```
+
+分别覆盖转换、原文保持、5 MiB 字节边界、分块断流与压缩响应、超时与取消、普通错误、工具注册与分组，以及真实 Session/CLI 的结果回填、事件关联和 Renderer 历史/增量投影。超时测试缩短底层计时并断言默认参数仍为 30 秒。真实页面测试为 `test/renderer/electron-web-fetch.test.cjs`，按下文隐藏窗口方式运行；覆盖成功与超限失败卡片、Markdown 原文展示，并保存 `dist/web-fetch-renderer.png`。定向工具测试之外，调度回归仍用 start/end 与并发峰值断言。
 
 | 范围 | 已有测试位置和关注点 |
 | --- | --- |

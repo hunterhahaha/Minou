@@ -22,6 +22,7 @@ import {
   bundledRipgrepPath, createExecuteToolCall, registerFileTools, registerMemoryTools, registerMCPTools,
   registerShellTools, registerSkillTools, registerTerminalTools, RenderRegistry, ShellRouter, TerminalRouter, ToolRegistry,
   registerWebSearchTool, WEB_SEARCH_DATABASE_FILE,
+  registerWebFetchTool,
 } from "../../runtime/tools/src/index.ts"
 import type { ToolExecutionContext } from "../../runtime/tools/src/types.ts"
 import { initializeConfigFilesSnapshot } from "../main/config-files.ts"
@@ -274,6 +275,7 @@ export async function runCli(argv: readonly string[]): Promise<number> {
     const applicationRoot = typeof __dirname === "string" ? resolve(__dirname, "../../..") : cwd
     registerFileTools(tools, renders, { rgPath: bundledRipgrepPath(applicationRoot), loadAccess: () => ({ sandboxMode: mode, roots }) })
     registerWebSearchTool(tools, renders, join(paths.rootDir, WEB_SEARCH_DATABASE_FILE))
+    registerWebFetchTool(tools, renders)
     shell = new ShellRouter()
     terminal = new TerminalRouter()
     /** @returns 本次固定的沙箱模式和新进程初始目录。 */

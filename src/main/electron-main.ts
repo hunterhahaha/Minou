@@ -15,6 +15,7 @@ import {
   registerFileTools,
   registerMemoryTools,
   registerWebSearchTool,
+  registerWebFetchTool,
   WEB_SEARCH_DATABASE_FILE,
   bundledRipgrepPath,
   RenderRegistry,
@@ -49,6 +50,7 @@ async function main(): Promise<void> {
   const memoryManager = new MemoryManager(paths.rootDir)
   registerMemoryTools(toolRegistry, renderRegistry, memoryManager)
   registerWebSearchTool(toolRegistry, renderRegistry, join(paths.rootDir, WEB_SEARCH_DATABASE_FILE))
+  registerWebFetchTool(toolRegistry, renderRegistry)
   const sessionRuntimeGlobal = new SessionRuntimeGlobal(paths, toolRegistry, renderRegistry)
   await sessionRuntimeGlobal.mcpManager.initialize(config.mcpServers)
   for (const state of sessionRuntimeGlobal.mcpManager.getConnectionStates()) {

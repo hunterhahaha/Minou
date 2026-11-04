@@ -28,6 +28,7 @@ export const BUILTIN_TOOL_NAMES = [
   "mcp_load_tools",
   "tool_search",
   "web_search",
+  "web_fetch",
 ] as const
 
 /** NiCode 自带工具的稳定名称。 */
