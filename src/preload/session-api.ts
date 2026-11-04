@@ -26,6 +26,68 @@ import type { SkillRegistryEntry, SkillSummary, SkillTarget } from "../../runtim
 
 export type { SkillRegistryEntry, SkillSummary, SkillTarget }
 
+import type { WebSearchProviderConfig, WebSearchProviderDefinition, WebSearchProviderSaveInput, WebSearchProviderSummary } from "../../runtime/tools/src/web-search/types.ts"
+export type { WebSearchProviderConfig, WebSearchProviderDefinition, WebSearchProviderSaveInput, WebSearchProviderSummary }
+
+/** 搜索服务商配置管理的固定通道，不暴露任意 IPC 调用。 */
+export const WEB_SEARCH_IPC_CHANNELS = {
+  listWebSearchProviderDefinitions: "nicode:web-search:definitions",
+  listWebSearchProviders: "nicode:web-search:list",
+  getWebSearchProvider: "nicode:web-search:get",
+  createWebSearchProvider: "nicode:web-search:create",
+  updateWebSearchProvider: "nicode:web-search:update",
+  deleteWebSearchProvider: "nicode:web-search:delete",
+  setActiveWebSearchProvider: "nicode:web-search:set-active",
+} as const
+
+/**
+ * 检查列表和创建结果，拒绝把请求凭据混入摘要。
+ * @param value 主进程返回的未知列表。
+ * @returns 独立的无凭据摘要列表。
+ * @throws TypeError 身份、名称、启用状态、唯一性或字段集合无效。
+ */
+function requireWebSearchSummaries(value: unknown): WebSearchProviderSummary[] {
+  if (!Array.isArray(value) || !value.every((entry) => isRecord(entry) &&
+      Object.keys(entry).length === 3 && typeof entry.id === "string" && entry.id.trim() !== "" &&
+      typeof entry.name === "string" && entry.name.trim() !== "" && typeof entry.enabled === "boolean") ||
+      new Set(value.map((entry) => entry.id)).size !== value.length || value.filter((entry) => entry.enabled).length > 1) {
+    throw new TypeError("搜索服务商摘要无效。")
+  }
+  return value.map(({ id, name, enabled }) => ({ id, name, enabled }))
+}
+
+/**
+ * 检查可序列化预置定义和绑定字段，不包含用户参数值。
+ * @param value 主进程返回的未知目录。
+ * @returns 独立的服务商定义列表。
+ * @throws TypeError 模板、参数元数据或字段路径无效。
+ */
+function requireWebSearchDefinitions(value: unknown): WebSearchProviderDefinition[] {
+  /** @param path 未知路径。 @returns 非空安全字段路径是否有效。 */
+  function validPath(path: unknown): boolean {
+    return Array.isArray(path) && path.length > 0 && path.every((key) => typeof key === "string" && key !== "" && !["__proto__", "constructor", "prototype"].includes(key))
+  }
+  if (!Array.isArray(value) || !value.every((entry) => {
+    if (!isRecord(entry) || typeof entry.name !== "string" || !entry.name.trim() || typeof entry.requestJsonTemplate !== "string" ||
+        typeof entry.responseJmespath !== "string" || !entry.responseJmespath.trim() || !Array.isArray(entry.parameters)) return false
+    try { JSON.parse(entry.requestJsonTemplate) } catch { return false }
+    return new Set(entry.parameters.map((field: unknown) => isRecord(field) ? field.key : undefined)).size === entry.parameters.length && entry.parameters.every((field: unknown) =>
+      isRecord(field) && typeof field.key === "string" && field.key.trim() !== "" && typeof field.label === "string" && field.label.trim() !== "" &&
+      (field.type === "string" || field.type === "positiveInteger") && typeof field.required === "boolean" && typeof field.secret === "boolean" &&
+      isRecord(field.target) && validPath(field.target.path) && (field.target.jsonPath === undefined || validPath(field.target.jsonPath)) &&
+      (field.target.prefix === undefined || (field.type === "string" && typeof field.target.prefix === "string")) &&
+      (field.max === undefined || (Number.isSafeInteger(field.max) && (field.max as number) > 0)) &&
+      (field.defaultValue === undefined || (field.type === "string" ? typeof field.defaultValue === "string" :
+        Number.isSafeInteger(field.defaultValue) && (field.defaultValue as number) > 0 && (field.max === undefined || (field.defaultValue as number) <= (field.max as number)))))
+  }) || new Set(value.map((entry) => entry.name)).size !== value.length) throw new TypeError("搜索服务商目录无效。")
+  return structuredClone(value) as WebSearchProviderDefinition[]
+}
+
+/** @param value 主进程写确认。 @throws TypeError 返回了非空业务数据。 */
+function requireWebSearchConfirmation(value: unknown): void {
+  if (value !== undefined) throw new TypeError("搜索配置操作确认无效。")
+}
+
 export const NICODE_PRELOAD_GLOBAL = "nicode"
 
 export const SESSION_IPC_CHANNELS = {
@@ -298,6 +360,20 @@ export interface StoppedSessionResponse {
 
 /** 暴露为 `window.nicode` 的 Session 命令与启动页面查询。 */
 export interface NiCodePreloadApi {
+  /** @returns 不含用户配置的预置目录。 @throws Error 查询或返回值校验失败。 */
+  listWebSearchProviderDefinitions(): Promise<WebSearchProviderDefinition[]>
+  /** @returns 全部无凭据摘要。 @throws Error 查询或返回值校验失败。 */
+  listWebSearchProviders(): Promise<WebSearchProviderSummary[]>
+  /** @param id 配置身份。 @returns 可能包含密钥的按需编辑详情。 @throws Error 配置缺失或返回值无效。 */
+  getWebSearchProvider(id: string): Promise<WebSearchProviderConfig>
+  /** @param input 前端生成的完整配置。 @returns 默认停用的新记录摘要。 @throws Error 校验或保存失败。 */
+  createWebSearchProvider(input: WebSearchProviderSaveInput): Promise<WebSearchProviderSummary>
+  /** @param id 配置身份。 @param input 完整替换内容。 @returns 保存确认。 @throws Error 配置缺失或保存失败。 */
+  updateWebSearchProvider(id: string, input: WebSearchProviderSaveInput): Promise<void>
+  /** @param id 配置身份。 @returns 删除确认，不自动选择替代项。 @throws Error 删除失败。 */
+  deleteWebSearchProvider(id: string): Promise<void>
+  /** @param id 要启用的身份；null 全部停用。 @returns 事务提交确认。 @throws Error 切换失败。 */
+  setActiveWebSearchProvider(id: string | null): Promise<void>
   /**
    * 读取历史；前端缓存命中时不调用。
    * @param projectId 所属 Project 或 default。
@@ -638,6 +714,39 @@ export interface ContextBridgePort {
  */
 export function createSessionApi(ipcRenderer: IpcRendererInvokePort): NiCodePreloadApi {
   return Object.freeze({
+    /** @returns 已检查的预置目录。 @throws Error IPC 或结构无效。 */
+    async listWebSearchProviderDefinitions(): Promise<WebSearchProviderDefinition[]> {
+      return requireWebSearchDefinitions(await ipcRenderer.invoke(WEB_SEARCH_IPC_CHANNELS.listWebSearchProviderDefinitions))
+    },
+    /** @returns 全部无凭据摘要。 @throws Error IPC 或结构无效。 */
+    async listWebSearchProviders(): Promise<WebSearchProviderSummary[]> {
+      return requireWebSearchSummaries(await ipcRenderer.invoke(WEB_SEARCH_IPC_CHANNELS.listWebSearchProviders))
+    },
+    /** @param id 配置身份。 @returns 按需详情。 @throws Error IPC 或详情无效。 */
+    async getWebSearchProvider(id: string): Promise<WebSearchProviderConfig> {
+      const value: unknown = await ipcRenderer.invoke(WEB_SEARCH_IPC_CHANNELS.getWebSearchProvider, id)
+      if (!isRecord(value) || typeof value.requestJson !== "string" || typeof value.responseJmespath !== "string" || !value.responseJmespath.trim()) throw new TypeError("搜索配置详情无效。")
+      requireWebSearchSummaries([{ id: value.id, name: value.name, enabled: value.enabled }])
+      try { JSON.parse(value.requestJson) } catch { throw new TypeError("搜索配置详情 JSON 无效。") }
+      return { id: value.id as string, name: value.name as string, enabled: value.enabled as boolean,
+        requestJson: value.requestJson, responseJmespath: value.responseJmespath }
+    },
+    /** @param input 最终请求内容。 @returns 新记录摘要。 @throws Error IPC 或摘要无效。 */
+    async createWebSearchProvider(input: WebSearchProviderSaveInput): Promise<WebSearchProviderSummary> {
+      return requireWebSearchSummaries([await ipcRenderer.invoke(WEB_SEARCH_IPC_CHANNELS.createWebSearchProvider, input)])[0]!
+    },
+    /** @param id 配置身份。 @param input 最终请求内容。 @returns 写入确认。 @throws Error 保存失败。 */
+    async updateWebSearchProvider(id: string, input: WebSearchProviderSaveInput): Promise<void> {
+      requireWebSearchConfirmation(await ipcRenderer.invoke(WEB_SEARCH_IPC_CHANNELS.updateWebSearchProvider, id, input))
+    },
+    /** @param id 配置身份。 @returns 删除确认。 @throws Error 删除失败。 */
+    async deleteWebSearchProvider(id: string): Promise<void> {
+      requireWebSearchConfirmation(await ipcRenderer.invoke(WEB_SEARCH_IPC_CHANNELS.deleteWebSearchProvider, id))
+    },
+    /** @param id 目标身份或 null。 @returns 切换确认。 @throws Error 切换失败。 */
+    async setActiveWebSearchProvider(id: string | null): Promise<void> {
+      requireWebSearchConfirmation(await ipcRenderer.invoke(WEB_SEARCH_IPC_CHANNELS.setActiveWebSearchProvider, id))
+    },
     /**
      * 读取历史；前端缓存命中时不调用。
      * @param projectId 所属 Project 或 default。

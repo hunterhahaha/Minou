@@ -215,7 +215,9 @@ async function testExposesOnlyNiCodeApi(): Promise<void> {
   assert.deepEqual(
     Object.keys(exposedApi as NiCodePreloadApi).sort(),
     ["getSessionData", "onSessionUpdate", "renameProject", "renameSession", "exportSessionMarkdown", "updateSessionSettings", "decideSessionApproval", "addProjectDirectory", "continueSession", "createModel", "createProject", "createCompatibleProvider", "createCustomProvider", "listCompatibleProviders", "deleteModel", "deleteProvider", "enqueueSessionMessage", "listDefaultSessions", "listProjects", "listProviders", "removeProjectDirectory", "selectDirectory", "setDefaultModel", "startNewSession", "stopSession", "updateApiKey", "updateModel", "updateProvider",
-      "listMcpServers", "createMcpServer", "updateMcpServer", "deleteMcpServer", "reloadMcpServers", "listSkills", "setSkillEnabled"].sort(),
+      "listMcpServers", "createMcpServer", "updateMcpServer", "deleteMcpServer", "reloadMcpServers", "listSkills", "setSkillEnabled",
+      "listWebSearchProviderDefinitions", "listWebSearchProviders", "getWebSearchProvider", "createWebSearchProvider",
+      "updateWebSearchProvider", "deleteWebSearchProvider", "setActiveWebSearchProvider"].sort(),
   )
 }
 

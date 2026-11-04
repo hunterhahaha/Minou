@@ -10,6 +10,7 @@ import { SessionRuntime } from "../../runtime/agent/src/session-runtime.ts"
 import type { SessionRuntimeGlobal } from "./session-runtime-global.ts"
 import type { ConfigFilePaths } from "./config-files.ts"
 import { registerModelIpcHandlers } from "./provider-ipc.ts"
+import { registerWebSearchIpcHandlers } from "./web-search-ipc.ts"
 import { registerMcpIpcHandlers } from "./mcp-ipc.ts"
 import { registerSkillIpcHandlers } from "./skill-ipc.ts"
 import { registerStartupDataIpcHandlers } from "./startup-data-ipc.ts"
@@ -136,6 +137,7 @@ export async function startElectronApp(options: ElectronStartupOptions): Promise
   )
   registerStartupDataIpcHandlers(options.ipcMain, options.configPaths)
   registerModelIpcHandlers(options.ipcMain, options.configPaths)
+  registerWebSearchIpcHandlers(options.ipcMain, options.configPaths)
   registerProjectIpcHandlers(options.ipcMain, options.dialog, options.configPaths)
   registerMcpIpcHandlers(options.ipcMain, options.configPaths, options.sessionRuntime.global.mcpManager)
   registerSkillIpcHandlers(options.ipcMain, options.configPaths, options.sessionRuntime.global.skillManager)

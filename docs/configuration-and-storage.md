@@ -160,6 +160,7 @@ NVIDIA 使用托管 NIM 的 `https://integrate.api.nvidia.com/v1`，仅提供 Ch
 | 字段 | 类型与用途 |
 | --- | --- |
 | `id` | 非空字符串主键，服务商唯一身份 |
+| `name` | 非空服务商名称，允许重复；设置页使用所选预置服务商的名称 |
 | `enabled` | 非空整数 `0/1`，新增默认禁用 |
 | `request_json` | 非空合法 JSON 字符串，按原文保存完整 fetch 请求配置 |
 | `response_jmespath` | 非空 JMESPath，负责将响应映射成 `WebSearchItem[]` |
@@ -184,7 +185,23 @@ NVIDIA 使用托管 NIM 的 `https://integrate.api.nvidia.com/v1`，仅提供 Ch
 
 工具不读取服务商业务字段，不补请求头或重新组装 body。URL 等字符串内的嵌入占位符（如 `?q=${query}`）仍按原文字面量替换，不做 URL 编码；这类嵌入替换若使配置 JSON 无效则返回请求错误。保存接口只检查必要字符串及 JSON、JMESPath 语法，不检查服务商请求字段。每次搜索重新读配置并在网络请求前关闭数据库连接。
 
-JMESPath 输出只检查顶层为数组，直接包装成 `{ results }`；条目结构由表达式保证，不逐项校验、补字段、筛选、排序或转换日期。配置与请求可能包含明文凭据，仅供后端消费，不应公开数据库。本次未增加搜索配置页面、IPC 或管理命令，可由内部存储函数配置。
+JMESPath 输出只检查顶层为数组，直接包装成 `{ results }`；条目结构由表达式保证，不逐项校验、补字段、筛选、排序或转换日期。配置与请求可能包含明文凭据，不应公开数据库。设置页通过搜索管理 IPC 获取 `{ id, name, enabled }` 摘要，仅编辑指定记录时读取完整请求，密钥以密码输入框显示，不进入列表缓存或浏览器持久化。
+
+预置定义统一位于 `src/main/web-search-providers/`，由相邻 `web-search-providers.ts` 显式导入汇总；增加服务商时在该目录新增定义并登记。定义包含参数的 key、label、type、required、secret、可选 defaultValue/max 和 target 字段位置，以及 requestJsonTemplate 与 responseJmespath。target 可声明字符串字段的固定 prefix：生成请求时添加，编辑读取时校验并移除；不匹配前缀或移除后必填值为空时拒绝读取。Tavily 的 APIKEY 必填，只填写 Key，由绑定器添加 `Bearer ` 后写入 Authorization；max_results 可选、默认 5、仅接受 1–8 的整数。前端按定义把参数填入并序列化最终请求，再保存请求原文和固定映射。编辑通过相同字段位置还原参数，不单独保存参数副本或模板身份列。
+
+新增预置同样仅提供创建资料，不覆盖已保存配置，不自动启用或发起请求：
+
+| 服务商与定义 | 请求地址 | APIKEY 填写方式 | 数量参数 | 响应摘要 |
+| --- | --- | --- | --- | --- |
+| [DeepSeek Search](../src/main/web-search-providers/deepseek.ts) | `https://api.deepseek.com/v1/tools/search` | 只填 Key，自动添加 `Bearer ` 后写入 Authorization | count，默认 5，1–50 | summary，空时回退 snippet；date 映射到 publishedAt |
+| [Exa](../src/main/web-search-providers/exa.ts) | `https://api.exa.ai/search` | API Key 本身，写入 x-api-key | numResults，默认 5，1–100 | 请求 highlights，以换行拼接摘录；publishedDate 映射到 publishedAt |
+| [Bocha](../src/main/web-search-providers/bocha.ts) | `https://api.bocha.cn/v1/web-search` | 只填 Key，自动添加 `Bearer ` 后写入 Authorization | count，默认 5，1–50 | 请求 summary，以长摘要优先、snippet 回退；datePublished 映射到 publishedAt |
+
+上述数量参数均可留空。DeepSeek 使用独立 Search API，固定不请求网页全文，查询受服务商 1–128 个 Unicode 字符限制；NiCode 不改写或截断查询，服务商拒绝时沿用现有 HTTP 错误处理。Exa 固定 auto 搜索模式；Bocha 固定 noLimit 时间范围。所有服务商表单只填写 Key；Tavily、DeepSeek、Bocha 通过 target.prefix 自动添加 `Bearer `，Exa 不添加前缀。编辑回填仅返回纯 Key，再次保存不会重复添加前缀。
+
+接口依据：[DeepSeek Search](https://api-docs.deepseek.com/api/search/)、[DeepSeek 鉴权](https://api-docs.deepseek.com/guides/search/)、[Exa Search](https://exa.ai/docs/reference/search)、[博查官方适配参考](https://github.com/bocha-ai/dsh-web-search-bocha)。模板及本地响应样本测试不表示已验证远端凭据、账户权限或服务可用性。
+
+管理接口区分创建、更新、详情、列表、删除和唯一启用；创建 UUID 由主进程生成，普通更新不接受 enabled，名称不能切换为另一预置服务商。name 直接加入当前 V1 建表定义，不增加迁移、兼容或重建逻辑；已有缺少该列的数据库会按现有结构检查报告错误。
 
 ## workspace.sqlite
 

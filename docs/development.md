@@ -17,6 +17,7 @@
 | 对话命令、队列与停止 | [session-ipc.ts](../src/main/session-ipc.ts)、[SessionRuntime](../runtime/agent/src/session-runtime.ts) |
 | 模型调用与工具小轮 | [loop.ts](../runtime/agent/src/loop.ts)、[model 模块入口](../runtime/model/src/index.ts)、[tool-executor.ts](../runtime/tools/src/tool-executor.ts) |
 | 网页搜索与配置库 | [搜索工具](../runtime/tools/src/web-search/index.ts)、[搜索存储](../runtime/tools/src/web-search/store.ts)、[结果整理](../runtime/tools/src/render/web-search.ts) |
+| 搜索服务设置 | [服务商目录](../src/main/web-search-providers.ts)、[参数模板](../runtime/tools/src/web-search/provider-template.ts)、[管理 IPC](../src/main/web-search-ipc.ts)、[设置页面](../src/renderer/web-search-settings.tsx) |
 | 网页抓取 | [抓取工具](../runtime/tools/src/web-fetch/index.ts)、[流式限量读取](../runtime/tools/src/web-fetch/fetch.ts)、[结果整理](../runtime/tools/src/render/web-fetch.ts) |
 | 会话恢复与 Usage | [session-state.ts](../runtime/session/src/session-state.ts)、[event-log.ts](../runtime/session/src/event-log.ts)、[usage.ts](../runtime/model/src/usage.ts) |
 | 页面与展示缓存 | [main.tsx](../src/renderer/main.tsx)、[session-page.tsx](../src/renderer/session-page.tsx)、[Renderer session-state.ts](../src/renderer/session-state.ts) |
@@ -59,12 +60,18 @@ node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types t
 
 ```powershell
 node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types runtime/tools/test/web-search-store.test.ts
+node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types runtime/tools/test/web-search-provider-template.test.ts
+node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/main/web-search-ipc.test.ts
+node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/main/web-search-providers.test.ts
+node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/preload/web-search-api.test.ts
 node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types runtime/tools/test/web-search.test.ts
 node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types runtime/agent/test/web-search-turn.test.ts
 node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types test/cli/web-search.test.ts
 ```
 
 分别覆盖配置持久化与事务、请求字符串替换与 fetch 透传、每条摘要 800 token 边界及代理对保护、错误边界、桌面 Session 事件关联与回填，以及真实 CLI 子进程的工具注册与调用。超时测试临时缩短底层计时，同时断言生产代码传入的默认值仍为 30 秒。
+
+`test/main/web-search-providers.test.ts` 使用临时配置库及替换的 fetch，验证 DeepSeek Search、Exa、Bocha 的请求地址、鉴权头、查询转义、默认数量与边界、编辑往返、响应映射、空结果及 HTTP 401；不请求远端服务。现有 Tavily 模板回归仍由 `web-search-provider-template.test.ts` 覆盖。
 
 网页抓取使用以下定向测试入口，均使用本地 HTTP 服务或假模型，不访问远端网页。CLI 测试运行编译后的入口，需先构建：
 
@@ -110,6 +117,7 @@ $testProcess.ExitCode
 - `test/renderer/electron-default-model.test.cjs`：默认模型保存与发送边界。
 - `test/renderer/electron-mcp-settings.test.cjs`：MCP 配置与页面。
 - `test/renderer/electron-skill-settings.test.cjs`：技能来源、加载与启停。
+- `test/renderer/electron-web-search-settings.test.cjs`：真实搜索配置增改删、唯一启停、默认数量和上限、失败刷新恢复、忙碌保护、主题与缩放；全部使用临时数据库，不请求 Tavily。
 - `test/renderer/electron-workspace-design.test.cjs`：工作区、路由、窗口和布局交互。
 - `test/main/electron-process-tools.test.cjs`：Electron 环境实际加载和使用进程工具。
 

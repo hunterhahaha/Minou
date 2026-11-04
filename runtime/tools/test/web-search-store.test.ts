@@ -19,7 +19,7 @@ async function main(): Promise<void> {
   const directory = await mkdtemp(join(tmpdir(), "nicode-web-store-"))
   const path = join(directory, "web-search.sqlite")
   const input: WebSearchProviderInput = {
-    id: "first", requestJson: '{ "url": "https://example.com", "body": "${query}" }', responseJmespath: "items",
+    id: "first", name: "Test", requestJson: '{ "url": "https://example.com", "body": "${query}" }', responseJmespath: "items",
   }
   try {
     assert.throws(() => listWebSearchProviders(path))
@@ -47,6 +47,7 @@ async function main(): Promise<void> {
       assert.throws(() => db.prepare("UPDATE web_search_providers SET enabled = 1 WHERE id = 'second'").run())
       assert.throws(() => db.prepare("UPDATE web_search_providers SET enabled = 2 WHERE id = 'second'").run())
       assert.throws(() => db.prepare("UPDATE web_search_providers SET request_json = 'invalid'").run())
+      assert.throws(() => db.prepare("UPDATE web_search_providers SET name = ' '").run())
       db.exec(`CREATE TRIGGER fail_activation BEFORE UPDATE OF enabled ON web_search_providers
         WHEN NEW.id = 'second' AND NEW.enabled = 1 BEGIN SELECT RAISE(ABORT, 'test rollback'); END`)
       assert.throws(() => setActiveWebSearchProvider(path, "second"))
@@ -55,7 +56,7 @@ async function main(): Promise<void> {
     } finally { db.close() }
 
     for (const invalid of [
-      { ...input, id: " " }, { ...input, requestJson: "not-json-secret" },
+      { ...input, id: " " }, { ...input, name: " " }, { ...input, requestJson: "not-json-secret" },
       { ...input, responseJmespath: "[" }, { ...input, responseJmespath: " " },
     ]) assert.throws(() => saveWebSearchProvider(path, invalid))
     assert.equal(listWebSearchProviders(path).length, 2)

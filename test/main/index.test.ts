@@ -29,6 +29,7 @@ import {
   PROVIDER_IPC_CHANNELS,
   MCP_IPC_CHANNELS,
   SKILL_IPC_CHANNELS,
+  WEB_SEARCH_IPC_CHANNELS,
 } from "../../src/preload/session-api.ts"
 import type { StartedSessionResponse } from "../../src/preload/session-api.ts"
 
@@ -257,6 +258,8 @@ async function testRegistersIpcAndWindowLifecycle(): Promise<void> {
       SESSION_IPC_CHANNELS.enqueueSessionMessage,
       SESSION_IPC_CHANNELS.stopSession,
       SESSION_IPC_CHANNELS.getSessionData,
+      SESSION_IPC_CHANNELS.renameSession,
+      SESSION_IPC_CHANNELS.exportSessionMarkdown,
       SESSION_IPC_CHANNELS.updateSessionSettings,
       SESSION_IPC_CHANNELS.decideSessionApproval,
       STARTUP_DATA_IPC_CHANNELS.listProjects,
@@ -272,8 +275,10 @@ async function testRegistersIpcAndWindowLifecycle(): Promise<void> {
       PROVIDER_IPC_CHANNELS.updateModel,
       PROVIDER_IPC_CHANNELS.deleteModel,
       PROVIDER_IPC_CHANNELS.setDefaultModel,
+      ...Object.values(WEB_SEARCH_IPC_CHANNELS),
       PROJECT_IPC_CHANNELS.selectDirectory,
       PROJECT_IPC_CHANNELS.createProject,
+      PROJECT_IPC_CHANNELS.renameProject,
       PROJECT_IPC_CHANNELS.addProjectDirectory,
       PROJECT_IPC_CHANNELS.removeProjectDirectory,
       ...Object.values(MCP_IPC_CHANNELS),

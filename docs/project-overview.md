@@ -15,6 +15,7 @@ NiCode 是本地运行的 Coding Agent 应用，提供 Electron 桌面工作区�
 | 项目与对话 | default 分组、Project 目录关联、对话索引、历史读取和跨路由缓存 | [project-ipc.ts](../src/main/project-ipc.ts)、[session-state.ts](../src/renderer/session-state.ts) |
 | 桌面对话 | 流式回复、Markdown、工具结果、FIFO 消息队列、停止与审批 | [session-page.tsx](../src/renderer/session-page.tsx)、[SessionRuntime](../runtime/agent/src/session-runtime.ts) |
 | 模型配置 | Provider、模型、API Key、默认模型、推理等级和请求字段路径 | [provider-ipc.ts](../src/main/provider-ipc.ts)、[provider-store.ts](../src/main/provider-store.ts) |
+| 搜索服务配置 | 预置 Tavily、DeepSeek Search、Exa、Bocha 动态参数表单、同名配置、增改删、默认停用及唯一启用管理 | [搜索设置](../src/renderer/web-search-settings.tsx)、[web-search-ipc.ts](../src/main/web-search-ipc.ts) |
 | 模型协议 | Anthropic Messages、Chat Completions、Responses 的请求与事件转换 | [adapter.ts](../runtime/model/src/adapter.ts) |
 | 文件与进程工具 | glob、grep、read、write、edit、Shell 与 PTY 终端 | [tools 模块入口](../runtime/tools/src/index.ts) |
 | 网页搜索 | `web_search` 接收 query，以本地启用配置执行 fetch 请求，通过 JMESPath 统一响应，每条摘要限制 800 粗估 token；桌面与 CLI 共用 | [搜索工具](../runtime/tools/src/web-search/index.ts) |

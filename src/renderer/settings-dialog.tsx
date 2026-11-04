@@ -1,4 +1,4 @@
-/** 设置弹窗：维护模型、MCP 配置与按来源管理的技能。 */
+/** 设置弹窗：维护模型、搜索服务、MCP 配置与按来源管理的技能。 */
 
 import { type FormEvent, useEffect, useId, useRef, useState } from "react"
 import { IconChevronRight, IconCpu, IconHelpCircle, IconPlugConnected, IconPlus, IconSettings, IconSparkles, IconX } from "@tabler/icons-react"
@@ -16,13 +16,14 @@ import { PROTOCOLS } from "../../runtime/model/src/types.ts"
 import type { Protocol, ReasoningField } from "../../runtime/model/src/types.ts"
 import { completeReasoningConfig, defaultReasoningConfig, isReasoningField, isReasoningLevels, renderReasoningField } from "../../runtime/model/src/reasoning.ts"
 import { McpSettings } from "./mcp-settings.tsx"
+import { WebSearchSettings } from "./web-search-settings.tsx"
 import { SkillSettings } from "./skill-settings.tsx"
 import type { SkillSettingsProps } from "./skill-settings.tsx"
 
 /** 设置弹窗的关闭出口与工作区 Provider 列表同步出口。 */
 interface SettingsDialogProps extends Omit<SkillSettingsProps, "onBusyChange"> {
   /** 由工作台入口决定的初始分区；不改变各分区的按需加载时机。 */
-  initialSection?: "models" | "mcp" | "skills"
+  initialSection?: "models" | "mcp" | "skills" | "search"
   /** 关闭设置弹窗。 */
   onClose: () => void
   /** 将完整 Provider 列表同步到工作区模型选择器。 */
@@ -261,12 +262,12 @@ function isHttpURL(value: string): boolean {
 }
 
 /**
- * 渲染模型、MCP 与技能设置导航，阻止受保护请求期间关闭或离开页面。
+ * 渲染模型、搜索服务、MCP 与技能设置导航，阻止受保护请求期间关闭或离开页面。
  * @param props 关闭及同步回调，以及工作区持有的项目摘要和技能缓存。
  * @returns 设置弹窗。
  */
 export function SettingsDialog({ initialSection = "models", onClose, onProvidersChange, projects, onReloadProjects, skillsByScope, onSkillsChange }: SettingsDialogProps) {
-  const [section, setSection] = useState<"models" | "mcp" | "skills">(initialSection)
+  const [section, setSection] = useState<"models" | "mcp" | "skills" | "search">(initialSection)
   const dialogRef = useRef<HTMLElement>(null)
   useDialogFocus(dialogRef)
   const [loadState, setLoadState] = useState<"loading" | "ready" | "error">("loading")
@@ -276,11 +277,11 @@ export function SettingsDialog({ initialSection = "models", onClose, onProviders
   const [page, setPage] = useState<"create" | "manage">("create")
   const [selectedProviderId, setSelectedProviderId] = useState<string | null>(null)
   const [creating, setCreating] = useState(false)
-  /** 同步守住模型创建、MCP 或技能请求期间的关闭和导航路径。 */
+  /** 同步守住模型创建、搜索服务、MCP 或技能请求期间的关闭和导航路径。 */
   const creatingRef = useRef(false)
 
   /**
-   * 接收 Provider/模型创建、MCP 及技能请求的生命周期，统一控制外层关闭和导航。
+   * 接收 Provider/模型创建、搜索服务、MCP 及技能请求的生命周期，统一控制外层关闭和导航。
    * @param pending 请求进行中时为 true，成功或失败后为 false。
    */
   function handleCreatingChange(pending: boolean): void {
@@ -433,6 +434,7 @@ export function SettingsDialog({ initialSection = "models", onClose, onProviders
           </button>
           <button className={`settings-nav-option${section === "mcp" ? " settings-nav-option-active" : ""}`} type="button" aria-current={section === "mcp" ? "page" : undefined} disabled={creating} onClick={() => { if (!creatingRef.current) setSection("mcp") }}><IconPlugConnected size={18} stroke={1.6} /><span>MCP</span></button>
           <button className={`settings-nav-option${section === "skills" ? " settings-nav-option-active" : ""}`} type="button" aria-current={section === "skills" ? "page" : undefined} disabled={creating} onClick={() => { if (!creatingRef.current) setSection("skills") }}><IconSparkles size={18} stroke={1.6} /><span>技能</span></button>
+          <button className={`settings-nav-option${section === "search" ? " settings-nav-option-active" : ""}`} type="button" aria-current={section === "search" ? "page" : undefined} disabled={creating} onClick={() => { if (!creatingRef.current) setSection("search") }}><IconSettings size={18} stroke={1.6} /><span>搜索服务</span></button>
           <div className="settings-nav-footer"><span className="brand-name">NiCode</span><p>为你的工作方式而设</p></div>
         </nav>
         {section === "models" && <section className="settings-dialog-content" aria-label="模型设置">
@@ -498,6 +500,7 @@ export function SettingsDialog({ initialSection = "models", onClose, onProviders
             </section>
           </div>}
         </section>}
+        {section === "search" && <section className="settings-dialog-content" aria-label="搜索服务设置"><WebSearchSettings onBusyChange={handleCreatingChange} /></section>}
         {section === "mcp" && <section className="settings-dialog-content" aria-label="MCP 设置"><McpSettings onBusyChange={handleCreatingChange} /></section>}
         {section === "skills" && <section className="settings-dialog-content" aria-label="技能设置"><SkillSettings projects={projects} onReloadProjects={onReloadProjects} skillsByScope={skillsByScope} onSkillsChange={onSkillsChange} onBusyChange={handleCreatingChange} /></section>}
       </div>

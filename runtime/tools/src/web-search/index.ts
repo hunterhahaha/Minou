@@ -7,6 +7,7 @@ import type { WebSearchInput } from "./types.ts"
 
 export * from "./types.ts"
 export * from "./store.ts"
+export * from "./provider-template.ts"
 export { executeWebSearch, WEB_SEARCH_TIMEOUT_MS } from "./search.ts"
 
 /**

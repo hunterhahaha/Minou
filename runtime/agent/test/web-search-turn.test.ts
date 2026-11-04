@@ -28,7 +28,7 @@ async function main(): Promise<void> {
   try {
     const { paths } = await initializeConfigFilesSnapshot(profile)
     const database = join(paths.rootDir, WEB_SEARCH_DATABASE_FILE)
-    saveWebSearchProvider(database, { id: "local", requestJson: JSON.stringify({ url: `http://127.0.0.1:${address.port}/?q=\${query}` }), responseJmespath: "hits" })
+    saveWebSearchProvider(database, { id: "local", name: "Test", requestJson: JSON.stringify({ url: `http://127.0.0.1:${address.port}/?q=\${query}` }), responseJmespath: "hits" })
     setActiveWebSearchProvider(database, "local")
     const tools = new ToolRegistry(), renders = new RenderRegistry()
     registerWebSearchTool(tools, renders, database, estimateLocalTokens)

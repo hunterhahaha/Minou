@@ -12,6 +12,8 @@ export const WEB_SEARCH_DATABASE_FILE = "web-search.sqlite"
 interface ProviderRow {
   /** 服务商 ID。 */
   id: string
+  /** 非唯一的服务商名称。 */
+  name: string
   /** SQLite 布尔列。 */
   enabled: number
   /** 完整请求配置原文。 */
@@ -77,7 +79,7 @@ function transaction(db: DatabaseSync, operation: () => void): void {
 export function initializeWebSearchDatabase(databasePath: string): void {
   if (databaseExists(databasePath)) {
     withDatabase(databasePath, true, (db) => {
-      db.prepare("SELECT id, enabled, request_json, response_jmespath FROM web_search_providers LIMIT 0").all()
+      db.prepare("SELECT id, name, enabled, request_json, response_jmespath FROM web_search_providers LIMIT 0").all()
       const index = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'web_search_single_enabled'").get()
       if (!index?.sql) throw new Error("搜索数据库缺少唯一启用索引。")
     })
@@ -88,6 +90,7 @@ export function initializeWebSearchDatabase(databasePath: string): void {
     transaction(db, () => {
       db.exec(`CREATE TABLE web_search_providers (
         id TEXT PRIMARY KEY NOT NULL CHECK (length(trim(id)) > 0),
+        name TEXT NOT NULL CHECK (length(trim(name)) > 0),
         enabled INTEGER NOT NULL DEFAULT 0 CHECK (enabled IN (0, 1)),
         request_json TEXT NOT NULL CHECK (json_valid(request_json)),
         response_jmespath TEXT NOT NULL CHECK (length(trim(response_jmespath)) > 0)
@@ -105,8 +108,8 @@ export function initializeWebSearchDatabase(databasePath: string): void {
  * @throws Error 字符串、JSON 或表达式语法无效，不包含输入原文。
  */
 function validateProvider(input: WebSearchProviderInput): void {
-  if ([input.id, input.requestJson, input.responseJmespath].some((value) => typeof value !== "string" || value.trim() === "")) {
-    throw new Error("搜索服务商 ID、请求 JSON 和 JMESPath 必须是非空字符串。")
+  if ([input.id, input.name, input.requestJson, input.responseJmespath].some((value) => typeof value !== "string" || value.trim() === "")) {
+    throw new Error("搜索服务商 ID、名称、请求 JSON 和 JMESPath 必须是非空字符串。")
   }
   try { JSON.parse(input.requestJson) }
   catch { throw new Error("搜索请求配置必须是合法 JSON。") }
@@ -121,7 +124,7 @@ function validateProvider(input: WebSearchProviderInput): void {
  * @throws Error 持久化配置语法或启用值无效。
  */
 function readProvider(row: ProviderRow): WebSearchProviderConfig {
-  const config = { id: row.id, enabled: row.enabled === 1, requestJson: row.request_json, responseJmespath: row.response_jmespath }
+  const config = { id: row.id, name: row.name, enabled: row.enabled === 1, requestJson: row.request_json, responseJmespath: row.response_jmespath }
   validateProvider(config)
   if (row.enabled !== 0 && row.enabled !== 1) throw new Error("搜索服务商启用值无效。")
   return config
@@ -135,6 +138,20 @@ function readProvider(row: ProviderRow): WebSearchProviderConfig {
  */
 export function listWebSearchProviders(databasePath: string): WebSearchProviderConfig[] {
   return withDatabase(databasePath, true, (db) => (db.prepare("SELECT * FROM web_search_providers ORDER BY id").all() as unknown as ProviderRow[]).map(readProvider))
+}
+
+/**
+ * 按身份读取用于编辑的完整配置，读取后关闭连接。
+ * @param databasePath 已初始化数据库的绝对路径。
+ * @param providerId 配置身份。
+ * @returns 完整配置，缺失时为 undefined；返回值可能包含密钥。
+ * @throws Error 数据库或配置无效。
+ */
+export function getWebSearchProvider(databasePath: string, providerId: string): WebSearchProviderConfig | undefined {
+  return withDatabase(databasePath, true, (db) => {
+    const row = db.prepare("SELECT * FROM web_search_providers WHERE id = ?").get(providerId) as unknown as ProviderRow | undefined
+    return row === undefined ? undefined : readProvider(row)
+  })
 }
 
 /**
@@ -160,9 +177,9 @@ export function readActiveWebSearchProvider(databasePath: string): WebSearchProv
 export function saveWebSearchProvider(databasePath: string, input: WebSearchProviderInput): void {
   validateProvider(input)
   withDatabase(databasePath, false, (db) => {
-    db.prepare(`INSERT INTO web_search_providers (id, request_json, response_jmespath) VALUES (?, ?, ?)
-      ON CONFLICT(id) DO UPDATE SET request_json = excluded.request_json, response_jmespath = excluded.response_jmespath`)
-      .run(input.id, input.requestJson, input.responseJmespath)
+    db.prepare(`INSERT INTO web_search_providers (id, name, request_json, response_jmespath) VALUES (?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET name = excluded.name, request_json = excluded.request_json, response_jmespath = excluded.response_jmespath`)
+      .run(input.id, input.name, input.requestJson, input.responseJmespath)
   })
 }
 

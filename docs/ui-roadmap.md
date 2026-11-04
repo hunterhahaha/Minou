@@ -444,3 +444,19 @@
 - 验证：`npm run typecheck`、`npm run build` 和 `git diff --check` 通过。项目 IPC、工作区存储、真实 Runtime 与 SQLite、preload 和 Renderer 会话状态断言通过。覆盖关联目录选择取消、重复及失效路径移除、运行中重命名、索引恢复、Markdown 多轮顺序与工具结果过滤。
 - 隐藏窗口工作台及会话回归通过，内置网页视图在菜单打开时隐藏并在关闭后恢复。工作台覆盖键盘焦点、触屏入口模拟、窄窗定位、目录增删、重命名失败重试和后台复制。复核 `dist/workspace-sidebar-menu-narrow.png`，菜单保持在窗口内并越过侧栏边界。Impeccable 静态检查返回空列表。
 - 剪贴板成功与失败使用替身验证，实体触屏和系统剪贴板未做手工复测。独立的模拟 Session IPC 脚本在本次代码和 HEAD 基线上均未输出完成标记，未计入通过项。
+
+## 11. 搜索服务商配置管理（2026-11-04）
+
+- **完成状态**：已完成。按明确授权增加搜索配置数据流，复用模型设置的列表—详情布局、现有 Token、焦点和忙碌保护，不调整模型、对话或搜索执行业务。
+- **实现范围**：搜索配置表增加非唯一 name；预置目录和 Tavily 独立定义放在主进程 `src/main/web-search-providers.ts` 和 `src/main/web-search-providers/`，参数处理、存储与执行留在现有搜索模块。前端动态收集参数，按字段位置生成请求并保留 `${query}`，通过七个固定 IPC 完成目录、列表、详情、创建、更新、删除和唯一启用管理。
+- **参数和状态**：APIKEY 必填，密码输入框仅在当前详情保留值；max_results 可选，留空保存数值 5，范围 1–8。新建停用，编辑保持状态，切换启用复用事务和唯一索引，删除启用项不自动选择替代项。同名项保留独立 ID 作为列表 key 与操作身份；按负责人要求，卡片不显示短 ID。
+- **缓存和失败恢复**：列表仅保留 id/name/enabled；每次写入后重查全部摘要、失效旧详情并按需回读。写入成功但刷新失败时禁用旧缓存操作，提供只重试查询的入口；测试确认不会重复创建。离开详情或关闭分区后释放参数，不写入浏览器持久化。
+- **自动化验证**：搜索存储、模板、真实 SQLite/IPC、搜索 preload、既有 preload、配置初始化及启动装配测试通过；现有搜索执行、Agent Turn 和实际 CLI 子进程回归通过。启动测试白名单同步包含七个新接口及源码此前已有的三个重命名/导出接口，没有修改相应业务。
+- **Electron 验证**：`electron-web-search-settings.test.cjs` 退出 0 且输出完整通过标记，覆盖增改删、同名、数量默认值及上限、唯一启停、列表和保存失败、写后刷新失败、忙碌与 Escape 保护、重开恢复和按需详情。现有 `electron-default-model.test.cjs` 同样退出 0，覆盖真实模型保存、失败保留、重载和首条消息模型。
+- **视觉及工程验证**：浅深主题、1200×900 / 420×680 窗口以及 100% / 125% / 150% 页面缩放检查通过；复核宽窗浅色与窄窗深色截图，保存按钮使用现有主操作样式。最终截图为 `dist/web-search-settings-{light,dark}-{1200,420}.png`；日志为 `dist/web-search-ui.*.log` 和 `dist/web-search-default-model.*.log`。Impeccable detector 为 `[]`；`npm run typecheck`、`npm run build`、`git diff --check` 通过。构建保留依赖中的模块指令提示。
+- **影响检查**：GitNexus 索引已刷新到当前 HEAD。`detect_changes(scope: all)` 最终报告 CRITICAL、72 个变化符号、41 条影响流程，未返回 partial/truncated；该接口仅列出已跟踪文件，新文件另外做源码复核、函数 impact 和真实测试。新增参数读取函数 impact 为 HIGH，目录常量为 UNKNOWN 并补查显式导入及目录消费。分析器本身提示执行流程采样上限，不能据此宣称不存在其他影响。
+- **未覆盖与边界**：未调用真实 Tavily 或验证远端账号权益，未执行真人输入法、实体触屏或屏幕阅读器验证。不增加依赖、数据迁移、跨窗口推送、数据库自动重建或搜索执行适配。
+- **目录归属调整**：按负责人要求，将预置汇总及 Tavily 文件移到 `src/main/web-search-providers.ts` 和 `src/main/web-search-providers/tavily.ts`，同步 IPC、测试和文档引用，移除 Runtime 对预置目录的导出。参数处理、存储和搜索执行仍在 Runtime；业务参数、IPC 契约和数据库均未调整。本次移动后重跑模板、搜索 IPC、搜索 preload 测试、类型检查与构建，均通过；真实搜索设置 Electron 回归退出 0，日志为 `dist/web-search-move-ui.*.log`。没有重跑其余 Agent、CLI 或模型页面测试，因本次只移动配置资料与修改导入；未将此前结果作为本次重新验证。
+- **卡片展示打磨（2026-11-04）**：已完成。卡片移除短编号，强化名称字重、留白与选中边界，启用状态改为独立标记，以实心/空心圆点及文字区分。样式限定在搜索设置，保留原按钮、稳定 key、点击回调、禁用条件和 aria-current。同步现有 Electron 测试的状态定位，新增编号不出现在列表中的断言。类型检查、构建、Impeccable detector（空列表）及真实 Electron 搜索设置回归通过；覆盖配置操作、忙碌保护、浅深主题、1200×900 / 420×680 和 100% / 125% / 150% 缩放。人工复核宽窗浅色及窄窗深色截图，文件仍为 `dist/web-search-settings-{light,dark}-{1200,420}.png`，本次日志为 `dist/search-card.*.log`。未重跑后端、Agent、CLI 或远端服务测试，本次只调整展示与相关断言。
+- **选中态修正（2026-11-04）**：移除搜索卡片专用边框、背景和阴影覆盖，直接复用 provider-list-item-active 的共用选中态；已启用圆点使用设计规范中的 --success（浅色 #32694a，深色 #93c8a4），未启用保持空心。仅修改 settings.css、workspace.css 和本记录。完整构建、Impeccable detector（空列表）、临时 Electron 夹具及差异检查通过；夹具验证选中卡片边框为 0、两主题的绿色计算值，并运行搜索设置交互与宽窄窗/缩放回归。复核已启用状态的浅色宽窗及深色窄窗截图，日志为 dist/search-card-green.*.log。本次未单独运行类型检查或后端测试，未修改 TypeScript 或业务流程。
+- **移除成功提示（2026-11-04）**：按负责人要求删除“搜索配置已更新。”及其专用 notice 状态。保存后仍刷新列表和详情，错误提示和写后刷新失败的重试入口保留。仅修改 web-search-settings.tsx 和本记录。类型检查、完整构建、Impeccable detector（空列表）、真实 Electron 搜索设置回归和差异检查通过；复核浅色页面截图，顶部不再显示成功提示。未执行后端、Agent、CLI 或远端服务测试，本次未修改相关模块。

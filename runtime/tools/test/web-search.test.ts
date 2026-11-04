@@ -59,6 +59,7 @@ async function main(): Promise<void> {
   assert.ok(address && typeof address !== "string")
   const endpoint = `http://127.0.0.1:${address.port}`
   const provider: WebSearchProviderInput = {
+    name: "Test",
     id: "local", requestJson: JSON.stringify({
       url: `${endpoint}/search?q=\${query}`, method: "POST",
       headers: { "X-API-Key": "secret-key-${query}", "Content-Type": "application/json" },

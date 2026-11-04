@@ -18,7 +18,7 @@ flowchart LR
   Session --> Store[Event Log / SessionState]
 ```
 
-Renderer 负责页面、路由与展示缓存，不直接打开数据库、读凭据或执行本机工具。preload 的 `window.nicode` 提供对话、项目、模型、MCP 和 Skill 接口，`window.nicodeWindow` 提供窗口控制。主进程负责校验 IPC、持有活动实例、运行任务并推送已提交状态。
+Renderer 负责页面、路由与展示缓存，不直接打开数据库、读取本机凭据文件或执行本机工具。preload 的 `window.nicode` 提供对话、项目、模型、搜索配置、MCP 和 Skill 接口，`window.nicodeWindow` 提供窗口控制。搜索设置仅在编辑指定配置时通过专用 IPC 读取含凭据的完整请求，列表只保存摘要。主进程负责校验 IPC、持有活动实例、运行任务并推送已提交状态。
 
 | 位置 | 实际职责 |
 | --- | --- |
@@ -98,6 +98,31 @@ min(contextWindow × 0.8, contextWindow - maxOutputTokens - (10000 + maxOutputTo
 ```
 
 达到阈值时写入 `summary/start`，用当前 Turn Adapter 发起独立压缩请求。该请求禁用工具，要求完整、非空、正常结束的文本。成功后提交带覆盖事件范围和完整基线的 `summary/end`，再切换后续上下文；失败不会提交成功摘要。日志保留完整事件。实现见 [summary.ts](../runtime/context/src/summary.ts) 与 SessionRuntime 的 `startLoop()`。
+
+## 搜索服务配置管理
+
+[搜索设置](../src/renderer/web-search-settings.tsx) 复用现有设置弹窗的列表—详情布局与忙碌保护。服务商定义在 [providers](../src/main/web-search-providers.ts) 显式汇总，每个配置文件声明名称、表单参数、字段位置、JSON 请求模板和 JMESPath。预置包括 Tavily、DeepSeek Search、Exa 和 Bocha；数量均默认 5，上限及鉴权填写格式见 [配置与持久化](configuration-and-storage.md)。新增服务商沿用相同 IPC、参数绑定与搜索执行流程。
+
+Renderer 从 [web-search-ipc.ts](../src/main/web-search-ipc.ts) 获取目录和无凭据摘要，选中记录后才获取完整请求，并通过 [provider-template.ts](../runtime/tools/src/web-search/provider-template.ts) 按字段路径还原参数，校验并移除定义中的固定前缀。保存时也由该纯函数模块按位置填入参数并添加固定前缀，分别序列化内层 body 与外层请求，保留 `${query}`，再通过 preload 提交。Tavily、DeepSeek、Bocha 的表单只填写 Key，绑定器负责生成 Bearer 鉴权头。主进程校验目录身份、参数、固定响应映射及存储语法，创建时生成 UUID；存储保持新建停用、更新保留状态和唯一启用事务。
+
+每次写入确认后，前端重新读取全部摘要并替换列表缓存，同时清除旧详情参数，再按需重读当前记录。写入成功但刷新失败时禁用旧缓存操作，只允许重试读取；不会重复保存。完整请求不进入列表缓存，密钥仅保留在当前详情表单，离开后释放。本流程不增加跨窗口推送，不改变搜索工具执行逻辑。
+
+```mermaid
+flowchart TD
+  Files[服务商定义文件] --> Catalog[显式目录汇总]
+  UI[设置页列表与动态表单] --> Bridge[preload 固定 API]
+  Bridge --> IPC[主进程搜索管理 IPC]
+  IPC --> Catalog
+  IPC --> Store[搜索配置 Store]
+  Store --> DB[(web-search.sqlite)]
+  Catalog -->|定义与参数| UI
+  Store -->|摘要或按需详情，经 IPC 和 preload| UI
+  UI --> Template[前端按位置填入参数，保留 query]
+  Template -->|最终请求与 JMESPath，经 preload| IPC
+  IPC -->|校验并保存、删除或切换启用项| Store
+  Store -->|写入确认，经 IPC 和 preload| Refresh[重新查询全部摘要，失效旧详情]
+  Refresh --> UI
+```
 
 ## CLI 独立调用
 

@@ -74,7 +74,7 @@ async function main(): Promise<void> {
     saveModel(paths.providerDatabasePath, { providerId: "model", modelId: "fake", name: "fake", contextWindow: 128000, maxOutputTokens: 4096, supportsReasoning: false })
     setProviderApiKey(paths.providerDatabasePath, "model", "model-secret")
     const database = join(paths.rootDir, WEB_SEARCH_DATABASE_FILE)
-    saveWebSearchProvider(database, { id: "search", requestJson: JSON.stringify({ url: `${endpoint}/search?q=\${query}`, headers: { "X-API-KEY": "search-secret" } }), responseJmespath: "hits" })
+    saveWebSearchProvider(database, { id: "search", name: "Test", requestJson: JSON.stringify({ url: `${endpoint}/search?q=\${query}`, headers: { "X-API-KEY": "search-secret" } }), responseJmespath: "hits" })
     setActiveWebSearchProvider(database, "search")
     const input = join(directory, "request.json"), output = join(directory, "result.json")
     await writeFile(input, JSON.stringify({ version: 1, prompt: "search", workspace, isolated: { skill: true, memory: true, mcp: true } }))
