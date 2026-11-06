@@ -71,7 +71,7 @@ export async function resolveTurnModelAdapterSpecification(
  *
  * @param paths 每次调用都重新读取的 Provider 数据库路径。
  * @param model 已从当前 Session Meta 重新读取的模型引用。
- * @returns 当前 Turn 共用的 Adapter，附带同一配置快照的 contextWindow 和 maxOutputTokens 供压缩判断及 MCP 预算使用。
+ * @returns 当前 Turn 共用的 Adapter，附带同一配置快照的预算及思考能力。
  * @throws Error 当配置解析、凭据读取或协议 Adapter 构造失败时抛出；不返回半构建实例。
  */
 export async function createTurnModelAdapter(
@@ -83,6 +83,9 @@ export async function createTurnModelAdapter(
     return Object.assign(createModelAdapter(specification.modelConfig, specification.clientOptions), {
       contextWindow: specification.modelConfig.contextWindow,
       maxOutputTokens: specification.modelConfig.maxOutputTokens,
+      ...(specification.modelConfig.supportsReasoning
+        ? { reasoningLevels: [...specification.modelConfig.reasoningLevels] }
+        : {}),
     })
   } catch {
     throw new Error(

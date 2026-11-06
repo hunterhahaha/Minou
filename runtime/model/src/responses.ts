@@ -24,6 +24,7 @@ import type { ResponsesUsageFields } from "./usage.ts"
 import type {
   BlockType,
   ModelAdapter,
+  ModelStreamOptions,
   ModelCompletion,
   ModelConfig,
   ModelMessage,
@@ -574,19 +575,21 @@ export function createResponsesAdapter(
    *
    * @param request 当前统一模型请求。
    * @param signal 调用方的取消信号。
+   * @param options 单次请求的 SDK 选项。
    * @returns Responses 响应转换后的统一模型事件流。
    * @throws `AppError` 请求校验失败、协议请求失败或取消时抛出。
    */
   async function* stream(
     request: UnifiedModelRequest,
     signal: AbortSignal,
+    options?: ModelStreamOptions,
   ): AsyncGenerator<ModelStreamEvent> {
     /** 校验与请求构建在迭代时抛出：AgentLoop 只需在一处处理 Adapter 的错误。 */
     assertRequestMatchesModel(request, config)
     const params = buildResponsesRequest(request, config)
 
     yield* runModelStream((attemptSignal) => {
-      return mapResponsesStream(requestResponsesStream(client, params, attemptSignal))
+      return mapResponsesStream(requestResponsesStream(client, params, attemptSignal, options?.timeoutMs))
     }, signal)
   }
 
@@ -599,6 +602,7 @@ export function createResponsesAdapter(
  * @param client OpenAI SDK 客户端。
  * @param params 已构建的流式请求参数。
  * @param signal 当前请求尝试的取消信号。
+ * @param timeout SDK 超时毫秒数；省略时沿用默认值。
  * @returns 原始 Responses 流事件异步生成器。
  * @throws SDK 请求失败或取消时抛出底层异常。
  */
@@ -606,7 +610,8 @@ async function* requestResponsesStream(
   client: OpenAI,
   params: ResponseCreateParamsStreaming,
   signal: AbortSignal,
+  timeout?: number,
 ): AsyncGenerator<ResponseStreamEvent> {
-  const stream = await client.responses.create(params, { signal })
+  const stream = await client.responses.create(params, { signal, ...(timeout === undefined ? {} : { timeout }) })
   for await (const event of stream) yield event
 }

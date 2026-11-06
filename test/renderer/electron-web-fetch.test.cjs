@@ -52,7 +52,8 @@ async function main() {
   global = new SessionRuntimeGlobal(paths, tools, renders)
   global.createTurnModelAdapter = async () => {
     let step = 0
-    return { contextWindow: 128000, maxOutputTokens: 4096, stream: async function* () {
+    return { contextWindow: 128000, maxOutputTokens: 4096, stream: async function* (_request, _signal, options) {
+      if (options?.timeoutMs !== undefined) return
       step++
       if (step <= 3) {
         yield { type: "block_start", index: 0, blockType: "tool_call" }

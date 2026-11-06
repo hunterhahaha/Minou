@@ -4,6 +4,7 @@ import assert from "node:assert/strict"
 import { mkdir, mkdtemp, readdir, rm, stat } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve, sep } from "node:path"
+import { setTimeout as delay } from "node:timers/promises"
 
 import type { SessionCompletionFailure } from "../../src/main/index.ts"
 import type { SessionRuntimeGlobal } from "../../src/main/session-runtime-global.ts"
@@ -20,8 +21,9 @@ import type {
 import type { ModelAdapter, ModelRef } from "../../runtime/model/src/types.ts"
 import type { SessionEvent } from "../../runtime/session/src/events.ts"
 import type { CurrentSessionBaseline } from "../../runtime/session/src/session-state.ts"
-import { initializeSessionMetaDatabase } from "../../runtime/session/src/meta-store.ts"
-import { initializeWorkspaceDatabase, saveProjectWorkspace } from "../../src/main/workspace-store.ts"
+import { INITIAL_SESSION_NAME, initializeSessionMetaDatabase, readSessionMeta } from "../../runtime/session/src/meta-store.ts"
+import { initializeWorkspaceDatabase, readDefaultWorkspace, readProjectWorkspace, saveProjectWorkspace } from "../../src/main/workspace-store.ts"
+import type { SessionData, SessionUpdate } from "../../src/preload/session-api.ts"
 import {
   SESSION_IPC_CHANNELS,
   STARTUP_DATA_IPC_CHANNELS,
@@ -317,7 +319,8 @@ async function testCreatesProjectSessionRuntime(): Promise<void> {
     const forwarded: SessionEvent[] = []
     const failures: SessionCompletionFailure[] = []
     const adapter: ModelAdapter = {
-      contextWindow: 128000, maxOutputTokens: 4096, stream: async function* (request) {
+      contextWindow: 128000, maxOutputTokens: 4096, stream: async function* (request, _signal, options) {
+        if (options?.timeoutMs !== undefined) return
         resolveRequest(request)
         yield { type: "stream_end", completion: "finished" }
       },
@@ -415,7 +418,8 @@ async function testResolvesContextForEachProject(): Promise<void> {
     let resolveTurns!: () => void
     const turnsCompleted = new Promise<void>((resolve) => { resolveTurns = resolve })
     const adapter: ModelAdapter = {
-      contextWindow: 128000, maxOutputTokens: 4096, stream: async function* (request) {
+      contextWindow: 128000, maxOutputTokens: 4096, stream: async function* (request, _signal, options) {
+        if (options?.timeoutMs !== undefined) return
         const systemMessage = request.context.messages[0]
         assert.equal(systemMessage.role, "system")
         assert.equal(typeof systemMessage.content, "string")
@@ -476,6 +480,102 @@ async function testResolvesContextForEachProject(): Promise<void> {
       assert.equal(systemMessages.some((message) =>
         message.includes(`Workspace ${projectId}\n\nRules ${projectId}`)), true)
     }
+  })
+}
+
+/** 验证标题独立完成、写入顺序、手动命名优先和后续轮次不再触发。 */
+async function testGeneratedSessionTitles(): Promise<void> {
+  await withTempProfile(async (profile) => {
+    const fixture = startupFixture(profile)
+    const { rootDir, metaDatabasePath, workspaceDatabasePath } = fixture.options.configPaths
+    const updates: SessionUpdate[] = []
+    const failures: SessionCompletionFailure[] = []
+    const titleRequests: string[] = []
+    const diskAtPublish = new Map<string, string[]>()
+    let releaseTitle!: () => void
+    let titleGate = Promise.resolve()
+    let titleMode: "generate" | "rename" | "fail" = "generate"
+    let generationFinished = false
+
+    const readIndex = (projectId: string) => (projectId === "default"
+      ? readDefaultWorkspace(workspaceDatabasePath) : readProjectWorkspace(workspaceDatabasePath, projectId)).sessions
+    await startElectronApp({
+      ...fixture.options,
+      sessionRuntime: {
+        ...fixture.options.sessionRuntime,
+        global: {
+          ...fixture.options.sessionRuntime.global,
+          createTurnModelAdapter: async (): Promise<ModelAdapter> => ({
+            contextWindow: 128_000, maxOutputTokens: 4096, reasoningLevels: ["medium", "none"],
+            async *stream(request, _signal, options) {
+              if (options?.timeoutMs !== undefined) {
+                titleRequests.push(request.model.reasoningLevel)
+                try {
+                  await titleGate
+                  if (titleMode === "fail") throw new Error("标题请求失败")
+                  yield { type: "block_start", index: 0, blockType: "text" }
+                  yield { type: "block_end", index: 0, block: { type: "text", text: '{"title":"自动标题"}' } }
+                  yield { type: "stream_end", completion: "finished" }
+                } finally { generationFinished = true }
+                return
+              }
+              assert.equal(request.model.reasoningLevel, MODEL.reasoningLevel)
+              yield { type: "stream_end", completion: "finished" }
+            },
+          }),
+        } as unknown as SessionRuntimeGlobal,
+      },
+      onSessionCompletionFailure: (failure) => { failures.push(failure) },
+      sessionEventForwarding: {
+        sendSessionUpdateToRenderer: (update) => {
+          updates.push(update)
+          if (update.kind === "state" && update.summary?.name === "自动标题") {
+            const meta = readSessionMeta(metaDatabasePath, update.projectId, update.sessionId) as { name: string }
+            const indexed = readIndex(update.projectId).find(({ id }) => id === update.sessionId)
+            diskAtPublish.set(update.sessionId, [meta.name, indexed?.name ?? ""])
+          }
+        },
+      },
+    })
+
+    /** @param ready 要等待的 IPC 或脚本模型条件。 @throws Error 条件迟迟未出现。 */
+    async function waitFor(ready: () => boolean): Promise<void> {
+      for (let attempt = 0; attempt < 500; attempt++) {
+        if (ready()) return
+        if (failures.length > 0) throw failures[0].error
+        await delay(10)
+      }
+      assert.fail("未收到预期的标题或会话更新")
+    }
+
+    for (const [projectId, mode] of [
+      ["default", "generate"], [PROJECT_ID, "generate"], [PROJECT_ID, "rename"], [PROJECT_ID, "fail"],
+    ] as const) {
+      titleMode = mode
+      generationFinished = false
+      titleGate = new Promise<void>((resolve) => { releaseTitle = resolve })
+      await mkdir(join(rootDir, "sessions", projectId), { recursive: true })
+      const { sessionId } = await fixture.ipcMain.invoke<StartedSessionResponse>(
+        SESSION_IPC_CHANNELS.startNewSession, projectId, { content: MESSAGE, model: MODEL },
+      )
+      const getData = () => fixture.ipcMain.invoke<SessionData>(SESSION_IPC_CHANNELS.getSessionData, projectId, sessionId)
+      await waitFor(() => updates.some((update) => update.sessionId === sessionId && update.kind === "state" && update.control.phase === "idle"))
+      assert.equal((await getData()).summary.name, INITIAL_SESSION_NAME, "主回复已结束，标题请求仍在等待")
+      if (mode === "rename") await fixture.ipcMain.invoke(SESSION_IPC_CHANNELS.renameSession, projectId, sessionId, "手动标题")
+      releaseTitle()
+      await waitFor(() => mode === "generate" ? diskAtPublish.has(sessionId) : generationFinished)
+      const expected = mode === "generate" ? "自动标题" : mode === "rename" ? "手动标题" : INITIAL_SESSION_NAME
+      if (mode === "generate") assert.deepEqual(diskAtPublish.get(sessionId), [expected, expected])
+      assert.equal((await getData()).summary.name, expected)
+      assert.equal(readIndex(projectId).find(({ id }) => id === sessionId)?.name, expected)
+      if (mode === "generate") {
+        const next = await fixture.ipcMain.invoke<StartedSessionResponse>(SESSION_IPC_CHANNELS.continueSession, projectId, sessionId, { content: MESSAGE })
+        await waitFor(() => updates.some((update) => update.sessionId === sessionId && update.kind === "event" &&
+          update.event.type === "turn/end" && update.event.turn === next.turn))
+      }
+    }
+    assert.deepEqual(titleRequests, ["none", "none", "none", "none"])
+    assert.deepEqual(failures, [])
   })
 }
 
@@ -569,6 +669,7 @@ async function main(): Promise<void> {
   await testRegistersIpcAndWindowLifecycle()
   await testCreatesProjectSessionRuntime()
   await testResolvesContextForEachProject()
+  await testGeneratedSessionTitles()
   await testForwardsSessionCompletionFailure()
   await testRejectsProjectContextBeforeSessionCreation()
   await testWaitsForProcessDisposal()

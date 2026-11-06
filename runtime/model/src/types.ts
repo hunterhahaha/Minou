@@ -374,19 +374,28 @@ export type ModelStreamEvent =
       finishReason?: string
     }
 
+/** 传给协议 SDK 的单次请求选项。 */
+export interface ModelStreamOptions {
+  /** SDK 请求超时（毫秒）；缺省时沿用 SDK 默认值。 */
+  timeoutMs?: number
+}
+
 /** 模型适配器。三个 Adapter 均实现此接口。 */
 export interface ModelAdapter {
   /** 每 Turn 装配时从同一模型快照提供的压缩及 MCP 预算窗口；直接构造的 Adapter 可不提供。 */
   contextWindow?: number
   /** 与 contextWindow 同一 Turn 配置快照的最大输出；直接构造的 Adapter 可不提供。 */
   maxOutputTokens?: number
+  /** 支持思考的 Turn 模型在同一配置快照中声明的档位。 */
+  reasoningLevels?: readonly string[]
   /**
    * 把一次统一模型请求转换为协议请求并以统一事件流返回。
    *
    * @param request 当前请求的上下文、工具和模型引用。
    * @param signal 调用方的取消信号；实现必须把它传递到协议请求。
+   * @param options 此次调用的 SDK 选项；调用方仍通过 signal 控制整个流的期限。
    * @returns 按块开始、增量、结束及最终流结束事件排列的异步迭代器。
    * @throws `AppError` 请求不符合统一契约、请求失败或被取消时抛出。
    */
-  stream(request: UnifiedModelRequest, signal: AbortSignal): AsyncIterable<ModelStreamEvent>
+  stream(request: UnifiedModelRequest, signal: AbortSignal, options?: ModelStreamOptions): AsyncIterable<ModelStreamEvent>
 }

@@ -196,6 +196,24 @@ export function updateSessionMetaName(databasePath: string, projectId: string, s
 }
 
 /**
+ * 仅在现有名称仍为默认值时写入自动生成的标题。
+ * @param databasePath 共享 Meta 数据库路径。
+ * @param projectId Project UUID 或 default。
+ * @param sessionId Session ID。
+ * @param name 已验证的非空标题。
+ * @returns 更新一行时为 true；会话缺失或已有自定义名称时为 false。
+ * @throws Error 当身份、标题无效或数据库写入失败时抛出。
+ */
+export function updateSessionMetaNameIfDefault(databasePath: string, projectId: string, sessionId: string, name: string): boolean {
+  requireProjectId(projectId)
+  requireMetaSessionId(sessionId)
+  if (typeof name !== "string" || name.trim() === "") throw new TypeError("Session 名称不能为空")
+  return withDatabase(databasePath, false, (db) => db.prepare(
+    "UPDATE session_meta SET name = ? WHERE project_id = ? AND session_id = ? AND name = ?",
+  ).run(name, projectId, sessionId, INITIAL_SESSION_NAME).changes !== 0)
+}
+
+/**
  * 规范化共享数据库的绝对路径。
  * @param databasePath 调用方提供的数据库路径。
  * @returns 规范化的绝对路径。

@@ -15,6 +15,7 @@ import { mkdir } from "node:fs/promises"
 import { isAbsolute, join, resolve } from "node:path"
 import { isDeepStrictEqual } from "node:util"
 import { compressContext, summaryThreshold } from "../../context/src/index.ts"
+import { generateSessionTitle } from "./session-title.ts"
 import { createAbortError } from "../../error/src/abort.ts"
 
 import { CANCELLED, normalizeError } from "../../error/src/normalizer.ts"
@@ -1067,10 +1068,14 @@ export class SessionRuntime implements SessionRepairPorts {
   /**
    * 首次提交并启动本 Session 的首个 Turn。
    * @param input 首个用户消息和模型选择。
+   * @param onGeneratedTitle 宿主接收有效标题及活动期停止信号的回调；缺省时跳过标题请求。
    * @returns 已提交的 Turn 身份、事件流与后台运行任务。
    * @throws Error 目录创建或首批事件提交失败。
    */
-  async startNewSession(input: StartNewSessionInput): Promise<StartedSessionTurn> {
+  async startNewSession(
+    input: StartNewSessionInput,
+    onGeneratedTitle?: (title: string, stopSignal: AbortSignal) => Promise<void>,
+  ): Promise<StartedSessionTurn> {
     const turn = 1
     await this.createSessionDirectory()
     await this.appendTurnStartAndUserMessage(turnEvents(turn, input.model, input.content))
@@ -1084,6 +1089,14 @@ export class SessionRuntime implements SessionRepairPorts {
       this.onStateChanged?.()
       const model = await this.readCurrentModel()
       const loopOptions = await this.createLoopOptions(model)
+      if (onGeneratedTitle !== undefined) {
+        const { adapter, signal } = loopOptions
+        void generateSessionTitle(adapter, model, input.content, signal)
+          .then(async (title) => {
+            if (title !== undefined && !signal.aborted) await onGeneratedTitle(title, signal)
+          })
+          .catch(() => { /** 标题后台任务的失败不进入 Turn 错误流程。 */ })
+      }
       return this.startLoop(turn, model, loopOptions)
     })
     return { sessionId: this.sessionId, turn, events: this.events, completion }

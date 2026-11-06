@@ -57,6 +57,8 @@ Renderer 负责页面、路由与展示缓存，不直接打开数据库、读�
 
 模型配置的必填 `supportsReasoning` 从 Provider 数据库快照传入 Adapter。三个协议共用的推理请求片段仅在该字段为 true 时校验等级并拼装字段；普通请求和上下文压缩遵循相同规则。false 时忽略会话中保留的等级，不改变 ModelRef 或 Meta 的结构，CLI 也使用相同的能力判断。
 
+桌面新对话提交首条消息后，SessionRuntime 用本轮 Adapter 发起独立的标题请求，主回复与队列可同时执行。标题请求只携带首条消息和命名提示词，优先使用该模型支持的关闭或最低思考档位。活动期停止会放弃命名，60 秒超时则使用消息前 30 个字符。主进程仅在 Meta 名称仍为「新对话」时原子写入，再同步工作区索引并推送会话摘要。
+
 模型工厂见 [model-adapters.ts](../src/main/model-adapters.ts)。启动阶段不预先为全部模型创建 SDK Client，也不把 Provider 凭据快照传入 Renderer。
 
 ## Step、协议与 Usage

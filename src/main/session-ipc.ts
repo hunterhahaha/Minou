@@ -7,7 +7,7 @@ import type { UserMessageInput } from "../../runtime/session/src/events.ts"
 import type { SandboxMode, SessionSettingsPatch } from "../../runtime/session/src/session-state.ts"
 import { SessionRuntime } from "../../runtime/agent/src/session-runtime.ts"
 import type { ContinueSessionInput, SessionRuntimeSnapshot, StartNewSessionInput, StartedSessionTurn } from "../../runtime/agent/src/session-runtime.ts"
-import { INITIAL_SESSION_NAME } from "../../runtime/session/src/meta-store.ts"
+import { INITIAL_SESSION_NAME, updateSessionMetaNameIfDefault } from "../../runtime/session/src/meta-store.ts"
 import { SESSION_IPC_CHANNELS } from "../preload/session-api.ts"
 import type { SessionControl, SessionData, SessionSummary, SessionUpdate } from "../preload/session-api.ts"
 import type { ConfigFilePaths } from "./config-files.ts"
@@ -231,7 +231,19 @@ export function registerSessionIpcHandlers(
     return serial(key, async () => {
       const runtime = createActive(projectId, sessionId)
       try {
-        const started = await runtime.startNewSession(input)
+        const started = await runtime.startNewSession(input, paths === undefined ? undefined : async (title, stopSignal) => {
+          try {
+            await serial(key, async () => {
+              if (stopSignal.aborted || !updateSessionMetaNameIfDefault(paths.metaDatabasePath, projectId, sessionId, title)) return
+              reconcileWorkspaceSessions(paths, projectId)
+              const snapshot = await (activeSessions.get(key) ?? runtime).readSnapshot()
+              const summary = { sessionId, name: snapshot.settings.name, updatedAt: snapshot.events.at(-1)?.createdAt ?? new Date().toISOString() }
+              await send({ kind: "state", projectId, sessionId, control: controlOf(key, snapshot), summary })
+            })
+          } catch (error) {
+            onCompletionFailure({ sessionId, turn: 1, error })
+          }
+        })
         observe(projectId, runtime, started)
         await index(projectId, runtime)
         return { sessionId, turn: started.turn }

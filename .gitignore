@@ -8,7 +8,6 @@ Thumbs.db
 # Local editor settings and code index
 .idea/
 .vscode/
-.gitnexus/
 
 # Local database inspection files
 /identifier.sqlite
@@ -21,7 +20,6 @@ Thumbs.db
 !.env.*.example
 
 .impeccable/
-.claude/
 # Track published project guides; keep other local notes out of Git.
 /docs/*
 !/docs/cli-usage.md

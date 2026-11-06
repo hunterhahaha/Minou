@@ -7,8 +7,10 @@ import type { NiCodePreloadApi, SessionControl, SessionData, SessionSummary, Ses
 export type SessionKey = string
 /** 摘要、控制快照与操作状态独立于原始历史保存。 */
 export interface SessionView {
-  /** 历史查询返回的摘要。 */
+  /** 历史查询或实时状态更新返回的摘要。 */
   summary?: SessionSummary
+  /** 摘要来源的版本；控制更新可以独立推进。 */
+  summaryRevision?: number
   /** 已取得事件水位后生效的控制快照。 */
   control?: SessionControl
   /** 更高版本但尚未取得其 throughSeq 的快照。 */
@@ -141,7 +143,11 @@ export class WorkspaceSessionState {
     const key = sessionKey(data.projectId, data.sessionId)
     this.sessionEventsByKey[key] = mergeSessionEvents(data.events, this.sessionEventsByKey[key] ?? [], this.pendingEventsRef.get(key) ?? [])
     this.pendingEventsRef.delete(key)
-    this.view(key).summary = data.summary
+    const view = this.view(key)
+    if (data.control.revision > (view.summaryRevision ?? -1)) {
+      view.summary = data.summary
+      view.summaryRevision = data.control.revision
+    }
     this.acceptControl(key, data.control)
     this.releaseControl(key)
     this.changed()
@@ -160,8 +166,10 @@ export class WorkspaceSessionState {
       }
       this.releaseControl(key)
     } else if (update.kind === "state") {
-      if (update.summary && update.control.revision > Math.max(this.view(key).control?.revision ?? -1, this.view(key).pendingControl?.revision ?? -1)) {
-        this.view(key).summary = update.summary
+      const view = this.view(key)
+      if (update.summary && update.control.revision > (view.summaryRevision ?? -1)) {
+        view.summary = update.summary
+        view.summaryRevision = update.control.revision
       }
       this.acceptControl(key, update.control)
     } else this.view(key).operationError = update.error.message

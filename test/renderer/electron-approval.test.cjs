@@ -76,7 +76,8 @@ async function main() {
     createTurnModelAdapter: async () => {
       let requests = 0
       const count = toolCount
-      return {  contextWindow: 256000, maxOutputTokens: 32000, stream: async function* () {
+      return {  contextWindow: 256000, maxOutputTokens: 32000, stream: async function* (_request, _signal, options) {
+        if (options?.timeoutMs !== undefined) return
         if (++requests === 1) {
           for (let index = 0; index < count; index++) {
             yield { type: "block_start", index, blockType: "tool_call" }

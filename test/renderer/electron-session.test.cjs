@@ -19,6 +19,8 @@ let window, profile, failed = false
 const rendererErrors = []
 const failures = []
 let historyQueries = 0
+let releaseTitle
+const titleGate = new Promise((done) => { releaseTitle = done })
 let releaseLoop
 const loopGate = new Promise((done) => { releaseLoop = done })
 let releaseAnswer
@@ -64,7 +66,14 @@ async function main() {
     estimateSkillTokens: () => 0, listToolDefinitions: () => [],
     executeTool: async () => { throw new Error("unexpected tool") },
     /** 对话展示测试使用足够大的窗口，避免进入另有专门测试的 Summary 压缩流程。 */
-    createTurnModelAdapter: async () => ({  contextWindow: 256000, maxOutputTokens: 32000, stream: async function* () {
+    createTurnModelAdapter: async () => ({  contextWindow: 256000, maxOutputTokens: 32000, stream: async function* (_request, _signal, options) {
+      if (options?.timeoutMs !== undefined) {
+        await titleGate
+        yield { type: "block_start", index: 0, blockType: "text" }
+        yield { type: "block_end", index: 0, block: { type: "text", text: '{"title":"真实页面标题"}' } }
+        yield { type: "stream_end", completion: "finished" }
+        return
+      }
       await loopGate
       yield { type: "block_start", index: 0, blockType: "thinking" }
       yield { type: "block_delta", index: 0, delta: { type: "thinking", text: "本机思考过程" } }
@@ -139,6 +148,9 @@ async function main() {
   assert.equal(enabledSend.foreground, enabledSend.onAccent, "可用发送按钮使用主操作前景")
   await evaluate(`document.querySelector('[aria-label="发送消息"]').click()`)
   await until(() => evaluate(`document.querySelector('.user-bubble')?.textContent === '第一条真实页面消息'`))
+  await until(() => evaluate(`Boolean(document.querySelector('.session-name[title="新对话"]'))`))
+  releaseTitle()
+  await until(() => evaluate(`Boolean(document.querySelector('.session-name[title="真实页面标题"]'))`))
   assert.equal(await evaluate("document.querySelector('.user-label')"), null, "移除用户消息上方的你字")
   window.webContents.sendInputEvent({ type: "mouseMove", x: 5, y: 5 })
   await evaluate("document.activeElement.blur()")

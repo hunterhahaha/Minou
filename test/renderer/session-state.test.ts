@@ -52,12 +52,14 @@ async function testCache(): Promise<void> {
   assert.equal(state.has(key), false, "加载期间没有空条目")
   await Promise.resolve()
   state.receive({ kind: "event", projectId: "default", sessionId: "s", event: second })
-  state.receive({ kind: "state", projectId: "default", sessionId: "s", control: control(3) })
+  const generatedSummary = { ...data().summary, name: "生成的对话标题" }
+  state.receive({ kind: "state", projectId: "default", sessionId: "s", control: control(3), summary: generatedSummary })
   resolveLoad(data([first, second], 2))
   await loading
   assert.deepEqual(state.sessionEventsByKey[key], [first, second, third])
   assert.equal(state.pendingEventsRef.has(key), false)
   assert.equal(state.view(key).control?.revision, 3, "旧查询不能覆盖较新推送")
+  assert.deepEqual(state.view(key).summary, generatedSummary, "旧查询不能覆盖已推送的标题")
   await state.load("default", "s"); await state.load("default", "s")
   assert.equal(calls, 1, "切换回缓存对话不查询历史")
   state.setDraft(key, "未发送"); state.setDraft(sessionKey("project", "$new-chat"), "新任务")
