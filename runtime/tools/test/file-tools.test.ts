@@ -7,6 +7,7 @@ import { TurnFileChangeTracker } from "../../session/src/file-changes.ts"
 import type { SandboxMode } from "../../session/src/session-state.ts"
 import { bundledRipgrepPath, runRipgrep } from "../src/filesystem/index.ts"
 import { registerFileTools, type FileAccessState } from "../src/file/index.ts"
+import type { ReadResult } from "../src/file/types.ts"
 import { createExecuteToolCall } from "../src/tool-executor.ts"
 import { RenderRegistry, ToolRegistry } from "../src/tool-registry.ts"
 import type { ToolCallContext, ToolResult } from "../src/types.ts"
@@ -78,6 +79,36 @@ async function main(): Promise<void> {
     assert.equal(firstRead.status, "success")
     assert.match(content(firstRead), /2 \| beta/)
     assert.match(content(firstRead), /offset=3/)
+    const longPath = join(workspace, "long.txt")
+    const longLine = "a".repeat(1999) + "😀" + "z".repeat(2005) + "TAIL"
+    await writeFile(longPath, `${longLine}\nlast\n`)
+    const parts = new Map<number, string>()
+    let offset = 1, column = 1
+    for (let page = 0; ; page++) {
+      assert.ok(page < 10, "续读位置必须向前推进")
+      const input = { path: longPath, offset, column }
+      const result = await tools.get("read")!.execute(input, { ...context, validatedArguments: input }) as ReadResult
+      for (const line of result.lines) {
+        assert.ok(!/[\uD800-\uDBFF]$/.test(line.text) && !/^[\uDC00-\uDFFF]/.test(line.text), "分页不能拆开代理对")
+        parts.set(line.number, (parts.get(line.number) ?? "") + line.text)
+      }
+      if (!result.truncated) break
+      assert.ok(result.nextOffset !== undefined)
+      offset = result.nextOffset
+      column = result.nextColumn ?? 1
+    }
+    assert.equal(parts.get(1), longLine)
+    assert.equal(parts.get(2), "last")
+    assert.match(content(await execute("read", { path: longPath }, context)), /offset=1, column=2000/)
+    assert.equal(code(await execute("read", { path: longPath, column: 0 }, context)), "INVALID_TOOL_ARGUMENTS")
+    assert.equal(code(await execute("read", { path: longPath, column: 2001 }, context)), "INVALID_COLUMN")
+    assert.equal(code(await execute("read", { path: longPath, column: 99999 }, context)), "INVALID_COLUMN")
+    await writeFile(longPath, "b".repeat(2000))
+    assert.equal((await tools.get("read")!.execute({ path: longPath }, { ...context, validatedArguments: { path: longPath } }) as ReadResult).truncated, false)
+    await writeFile(longPath, Array(12).fill("中".repeat(1900)).join("\n"))
+    const limited = await tools.get("read")!.execute({ path: longPath }, { ...context, validatedArguments: { path: longPath } }) as ReadResult
+    assert.equal(limited.nextOffset, limited.lines.length + 1)
+    assert.equal(limited.nextColumn, undefined)
     assert.equal(code(await execute("read", { path: other }, context)), "APPROVAL_DENIED")
     assert.equal(approvalCalls, 1)
     mode = "full-access"

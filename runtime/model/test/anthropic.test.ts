@@ -163,6 +163,7 @@ function endedText(events: ModelStreamEvent[]): string {
  * @throws Error 断言或场景执行失败时向上传播，测试入口报告失败。
  */
 async function main(): Promise<void> {
+  await testSignedThinkingRoundTrip()
   /** ------------------------------------------------------------------------- */
   /** 1. 请求转换 */
   /** ------------------------------------------------------------------------- */
@@ -326,7 +327,7 @@ async function main(): Promise<void> {
     )
   }
 
-  /** 没有统一表达的块（如 redacted_thinking）被忽略，不影响后续块的序号。 */
+  /** 遮蔽思考保留为不透明 thinking 块，仍占用原有顺序。 */
   {
     const events = await collect(
       mapAnthropicStream([
@@ -354,8 +355,8 @@ async function main(): Promise<void> {
     )
     assert.deepEqual(
       events.filter((item) => item.type === "block_end").map((item) => item.index),
-      [0],
-      "被忽略的块不占用统一 index",
+      [0, 1],
+      "遮蔽思考与可见正文按原顺序保留",
     )
   }
 
@@ -802,6 +803,37 @@ async function main(): Promise<void> {
   }
 
   console.log("anthropic.test.ts: Anthropic Messages Adapter 断言通过")
+}
+
+/** @returns 签名分片、遮蔽内容与工具调用经统一格式往返后保持完整顺序与字节。 */
+async function testSignedThinkingRoundTrip(): Promise<void> {
+  const events = await collect(mapAnthropicStream([
+    event({ type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "fixture", signature: "first-" } }),
+    event({ type: "content_block_delta", index: 0, delta: { type: "signature_delta", signature: "second" } }),
+    event({ type: "content_block_stop", index: 0 }),
+    event({ type: "content_block_start", index: 1, content_block: { type: "redacted_thinking", data: "opaque-data" } }),
+    event({ type: "content_block_stop", index: 1 }),
+    event({ type: "content_block_start", index: 2, content_block: { type: "tool_use", id: "toolu_01", name: "read_file", input: { path: "/p/config.ts" } } }),
+    event({ type: "content_block_stop", index: 2 }),
+    event({ type: "message_delta", delta: { stop_reason: "tool_use" }, usage: { output_tokens: 3 } }),
+    event({ type: "message_stop" }),
+  ]))
+  const blocks = events.flatMap((item) => item.type === "block_end" ? [item.block] : [])
+  assert.deepEqual(blocks.slice(0, 2), [
+    { type: "thinking", text: "fixture", signature: "first-second" },
+    { type: "thinking", text: "", redactedData: "opaque-data" },
+  ])
+  const request = agentRequest()
+  const assistant = request.context.messages.find((message) => message.role === "assistant")!
+  assert.equal(assistant.role, "assistant")
+  if (assistant.role === "assistant") assistant.content = structuredClone(blocks)
+  const params = buildAnthropicRequest(request, MODEL)
+  assert.deepEqual(params.messages[1].content, [
+    { type: "thinking", thinking: "fixture", signature: "first-second" },
+    { type: "redacted_thinking", data: "opaque-data" },
+    { type: "tool_use", id: "toolu_01", name: "read_file", input: { path: "/p/config.ts" } },
+  ])
+  assert.deepEqual(assistant.content, blocks, "构造请求不修改持久化内容")
 }
 
 /** 不用顶层 await：测试运行时被 Node 当作 ESM，但 tsc 按 CommonJS 检查。 */

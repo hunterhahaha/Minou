@@ -208,6 +208,22 @@ function completionOf(events: ModelStreamEvent[]): string | undefined {
  * @throws Error 断言或场景执行失败时向上传播，测试入口报告失败。
  */
 async function main(): Promise<void> {
+  // DeepSeek requires reasoning_content for all historical assistant messages when tools are present.
+  for (const name of ["deepseek-flash", "deepseek-v4-pro", "glm-5.1"]) {
+    const request = agentRequest()
+    const model = { ...MODEL, name }
+    request.model = { ...request.model, name }
+    for (const message of request.context.messages) {
+      if (message.role === "assistant") message.content.unshift({ type: "thinking", text: `reasoning for ${name}` })
+    }
+    const params = buildChatCompletionsRequest(request, model)
+    const assistants = params.messages.filter((message) => message.role === "assistant")
+    assert.equal(assistants.length, 2)
+    for (const message of assistants) assert.equal((message as unknown as Record<string, unknown>).reasoning_content, `reasoning for ${name}`)
+    assert.equal(params.messages.find((message) => message.role === "tool")?.tool_call_id, "call_01")
+    const openai = buildChatCompletionsRequest({ ...request, model: { ...request.model, name: MODEL.name } }, MODEL)
+    assert.ok(openai.messages.filter((message) => message.role === "assistant").every((message) => !("reasoning_content" in message)))
+  }
   /** ------------------------------------------------------------------------- */
   /** 1. 请求转换 */
   /** ------------------------------------------------------------------------- */

@@ -131,7 +131,8 @@ export function createFileSessionEventLog(options: FileSessionEventLogOptions): 
       await requireDirectory(sessionDirectory)
       await requireDatabase(databasePath)
       return withDatabase(databasePath, (db) => transaction(db, () => {
-        const values = readSessionEvents(db, options.projectGroupId, options.sessionId, databasePath)
+        // 流式追加只校验尾部并在同一事务内分配 seq；完整历史仍由 readEvents 和恢复入口校验。
+        const values = readSessionEvents(db, options.projectGroupId, options.sessionId, databasePath, false, true)
         const nextSeq = nextSequence(values, databasePath, 1)
         const [event] = materializeEvents([input], options.sessionId, nextSeq, now, createEventId, databasePath)
         insertEvents(db, options.projectGroupId, [event], databasePath)
@@ -231,16 +232,17 @@ function transaction<T>(db: DatabaseSync, operation: () => T): T {
  * @param sessionId Session ID。
  * @param path 错误定位用的数据库路径。
  * @param allowMissing 是否允许新 Session 没有日志。
+ * @param lastOnly 是否只读取尾部事件，供单条追加在事务内分配序号。
  * @returns 按 seq 排序的事件值。
  * @throws Error 当表、日志或事件内容无效时抛出。
  */
 function readSessionEvents(
-  db: DatabaseSync, projectGroupId: string, sessionId: string, path: string, allowMissing = false,
+  db: DatabaseSync, projectGroupId: string, sessionId: string, path: string, allowMissing = false, lastOnly = false,
 ): unknown[] {
   let rows: Array<Record<string, unknown>>
   try {
     rows = db.prepare(`SELECT seq, event_id, type, created_at, event_json
-      FROM session_events WHERE project_group_id = ? AND session_id = ? ORDER BY seq`)
+      FROM session_events WHERE project_group_id = ? AND session_id = ? ORDER BY seq ${lastOnly ? "DESC LIMIT 1" : "ASC"}`)
       .all(projectGroupId, sessionId) as Array<Record<string, unknown>>
   } catch (error) {
     throw new Error(`无法读取 Session Event Log：${path}`, { cause: error })

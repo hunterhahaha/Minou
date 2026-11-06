@@ -71,7 +71,16 @@ export type BlockType = "thinking" | "text" | "tool_call"
 
 /** Assistant 内容块，也是 `assistant/message.content` 的元素类型。 */
 export type AssistantContentBlock =
-  | { type: "thinking"; text: string }
+  | {
+      type: "thinking"
+      text: string
+      /** Anthropic 返回的完整不透明签名；随原 thinking 文本一起回传。 */
+      signature?: string
+      /** 生成签名时的 Anthropic system/tools 摘要；定义改变后不回传该旧签名。 */
+      anthropicContextHash?: string
+      /** Anthropic redacted_thinking 的不透明 data；此块的 text 为空，不附带 signature。 */
+      redactedData?: string
+    }
   | { type: "text"; text: string }
   | {
       type: "tool_call"

@@ -231,6 +231,10 @@ project_group_id, session_id, seq, event_id, type, created_at, event_json
 
 桌面会话共用根目录 `events.sqlite`，会话目录不另存一份正文日志。CLI 则在本次 Run 目录创建相同事件结构的独立数据库。事件类型和载荷见 [events.ts](../runtime/session/src/events.ts)。
 
+Assistant 的 thinking 内容块可带 `signature` 或 `redactedData`，用于 Anthropic 协议原样续传。redactedData 对应块的 text 必须为空，不能同时带 signature；已提供的签名和遮蔽数据须为非空字符串。它们保存在原有 event_json 中，不改变事件类型、SQL 表或 Meta 版本；无签名的 thinking 仍可读取，但不会构造成 Anthropic 的带签名思考块。
+
+`anthropicContextHash` 是真实 Adapter 为签名保存的可选 64 位十六进制 system/tools 摘要，用于工具定义或系统提示变化后过滤过期思考块；不存储凭据或额外系统提示副本。
+
 ### 桌面会话 Meta
 
 [meta-store.ts](../runtime/session/src/meta-store.ts) 创建 STRICT 表 `session_meta`，数据库版本为 1：

@@ -44,6 +44,8 @@ Renderer 负责页面、路由与展示缓存，不直接打开数据库、读�
 
 [electron-windows.ts](../src/main/electron-windows.ts) 加载编译 preload 和 Vite 页面；开发时由 `NICODE_RENDERER_URL` 改为加载 Vite 地址。窗口无系统边框。页面关闭操作使用最小化接口；最小化、最大化和状态同步见 [window-ipc.ts](../src/main/window-ipc.ts) 与 [window-controls.tsx](../src/renderer/window-controls.tsx)。
 
+主窗口只允许入口文档及其 hash 路由，拒绝跳转到其它文档和外部重定向；HTTP(S) 外链与弹窗交给系统浏览器，其他协议不启动。桌面入口将所有 IPC 注册到 `createTrustedIpcMain`：每次请求都重新检查发送者属于当前管理器的存活主窗口、来自其主 frame，且 frame 与 WebContents 的当前 URL 均匹配入口。内置浏览器网页不具有管理接口权限；仅靠带 preload 的窗口身份不能授权外部文档。
+
 ## 一次桌面对话调用
 
 1. [session-page.tsx](../src/renderer/session-page.tsx) 经 preload 请求新建或继续会话；运行中发送的消息请求入队。
@@ -55,6 +57,8 @@ Renderer 负责页面、路由与展示缓存，不直接打开数据库、读�
 7. Runtime 负责 Turn 完成、失败、停止、文件变化与派生状态同步，再消费 FIFO 队列。Queue 仅保存消息内容，不提前冻结后续 Turn 的模型。
 8. 主进程通过会话更新事件推送已提交内容和控制状态，Renderer 的 [session-state.ts](../src/renderer/session-state.ts) 合并历史与增量，供页面展示。
 
+桌面 Turn 只有模型 `completion=finished` 才以 completed 结束。未取消但返回 incomplete、unknown 或缺少正常终态时，保留已提交正文与文件变化，写入 `MODEL_RESPONSE_INCOMPLETE` 错误和 `turn/end(error)`，停止消费队列；用户可据部分回复决定后续操作，不自动重发已输出内容。
+
 模型配置的必填 `supportsReasoning` 从 Provider 数据库快照传入 Adapter。三个协议共用的推理请求片段仅在该字段为 true 时校验等级并拼装字段；普通请求和上下文压缩遵循相同规则。false 时忽略会话中保留的等级，不改变 ModelRef 或 Meta 的结构，CLI 也使用相同的能力判断。
 
 模型工厂见 [model-adapters.ts](../src/main/model-adapters.ts)。启动阶段不预先为全部模型创建 SDK Client，也不把 Provider 凭据快照传入 Renderer。
@@ -64,6 +68,10 @@ Renderer 负责页面、路由与展示缓存，不直接打开数据库、读�
 [loop.ts](../runtime/agent/src/loop.ts) 处理 `step/start`、模型块事件、`assistant/message`、`tool/result`、`step/end`，不承担宿主的 Turn 首尾。模型块包括 thinking、text 和 tool_call。工具结果通过 `toolCallId` 和对应块事件的 `toolCallEventId` 关联，不能只依据日志排列顺序配对。
 
 模型类型见 [types.ts](../runtime/model/src/types.ts)，Adapter 将各协议转成同一事件与内容结构。Usage 的 `inputTokens` 是未缓存输入；完整输入还包含已报告的 `cacheReadTokens`、`cacheWriteTokens`。`reasoningTokens` 属于输出子集，不应再次相加。可选桶未报告时保持缺失，其累计规则也不能简单视为零。具体映射见 [usage.ts](../runtime/model/src/usage.ts)。Session 的 `RealUsage` 是另一个派生结构，其中 `inputTokens` 表示最近一次正常 Agent 请求的完整输入，不可与统一 Usage 同名字段混用。
+
+Chat Completions 对名称以 `glm-` 或 `deepseek-` 开始的模型回传历史 thinking 的 `reasoning_content`，包括没有工具调用的历史 Assistant 消息。Anthropic 将 thinking 的完整签名保存在统一块的可选 `signature` 中，将 redacted_thinking 表示为 `{ type: "thinking", text: "", redactedData }`；这些字段随 block_end、assistant/message 和 SQLite 历史保存、恢复，并按原顺序还原协议块。其他协议产生的无签名思考文本不伪造为 Anthropic thinking。签名及遮蔽数据是不透明协议状态，不作为可见正文。
+
+真实 Anthropic Adapter 还为已签名或遮蔽块保存 `anthropicContextHash`，记录当次实际 system/tools 的 SHA-256 摘要。动态 MCP 定义或系统提示变化时不回传绑定旧定义的思考块，正文和工具调用仍照常回放；定义不变的工具循环与重启历史保留完整签名。摘要压缩沿用现有事件覆盖边界。
 
 网络层由 [retry.ts](../runtime/network/src/retry.ts) 控制重试，当前最大尝试次数为 3。可重试错误在尚无有效输出时重试；已产生有效流事件后失败，交由当前请求错误流程处理。取消不自动重试。
 
@@ -81,6 +89,8 @@ Renderer 负责页面、路由与展示缓存，不直接打开数据库、读�
 
 文件权限由 [security/index.ts](../runtime/tools/src/security/index.ts) 和规范路径判断实现：Full Access 直接允许；Sandbox Full Access 对允许根内访问直接允许；Sandbox Read Only 对根内读取直接允许，其他文件操作需要审批。审批事件与等待结果由 SessionRuntime 持有。Shell、PTY、MCP 使用各自工具实现中的检查；不能把文件规则推定为所有工具共有的系统级限制。
 
+`read` 每行最多返回 2000 个 UTF-16 单元，并保持 Unicode 代理对完整。超过时停止当前页、标记 truncated，返回同一行的 nextOffset 和 nextColumn；模型按提示传入 `offset` 与 `column` 继续读取，不跳过行尾。column 只应用于请求的起始行，从 1 开始；超过行长或位于代理对内部会报错。行数或 50 KiB 输出预算限制则从下一条未读取行继续。
+
 ## 固定上下文、外部能力与恢复
 
 - [project-context.ts](../src/main/project-context.ts) 从数据库读取 Project，选择首个关联目录作为 cwd；没有关联目录时使用内置 workspace。当前 cwd 下的 AGENTS.md 和启用 Skill 组成基线，允许根包括内置 workspace 与关联目录。
@@ -88,6 +98,8 @@ Renderer 负责页面、路由与展示缓存，不直接打开数据库、读�
 - MCPManager 共享连接和完整 Catalog，各 Session 单独记录载入身份。`tool_search` 搜索并载入，或经 `mcp_list_tools` / `mcp_load_tools` 载入。预算为模型窗口的 5%，按最近调用记录淘汰；单批自身超预算时仍整批载入。定义在请求前依据当前 Catalog 过滤，不直接沿用持久化旧 Schema。
 - Memory 不默认把正文注入系统消息；模型通过三件记忆工具按需访问当前 Project/default 的共享 Markdown。
 - Event Log 是已执行事实的恢复依据，SessionState 据此修复 Meta、`contextstate.json` 与 `agents_md.snapshot`，不能把页面缓存作为持久化事实。
+
+单条流式事件的追加事务只读取、校验当前会话的尾部事件，并分配下一个 seq；完整读取、Turn 首批事件提交及恢复入口仍校验完整历史。连续增量不会为分配序号重复解析全部历史，事件仍保留在同一数据库中，不通过删除日志降低写入成本。
 
 ## 桌面 Summary
 

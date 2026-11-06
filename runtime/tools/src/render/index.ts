@@ -62,9 +62,9 @@ export function renderGrep(value: GrepResult | AppError): ToolResult {
 export function renderRead(value: ReadResult | AppError): ToolResult {
   return render(value, (result) => {
     const lines = result.lines.length === 0 ? "No content found."
-      : result.lines.map((line) => `${line.number} | ${line.text}`).join("\n")
+      : result.lines.map((line) => `${line.number}${line.column === undefined ? "" : `:${line.column}`} | ${line.text}`).join("\n")
     return `${result.path}\n\n${lines}${result.truncated && result.nextOffset !== undefined
-      ? `\n[More content available. Continue with offset=${result.nextOffset}.]` : ""}`
+      ? `\n[More content available. Continue with offset=${result.nextOffset}${result.nextColumn === undefined ? "" : `, column=${result.nextColumn}`}.]` : ""}`
   })
 }
 

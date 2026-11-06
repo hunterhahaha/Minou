@@ -2,11 +2,13 @@
 
 import assert from "node:assert/strict"
 import { join } from "node:path"
+import { pathToFileURL } from "node:url"
 
-import type { BrowserWindowConstructorOptions } from "electron"
+import type { BrowserWindowConstructorOptions, IpcMain, IpcMainInvokeEvent } from "electron"
 
 import {
   createElectronWindowManager,
+  createTrustedIpcMain,
 } from "../../src/main/electron-windows.ts"
 import type {
   BrowserWindowConstructorPort,
@@ -28,7 +30,13 @@ class FakeBrowserWindow {
   destroyed = false
   sendFailure?: Error
   sent: Array<{ channel: string; update: SessionUpdate }> = []
+  navigation = new Map<string, (event: { url: string; preventDefault(): void }, url: string) => void>()
+  openWindow?: (details: { url: string }) => { action: string }
   webContents = {
+    mainFrame: { url: "" },
+    getURL: () => this.webContents.mainFrame.url,
+    on: (event: string, listener: (event: { url: string; preventDefault(): void }, url: string) => void) => { this.navigation.set(event, listener) },
+    setWindowOpenHandler: (handler: (details: { url: string }) => { action: string }) => { this.openWindow = handler },
     isDestroyed: () => this.destroyed,
     send: (channel: string, update: SessionUpdate) => {
       if (this.sendFailure) throw this.sendFailure
@@ -64,11 +72,13 @@ class FakeBrowserWindow {
 
   async loadFile(path: string): Promise<void> {
     this.loadedPath = path
+    this.webContents.mainFrame.url = pathToFileURL(path).href
     if (FakeBrowserWindow.loadFailure !== undefined) throw FakeBrowserWindow.loadFailure
   }
 
   async loadURL(url: string): Promise<void> {
     this.loadedUrl = url
+    this.webContents.mainFrame.url = url
     if (FakeBrowserWindow.loadFailure !== undefined) throw FakeBrowserWindow.loadFailure
   }
 
@@ -169,7 +179,54 @@ async function main(): Promise<void> {
   await testLoadsRendererFromDevServer()
   await testRejectsRelativePathsAndForwardsLoadFailure()
   await testBroadcast()
+  await testNavigationAndIpcTrust()
   console.log("electron-windows.test.ts: BrowserWindow 适配断言通过")
+}
+
+/** @returns 主窗口外链、弹窗、重定向和所有 IPC 注册路径的来源校验通过。 */
+async function testNavigationAndIpcTrust(): Promise<void> {
+  for (const rendererUrl of [undefined, "http://127.0.0.1:5173/"]) {
+    FakeBrowserWindow.instances = []
+    FakeBrowserWindow.loadFailure = undefined
+    const external: string[] = []
+    const windows = createElectronWindowManager(FakeBrowserWindow as unknown as BrowserWindowConstructorPort, {
+      preloadPath: join(process.cwd(), "preload.js"), rendererHtmlPath: join(process.cwd(), "index.html"),
+      rendererUrl, openExternal: (url) => external.push(url), onWindowLoadFailure: () => {},
+    })
+    windows.createMainWindow()
+    await Promise.resolve()
+    const window = FakeBrowserWindow.instances[0]
+    const event = { sender: window.webContents, senderFrame: window.webContents.mainFrame } as unknown as IpcMainInvokeEvent
+    assert.equal(windows.isTrustedSender(event), true)
+    window.webContents.mainFrame.url += "#/session/test"
+    assert.equal(windows.isTrustedSender(event), true, "hash 路由不会失去 IPC 权限")
+    assert.equal(windows.isTrustedSender({ ...event, senderFrame: { url: window.webContents.getURL() } } as IpcMainInvokeEvent), false)
+    assert.equal(windows.isTrustedSender({ ...event, sender: { ...window.webContents } } as IpcMainInvokeEvent), false)
+    let blocked = 0
+    const navigate = (type: string, url: string) => window.navigation.get(type)!({ url, preventDefault: () => { blocked++ } }, url)
+    navigate("will-navigate", window.webContents.getURL())
+    assert.equal(blocked, 0)
+    navigate("will-navigate", "https://example.com/review")
+    navigate("will-navigate", "file:///other.html")
+    navigate("will-redirect", "https://example.com/redirect")
+    assert.equal(blocked, 3)
+    assert.deepEqual(external, ["https://example.com/review"])
+    assert.deepEqual(window.openWindow!({ url: "https://example.com/popup" }), { action: "deny" })
+    assert.deepEqual(window.openWindow!({ url: "javascript:alert(1)" }), { action: "deny" })
+    assert.equal(external.length, 2)
+    const handlers = new Map<string, (event: IpcMainInvokeEvent, ...args: unknown[]) => unknown>()
+    const ipc = createTrustedIpcMain({ handle: (channel, listener) => { handlers.set(channel, listener) } } as Pick<IpcMain, "handle">,
+      (incoming) => windows.isTrustedSender(incoming))
+    ipc.handle("test:privileged", (_event, value) => value)
+    assert.equal(handlers.get("test:privileged")!(event, "ok"), "ok")
+    window.webContents.mainFrame.url = "https://example.com/review"
+    assert.equal(windows.isTrustedSender(event), false, "绕过导航限制的文档仍不能调用 IPC")
+    windows.sendSessionUpdate!({ kind: "error", projectId: "default", sessionId: "private", stage: "runtime", error: { source: "runtime", code: "TEST", message: "private update" } })
+    assert.equal(window.sent.length, 0, "外部文档不能接收会话广播")
+    assert.throws(() => handlers.get("test:privileged")!(event), /IPC 请求来源无效/)
+    window.destroyed = true
+    assert.equal(windows.isTrustedSender(event), false)
+  }
 }
 
 /** @returns 多窗口广播、销毁窗口跳过以及单窗失败隔离验证。 */

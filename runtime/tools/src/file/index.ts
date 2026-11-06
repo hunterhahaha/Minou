@@ -64,8 +64,8 @@ export function registerFileTools(
     execute: (input, context) => executeGrep(input, context, dependencies), render: renderGrep,
   })
   registerTool(tools, renders, {
-    kind: "builtin", definition: definition("read", "Read a known text file by absolute path and line range.",
-      { path: { type: "string" }, offset: { type: "integer" }, limit: { type: "integer" } }, ["path"]),
+    kind: "builtin", definition: definition("read", "Read a known text file by absolute path and line range. Resume a long line with the offset and column returned in the result.",
+      { path: { type: "string" }, offset: { type: "integer" }, column: { type: "integer" }, limit: { type: "integer" } }, ["path"]),
     validateArguments: (value) => validateRead(value),
     execute: (input, context) => executeRead(input, context, dependencies), render: renderRead,
   })
@@ -140,7 +140,7 @@ function validateGrep(value: unknown): ToolArgumentValidation<GrepInput> {
  * @returns read 业务参数。
  */
 function validateRead(value: unknown): ToolArgumentValidation<ReadInput> {
-  if (!isPlainRecord(value) || typeof value.path !== "string" || (value.offset !== undefined && !positiveInt(value.offset, Number.MAX_SAFE_INTEGER)) || (value.limit !== undefined && !positiveInt(value.limit, 2000))) return invalid("read 需要文件 path，offset 须为正行号，limit 须为 1–2000")
+  if (!isPlainRecord(value) || typeof value.path !== "string" || (value.offset !== undefined && !positiveInt(value.offset, Number.MAX_SAFE_INTEGER)) || (value.column !== undefined && !positiveInt(value.column, Number.MAX_SAFE_INTEGER)) || (value.limit !== undefined && !positiveInt(value.limit, 2000))) return invalid("read 需要文件 path，offset 和 column 须为正整数，limit 须为 1–2000")
   return { success: true, data: value as unknown as ReadInput }
 }
 
@@ -319,6 +319,8 @@ async function executeRead(input: ReadInput, context: ToolExecutionContext<ReadI
     let number = 0
     let bytes = 0
     let truncated = false
+    let nextOffset: number | undefined
+    let nextColumn: number | undefined
     const stream = createReadStream(path, { encoding: "utf8" })
     const reader = createInterface({ input: stream, crlfDelay: Infinity })
     try {
@@ -326,16 +328,30 @@ async function executeRead(input: ReadInput, context: ToolExecutionContext<ReadI
         if (context.signal.aborted) throw coded("CANCELLED", "工具调用已取消")
         number += 1
         if (number < offset) continue
-        const text = line.length > 2000 ? line.slice(0, 2000) : line
+        const start = number === offset ? (input.column ?? 1) - 1 : 0
+        if (start > line.length || (start > 0 && /[\uD800-\uDBFF]/.test(line[start - 1]) && /[\uDC00-\uDFFF]/.test(line[start] ?? ""))) {
+          throw coded("INVALID_COLUMN", "column 超出起始行或位于 Unicode 字符内部，请使用返回的续读位置")
+        }
+        let end = Math.min(line.length, start + 2000)
+        if (end < line.length && /[\uD800-\uDBFF]/.test(line[end - 1]) && /[\uDC00-\uDFFF]/.test(line[end])) end--
+        const text = line.slice(start, end)
         if (lines.length >= limit || bytes + Buffer.byteLength(text, "utf8") > 50 * 1024) {
           truncated = true
+          nextOffset = number
+          if (start > 0) nextColumn = start + 1
           break
         }
-        lines.push({ number, text })
+        lines.push({ number, text, ...(start === 0 ? {} : { column: start + 1 }) })
         bytes += Buffer.byteLength(text, "utf8")
+        if (end < line.length) {
+          truncated = true
+          nextOffset = number
+          nextColumn = end + 1
+          break
+        }
       }
     } finally { reader.close(); stream.destroy() }
-    return { path, offset, lines, truncated, ...(truncated ? { nextOffset: offset + lines.length } : {}) }
+    return { path, offset, lines, truncated, ...(nextOffset === undefined ? {} : { nextOffset }), ...(nextColumn === undefined ? {} : { nextColumn }) }
   } catch (error) { return fileError(error, "READ_FAILED") }
 }
 

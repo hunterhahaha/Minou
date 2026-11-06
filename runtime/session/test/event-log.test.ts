@@ -238,10 +238,44 @@ async function main(): Promise<void> {
     await testReadFailures(root)
     await testAppendFailures(root)
     await testSequenceFailures(root)
+    await testAppendDoesNotReparseHistory(root)
   } finally {
     await rm(root, { recursive: true, force: true })
   }
   console.log("event-log.test.ts: Session Event Log SQLite 读写断言通过")
+}
+
+/**
+ * 验证流式追加读取量不随历史事件总量增长，且完整读取仍保留全部事件。
+ * @param root 当前测试使用的隔离临时目录。
+ * @returns 追加成本与完整历史读取断言通过。
+ */
+async function testAppendDoesNotReparseHistory(root: string): Promise<void> {
+  const options = await fixture(root, "long-stream")
+  const log = createFileSessionEventLog(options)
+  await log.appendTurnStartAndUserMessage(turnBatch(1))
+  const db = new DatabaseSync(options.databasePath)
+  try {
+    const insert = db.prepare("INSERT INTO session_events VALUES (?, ?, ?, ?, ?, ?, ?)")
+    db.exec("BEGIN")
+    for (let seq = 3; seq <= 1002; seq++) {
+      const value = { sessionId: options.sessionId, seq, eventId: `delta-${seq}`, type: "assistant/block_delta", createdAt: CREATED_AT,
+        turn: 1, step: 1, blockId: "b", delta: { type: "text", text: "x".repeat(200) } }
+      insert.run(options.projectGroupId, options.sessionId, seq, value.eventId, value.type, CREATED_AT, JSON.stringify(value))
+    }
+    db.exec("COMMIT")
+  } finally { db.close() }
+  let parsedBytes = 0
+  const parse = JSON.parse
+  JSON.parse = (text, reviver) => { parsedBytes += Buffer.byteLength(text); return parse(text, reviver) }
+  try {
+    for (let index = 0; index < 10; index++) {
+      const event = await log.appendEvent({ type: "assistant/block_delta", turn: 1, step: 1, blockId: "b", delta: { type: "text", text: "next" } })
+      assert.equal(event.seq, 1003 + index)
+    }
+  } finally { JSON.parse = parse }
+  assert.ok(parsedBytes < 10000, `十次追加不应重新解析整个历史，实际解析 ${parsedBytes} 字节`)
+  assert.equal((await log.readEvents()).length, 1012)
 }
 
 main().catch((error: unknown) => {

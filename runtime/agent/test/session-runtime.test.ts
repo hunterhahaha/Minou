@@ -1061,6 +1061,7 @@ async function testStoppedThinkingCanContinue(): Promise<void> {
  * @throws Error 断言或场景执行失败时向上传播，测试入口记录错误并设置失败退出码。
  */
 async function main(): Promise<void> {
+  await testIncompleteResponseStopsQueue()
   await testNewSession()
   await testContinueSession()
   await testOneAdapterServesAllStepsInTurn()
@@ -1075,6 +1076,32 @@ async function main(): Promise<void> {
   await testRuntimeScopedCancellation()
   await testStoppedThinkingCanContinue()
   console.log("session-runtime.test.ts: SessionRuntime 入口与恢复断言通过")
+}
+
+/** @returns 截断或未知终态保留部分正文、发布错误并丢弃尚未开始的排队消息。 */
+async function testIncompleteResponseStopsQueue(): Promise<void> {
+  for (const completion of ["incomplete", "unknown"] as const) {
+    const f = fixture(`incomplete-${completion}`)
+    let requests = 0
+    f.global.createTurnModelAdapter = async () => ({ contextWindow: 128000, maxOutputTokens: 4096,
+      async *stream() {
+        requests++
+        yield { type: "block_start", index: 0, blockType: "text" }
+        yield { type: "block_delta", index: 0, delta: { type: "text", text: "partial reply" } }
+        yield { type: "block_end", index: 0, block: { type: "text", text: "partial reply" } }
+        yield { type: "stream_end", completion, finishReason: completion === "incomplete" ? "length" : undefined }
+      } })
+    const started = await f.ports.startNewSession({ model: MODEL, content: MESSAGE })
+    f.ports.enqueueSessionMessage({ content: [{ type: "text", text: "must not start" }] })
+    await assert.rejects(f.ports.processMessageQueue(started).completion, (error: unknown) =>
+      typeof error === "object" && error !== null && "code" in error && error.code === "MODEL_RESPONSE_INCOMPLETE")
+    assert.equal(requests, 1)
+    assert.equal(f.events.filter((event) => event.type === "turn/start").length, 1)
+    assert.ok(f.events.some((event) => event.type === "assistant/message" && event.message.content.some((block) => block.type === "text" && block.text === "partial reply")))
+    assert.ok(f.events.some((event) => event.type === "app/error" && event.error.code === "MODEL_RESPONSE_INCOMPLETE"))
+    const end = f.events.at(-1)
+    assert.ok(end?.type === "turn/end" && end.reason === "error")
+  }
 }
 
 main().catch((error: unknown) => {

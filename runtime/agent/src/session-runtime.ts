@@ -1145,6 +1145,13 @@ export class SessionRuntime implements SessionRepairPorts {
     let result: AgentLoopResult
     try {
       result = await run()
+      if (!result.stopped && result.completion !== "finished") {
+        throw {
+          source: "model", code: "MODEL_RESPONSE_INCOMPLETE",
+          message: "模型未正常完成回复，已保留收到的内容并停止后续排队任务。",
+          details: { completion: result.completion ?? "unknown", ...(result.finishReason === undefined ? {} : { finishReason: result.finishReason }) },
+        } satisfies AppError
+      }
     } catch (error) {
       const appError: AppError = isAppErrorValue(error)
         ? { source: error.source, code: error.code, message: error.message, ...(error.details === undefined ? {} : { details: error.details }) }
@@ -2370,6 +2377,15 @@ function requireAssistantBlock(sessionId: string, block: unknown, index: number)
   if (!isRecord(block)) corrupted(sessionId, `第 ${index + 1} 条事件的 Assistant Block 无效`)
   if (block.type === "thinking" || block.type === "text") {
     if (typeof block.text !== "string") corrupted(sessionId, `第 ${index + 1} 条事件的文本 Block 无效`)
+    if (block.type === "thinking") {
+      if (block.anthropicContextHash !== undefined && (typeof block.anthropicContextHash !== "string" || !/^[a-f0-9]{64}$/.test(block.anthropicContextHash))) {
+        corrupted(sessionId, `第 ${index + 1} 条事件的 thinking 上下文摘要无效`)
+      }
+      if (block.signature !== undefined && !isNonEmptyString(block.signature)) corrupted(sessionId, `第 ${index + 1} 条事件的 thinking 签名无效`)
+      if (block.redactedData !== undefined && (!isNonEmptyString(block.redactedData) || block.text !== "" || block.signature !== undefined)) {
+        corrupted(sessionId, `第 ${index + 1} 条事件的 redacted thinking 无效`)
+      }
+    }
     return
   }
   if (block.type === "tool_call") {

@@ -2,11 +2,12 @@
  * Anthropic Messages 的请求与统一流事件转换。
  *
  * 请求映射 system、messages、tool_use 与 tool_result；max_tokens 使用模型最大输出配置。
- * 历史 thinking 缺少签名，不回传到协议请求；未支持的服务端块不进入统一流。
+ * 历史 thinking 保留签名与 redacted_thinking 数据；其它协议的无签名思考不回传。
  * SDK 自动重试关闭，流请求通过共享入口处理重试、取消与错误归一化。
  */
 
 import Anthropic from "@anthropic-ai/sdk"
+import { createHash } from "node:crypto"
 
 import type { ProtocolClientOptions } from "./adapter.ts"
 import {
@@ -63,15 +64,22 @@ function toUserContent(content: string | ModelTextBlock[]): ModelTextBlock[] {
 /**
  * 统一 assistant content → Anthropic content。
  *
- * 历史 thinking 块缺少协议回放要求的 signature，因此不回传。
+ * 完整回传带签名的 thinking 与不透明 redacted_thinking；无签名文本可能来自其它协议，不伪造签名。
  *
  * @param blocks 统一 assistant 内容块。
- * @returns Anthropic 可接受的文本块和 `tool_use` 块；thinking 及空文本被跳过。
+ * @param contextHash 当前请求 system/tools 的摘要；过滤已失去原上下文的签名。
+ * @returns Anthropic 可接受的完整内容块；无签名 thinking 和空文本被跳过。
  */
-function toAssistantContent(blocks: AssistantContentBlock[]): ContentBlockParam[] {
+function toAssistantContent(blocks: AssistantContentBlock[], contextHash?: string): ContentBlockParam[] {
   const content: ContentBlockParam[] = []
 
   for (const block of blocks) {
+    if (block.type === "thinking") {
+      if (contextHash !== undefined && block.anthropicContextHash !== undefined && block.anthropicContextHash !== contextHash) continue
+      if (block.redactedData !== undefined) content.push({ type: "redacted_thinking", data: block.redactedData })
+      else if (block.signature !== undefined) content.push({ type: "thinking", thinking: block.text, signature: block.signature })
+      continue
+    }
     if (block.type === "text") {
       if (block.text.length > 0) content.push({ type: "text", text: block.text })
       continue
@@ -110,9 +118,10 @@ function isToolResultMessage(message: MessageParam): boolean {
  *   - content 不能为空数组，因此空文本、只剩 thinking 的 assistant 消息直接跳过。
  *
  * @param messages 除首个 System Message 外的统一会话消息。
+ * @param contextHash 当前请求 system/tools 的摘要；直接转换消息时可省略。
  * @returns Anthropic 消息数组；连续工具结果会合并进同一 user 消息。
  */
-export function toAnthropicMessages(messages: ModelMessage[]): MessageParam[] {
+export function toAnthropicMessages(messages: ModelMessage[], contextHash?: string): MessageParam[] {
   const result: MessageParam[] = []
 
   for (const message of messages) {
@@ -123,7 +132,7 @@ export function toAnthropicMessages(messages: ModelMessage[]): MessageParam[] {
     }
 
     if (message.role === "assistant") {
-      const content = toAssistantContent(message.content)
+      const content = toAssistantContent(message.content, contextHash)
       if (content.length > 0) result.push({ role: "assistant", content })
       continue
     }
@@ -165,6 +174,16 @@ function toAnthropicTools(tools: UnifiedToolDefinition[]): ToolUnion[] {
 }
 
 /**
+ * 记录签名绑定的系统提示和工具定义；不包含凭据，也不修改协议内容。
+ * @param system 实际发送的系统提示。
+ * @param tools 实际发送的工具定义；缺少工具与空数组视为相同。
+ * @returns 用于检测 system/tools 变化的 SHA-256 摘要。
+ */
+function thinkingContextHash(system: MessageCreateParamsStreaming["system"], tools: MessageCreateParamsStreaming["tools"]): string {
+  return createHash("sha256").update(JSON.stringify([system, tools ?? []])).digest("hex")
+}
+
+/**
  * 构建一次 Anthropic Messages 流式请求。
  *
  * `system` 取 `messages[0]`；`tools` 为空时不传该字段（协议不接受空数组）。
@@ -179,18 +198,17 @@ export function buildAnthropicRequest(
   config: ModelConfig,
 ): MessageCreateParamsStreaming {
   const { system, rest } = splitSystemMessage(request)
+  const tools = request.tools.length > 0 ? toAnthropicTools(request.tools) : undefined
 
   const params: MessageCreateParamsStreaming = {
     model: request.model.name,
     max_tokens: config.maxOutputTokens,
     system,
-    messages: toAnthropicMessages(rest),
+    messages: toAnthropicMessages(rest, thinkingContextHash(system, tools)),
     stream: true,
   }
 
-  if (request.tools.length > 0) {
-    params.tools = toAnthropicTools(request.tools)
-  }
+  if (tools !== undefined) params.tools = tools
   if (request.toolChoice === "none") params.tool_choice = { type: "none" }
 
   Object.assign(params, reasoningRequestFragment(request, config))
@@ -210,6 +228,10 @@ interface PendingBlock {
   blockType: BlockType
   /** 已收到的文本或 thinking 内容。 */
   text: string
+  /** 当前 thinking 块累积的完整不透明签名。 */
+  signature?: string
+  /** 遮蔽思考块的完整不透明数据，不作为可见文本。 */
+  redactedData?: string
   /** Anthropic `tool_use.id`。非工具块为空字符串。 */
   toolCallId: string
   /** Anthropic 工具名称。非工具块为空字符串。 */
@@ -320,11 +342,13 @@ function resolveCompletion(
  * 流在 `message_stop` 之前结束（连接被截断等）时抛错，不产出 `stream_end`。
  *
  * @param events Anthropic SDK 产生的原始流事件。
+ * @param contextHash 发起请求的 system/tools 摘要；真实 Adapter 用它标记已签名块。
  * @returns 按统一块协议产生的异步事件流。
  * @throws `Error` 当原始流在 `message_stop` 前结束时抛出。
  */
 export async function* mapAnthropicStream(
   events: AsyncIterable<RawMessageStreamEvent>,
+  contextHash?: string,
 ): AsyncGenerator<ModelStreamEvent> {
   /** key 是协议侧的 content block index；不在表里表示该 index 已被忽略。 */
   const blocks = new Map<number, PendingBlock>()
@@ -383,7 +407,12 @@ export async function* mapAnthropicStream(
     return {
       type: "block_end",
       index: block.index,
-      block: { type: block.blockType, text: block.text },
+      block: block.blockType === "thinking"
+        ? { type: "thinking", text: block.text,
+          ...(block.signature ? { signature: block.signature } : {}),
+          ...((block.signature || block.redactedData !== undefined) && contextHash !== undefined ? { anthropicContextHash: contextHash } : {}),
+          ...(block.redactedData === undefined ? {} : { redactedData: block.redactedData }) }
+        : { type: "text", text: block.text },
     }
   }
 
@@ -419,6 +448,7 @@ export async function* mapAnthropicStream(
           const blockType: BlockType = content.type
           const text = content.type === "text" ? content.text : content.thinking
           const block = openBlock(event.index, blockType)
+          if (content.type === "thinking" && content.signature) block.signature = content.signature
           yield { type: "block_start", index: block.index, blockType }
           /** 起始事件里已经带文本时补一条增量，避免增量之和与 block_end 的内容不一致。 */
           if (text.length > 0) {
@@ -429,6 +459,13 @@ export async function* mapAnthropicStream(
               delta: { type: blockType, text },
             }
           }
+          break
+        }
+
+        if (content.type === "redacted_thinking") {
+          const block = openBlock(event.index, "thinking")
+          block.redactedData = content.data
+          yield { type: "block_start", index: block.index, blockType: "thinking" }
           break
         }
 
@@ -449,7 +486,7 @@ export async function* mapAnthropicStream(
           break
         }
 
-        /** 其余块类型（redacted_thinking / server_tool_use / 各类 server tool result 等） */
+        /** 其余块类型（server_tool_use / 各类 server tool result 等） */
         /** 没有统一表达，忽略该 index 的后续增量与结束事件。 */
         break
       }
@@ -459,6 +496,10 @@ export async function* mapAnthropicStream(
         if (block === undefined) break
 
         const delta = event.delta
+        if (delta.type === "signature_delta" && block.blockType === "thinking" && block.redactedData === undefined) {
+          block.signature = (block.signature ?? "") + delta.signature
+          break
+        }
         if (delta.type === "text_delta" && block.blockType === "text") {
           block.text += delta.text
           yield { type: "block_delta", index: block.index, delta: { type: "text", text: delta.text } }
@@ -489,7 +530,7 @@ export async function* mapAnthropicStream(
           break
         }
 
-        /** signature_delta / citations_delta：统一格式没有对应表达，忽略。 */
+        /** citations_delta：统一格式没有对应表达，忽略。 */
         break
       }
 
@@ -577,7 +618,7 @@ export function createAnthropicAdapter(
     const params = buildAnthropicRequest(request, config)
 
     yield* runModelStream((attemptSignal) => {
-      return mapAnthropicStream(requestAnthropicStream(client, params, attemptSignal))
+      return mapAnthropicStream(requestAnthropicStream(client, params, attemptSignal), thinkingContextHash(params.system, params.tools))
     }, signal)
   }
 

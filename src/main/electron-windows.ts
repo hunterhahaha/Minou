@@ -1,10 +1,13 @@
 /** Electron `BrowserWindow` 到 NiCode 窗口生命周期端口的真实适配。 */
 
 import { isAbsolute } from "node:path"
+import { pathToFileURL } from "node:url"
 
 import type {
   BrowserWindow,
   BrowserWindowConstructorOptions,
+  IpcMain,
+  IpcMainInvokeEvent,
 } from "electron"
 
 import type { MainWindowLifecyclePort } from "./index.ts"
@@ -33,11 +36,41 @@ export interface ElectronWindowOptions {
   rendererHtmlPath: string
   /** 开发时 Vite Renderer 地址；未提供时从构建后的 HTML 加载。 */
   rendererUrl?: string
+  /** 在系统浏览器中打开已检查的 HTTP(S) 外链；不复用带 preload 的主窗口。 */
+  openExternal?(url: string): void
   /**
    * Renderer 页面后台装载失败时的进程级错误出口。
    * @param error 后台页面加载时捕获的原始错误。
    */
   onWindowLoadFailure(error: unknown): void
+}
+
+/** 桌面窗口生命周期及其 IPC 来源检查。 */
+export interface ElectronWindowManager extends MainWindowLifecyclePort {
+  /**
+   * 检查存活主窗口、主 frame 和当前文档地址，不信任仅有同源地址的其它窗口。
+   * @param event Electron IPC 请求身份。
+   * @returns 请求来自本管理器拥有的 NiCode 文档时为 true。
+   */
+  isTrustedSender(event: IpcMainInvokeEvent): boolean
+}
+
+/**
+ * 为所有桌面 IPC 通道统一检查来源；参数校验仍由各通道处理。
+ * @param ipcMain Electron 原始注册端口。
+ * @param trusted 检查请求是否来自可信主文档。
+ * @returns 具有相同注册契约的受保护端口。
+ */
+export function createTrustedIpcMain(
+  ipcMain: Pick<IpcMain, "handle">,
+  trusted: (event: IpcMainInvokeEvent) => boolean,
+): Pick<IpcMain, "handle"> {
+  return { handle(channel, listener): void {
+    ipcMain.handle(channel, (event, ...args) => {
+      if (!trusted(event)) throw new Error("IPC 请求来源无效")
+      return listener(event, ...args)
+    })
+  } }
 }
 
 /**
@@ -54,7 +87,7 @@ export interface ElectronWindowOptions {
 export function createElectronWindowManager(
   BrowserWindowClass: BrowserWindowConstructorPort,
   options: ElectronWindowOptions,
-): MainWindowLifecyclePort {
+): ElectronWindowManager {
   if (!isAbsolute(options.preloadPath)) {
     throw new Error(`Electron preload 路径必须是绝对路径：${options.preloadPath}`)
   }
@@ -62,8 +95,32 @@ export function createElectronWindowManager(
     throw new Error(`Electron Renderer 路径必须是绝对路径：${options.rendererHtmlPath}`)
   }
 
+  const rendererAddress = new URL(options.rendererUrl ?? pathToFileURL(options.rendererHtmlPath).href)
+  rendererAddress.hash = ""
+  /** @param value 文档或导航地址。 @returns 除 hash 路由外与入口完全一致时为 true。 */
+  const isRendererAddress = (value: string): boolean => {
+    try {
+      const address = new URL(value)
+      address.hash = ""
+      return address.href === rendererAddress.href
+    } catch { return false }
+  }
+  /** @param value 已被主窗口拒绝的目标。仅 HTTP(S) 外链交给系统浏览器。 */
+  const openWebLink = (value: string): void => {
+    const address = URL.parse(value)
+    if (address?.protocol === "https:" || address?.protocol === "http:") options.openExternal?.(address.href)
+  }
   const retainedWindows = new Set<BrowserWindow>()
   return {
+    isTrustedSender(event): boolean {
+      for (const window of retainedWindows) {
+        const contents = window.webContents
+        if (window.isDestroyed() || contents.isDestroyed() || event.sender !== contents) continue
+        return event.senderFrame !== null && event.senderFrame === contents.mainFrame
+          && isRendererAddress(event.senderFrame.url) && isRendererAddress(contents.getURL())
+      }
+      return false
+    },
     /**
      * 向存活主窗口发送当前对话更新，窗口发送失败交给宿主处理。
      *
@@ -74,6 +131,7 @@ export function createElectronWindowManager(
       const failures: unknown[] = []
       for (const window of retainedWindows) {
         if (window.isDestroyed() || window.webContents.isDestroyed()) continue
+        if (!isRendererAddress(window.webContents.getURL())) continue
         try { window.webContents.send(SESSION_IPC_CHANNELS.update, update) }
         catch (error) { failures.push(error) }
       }
@@ -102,6 +160,19 @@ export function createElectronWindowManager(
         },
       })
       retainedWindows.add(window)
+      window.webContents.on("will-navigate", (event, url) => {
+        const target = event.url ?? url
+        if (isRendererAddress(target)) return
+        event.preventDefault()
+        openWebLink(target)
+      })
+      window.webContents.on("will-redirect", (event, url) => {
+        if (!isRendererAddress(event.url ?? url)) event.preventDefault()
+      })
+      window.webContents.setWindowOpenHandler(({ url }) => {
+        openWebLink(url)
+        return { action: "deny" }
+      })
       options.browserTags?.register(window)
       /** 同步系统触发的最大化/还原；尺寸和拖动仍由 Electron 管理。 */
       const sendWindowState = (): void => {

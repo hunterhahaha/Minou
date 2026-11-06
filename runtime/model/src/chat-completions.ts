@@ -53,7 +53,7 @@ type AssistantToolCalls = NonNullable<ChatCompletionAssistantMessageParam["tool_
  * content 为空且没有 tool_call 的 assistant 消息、以及空文本消息都不发送。
  *
  * @param messages 除首个 System Message 外的统一会话消息。
- * @param replayReasoning GLM 请求使用 reasoning_content 回传历史思考；默认不发送厂商扩展。
+ * @param replayReasoning GLM / DeepSeek 请求使用 reasoning_content 回传历史思考；默认不发送厂商扩展。
  * @returns Chat Completions 消息数组。
  */
 export function toChatCompletionsMessages(messages: ModelMessage[], replayReasoning = false): ChatCompletionMessageParam[] {
@@ -178,7 +178,7 @@ export function buildChatCompletionsRequest(
 
   const params: ChatCompletionCreateParamsStreaming = {
     model: request.model.name,
-    messages: [{ role: "system", content: system }, ...toChatCompletionsMessages(rest, /^glm-/i.test(config.name))],
+    messages: [{ role: "system", content: system }, ...toChatCompletionsMessages(rest, /^(glm-|deepseek-)/i.test(config.name))],
     stream: true,
     stream_options: { include_usage: true },
   }
