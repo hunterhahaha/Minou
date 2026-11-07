@@ -143,25 +143,32 @@ async function testRejectsInvalidBindingsWithoutSecrets(): Promise<void> {
 }
 
 /**
- * 验证原生能力由协议、端点地址和目录模型决定。
+ * 验证原生能力由协议和实际模型名前缀决定。
  * @returns 匹配和回退均通过。
  */
 async function testNativeHistoryPolicy(): Promise<void> {
   await withPaths(async (paths) => {
     const database = paths.providerDatabasePath
-    const model: ModelRef = { ...MODEL, name: "claude-opus-5-5", protocol: "anthropic_messages" }
+    const model: ModelRef = { ...MODEL, name: "claude-proxy-alias", protocol: "anthropic_messages" }
     const provider = { id: model.providerId, protocol: model.protocol, type: "custom" as const, name: "Editable name" }
     saveProvider(database, { ...provider, baseURL: "https://API.ANTHROPIC.COM:443/" })
     saveModel(database, { ...model, supportsReasoning: false, contextWindow: 1000000, maxOutputTokens: 4096 })
     setProviderApiKey(database, model.providerId, "fixture-key")
-    assert.deepEqual((await resolveTurnModelAdapterSpecification(paths, model)).clientOptions.nativeHistory, {
+    const expected = {
       name: "anthropic", protocol: "anthropic_messages", inlineToolChanges: true,
-    })
-    saveProvider(database, { ...provider, name: "Anthropic", baseURL: "https://proxy.example.com" })
-    assert.equal((await resolveTurnModelAdapterSpecification(paths, model)).clientOptions.nativeHistory, undefined)
-    saveProvider(database, { ...provider, baseURL: "https://api.anthropic.com" })
-    updateModel(database, { providerId: model.providerId, modelId: model.modelId }, { name: "custom-model" })
-    assert.equal((await resolveTurnModelAdapterSpecification(paths, model)).clientOptions.nativeHistory, undefined)
+    }
+    for (const baseURL of ["https://api.anthropic.com", "https://proxy.example.com", undefined]) {
+      saveProvider(database, { ...provider, baseURL })
+      const { clientOptions } = await resolveTurnModelAdapterSpecification(paths, model)
+      assert.deepEqual(clientOptions.nativeHistory, expected)
+      assert.equal(clientOptions.baseURL, baseURL)
+    }
+    const identity = { providerId: model.providerId, modelId: model.modelId }
+    updateModel(database, identity, { name: "proxy-claude" })
+    assert.equal((await resolveTurnModelAdapterSpecification(paths, { ...model, name: "proxy-claude" })).clientOptions.nativeHistory, undefined)
+    updateModel(database, identity, { name: model.name })
+    saveProvider(database, { ...provider, protocol: "chat_completions" })
+    assert.equal((await resolveTurnModelAdapterSpecification(paths, { ...model, protocol: "chat_completions" })).clientOptions.nativeHistory, undefined)
   })
 }
 

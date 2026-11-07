@@ -31,8 +31,13 @@ export interface CompatibleProviderDefinition {
     protocol: Protocol
     /** 协议客户端的服务地址。 */
     url: string
-    /** 端点上支持原生块回放的模型能力。 */
-    nativeHistory?: NativeHistoryPolicy
+    /** 在此协议下按模型名前缀启用的原生回放规则。 */
+    nativeHistory?: {
+        /** 匹配模型实际请求名称的前缀。 */
+        modelNamePrefix: string
+        /** 匹配后交给 Adapter 的回放能力。 */
+        policy: NativeHistoryPolicy
+    }
     /** 按创建顺序保存的完整模型规格。 */
     models: Array<{
         name: string

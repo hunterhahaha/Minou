@@ -216,6 +216,7 @@ async function testNativeReplay(): Promise<void> {
     await send()
     const [initial, replayed] = provider.requests
     assert.deepEqual(initial.body.tools, replayed.body.tools)
+    assert.deepEqual(replayed.body.thinking, { type: "adaptive", display: "summarized" })
     assert.equal(replayed.headers["anthropic-beta"], "inline-tools-2026-09-15")
     const messages = replayed.body.messages as Array<{ role: string; content: Array<Record<string, unknown>> }>
     assert.deepEqual(messages.map(({ role }) => role), ["user", "assistant", "user", "system"])
@@ -277,6 +278,8 @@ async function main(): Promise<void> {
     assert.equal(params.tool_choice, undefined)
 
     assert.equal(params.model, "claude-test")
+    assert.deepEqual(params.thinking, { type: "adaptive", display: "summarized" })
+    assert.deepEqual(compact.thinking, params.thinking)
     assert.equal(params.max_tokens, MODEL.maxOutputTokens)
     assert.deepEqual(params.output_config, { effort: "medium" })
     assert.equal(params.stream, true)
@@ -317,6 +320,15 @@ async function main(): Promise<void> {
         },
       },
     ])
+  }
+
+  /** 其他 Anthropic Messages 模型不套用 Claude 的思考配置。 */
+  {
+    const request = agentRequest()
+    request.model.name = "provider-claude-test"
+    const params = buildAnthropicRequest(request, { ...MODEL, name: request.model.name })
+    assert.equal(Object.hasOwn(params, "thinking"), false)
+    assert.deepEqual(params.output_config, { effort: "medium" })
   }
 
   /** 空 tools 不发送该字段（协议不接受空数组）。 */

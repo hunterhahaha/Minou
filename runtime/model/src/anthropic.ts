@@ -60,6 +60,14 @@ type AnthropicRequest = Omit<MessageCreateParamsStreaming, "messages"> & {
 }
 const INLINE_TOOLS_BETA = "inline-tools-2026-09-15"
 
+/** Anthropic Messages 按模型名称前缀选用首条匹配的思考配置。 */
+const MODEL_THINKING_RULES: ReadonlyArray<{
+  prefix: string
+  thinking: NonNullable<MessageCreateParamsStreaming["thinking"]>
+}> = [
+  { prefix: "claude", thinking: { type: "adaptive", display: "summarized" } },
+]
+
 
 /** 请求方向：统一上下文 → Anthropic Messages */
 
@@ -330,6 +338,9 @@ export function buildAnthropicRequest(
   if (request.toolChoice === "none") params.tool_choice = { type: "none" }
 
   Object.assign(params, reasoningRequestFragment(request, config))
+
+  const thinkingRule = MODEL_THINKING_RULES.find(({ prefix }) => request.model.name.startsWith(prefix))
+  if (thinkingRule !== undefined) params.thinking = { ...thinkingRule.thinking }
 
   return params
 }

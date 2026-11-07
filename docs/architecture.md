@@ -105,7 +105,7 @@ min(contextWindow × 0.8, contextWindow - maxOutputTokens - (10000 + maxOutputTo
 
 每个正常 Step 从宿主取得已提交的有序历史。最近成功的 `summary/end` 是历史的首项，其 MCP 快照作为工具基线。Builder 结合基础工具、基线和后续事件构造消息与工具表。桌面和 CLI 共用这一请求形状，CLI 以空基线和 Run 内载入状态启动。标题和独立 Summary 继续传显式消息。
 
-Adapter 按兼容目录的协议、服务 URL 和模型匹配原生回放能力。当前规则覆盖目录中的官方 Anthropic 模型，来源为 `anthropic` / `anthropic_messages`。完整且匹配的 Assistant 消息逐块回放，其他消息走通用转换。首次回放带签名或加密数据的思考块时固定顶层工具表，后续增量按序作为内联变更放在整组工具结果后。官方 Anthropic 的独立 Summary 将通用消息作为文本材料。历史的系统提示和消息前缀仍需满足服务端的签名校验。
+Adapter 按协议和模型名前缀匹配原生回放能力。使用 `anthropic_messages` 且模型名以 `claude` 开头时启用，适用于官方和代理地址，回放来源为 `anthropic` / `anthropic_messages`。完整且匹配的 Assistant 消息逐块回放，其他消息走通用转换。首次回放带签名或加密数据的思考块时固定顶层工具表，后续增量按序作为内联变更放在整组工具结果后。启用回放能力的 Adapter 将独立 Summary 的通用消息作为文本材料。历史的系统提示和消息前缀仍需满足服务端的签名校验。
 
 ## 搜索服务配置管理
 

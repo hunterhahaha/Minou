@@ -54,11 +54,10 @@ export async function resolveTurnModelAdapterSpecification(
   }
 
   const baseURL = snapshot.provider.baseURL
-  const nativeHistory = baseURL === undefined ? undefined : Object.values(COMPATIBLE_PROVIDERS).flat().find((definition) =>
-    definition.nativeHistory !== undefined && definition.protocol === model.protocol &&
-    normalizeServiceURL(definition.url) === normalizeServiceURL(baseURL) &&
-    definition.models.some(({ name }) => name === snapshot.model.name),
-  )?.nativeHistory
+  const nativeHistory = Object.values(COMPATIBLE_PROVIDERS).flat().find((definition) =>
+    definition.protocol === snapshot.model.protocol && definition.nativeHistory !== undefined &&
+    snapshot.model.name.startsWith(definition.nativeHistory.modelNamePrefix),
+  )?.nativeHistory?.policy
   return {
     modelConfig: snapshot.model,
     clientOptions: {
@@ -108,19 +107,4 @@ export async function createTurnModelAdapter(
  */
 function formatModelRef(model: ModelRef): string {
   return `ModelRef(${model.providerId}/${model.protocol}/${model.modelId}/${model.name})`
-}
-
-/**
- * 规范化兼容规则比较用的服务 URL，保留服务路径、凭据、查询与片段。
- * @param value 待比较的服务地址。
- * @returns 规范化地址，无效地址返回原值。
- */
-function normalizeServiceURL(value: string): string {
-  try {
-    const url = new URL(value)
-    url.pathname = url.pathname.replace(/\/+$/, "") || "/"
-    return url.href
-  } catch {
-    return value
-  }
 }

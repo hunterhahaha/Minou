@@ -7,7 +7,10 @@ export const ANTHROPIC_PROVIDERS: readonly CompatibleProviderDefinition[] = [
     {
         protocol: "anthropic_messages",
         url: "https://api.anthropic.com",
-        nativeHistory: { name: "anthropic", protocol: "anthropic_messages", inlineToolChanges: true },
+        nativeHistory: {
+            modelNamePrefix: "claude",
+            policy: { name: "anthropic", protocol: "anthropic_messages", inlineToolChanges: true },
+        },
         models: ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"].map((name) => ({
             name,
             contextWindow: 1000000,
