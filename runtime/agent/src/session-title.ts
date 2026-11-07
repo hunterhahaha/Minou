@@ -78,6 +78,7 @@ async function readTitle(adapter: ModelAdapter, model: ModelRef, input: string, 
     model,
     context: { messages: [{ role: "system", content: TITLE_PROMPT }, { role: "user", content: input }] },
     tools: [],
+    toolChoice: "none",
   }, signal, { timeoutMs: TITLE_TIMEOUT_MS })) {
     if (signal.aborted || finished) return undefined
     if (event.type === "block_start") {
@@ -92,8 +93,9 @@ async function readTitle(adapter: ModelAdapter, model: ModelRef, input: string, 
     }
   }
   if (!finished || signal.aborted) return undefined
-  const output = [...texts].sort(([a], [b]) => a - b).map(([, text]) => text).join("")
-  const parsed: unknown = JSON.parse(output)
+  const output = [...texts].sort(([a], [b]) => a - b).map(([, text]) => text).join("").trim()
+  const fenced = /^```(?:json)?[ \t]*\r?\n([\s\S]*?)\r?\n```$/iu.exec(output)
+  const parsed: unknown = JSON.parse(fenced?.[1] ?? output)
   if (typeof parsed !== "object" || parsed === null || !("title" in parsed) || typeof parsed.title !== "string") return undefined
   const title = singleLine(parsed.title)
   if (title === "") return undefined
