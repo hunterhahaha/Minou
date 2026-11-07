@@ -120,6 +120,9 @@ $testProcess.ExitCode
 - `test/renderer/electron-web-search-settings.test.cjs`：真实搜索配置增改删、唯一启停、默认数量和上限、失败刷新恢复、忙碌保护、主题与缩放；全部使用临时数据库，不请求 Tavily。
 - `test/renderer/electron-workspace-design.test.cjs`：工作区、路由、窗口和布局交互。
 - `test/main/electron-process-tools.test.cjs`：Electron 环境实际加载和使用进程工具。
+- `test/main/electron-ipc-security.test.cjs`：使用本地 HTTP 和临时配置验证主窗口外链与弹窗拦截，以及外部文档无法调用 MCP 管理 IPC。
+
+`runtime/session/test/event-log.test.ts` 按解析量验证长历史的单条追加，并覆盖尾部损坏、全量校验和 MCP 批次回滚。`runtime/tools/test/file-tools.test.ts` 覆盖长行按列续读、Unicode 代理对、参数错误及原有行数和字节预算。
 
 测试输出与截图主要写入被忽略的 `dist/`。是否通过应依据对应测试退出码和断言；本文不把存在测试文件等同于当前环境已通过。
 

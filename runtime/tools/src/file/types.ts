@@ -64,6 +64,8 @@ export interface ReadInput {
   path: string
   /** 从 1 开始的起始行号。 */
   offset?: number
+  /** 起始行中从 1 开始的 UTF-16 列位置；续读长行时使用结果给出的 nextColumn。 */
+  column?: number
   /** 最多返回的行数，允许 1–2000。 */
   limit?: number
 }
@@ -71,6 +73,8 @@ export interface ReadInput {
 export interface ReadLine {
   /** 从 1 开始的行号。 */
   number: number
+  /** 本片段在该行的起始列；省略时从第 1 列开始。 */
+  column?: number
   /** 最多 2000 字符的文本。 */
   text: string
 }
@@ -84,8 +88,10 @@ export interface ReadResult {
   lines: ReadLine[]
   /** 达到输出限制且仍有内容时为 true。 */
   truncated: boolean
-  /** 截断后可继续读取的下一行号。 */
+  /** 截断后继续读取的行号；长行续读时仍为当前行。 */
   nextOffset?: number
+  /** 续读同一长行时的列位置；省略时从 nextOffset 的第 1 列开始。 */
+  nextColumn?: number
 }
 /** write 的完整文件内容。 */
 export interface WriteInput {

@@ -7,7 +7,7 @@
 
 import { join } from "node:path"
 
-import { app, BrowserWindow, dialog, ipcMain } from "electron"
+import { app, BrowserWindow, dialog, ipcMain, shell } from "electron"
 
 import { initNetworkDispatcher } from "../../runtime/network/src/dispatcher.ts"
 import { MemoryManager } from "../../runtime/memory/src/index.ts"
@@ -24,7 +24,7 @@ import {
 import { initializeConfigFilesSnapshot } from "./config-files.ts"
 import { TagManager } from "./tag-manager.ts"
 import { estimateLocalTokens } from "./token-estimator.ts"
-import { createElectronWindowManager } from "./electron-windows.ts"
+import { createElectronWindowManager, createTrustedIpcMain, type ElectronWindowManager } from "./electron-windows.ts"
 import { startElectronApp } from "./index.ts"
 import { SessionRuntimeGlobal } from "./session-runtime-global.ts"
 import { loadFileAccessState } from "./file-access.ts"
@@ -57,20 +57,25 @@ async function main(): Promise<void> {
   for (const state of sessionRuntimeGlobal.mcpManager.getConnectionStates()) {
     if (state.error) console.error(`MCP Server ${state.name} 初始化失败。`, state.error)
   }
-  registerWindowIpcHandlers(ipcMain, BrowserWindow)
-  const windows = createElectronWindowManager(BrowserWindow, {
-    browserTags: new TagManager(ipcMain),
+  let windows: ElectronWindowManager | undefined
+  const trustedIpcMain = createTrustedIpcMain(ipcMain, (event) => windows?.isTrustedSender(event) ?? false)
+  windows = createElectronWindowManager(BrowserWindow, {
+    browserTags: new TagManager(trustedIpcMain),
     preloadPath: join(__dirname, "../preload/index.js"),
     rendererHtmlPath: join(__dirname, "../renderer/index.html"),
     rendererUrl: process.env.NICODE_RENDERER_URL,
+    openExternal: (url) => {
+      void shell.openExternal(url).catch((error: unknown) => console.error("无法打开外部链接。", error))
+    },
     onWindowLoadFailure: (error) => {
       console.error("NiCode 主窗口页面装载失败。", error)
     },
   })
+  registerWindowIpcHandlers(trustedIpcMain, BrowserWindow)
 
   await startElectronApp({
     app,
-    ipcMain,
+    ipcMain: trustedIpcMain,
     dialog,
     windows,
     configPaths: paths,

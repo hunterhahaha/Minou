@@ -6,7 +6,7 @@ import { DatabaseSync } from "node:sqlite"
 
 import { createFileSessionEventLog, initializeSessionEventDatabase } from "../src/event-log.ts"
 import type { FileSessionEventLogOptions } from "../src/event-log.ts"
-import type { SessionEvent, TurnStartEventInput, UserMessageEventInput } from "../src/events.ts"
+import type { McpToolChangeInput, SessionEvent, TurnStartEventInput, UserMessageEventInput } from "../src/events.ts"
 
 const CREATED_AT = "2026-09-19T00:00:00.000Z"
 const FIRST_PROJECT_ID = "00000000-0000-4000-8000-000000000001"
@@ -224,6 +224,65 @@ async function testSequenceFailures(root: string): Promise<void> {
 }
 
 /**
+ * 验证单条追加只检查尾部，批量与全量读取仍报告旧记录损坏。
+ * @param root 当前测试使用的隔离临时目录。
+ * @returns 各写入和读取路径的校验边界断言完成。
+ * @throws Error 断言或临时存储操作失败时传播。
+ */
+async function testAppendValidationScope(root: string): Promise<void> {
+  const options = await fixture(root, "append-validation-scope")
+  const log = createFileSessionEventLog(options)
+  await log.appendTurnStartAndUserMessage(turnBatch(1))
+  const db = new DatabaseSync(options.databasePath)
+  try {
+    const corrupt = db.prepare(`UPDATE session_events SET event_json = 'not-json'
+      WHERE project_group_id = ? AND session_id = ? AND seq = ?`)
+    corrupt.run(options.projectGroupId, options.sessionId, 1)
+    const end = await log.appendEvent({ type: "turn/end", turn: 1, reason: "completed" })
+    assert.equal(end.seq, 3)
+
+    const remove: McpToolChangeInput = {
+      type: "mcp/tools_removed", turn: 1, step: 1, toolCallEventId: "call-1", toolNames: ["old-tool"],
+    }
+    await assert.rejects(log.appendMcpToolChanges([remove]), /第 1 条不是有效 JSON/)
+    await assert.rejects(log.appendTurnStartAndUserMessage(turnBatch(2)), /第 1 条不是有效 JSON/)
+    await assert.rejects(log.readEvents(), /第 1 条不是有效 JSON/)
+
+    corrupt.run(options.projectGroupId, options.sessionId, end.seq)
+    await assert.rejects(log.appendEvent({ type: "turn/end", turn: 1, reason: "error" }), /末尾事件不是有效 JSON/)
+  } finally {
+    db.close()
+  }
+}
+
+/**
+ * 验证 MCP 增量保留提交顺序，后一条写入失败时整批回滚。
+ * @param root 当前测试使用的隔离临时目录。
+ * @returns MCP 批次的顺序、原子性和回滚后续写断言完成。
+ * @throws Error 断言或临时存储操作失败时传播。
+ */
+async function testMcpBatch(root: string): Promise<void> {
+  const options = await fixture(root, "mcp-batch")
+  const ids = ["turn", "user", "remove-rolled-back", "user", "remove", "add"]
+  const log = createFileSessionEventLog({ ...options, createEventId: () => ids.shift()! })
+  const first = await log.appendTurnStartAndUserMessage(turnBatch(1))
+  const source = { turn: 1, step: 1, toolCallEventId: "call-1" }
+  const changes: McpToolChangeInput[] = [
+    { ...source, type: "mcp/tools_removed", toolNames: ["old-tool"] },
+    { ...source, type: "mcp/tools_added", tools: [{
+      entry: { name: "new-tool", serverId: "server", originalToolName: "tool", estimatedTokens: 1, lastCalledAt: 0 },
+      definition: { name: "new-tool", inputSchema: { type: "object" } },
+    }] },
+  ]
+  await assert.rejects(log.appendMcpToolChanges(changes), /无法追加/)
+  assert.deepEqual(await log.readEvents(), first)
+
+  const committed = await log.appendMcpToolChanges(changes)
+  assert.deepEqual(committed.map((event) => [event.seq, event.type]), [[3, "mcp/tools_removed"], [4, "mcp/tools_added"]])
+  assert.deepEqual(await log.readEvents(), [...first, ...committed])
+}
+
+/**
  * 依次执行当前文件的持久化与恢复场景，并按现有清理流程释放临时资源。
  * @returns 当前场景的断言及异步操作完成后解析。
  * @throws Error 断言或临时存储操作失败时传播，由测试入口报告失败。
@@ -238,10 +297,47 @@ async function main(): Promise<void> {
     await testReadFailures(root)
     await testAppendFailures(root)
     await testSequenceFailures(root)
+    await testAppendValidationScope(root)
+    await testMcpBatch(root)
+    await testAppendDoesNotReparseHistory(root)
   } finally {
     await rm(root, { recursive: true, force: true })
   }
   console.log("event-log.test.ts: Session Event Log SQLite 读写断言通过")
+}
+
+/**
+ * 验证流式追加读取量不随历史事件总量增长，且完整读取仍保留全部事件。
+ * @param root 当前测试使用的隔离临时目录。
+ * @returns 追加成本与完整历史读取断言通过。
+ * @throws Error 断言或临时存储操作失败时传播。
+ */
+async function testAppendDoesNotReparseHistory(root: string): Promise<void> {
+  const options = await fixture(root, "long-stream")
+  const log = createFileSessionEventLog(options)
+  await log.appendTurnStartAndUserMessage(turnBatch(1))
+  const db = new DatabaseSync(options.databasePath)
+  try {
+    const insert = db.prepare("INSERT INTO session_events VALUES (?, ?, ?, ?, ?, ?, ?)")
+    db.exec("BEGIN")
+    for (let seq = 3; seq <= 1002; seq++) {
+      const value = { sessionId: options.sessionId, seq, eventId: `delta-${seq}`, type: "assistant/block_delta", createdAt: CREATED_AT,
+        turn: 1, step: 1, blockId: "b", delta: { type: "text", text: "x".repeat(200) } }
+      insert.run(options.projectGroupId, options.sessionId, seq, value.eventId, value.type, CREATED_AT, JSON.stringify(value))
+    }
+    db.exec("COMMIT")
+  } finally { db.close() }
+  let parsedBytes = 0
+  const parse = JSON.parse
+  JSON.parse = (text, reviver) => { parsedBytes += Buffer.byteLength(text); return parse(text, reviver) }
+  try {
+    for (let index = 0; index < 10; index++) {
+      const event = await log.appendEvent({ type: "assistant/block_delta", turn: 1, step: 1, blockId: "b", delta: { type: "text", text: "next" } })
+      assert.equal(event.seq, 1003 + index)
+    }
+  } finally { JSON.parse = parse }
+  assert.ok(parsedBytes < 10000, `十次追加不应重新解析整个历史，实际解析 ${parsedBytes} 字节`)
+  assert.equal((await log.readEvents()).length, 1012)
 }
 
 main().catch((error: unknown) => {

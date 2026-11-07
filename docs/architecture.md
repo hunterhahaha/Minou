@@ -44,6 +44,8 @@ Renderer 负责页面、路由与展示缓存，不直接打开数据库、读�
 
 [electron-windows.ts](../src/main/electron-windows.ts) 加载编译 preload 和 Vite 页面；开发时由 `NICODE_RENDERER_URL` 改为加载 Vite 地址。窗口无系统边框。页面关闭操作使用最小化接口；最小化、最大化和状态同步见 [window-ipc.ts](../src/main/window-ipc.ts) 与 [window-controls.tsx](../src/renderer/window-controls.tsx)。
 
+桌面入口通过 `createTrustedIpcMain` 注册管理接口。每次调用都要求发送者是存活主窗口的主 frame，且 frame 和 WebContents 的当前地址均匹配入口文档，允许 hash 路由。主窗口拒绝导航到其他文档和外部重定向，并将直接打开的 HTTP(S) 外链和弹窗交给系统浏览器。会话更新仅广播给仍在入口文档的主窗口。内置浏览器继续使用自己的网页视图管理流程。
+
 ## 一次桌面对话调用
 
 1. [session-page.tsx](../src/renderer/session-page.tsx) 经 preload 请求新建或继续会话；运行中发送的消息请求入队。
@@ -85,6 +87,8 @@ Renderer 负责页面、路由与展示缓存，不直接打开数据库、读�
 
 文件权限由 [security/index.ts](../runtime/tools/src/security/index.ts) 和规范路径判断实现：Full Access 直接允许；Sandbox Full Access 对允许根内访问直接允许；Sandbox Read Only 对根内读取直接允许，其他文件操作需要审批。审批事件与等待结果由 SessionRuntime 持有。Shell、PTY、MCP 使用各自工具实现中的检查；不能把文件规则推定为所有工具共有的系统级限制。
 
+`read` 每行最多返回 2,000 个 UTF-16 单元，续读边界保留 Unicode 代理对。遇到超长行时结束当前页，并给出同一行的 `nextOffset` 和 `nextColumn`。模型可按提示传入 `offset` 和 `column` 继续读取。`column` 从 1 开始，仅作用于起始行，越过行尾或落在代理对内部会报错。因行数或 50 KiB 文本预算停止时，可从下一条未读取行继续。
+
 ## 固定上下文、外部能力与恢复
 
 - [project-context.ts](../src/main/project-context.ts) 从数据库读取 Project，选择首个关联目录作为 cwd；没有关联目录时使用内置 workspace。当前 cwd 下的 AGENTS.md 和启用 Skill 组成基线，允许根包括内置 workspace 与关联目录。
@@ -92,6 +96,8 @@ Renderer 负责页面、路由与展示缓存，不直接打开数据库、读�
 - MCPManager 共享连接和完整 Catalog，各 Session 单独记录载入身份。`tool_search` 搜索并载入，或经 `mcp_list_tools` / `mcp_load_tools` 载入。预算为模型窗口的 5%，按最近调用记录淘汰；单批自身超预算时仍整批载入。实际载入和淘汰产生有序增量。同一次载入先提交移除、再提交带定义快照的新增，事件提交后同步 Session Meta。模型请求使用历史定义，真正执行仍由当前 Catalog 校验工具和参数。
 - Memory 不默认把正文注入系统消息；模型通过三件记忆工具按需访问当前 Project/default 的共享 Markdown。
 - Event Log 是已执行事实的恢复依据，SessionState 据此修复 Meta、`contextstate.json` 与 `agents_md.snapshot`，不能把页面缓存作为持久化事实。
+
+事件日志的 `appendEvent` 在原写入事务中只读取并校验当前会话的尾部事件，再分配下一个序号。MCP 增量批量写入、Turn 首批写入和完整读取仍检查全量历史。尾部之前的记录损坏由下一次全量校验报告。
 
 ## 桌面 Summary
 

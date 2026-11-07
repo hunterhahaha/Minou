@@ -126,12 +126,18 @@ export function createFileSessionEventLog(options: FileSessionEventLogOptions): 
   const now = options.now ?? (() => new Date())
   const createEventId = options.createEventId ?? randomUUID
 
-  /** 在同一事务分配并提交一个批次的序号。 */
-  const append = (inputs: readonly SessionEventInput[]) => runSerializedWrite(queueKey, async () => {
+  /**
+   * 在同一事务分配序号并提交事件。
+   * @param inputs 本次需要原子提交的事件。
+   * @param history 序号分配前校验完整历史或只校验尾部。
+   * @returns 按提交顺序排列的已持久化事件。
+   * @throws Error 日志不可读、序号无效或事务失败时拒绝。
+   */
+  const append = (inputs: readonly SessionEventInput[], history: "all" | "tail" = "all") => runSerializedWrite(queueKey, async () => {
     await requireDirectory(sessionDirectory)
     await requireDatabase(databasePath)
     return withDatabase(databasePath, (db) => transaction(db, () => {
-      const values = readSessionEvents(db, options.projectGroupId, options.sessionId, databasePath)
+      const values = readSessionEvents(db, options.projectGroupId, options.sessionId, databasePath, false, history)
       const seq = nextSequence(values, databasePath, inputs.length)
       const events = materializeEvents(inputs, options.sessionId, seq, now, createEventId, databasePath)
       insertEvents(db, options.projectGroupId, events, databasePath)
@@ -147,7 +153,7 @@ export function createFileSessionEventLog(options: FileSessionEventLogOptions): 
       return withDatabase(databasePath, (db) =>
         readSessionEvents(db, options.projectGroupId, options.sessionId, databasePath))
     },
-    appendEvent: async (input) => (await append([input]))[0],
+    appendEvent: async (input) => (await append([input], "tail"))[0],
     appendMcpToolChanges: (inputs) => inputs.length === 0 ? Promise.resolve([]) : append(inputs),
     appendTurnStartAndUserMessage: (inputs) => runSerializedWrite(queueKey, async () => {
       await requireDirectory(sessionDirectory)
@@ -242,16 +248,18 @@ function transaction<T>(db: DatabaseSync, operation: () => T): T {
  * @param sessionId Session ID。
  * @param path 错误定位用的数据库路径。
  * @param allowMissing 是否允许新 Session 没有日志。
+ * @param history 完整读取，或只读取末尾事件以分配单条追加的序号。
  * @returns 按 seq 排序的事件值。
  * @throws Error 当表、日志或事件内容无效时抛出。
  */
 function readSessionEvents(
-  db: DatabaseSync, projectGroupId: string, sessionId: string, path: string, allowMissing = false,
+  db: DatabaseSync, projectGroupId: string, sessionId: string, path: string,
+  allowMissing = false, history: "all" | "tail" = "all",
 ): unknown[] {
   let rows: Array<Record<string, unknown>>
   try {
     rows = db.prepare(`SELECT seq, event_id, type, created_at, event_json
-      FROM session_events WHERE project_group_id = ? AND session_id = ? ORDER BY seq`)
+      FROM session_events WHERE project_group_id = ? AND session_id = ? ORDER BY seq ${history === "tail" ? "DESC LIMIT 1" : "ASC"}`)
       .all(projectGroupId, sessionId) as Array<Record<string, unknown>>
   } catch (error) {
     throw new Error(`无法读取 Session Event Log：${path}`, { cause: error })
@@ -260,20 +268,21 @@ function readSessionEvents(
     throw new Error(`Session Event Log不存在或无法访问：${path}（${projectGroupId}/${sessionId}）`)
   }
   return rows.map((row, index) => {
+    const position = history === "tail" ? "末尾事件" : `第 ${index + 1} 条`
     if (typeof row.event_json !== "string") {
-      throw new Error(`Session Event Log 第 ${index + 1} 条内容无效：${path}`)
+      throw new Error(`Session Event Log ${position}内容无效：${path}`)
     }
     let value: unknown
     try {
       value = JSON.parse(row.event_json) as unknown
     } catch (error) {
-      throw new Error(`Session Event Log 第 ${index + 1} 条不是有效 JSON：${path}`, { cause: error })
+      throw new Error(`Session Event Log ${position}不是有效 JSON：${path}`, { cause: error })
     }
     if (
       !isRecord(value) || value.seq !== row.seq || value.eventId !== row.event_id
       || value.type !== row.type || value.createdAt !== row.created_at || value.sessionId !== sessionId
     ) {
-      throw new Error(`Session Event Log 第 ${index + 1} 条索引与事件内容不一致：${path}`)
+      throw new Error(`Session Event Log ${position}索引与事件内容不一致：${path}`)
     }
     return value
   })

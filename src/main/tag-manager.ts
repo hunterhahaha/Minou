@@ -40,7 +40,7 @@ export class TagManager {
   /** 注册浏览器命令入口。
    * @param ipc Electron 主进程 IPC
    */
-  constructor(ipc: IpcMain) {
+  constructor(ipc: Pick<IpcMain, "handle">) {
     ipc.handle(BROWSER_COMMAND, (event, command: BrowserCommand) => {
       const host = this.hosts.get(event.sender.id)
       if (!host || !event.senderFrame || event.senderFrame !== event.sender.mainFrame) {
