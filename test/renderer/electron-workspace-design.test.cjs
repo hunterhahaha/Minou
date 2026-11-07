@@ -373,8 +373,9 @@ async function main() {
     assert.equal(sessionId, "design")
     return transcript
   })
-  ipcMain.handle(startup.listProjects, () => projects)
-  ipcMain.handle(startup.listDefaultSessions, () => sessions)
+  let summaryReads = 0
+  ipcMain.handle(startup.listProjects, () => { summaryReads++; return projects })
+  ipcMain.handle(startup.listDefaultSessions, () => { summaryReads++; return sessions })
   ipcMain.handle(startup.listProviders, () => providers)
   ipcMain.handle(provider.listCompatibleProviders, () => [])
   ipcMain.handle(skill.listSkills, (_event, target) => {
@@ -933,6 +934,85 @@ async function main() {
   await click('.project-action-button')
   await until(() => evaluate("location.hash.includes('/projects/') && Boolean(document.querySelector('.project-row-active'))"))
   assert.equal(await evaluate("document.querySelector('.project-name').getAttribute('aria-current')"), "page", "项目新聊天页面仍标记当前项目入口")
+
+  const sidebarFixture = [4, 1, 12, 3, 9, 6, 10, 2, 8, 11, 5, 7].map((number) => ({
+    sessionId: `sidebar-${number}`, name: `侧栏摘要 ${number}`,
+    updatedAt: new Date(Date.parse(updatedAt) + number * 1000).toISOString(),
+  }))
+  sidebarFixture.find((item) => item.sessionId === "sidebar-8").name = "侧栏摘要 8 · 一个很长的对话标题，用来验证文件夹下方的对话名称保持单行并在窄窗口中截断"
+  projects[0].sessions = sidebarFixture
+  projects[1].sessions = sidebarFixture.slice(0, 5)
+  sessions.splice(0, sessions.length, ...sidebarFixture)
+  for (const projectId of [PROJECT, "default"]) {
+    window.webContents.send(session.update, { kind: "event", projectId, sessionId: "sidebar-refresh",
+      event: { type: "turn/end", turn: 1, reason: "completed", seq: 1, eventId: "sidebar-update", sessionId: "sidebar-refresh", createdAt: updatedAt } })
+  }
+  const projectList = ".project-sessions"
+  const defaultList = ".chats-section"
+  const more = " .session-list-more"
+  const sidebarNames = (scope) => evaluate(`[...document.querySelectorAll('${scope} .session-name')].map(node => node.title.match(/^侧栏摘要 (\\d+)/)?.[1])`)
+  await until(async () => (await sidebarNames(projectList)).length === 5 && (await sidebarNames(defaultList)).length === 5)
+  const sorted = ["12", "11", "10", "9", "8", "7", "6", "5", "4", "3", "2", "1"]
+  assert.deepEqual(await sidebarNames(projectList), sorted.slice(0, 5))
+  assert.deepEqual(await sidebarNames(defaultList), sorted.slice(0, 5))
+  const readsBeforeReveal = summaryReads
+  const historyBeforeReveal = historyReads
+
+  await click('.titlebar-search')
+  await until(() => evaluate("Boolean(document.querySelector('.search-input-row input'))"))
+  await input('.search-input-row input', '侧栏摘要 1')
+  await until(() => evaluate("[...document.querySelectorAll('.search-result strong')].some(node => node.textContent === '侧栏摘要 1')"))
+  await click('[aria-label="关闭搜索"]')
+  await until(() => evaluate("!document.querySelector('.search-dialog')"))
+  await click(".project-sessions .session-name")
+  await until(() => evaluate("Boolean(document.querySelector('.project-sessions .session-name[aria-current]') && document.querySelector('.final-answer'))"))
+  const summaryWindowSize = window.getContentSize()
+  window.setContentSize(1200, 900)
+  await until(() => evaluate("innerWidth === 1200 && !document.querySelector('.sidebar-copy-status')"))
+  await screenshot("workspace-sidebar-summary")
+  window.setContentSize(640, 800)
+  await until(() => evaluate("innerWidth <= 640"))
+  await click('[aria-label="切换深色外观"]')
+  await until(() => evaluate("document.documentElement.dataset.theme === 'dark'"))
+  assert.equal(await evaluate(`(() => {
+    const labels = document.querySelectorAll('.project-list > li:first-child :is(.project-name > span, .session-name > span, .session-list-more)')
+    const starts = [...labels].map(node => node.getBoundingClientRect().left + (node.tagName === 'BUTTON' ? parseFloat(getComputedStyle(node).paddingLeft) : 0))
+    const longTitle = labels[5]
+    return starts.every(left => left === starts[0]) && longTitle.scrollWidth > longTitle.clientWidth && getComputedStyle(longTitle).textOverflow === 'ellipsis'
+  })()`), true, "窄窗内项目标题、对话标题与展开入口对齐，长标题单行截断")
+  await screenshot("workspace-sidebar-summary-narrow")
+  await click('[aria-label="切换浅色外观"]')
+  window.setContentSize(...summaryWindowSize)
+  await until(() => evaluate(`innerWidth === ${summaryWindowSize[0]}`))
+  await evaluate("document.querySelector('.project-sessions .session-list-more').focus()")
+  await click(projectList + more)
+  await until(async () => (await sidebarNames(projectList)).length === 10)
+  assert.deepEqual(await sidebarNames(projectList), sorted.slice(0, 10))
+  assert.deepEqual(await sidebarNames(defaultList), sorted.slice(0, 5), "项目与独立对话分别展开")
+  assert.equal(await evaluate("document.activeElement.title"), "侧栏摘要 7", "展开后聚焦第一条新增对话")
+  await click(projectList + more)
+  await until(async () => (await sidebarNames(projectList)).length === 12)
+  assert.deepEqual(await sidebarNames(projectList), sorted)
+  assert.equal(await evaluate("Boolean(document.querySelector('.project-sessions .session-list-more'))"), false)
+  await click(defaultList + more)
+  await until(async () => (await sidebarNames(defaultList)).length === 10)
+  assert.deepEqual(await sidebarNames(defaultList), sorted.slice(0, 10))
+  assert.equal(summaryReads, readsBeforeReveal, "展开只处理前端已取得的摘要")
+  assert.equal(historyReads, historyBeforeReveal + 1, "只有打开对话才读取历史")
+
+  projects[1].updatedAt = sidebarFixture[0].updatedAt
+  projects[0].sessions = sidebarFixture.map((item) => item.sessionId === "sidebar-1"
+    ? { ...item, updatedAt: new Date(Date.parse(updatedAt) + 60000).toISOString() } : item)
+  window.webContents.send(session.update, { kind: "event", projectId: PROJECT, sessionId: "sidebar-1",
+    event: { type: "turn/end", turn: 1, reason: "completed", seq: 1, eventId: "sidebar-reorder", sessionId: "sidebar-1", createdAt: updatedAt } })
+  await until(async () => (await sidebarNames(projectList))[0] === "1")
+  assert.equal(await evaluate("document.querySelector('.project-name').title"), projects[1].name, "收到更新后项目按时间重新排序")
+  assert.equal((await sidebarNames(projectList)).length, 12, "摘要更新保留已展开条数")
+  await click('.project-name')
+  await until(() => evaluate("document.querySelectorAll('.project-sessions').length === 2"))
+  assert.equal(await evaluate("document.querySelectorAll('.project-sessions')[0].querySelectorAll('.session-name').length"), 5)
+  assert.equal(await evaluate("Boolean(document.querySelector('.project-list > li:first-child .session-list-more'))"), false, "恰好五条无需展开")
+
   window.setOpacity(0)
   window.setSkipTaskbar(true)
   await click('[aria-label="最大化窗口"]')

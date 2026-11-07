@@ -8,6 +8,7 @@ import {
   IconChevronDown,
   IconDots,
   IconFolder,
+  IconFolderOpen,
   IconFolderPlus,
   IconLayoutSidebar,
   IconLayoutSidebarRight,
@@ -71,10 +72,23 @@ const permissionLabels: Record<Permission, string> = {
 }
 const permissionOptions: Permission[] = ["workspace-read-only", "workspace-read-write", "full-access"]
 
+/** 每组侧栏对话首次展示及每次追加的条数。 */
+const SIDEBAR_SESSION_BATCH_SIZE = 5
+
 /**
- * 按持久化索引顺序显示一个分组的对话入口，并把所在分组与 Session 身份交给路由。
+ * 按已保存的更新时间从新到旧排列摘要，时间相同则保留输入顺序。
+ * @param left 左侧摘要。
+ * @param right 右侧摘要。
+ * @returns 用于数组排序的时间差。
+ */
+function newestFirst(left: { updatedAt: string }, right: { updatedAt: string }): number {
+  return Date.parse(right.updatedAt) - Date.parse(left.updatedAt)
+}
+
+/**
+ * 按更新时间分批展示一个分组的对话入口，并把分组与 Session 身份交给路由。
  * @param props 已取得的对话摘要列表。
- * @returns 可打开各 Session 路由的对话列表。
+ * @returns 当前可见的对话列表和仍有剩余时的展开入口。
  */
 function SessionList({
   projectId,
@@ -91,11 +105,20 @@ function SessionList({
   onMore: (target: SidebarTarget, anchor: HTMLButtonElement) => void
   onOpenSession: (projectId: string, sessionId: string) => void
 }) {
-  return <ul className="session-list">{sessions.map((session) =>
+  const [visibleCount, setVisibleCount] = useState(SIDEBAR_SESSION_BATCH_SIZE)
+  const firstRevealedSession = useRef<HTMLButtonElement>(null)
+  const visibleSessions = [...sessions].sort(newestFirst).slice(0, visibleCount)
+
+  useLayoutEffect(() => {
+    firstRevealedSession.current?.focus()
+  }, [visibleCount])
+
+  return <><ul className="session-list">{visibleSessions.map((session, index) =>
     <li key={session.sessionId} className="sidebar-session-row">
       <button
         className="session-name"
         type="button"
+        ref={index === visibleCount - SIDEBAR_SESSION_BATCH_SIZE && visibleCount > SIDEBAR_SESSION_BATCH_SIZE ? firstRevealedSession : undefined}
         title={session.name}
         aria-current={session.sessionId === activeSessionId ? "page" : undefined}
         onClick={() => onOpenSession(projectId, session.sessionId)}
@@ -106,6 +129,9 @@ function SessionList({
         expanded={menuAnchor?.projectId === projectId && menuAnchor.sessionId === session.sessionId} onOpen={onMore} />
     </li>,
   )}</ul>
+    {visibleCount < sessions.length && <button className="session-list-more" type="button"
+      onClick={() => setVisibleCount((count) => count + SIDEBAR_SESSION_BATCH_SIZE)}>展开显示</button>}
+  </>
 }
 
 /**
@@ -360,6 +386,7 @@ function Workspace() {
         if (existingIndex === -1) value.push(createdProject)
         else value[existingIndex] = createdProject
       }
+      value.sort(newestFirst)
       setProjects({ status: "ready", value })
       setExpandedProjects(new Set(value.length > 0 ? [value[0].projectId] : []))
     } catch (error) {
@@ -721,9 +748,12 @@ function Workspace() {
             {projectsOpen && <><DataStatus state={projects} retry={() => { void loadProjects() }} />
               {projects.status === "ready" && (projects.value.length === 0
                 ? <button className="sidebar-empty" type="button" onClick={openProjectDialog}><IconFolderPlus size={23} /><strong>为想法建立一个空间</strong><span>创建项目，连接你的代码</span></button>
-                : <ul className="project-list">{projects.value.map((project) => <li key={project.projectId}>
+                : <ul className="project-list">{[...projects.value].sort(newestFirst).map((project) => <li key={project.projectId}>
                     <div className={workspaceRoute.page === "new-chat" && workspaceRoute.group === "project" && workspaceRoute.projectId === project.projectId ? "project-row project-row-active" : "project-row"}>
-                      <button className="project-name" type="button" title={project.name} aria-expanded={expandedProjects.has(project.projectId)} aria-current={workspaceRoute.page === "new-chat" && workspaceRoute.group === "project" && workspaceRoute.projectId === project.projectId ? "page" : undefined} onClick={() => toggleProject(project.projectId)}><IconChevronDown className={expandedProjects.has(project.projectId) ? "project-chevron" : "project-chevron collapsed"} size={13} stroke={1.6} aria-hidden="true" /><span>{project.name}</span></button>
+                      <button className="project-name" type="button" title={project.name} aria-expanded={expandedProjects.has(project.projectId)} aria-current={workspaceRoute.page === "new-chat" && workspaceRoute.group === "project" && workspaceRoute.projectId === project.projectId ? "page" : undefined} onClick={() => toggleProject(project.projectId)}>
+                        {expandedProjects.has(project.projectId) ? <IconFolderOpen stroke={1.6} aria-hidden="true" /> : <IconFolder stroke={1.6} aria-hidden="true" />}
+                        <span>{project.name}</span>
+                      </button>
                       <button className="project-action-button" type="button" aria-label={`在 ${project.name} 中新建聊天`} title={`在 ${project.name} 中新建聊天`} onClick={() => focusNewChatComposer(project.projectId)}><IconPlus size={16} stroke={1.6} aria-hidden="true" /></button>
                       <SidebarMore target={project} expanded={sidebarMenu?.target.projectId === project.projectId && sidebarMenu.target.sessionId === undefined} onOpen={openSidebarMenu} />
                     </div>
