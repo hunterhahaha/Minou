@@ -54,10 +54,14 @@ export async function resolveTurnModelAdapterSpecification(
   }
 
   const baseURL = snapshot.provider.baseURL
-  const nativeHistory = Object.values(COMPATIBLE_PROVIDERS).flat().find((definition) =>
-    definition.protocol === snapshot.model.protocol && definition.nativeHistory !== undefined &&
-    snapshot.model.name.startsWith(definition.nativeHistory.modelNamePrefix),
-  )?.nativeHistory?.policy
+  const providerName = snapshot.provider.name.trim().toLowerCase()
+  const nativeHistory: ProtocolClientOptions["nativeHistory"] =
+    snapshot.model.protocol === "chat_completions" && (providerName === "openrouter" || providerName === "open router")
+      ? { name: "openrouter", protocol: "chat_completions", inlineToolChanges: false }
+      : Object.values(COMPATIBLE_PROVIDERS).flat().find((definition) =>
+        definition.protocol === snapshot.model.protocol && definition.nativeHistory !== undefined &&
+        snapshot.model.name.startsWith(definition.nativeHistory.modelNamePrefix),
+      )?.nativeHistory?.policy
   return {
     modelConfig: snapshot.model,
     clientOptions: {

@@ -16,7 +16,7 @@ import {
   toChatCompletionsMessages,
 } from "../src/chat-completions.ts"
 import { CANCELLED, MODEL_REQUEST_FAILED } from "../../error/src/normalizer.ts"
-import type { ModelConfig, ModelStreamEvent, UnifiedModelRequest } from "../src/types.ts"
+import type { AssistantContentBlock, ModelConfig, ModelStreamEvent, UnifiedModelRequest } from "../src/types.ts"
 
 import { collect, collectError, sseData, startFakeProvider, streamOf } from "./helpers.ts"
 
@@ -203,11 +203,107 @@ function completionOf(events: ModelStreamEvent[]): string | undefined {
 }
 
 /**
+ * 验证 OpenRouter SSE 原生思考详情经过统一消息历史后，能在实际 SDK 请求中还原。
+ * @returns 本地服务关闭且所有回放与回退断言完成后解析。
+ * @throws Error 当分片组装、工具参数或回传形状不符合预期时抛出。
+ */
+async function testOpenRouterReasoningReplay(): Promise<void> {
+  const policy = { name: "openrouter", protocol: "chat_completions", inlineToolChanges: false } as const
+  const signed = { type: "reasoning.text", index: 0, id: "thinking-0", format: "anthropic-claude-v1" }
+  const encrypted = { type: "reasoning.encrypted", index: 1, id: "thinking-1", format: "anthropic-claude-v1" }
+  const summary = { type: "reasoning.summary", index: 2, summary: "摘要" }
+  const raw = [
+    chunk({ delta: { reasoning_content: "", reasoning: "先", reasoning_details: [{ ...signed, text: "先", signature: null }] } }),
+    chunk({ delta: { reasoning_content: {}, reasoning_details: [{ ...signed, text: "想" }, summary] } }),
+    chunk({ delta: { tool_calls: [{ index: 0, id: "call_1", function: { name: "read_file", arguments: '{"path":' } }] } }),
+    chunk({ delta: { reasoning_details: [
+      { ...signed, signature: "signature-exact" },
+      { ...encrypted, data: "cipher-" },
+    ] } }),
+    chunk({ delta: {
+      reasoning_details: [{ ...encrypted, data: "exact" }],
+      tool_calls: [{ index: 0, function: { arguments: '"test"}' } }],
+    } }),
+    chunk({ finish_reason: "tool_calls" }),
+  ]
+  const provider = await startFakeProvider(() => ({ events: [...raw.map(sseData), sseData("[DONE]")] }))
+  try {
+    const adapter = createChatCompletionsAdapter(MODEL, {
+      apiKey: "fixture", baseURL: provider.baseURL("chat_completions"), nativeHistory: policy,
+    })
+    const request = agentRequest()
+    const events = await collect(adapter.stream(request, new AbortController().signal))
+    assert.equal(completionOf(events), "tool_calls")
+    const blocks = events.flatMap((event) => event.type === "block_end" ? [event.block] : [])
+    assert.deepEqual(blocks[0], { type: "thinking", text: "先想摘要" })
+    assert.deepEqual(endedToolCall(events)?.arguments, { path: "test" })
+    const expected = [
+      { ...signed, text: "先想", signature: "signature-exact" },
+      summary,
+      { ...encrypted, data: "cipher-exact" },
+    ]
+    assert.deepEqual(blocks[1]?.replay, {
+      name: policy.name, protocol: policy.protocol, payloadJson: JSON.stringify(expected),
+    })
+
+    const restored = JSON.parse(JSON.stringify(blocks)) as AssistantContentBlock[]
+    const continuation: UnifiedModelRequest = { ...request, context: { history: {
+      system: "system", mcpBaseline: [],
+      events: [
+        { seq: 1, type: "user/message", content: [{ type: "text", text: "read" }] },
+        { seq: 2, type: "assistant/message", content: restored, finishReason: "tool_calls" },
+        {
+          seq: 3, type: "tool/result", turn: 1, step: 1, toolCallEventId: "block-end-1",
+          toolCallId: "call_1", content: [{ type: "text", text: "done" }], isError: false,
+        },
+      ],
+    } } }
+    await collect(adapter.stream(continuation, new AbortController().signal))
+    const sent = provider.requests[1]?.body.messages as Array<Record<string, unknown>>
+    assert.deepEqual(sent[2], {
+      role: "assistant", content: null, reasoning_details: expected,
+      tool_calls: [{ id: "call_1", type: "function", function: { name: "read_file", arguments: '{"path":"test"}' } }],
+    })
+    assert.deepEqual(sent[3], { role: "tool", tool_call_id: "call_1", content: "done" })
+
+    const generic = buildChatCompletionsRequest(continuation, MODEL)
+    assert.deepEqual(generic.messages[2], {
+      role: "assistant", content: null, tool_calls: sent[2]?.tool_calls, reasoning_content: "先想摘要",
+    })
+    const summaryRequest = buildChatCompletionsRequest({ ...request, context: {
+      purpose: "summary", messages: [{ role: "system", content: "system" }, { role: "assistant", content: restored }],
+    } }, MODEL, policy)
+    assert.deepEqual(summaryRequest.messages[1], generic.messages[2])
+
+    const replay = restored[1]!.replay!
+    replay.protocol = "responses"
+    const plaintext = { role: "assistant", content: null, tool_calls: sent[2]?.tool_calls, reasoning: "先想摘要" }
+    assert.deepEqual(buildChatCompletionsRequest(continuation, MODEL, policy).messages[2], plaintext)
+    replay.protocol = policy.protocol
+    replay.payloadJson = "invalid"
+    assert.deepEqual(buildChatCompletionsRequest(continuation, MODEL, policy).messages[2], plaintext)
+  } finally {
+    await provider.close()
+  }
+
+  const opaque = chunk({ delta: { reasoning_details: [{ ...encrypted, data: "cipher-only" }] } })
+  const events = await collect(mapChatCompletionsStreamOf(streamOf([opaque, chunk({ finish_reason: "stop" })]), policy))
+  assert.deepEqual(summarize(events), ["start:0:thinking", "end:0:", "stream_end:finished"])
+  const blocks = events.flatMap((event) => event.type === "block_end" ? [event.block] : [])
+  assert.deepEqual(toChatCompletionsMessages([{ role: "assistant", content: blocks }], policy), [
+    { role: "assistant", content: null, reasoning_details: [{ ...encrypted, data: "cipher-only" }] },
+  ])
+  const truncated = await collect(mapChatCompletionsStreamOf(streamOf([opaque, chunk({ finish_reason: "length" })]), policy))
+  assert.deepEqual(summarize(truncated), ["stream_end:incomplete"])
+}
+
+/**
  * 依次执行当前文件的请求转换、流事件或 Usage 断言；协议集成场景使用本地假 Provider 并在场景结束后关闭服务。
  * @returns 全部断言和异步场景完成后解析。
  * @throws Error 断言或场景执行失败时向上传播，测试入口报告失败。
  */
 async function main(): Promise<void> {
+  await testOpenRouterReasoningReplay()
   /** ------------------------------------------------------------------------- */
   /** 1. 请求转换 */
   /** ------------------------------------------------------------------------- */
@@ -290,7 +386,7 @@ async function main(): Promise<void> {
     ])
   }
 
-  /** 多块文本按顺序拼接、不添加分隔符；thinking 不回放。 */
+  /** 正文和思考分别按顺序拼接、不添加分隔符。 */
   {
     const messages = toChatCompletionsMessages([
       { role: "user", content: [{ type: "text", text: "PORT=" }, { type: "text", text: "3000" }] },
@@ -299,12 +395,13 @@ async function main(): Promise<void> {
         content: [
           { type: "thinking", text: "内部推理" },
           { type: "text", text: "回答" },
+          { type: "thinking", text: "续段" },
         ],
       },
     ])
     assert.deepEqual(messages, [
       { role: "user", content: "PORT=3000" },
-      { role: "assistant", content: "回答" },
+      { role: "assistant", content: "回答", reasoning_content: "内部推理续段" },
     ])
   }
 

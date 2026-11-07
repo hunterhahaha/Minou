@@ -172,10 +172,37 @@ async function testNativeHistoryPolicy(): Promise<void> {
   })
 }
 
+/**
+ * 验证 OpenRouter 按 Provider 名称和协议启用回放，与 URL 和模型名无关。
+ * @returns 正例和隔离断言通过后解析。
+ * @throws Error 当数据库快照选出错误的策略时抛出。
+ */
+async function testOpenRouterHistoryPolicy(): Promise<void> {
+  await withPaths(async (paths) => {
+    const database = paths.providerDatabasePath
+    const provider = {
+      id: MODEL.providerId, protocol: MODEL.protocol, type: "custom" as const, baseURL: "https://proxy.example.com",
+    }
+    saveProvider(database, { ...provider, name: "OpenRouter" })
+    saveModel(database, { ...MODEL, supportsReasoning: false, contextWindow: 128000, maxOutputTokens: 4096 })
+    setProviderApiKey(database, provider.id, "fixture-key")
+    const expected = { name: "openrouter", protocol: "chat_completions", inlineToolChanges: false }
+    for (const name of ["OpenRouter", "open router", "OPEN ROUTER"]) {
+      saveProvider(database, { ...provider, name })
+      assert.deepEqual((await resolveTurnModelAdapterSpecification(paths, MODEL)).clientOptions.nativeHistory, expected)
+    }
+    saveProvider(database, { ...provider, name: "Other", baseURL: "https://openrouter.ai/api/v1" })
+    assert.equal((await resolveTurnModelAdapterSpecification(paths, MODEL)).clientOptions.nativeHistory, undefined)
+    saveProvider(database, { ...provider, name: "OpenRouter", protocol: "responses" })
+    assert.equal((await resolveTurnModelAdapterSpecification(paths, { ...MODEL, protocol: "responses" })).clientOptions.nativeHistory, undefined)
+  })
+}
+
 /** 运行 Turn Adapter 的全部断言。 */
 async function main(): Promise<void> {
   await testResolvesCurrentDatabaseConfiguration()
   await testNativeHistoryPolicy()
+  await testOpenRouterHistoryPolicy()
   await testRejectsInvalidBindingsWithoutSecrets()
   console.log("model-adapters.test.ts: Provider 数据库与 Adapter 断言通过")
 }

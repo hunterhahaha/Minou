@@ -124,7 +124,7 @@ MiniMax 的 API 与 Coding Plan 共用地区地址，不单独拆分套餐入口
 
 套餐白名单按协议保守收录：Chat Completions 为 `glm-5.3`、`glm-5.3-flash`、`glm-5.2`，Anthropic 为前两者，Responses 为 `glm-5.3`。不由普通 API 列表推断套餐权益，FlashX 官方尚未开放套餐。普通 API 只预设双方明确给出的标准 Chat 入口；不代表其余协议在服务端不受支持。
 
-5.3 系列使用 1,000,000 上下文、131,072 最大输出，推理等级为 `low/high/max`；5.2 使用相同窗口与输出，预设使用 `none/high/max` 三个实际档位。更早型号使用 200,000 上下文与 `thinking.type=enabled/disabled`。Chat 的 5.2/5.3 使用 `reasoning_effort`，套餐 Anthropic 使用 `output_config.effort`，Responses 使用 `reasoning.effort`。5.3 预设不提供关闭思考选项。Chat Adapter 对 `glm-` 模型将历史 thinking 按原顺序拼成 `reasoning_content` 回传，保留工具调用后的思考上下文。
+5.3 系列使用 1,000,000 上下文、131,072 最大输出，推理等级为 `low/high/max`；5.2 使用相同窗口与输出，预设使用 `none/high/max` 三个实际档位。更早型号使用 200,000 上下文与 `thinking.type=enabled/disabled`。Chat 的 5.2/5.3 使用 `reasoning_effort`，套餐 Anthropic 使用 `output_config.effort`，Responses 使用 `reasoning.effort`。5.3 预设不提供关闭思考选项。GLM 的 Chat Completions 历史思考使用通用 `reasoning_content` 回传规则。
 
 核对来源：[BigModel 模型概览](https://docs.bigmodel.cn/cn/guide/start/model-overview)、[深度思考参数](https://docs.bigmodel.cn/cn/guide/capabilities/thinking)、[套餐模型与协议](https://docs.bigmodel.cn/cn/coding-plan/latest-model)、[Responses](https://docs.bigmodel.cn/cn/guide/develop/responses/introduction)、[Z.AI 模型概览](https://docs.z.ai/guides/overview/overview)、[标准 API](https://docs.z.ai/api-reference/introduction)、[套餐协议](https://docs.z.ai/devpack/tool/others)、[套餐模型与 effort](https://docs.z.ai/devpack/latest-model)、[Flash/FlashX 权益](https://docs.z.ai/guides/vlm/glm-5.3-flash)。
 
@@ -255,7 +255,9 @@ SessionState 基于已校验日志修复派生状态。成功 Summary 的 `summa
 
 MCP 的 `mcp/tools_added` 保存载入记录和当时的工具定义，`mcp/tools_removed` 保存移出的工具名。两类事件都带原始工具调用事件身份。同次载入的移除和新增按序在一笔 SQLite 事务里提交。
 
-支持原生回放的 Adapter 在 `assistant/block_end` 和 `assistant/message` 的每个内容块保存可选的 `replay`。其 `name` 和 `protocol` 来自兼容端点规则，`payloadJson` 保存完整原生块的 JSON。桌面 IPC 和 CLI 输出通用字段。
+支持原生回放的 Adapter 在 `assistant/block_end` 和 `assistant/message` 的内容块上保存可选的 `replay`。其 `name` 和 `protocol` 来自端点规则，`payloadJson` 保存对应协议的原生数据。桌面 IPC 和 CLI 输出通用字段。
+
+[model-adapters.ts](../src/main/model-adapters.ts) 对名称为 `OpenRouter` 或 `Open Router`、协议为 `chat_completions` 的供应商启用 `openrouter` 回放来源。名称匹配忽略大小写和首尾空白。正常结束或工具调用结束时，Adapter 将整条响应的有序 `reasoning_details` 数组附在最后完成的块上。只有密文时使用空文本的 thinking 块承载回放。签名和密文保存在 `payloadJson` 中，历史重建按来源校验后回传。
 
 ## Skill registry.json
 
