@@ -46,7 +46,7 @@ async function main(): Promise<void> {
   const summary: SummaryEndEvent = {
     type: "summary/end", summaryId: "compression-1", eventId: "summary-1", sessionId: "s", seq: 4, createdAt: "2026-10-21T00:00:00.000Z",
     turn: 1, fromEventSeq: 2, throughEventSeq: 2, summary: "compressed",
-    baseline: { agentsmd: { path: "G:/AGENTS.md", hash: "hash", content: "rules" }, skills: { content: "", entries: [], descriptions: {} } },
+    baseline: { mcp: [], agentsmd: { path: "G:/AGENTS.md", hash: "hash", content: "rules" }, skills: { content: "", entries: [], descriptions: {} } },
   }
   const started: SessionUpdate = { kind: "event", projectId: "default", sessionId: "s", event: {
     type: "summary/start", summaryId: summary.summaryId, turn: 1, fromEventSeq: 2, throughEventSeq: 2,

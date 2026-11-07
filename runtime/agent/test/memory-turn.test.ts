@@ -1,3 +1,4 @@
+import { requestMessages } from "../../model/test/helpers.ts"
 /**
  * 通过真实记忆工具、事件日志和临时存储验证 Session 记忆调用链。
  *
@@ -58,7 +59,7 @@ async function scenario(profile: string, projectId: string): Promise<void> {
     return { contextWindow: 128000, maxOutputTokens: 4096, stream: async function* (request) {
       requests.push(structuredClone(request))
       step += 1
-      const system = request.context.messages[0]
+      const system = requestMessages(request)[0]
       assert.equal(system.role, "system")
       assert.equal(JSON.stringify(system).includes(PRIOR), false, "记忆正文不能默认注入 System Message")
       assert.ok(["memory_list", "memory_read", "memory_write"].every((name) => request.tools?.some((tool) => tool.name === name)))
@@ -69,7 +70,7 @@ async function scenario(profile: string, projectId: string): Promise<void> {
         yield { type: "block_end", index: 0, block }
         yield { type: "stream_end", completion: "tool_calls" }
       } else if (step === 2) {
-        const result = request.context.messages.find((message) => message.role === "tool" && message.toolCallId === `turn-${turn}-write`)
+        const result = requestMessages(request).find((message) => message.role === "tool" && message.toolCallId === `turn-${turn}-write`)
         assert.ok(result?.role === "tool" && !result.isError)
         assert.match(JSON.stringify(result.content), /成功写入 1 条/)
         const calls = [
@@ -82,8 +83,8 @@ async function scenario(profile: string, projectId: string): Promise<void> {
         }
         yield { type: "stream_end", completion: "tool_calls" }
       } else {
-        const list = request.context.messages.find((message) => message.role === "tool" && message.toolCallId === `turn-${turn}-memory_list`)
-        const read = request.context.messages.find((message) => message.role === "tool" && message.toolCallId === `turn-${turn}-memory_read`)
+        const list = requestMessages(request).find((message) => message.role === "tool" && message.toolCallId === `turn-${turn}-memory_list`)
+        const read = requestMessages(request).find((message) => message.role === "tool" && message.toolCallId === `turn-${turn}-memory_read`)
         assert.ok(list?.role === "tool" && read?.role === "tool")
         assert.equal(JSON.stringify(list.content).includes(PRIOR), false)
         assert.ok(JSON.stringify(read.content).includes(PRIOR))

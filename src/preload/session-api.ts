@@ -1321,7 +1321,8 @@ function isSessionEvent(value: unknown): value is SessionEvent {
     Number.isSafeInteger(value.seq) && (value.seq as number) > 0 &&
     ["context_update", "user/message", "assistant/block_start", "assistant/block_delta", "assistant/block_end",
       "assistant/message", "tool/result", "app/error", "summary/start", "summary/end", "turn/file_changes",
-      "turn/start", "turn/end", "step/start", "step/end", "approval/request", "approval/result"].includes(value.type as string)
+      "turn/start", "turn/end", "step/start", "step/end", "approval/request", "approval/result",
+      "mcp/tools_added", "mcp/tools_removed"].includes(value.type as string)
 }
 
 /**

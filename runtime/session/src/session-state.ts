@@ -114,6 +114,8 @@ export interface SessionMeta {
   skills: SessionSkillContextState
   /** MCP 载入身份和预算记录，保存在 additional_meta_json 中。 */
   loadedMcpTools?: SessionLoadedMCPTool[]
+  /** 最近同步到 Meta 的载入事件序号。 */
+  loadedMcpToolsSeq: number
   [field: string]: unknown
 }
 
@@ -230,11 +232,11 @@ export interface FileSessionState {
   /**
    * 在 Session 串行边界先保存 Meta，再原子更新 contextstate.mcp。
    * @param tools 完整载入状态。
-   * @param definitions 当前有效 Catalog 的定义。
+   * @param throughSeq 当前有效 Catalog 的定义。
    * @throws Error 校验或写入失败；已提交的 Meta 用于下次同步恢复定义。
    * @returns 当前操作完成后的结果；异步写入等待提交完成后解析。
    */
-  writeLoadedMCPTools(tools: SessionLoadedMCPTool[], definitions: UnifiedToolDefinition[]): Promise<void>
+  writeLoadedMCPTools(tools: SessionLoadedMCPTool[], throughSeq?: number): Promise<void>
   /**
    * 幂等补齐或重建缺失、损坏的 Session 派生文件。
    * @throws Error 当 Session 路径、Event Log 或当前初始化基线无效时抛出。
@@ -358,7 +360,7 @@ export function createFileSessionState(options: FileSessionStateOptions): FileSe
       const summary = rawEvents.filter((event) => isRecord(event) && event.type === "summary/end").at(-1) as SummaryEndEvent | undefined
       const baseline: CurrentSessionBaseline = summary === undefined
         ? await options.resolveCurrentBaseline()
-        : { ...summary.baseline, mcp: contextState?.mcp ?? [] }
+        : summary.baseline
       validateCurrentBaseline(baseline)
       const turnModel = findLastTurnModel(rawEvents, paths.eventsPath)
       const latestSkillEventId = summary === undefined ? findLatestSkillEventId(rawEvents)
@@ -367,7 +369,7 @@ export function createFileSessionState(options: FileSessionStateOptions): FileSe
       let nextMeta = meta
       if (needsMeta) {
         const additionalMeta = baseline.additionalMeta ?? {}
-        for (const reserved of ["projectId", "sessionId", "name", "version", "currentModel", "sandboxMode", "usage", "skills"]) {
+        for (const reserved of ["projectId", "sessionId", "name", "version", "currentModel", "sandboxMode", "usage", "skills", "loadedMcpToolsSeq"]) {
           if (reserved in additionalMeta) {
             throw new Error(`当前 Session 基线的 additionalMeta 不得包含保留字段 ${reserved}。`)
           }
@@ -386,6 +388,7 @@ export function createFileSessionState(options: FileSessionStateOptions): FileSe
             entries: cloneSkillEntries(baseline.skills.entries),
           },
           loadedMcpTools: (additionalMeta.loadedMcpTools as SessionLoadedMCPTool[] | undefined) ?? [],
+          loadedMcpToolsSeq: 0,
         }
         nextMeta = initialMeta
       }
@@ -461,11 +464,24 @@ export function createFileSessionState(options: FileSessionStateOptions): FileSe
       let nextContextState = contextState
       let nextSnapshot = snapshot
 
+      const loaded = new Map((meta.loadedMcpTools ?? []).map((entry) => [entry.name, entry]))
+      for (const event of events) {
+        if (event.seq <= meta.loadedMcpToolsSeq) continue
+        if (event.type === "mcp/tools_removed") {
+          for (const name of event.toolNames) loaded.delete(name)
+        } else if (event.type === "mcp/tools_added") {
+          for (const { entry } of event.tools) loaded.set(entry.name, entry)
+        } else continue
+        nextMeta.loadedMcpToolsSeq = event.seq
+      }
+      if (nextMeta.loadedMcpToolsSeq !== meta.loadedMcpToolsSeq) nextMeta.loadedMcpTools = [...loaded.values()]
+
       const summary = events.filter((event) => event.type === "summary/end").at(-1)
       const effectiveEvents = summary === undefined ? events : events.filter((event) => event.seq > summary.throughEventSeq)
       if (summary !== undefined) {
         nextContextState = {
           ...contextState,
+          mcp: structuredClone(summary.baseline.mcp),
           agentsmd: { hash: summary.baseline.agentsmd.hash, content: summary.baseline.agentsmd.content },
           skills: { id: summary.eventId, content: summary.baseline.skills.content },
         }
@@ -564,15 +580,13 @@ export function createFileSessionState(options: FileSessionStateOptions): FileSe
       if (!isLoadedMCPTools(tools)) throw new Error(`Session MCP 状态无效：${paths.metaDatabasePath}`)
       return structuredClone(tools)
     }),
-    writeLoadedMCPTools: async (tools, definitions) => {
-      if (!isLoadedMCPTools(tools) || !definitions.every(isUnifiedToolDefinition)) throw new Error("Session MCP 更新无效。")
+    writeLoadedMCPTools: async (tools, throughSeq) => {
+      if (!isLoadedMCPTools(tools)) throw new Error("Session MCP 更新无效。")
       const nextTools = structuredClone(tools)
-      const nextDefinitions = structuredClone(definitions)
       await runSerialized(queue, async () => {
         const meta = readRequiredMeta(paths)
-        const state = await readRequiredJson(paths.contextStatePath, isSessionContextState, "Session Context State")
-        if (!isDeepStrictEqual(meta.loadedMcpTools, nextTools)) saveSessionMeta(paths.metaDatabasePath, { ...meta, loadedMcpTools: nextTools })
-        if (!isDeepStrictEqual(state.mcp, nextDefinitions)) await atomicWriteJson(paths.contextStatePath, { ...state, mcp: nextDefinitions })
+        const next = { ...meta, loadedMcpTools: nextTools, loadedMcpToolsSeq: throughSeq ?? meta.loadedMcpToolsSeq }
+        if (!isDeepStrictEqual(meta, next)) saveSessionMeta(paths.metaDatabasePath, next)
       })
     },
     writeCurrentModel: writeBoundCurrentModel,
@@ -615,7 +629,7 @@ export function createFileSessionState(options: FileSessionStateOptions): FileSe
  * @param value 从 Meta 读取或即将提交的数组。
  * @returns 身份唯一且估算值、时间戳有效时为 true。
  */
-function isLoadedMCPTools(value: unknown): value is SessionLoadedMCPTool[] {
+export function isLoadedMCPTools(value: unknown): value is SessionLoadedMCPTool[] {
   if (!Array.isArray(value)) return false
   const names = new Set<string>()
   return value.every((entry: unknown) => {
@@ -1116,6 +1130,8 @@ function isSessionMeta(value: unknown, projectId: ProjectId, sessionId: string):
     && isSandboxMode(value.sandboxMode)
     && isRealUsage(value.usage)
     && isSessionSkillContextState(value.skills)
+    && typeof value.loadedMcpToolsSeq === "number"
+    && Number.isSafeInteger(value.loadedMcpToolsSeq) && value.loadedMcpToolsSeq >= 0
 }
 
 /**
@@ -1214,7 +1230,7 @@ function isAgentsState(value: unknown): value is SessionContextState["agentsmd"]
  * @param value 待检查的 JSON 值。
  * @returns 值是否为有效 UnifiedToolDefinition。
  */
-function isUnifiedToolDefinition(value: unknown): value is UnifiedToolDefinition {
+export function isUnifiedToolDefinition(value: unknown): value is UnifiedToolDefinition {
   return isRecord(value)
     && isNonEmptyString(value.name)
     && (value.description === undefined || typeof value.description === "string")

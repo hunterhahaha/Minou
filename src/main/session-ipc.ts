@@ -3,7 +3,8 @@ import type { ModelRef } from "../../runtime/model/src/types.ts"
 import { normalizeError } from "../../runtime/error/src/index.ts"
 import { requireProjectId } from "../../runtime/session/src/project-id.ts"
 import type { ProjectId } from "../../runtime/session/src/project-id.ts"
-import type { UserMessageInput } from "../../runtime/session/src/events.ts"
+import type { AssistantContentBlock } from "../../runtime/model/src/types.ts"
+import type { SessionEvent, UserMessageInput } from "../../runtime/session/src/events.ts"
 import type { SandboxMode, SessionSettingsPatch } from "../../runtime/session/src/session-state.ts"
 import { SessionRuntime } from "../../runtime/agent/src/session-runtime.ts"
 import type { ContinueSessionInput, SessionRuntimeSnapshot, StartNewSessionInput, StartedSessionTurn } from "../../runtime/agent/src/session-runtime.ts"
@@ -12,6 +13,20 @@ import { SESSION_IPC_CHANNELS } from "../preload/session-api.ts"
 import type { SessionControl, SessionData, SessionSummary, SessionUpdate } from "../preload/session-api.ts"
 import type { ConfigFilePaths } from "./config-files.ts"
 import { reconcileWorkspaceSessions } from "./workspace-store.ts"
+
+/**
+ * 投影可向渲染进程公开的事件字段，保留日志序号和块索引。
+ * @param event 已提交的会话事件。
+ * @returns 剔除协议原生内容的同一事件投影。
+ */
+function publicSessionEvent(event: SessionEvent): SessionEvent {
+  const project = ({ replay: _replay, ...block }: AssistantContentBlock): AssistantContentBlock => block
+  if (event.type === "assistant/block_end") return { ...event, block: project(event.block) }
+  if (event.type === "assistant/message") {
+    return { ...event, message: { ...event.message, content: event.message.content.map(project) } }
+  }
+  return event
+}
 
 /** Electron 与无框架测试共用的最小 handler 注册边界。 */
 export interface IpcMainHandlePort {
@@ -106,7 +121,7 @@ export function registerSessionIpcHandlers(
    * @returns 发送尝试完成；传输失败交给宿主。
    */
   async function send(update: SessionUpdate): Promise<void> {
-    try { await eventForwarding.sendSessionUpdateToRenderer(update) }
+    try { await eventForwarding.sendSessionUpdateToRenderer(update.kind === "event" ? { ...update, event: publicSessionEvent(update.event) } : update) }
     catch (error) { onCompletionFailure({ sessionId: update.sessionId, turn: update.kind === "event" ? update.event.turn ?? 0 : 0, error }) }
   }
   /**
@@ -293,7 +308,7 @@ export function registerSessionIpcHandlers(
     return serial(key, () => withRuntime(projectId, sessionId, async (runtime) => {
       const snapshot = await runtime.readSnapshot()
       const last = snapshot.events.at(-1)
-      return { projectId, sessionId, events: snapshot.events, latestSeq: last?.seq ?? 0,
+      return { projectId, sessionId, events: snapshot.events.map(publicSessionEvent), latestSeq: last?.seq ?? 0,
         summary: { sessionId, name: snapshot.settings.name || INITIAL_SESSION_NAME, updatedAt: last?.createdAt ?? new Date().toISOString() },
         control: controlOf(key, snapshot) }
     }))

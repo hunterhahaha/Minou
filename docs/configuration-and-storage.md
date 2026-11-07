@@ -240,17 +240,22 @@ project_id, session_id, name, version,
 current_model_json, sandbox_mode_json, usage_json, skills_json, additional_meta_json
 ```
 
-主键为 `(project_id, session_id)`。`current_model_json` 包含 `providerId`、`protocol`、`modelId`、`name`、`reasoningLevel`。`sandbox_mode_json` 保存当前对话的权限模式，默认 `sandbox-full-access`。Usage、Skill 来源历史和其他 Meta 分开序列化；MCP 载入记录保存在 `additional_meta_json.loadedMcpTools`。
+主键为 `(project_id, session_id)`。`current_model_json` 包含 `providerId`、`protocol`、`modelId`、`name`、`reasoningLevel`。`sandbox_mode_json` 保存当前对话的权限模式，默认 `sandbox-full-access`。Usage、Skill 来源历史和其他 Meta 分开序列化；MCP 载入记录保存在 `additional_meta_json.loadedMcpTools`，`loadedMcpToolsSeq` 记录已同步的最后一条 MCP 增量序号，初始为 0。普通工具调用只更新调用统计。
 
 Meta 不等同于 Event Log：名称和运行设置有自己的写入入口，Usage 与部分上下文状态由事件派生。单条 Meta 缺失或 JSON 损坏时可交恢复流程补建，数据库结构不合法则报错。详细类型与恢复逻辑见 [session-state.ts](../runtime/session/src/session-state.ts)。
 
 ### 会话派生文件
 
-- `contextstate.json` 保存 `agentsmd: { hash, content }`、`skills: { id, content }` 和 `mcp` 定义数组。
+- `contextstate.json` 保存 `agentsmd: { hash, content }`、`skills: { id, content }` 和 `mcp` 定义数组。MCP 数组初始为空，成功 Summary 提交后才替换为该次摘要的工具定义快照。
 - `agents_md.snapshot` 保存参与增量比较的规则快照。
 - `tool_output/` 保存工具输出文件；具体输出路径由工具实现创建。`web_fetch` 的最终处理文本超过 32 KiB 时，完整 UTF-8 文本保存为 `web_fetch_<本机生成 UUID>.md`，独占创建、不覆盖已有文件；小结果不创建文件，全文不包含截断提示。桌面使用当前会话目录，CLI 使用 `.nicode/logs/cli/<内部 session-id>/tool_output/`。模型可见结果仅保存正文前缀及末尾截断说明、绝对路径；恢复历史时不重新获取或加载全文。
 
-SessionState 基于已校验日志修复派生状态。成功 Summary 的 `summary/end` 带覆盖范围与完整基线，恢复时使用该记录；不要通过手改快照替代合法事件写入。
+SessionState 基于已校验日志修复派生状态。成功 Summary 的 `summary/end` 带覆盖范围与完整基线。恢复时使用该记录修复基线文件，并从 Meta 的 MCP 游标之后补应用已提交的增量。缺少 Meta 时从完整日志重建载入集合。
+
+
+MCP 的 `mcp/tools_added` 保存载入记录和当时的工具定义，`mcp/tools_removed` 保存移出的工具名。两类事件都带原始工具调用事件身份。同次载入的移除和新增按序在一笔 SQLite 事务里提交。
+
+支持原生回放的 Adapter 在 `assistant/block_end` 和 `assistant/message` 的每个内容块保存可选的 `replay`。其 `name` 和 `protocol` 来自兼容端点规则，`payloadJson` 保存完整原生块的 JSON。桌面 IPC 和 CLI 输出通用字段。
 
 ## Skill registry.json
 

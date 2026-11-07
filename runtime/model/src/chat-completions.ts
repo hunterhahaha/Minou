@@ -175,7 +175,7 @@ export function buildChatCompletionsRequest(
   request: UnifiedModelRequest,
   config: ModelConfig,
 ): ChatCompletionCreateParamsStreaming {
-  const { system, rest } = splitSystemMessage(request)
+  const { system, rest, tools } = splitSystemMessage(request)
 
   const params: ChatCompletionCreateParamsStreaming = {
     model: request.model.name,
@@ -184,8 +184,8 @@ export function buildChatCompletionsRequest(
     stream_options: { include_usage: true },
   }
 
-  if (request.tools.length > 0) {
-    params.tools = toChatCompletionsTools(request.tools)
+  if (tools.length > 0) {
+    params.tools = toChatCompletionsTools(tools)
   }
   if (request.toolChoice === "none") params.tool_choice = "none"
 

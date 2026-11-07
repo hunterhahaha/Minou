@@ -7,7 +7,10 @@
 import { createAnthropicAdapter } from "./anthropic.ts"
 import { createChatCompletionsAdapter } from "./chat-completions.ts"
 import { createResponsesAdapter } from "./responses.ts"
-import type { ModelAdapter, ModelConfig, Protocol } from "./types.ts"
+import type { ModelAdapter, ModelConfig, Protocol, ReplaySource } from "./types.ts"
+
+/** 启用端点原生回放及可选的会话内工具变更。 */
+export type NativeHistoryPolicy = ReplaySource & { inlineToolChanges: boolean }
 
 /**
  * 创建一个 Adapter 所需的协议侧连接参数。
@@ -25,6 +28,8 @@ export interface ProtocolClientOptions {
   baseURL?: string
   /** 传给协议客户端的额外请求头。 */
   defaultHeaders?: Record<string, string>
+  /** 匹配兼容目录规则时可回放的原生块来源。 */
+  nativeHistory?: NativeHistoryPolicy
 }
 
 /**

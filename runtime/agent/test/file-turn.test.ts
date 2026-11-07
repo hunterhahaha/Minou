@@ -68,7 +68,7 @@ async function run(scenario: Scenario): Promise<SessionEvent[]> {
     appendTurnStartAndUserMessage: async (pair: readonly [SessionEventInput, SessionEventInput]) => [await append(pair[0]), await append(pair[1])],
     writeCurrentModel: async () => {},
     readCurrentModel: async () => MODEL,
-    buildContent: async () => [{ role: "system", content: "test" }, { role: "user", content: MESSAGE }],
+    buildHistory: async () => ({ system: "test", mcpBaseline: [], events: [] }),
     createLoopOptions: async () => ({
       adapter, tools: [],
       executeTool: async (name: string, _args: unknown, context: ToolExecutionContext): Promise<ToolResult> => {
@@ -125,7 +125,7 @@ async function run(scenario: Scenario): Promise<SessionEvent[]> {
     createSessionDirectory: fake.createSessionDirectory,
     writeCurrentModel: fake.writeCurrentModel,
     readCurrentModel: fake.readCurrentModel,
-    buildContent: fake.buildContent,
+    buildHistory: fake.buildHistory,
   })
   const started = await ports.startNewSession({ content: MESSAGE, model: MODEL })
   if (scenario === "error") await assert.rejects(started.completion, /tool failed/)

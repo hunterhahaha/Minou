@@ -74,7 +74,11 @@ async function fixture(profile: string, approval = false) {
       models.push(structuredClone(reference))
       const index = ++adapterCount
       let requestCount = 0
-      return { contextWindow: 128000, maxOutputTokens: 4096, stream: async function* (_request, signal) {
+      return { contextWindow: 128000, maxOutputTokens: 4096, stream: async function* (request, signal) {
+        if (!request.context.history) {
+          yield { type: "stream_end", completion: "finished" }
+          return
+        }
         if (!approval && index === 1) await Promise.race([gate, new Promise<never>((_resolve, reject) => {
           const cancel = () => reject(createAbortError())
           if (signal.aborted) cancel(); else signal.addEventListener("abort", cancel, { once: true })
@@ -86,7 +90,9 @@ async function fixture(profile: string, approval = false) {
         } else {
           yield { type: "block_start", index: 0, blockType: "text" }
           yield { type: "block_delta", index: 0, delta: { type: "text", text: reference.name } }
-          yield { type: "block_end", index: 0, block: { type: "text", text: reference.name } }
+          yield { type: "block_end", index: 0, block: { type: "text", text: reference.name,
+            replay: { name: "anthropic", protocol: "anthropic_messages", payloadJson: JSON.stringify({ type: "text", text: reference.name }) },
+          } }
           yield { type: "stream_end", completion: "finished" }
         }
       } }
@@ -172,6 +178,8 @@ async function testHistoryQueueSettings(profile: string): Promise<void> {
   const restarted = await fixture(profile)
   const recovered = await restarted.ipc.invoke<SessionData>(channels.getSessionData, "default", started.sessionId)
   assert.deepEqual(recovered.events, final.events)
+  assert.doesNotMatch(JSON.stringify(final.events), /payloadJson/)
+  assert.doesNotMatch(JSON.stringify(item.updates), /payloadJson/)
   assert.equal(recovered.summary.name, "保留名称")
   assert.equal(recovered.control.sandboxMode, "full-access")
   assert.deepEqual(item.failures, [])
@@ -185,6 +193,7 @@ async function testApproval(profile: string, decision: "approved" | "denied" | "
   const item = await fixture(profile, true)
   const started = await item.ipc.invoke<StartedSessionResponse>(channels.startNewSession, "default", { content, model })
   await until(() => item.updates.some((update) => update.kind === "event" && update.event.type === "approval/request"))
+    .catch((error: unknown) => { throw new Error("未收到审批请求 " + decision, { cause: item.failures[0]?.error ?? error }) })
   const request = item.updates.find((update) => update.kind === "event" && update.event.type === "approval/request")
   assert.ok(request?.kind === "event" && request.event.type === "approval/request")
   const id = request.event.approvalId

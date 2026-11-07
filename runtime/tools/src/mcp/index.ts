@@ -93,7 +93,7 @@ async function load(manager: MCPManager, names: string[], context: ToolExecution
     const previous = await context.mcpRuntime.readLoadedTools()
     if (context.signal.aborted) return mcpError("CANCELLED", "MCP 工具载入已取消。")
     const result = manager.loadTools(names, previous, context.mcpRuntime.contextWindow)
-    await context.mcpRuntime.writeLoadedTools(result.loaded, result.definitions)
+    await context.mcpRuntime.writeLoadedTools(result.loaded, result)
     return { loadedCount: result.loadedCount }
   } catch { return mcpError("MCP_LOAD_FAILED", "MCP 工具状态读取或保存失败。") }
 }

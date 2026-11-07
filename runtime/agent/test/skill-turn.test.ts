@@ -1,3 +1,4 @@
+import { requestMessages } from "../../model/test/helpers.ts"
 /**
  * 使用真实 Skill 来源、registry 和 Session 持久化验证 Skill 上下文更新。
  *
@@ -69,7 +70,7 @@ async function main(): Promise<void> {
           yield { type: "block_end", index: 0, block: { type: "tool_call", toolCallId: `skill-${turn}`, name: "skill_load", arguments: { name: "review" } } }
           yield { type: "stream_end", completion: "tool_calls" }
         } else {
-          const result = request.context.messages.find((message) => message.role === "tool" && message.toolCallId === `skill-${turn}`)
+          const result = requestMessages(request).find((message) => message.role === "tool" && message.toolCallId === `skill-${turn}`)
           assert.ok(result)
           yield { type: "block_start", index: 0, blockType: "text" }
           yield { type: "block_end", index: 0, block: { type: "text", text: "done" } }
@@ -116,7 +117,7 @@ async function main(): Promise<void> {
       assert.equal((await notifications()).length, 1)
       assert.equal(meta().skills.entries.length, 2)
       assert.deepEqual(meta().skills.entries.map((item) => [item.scope, item.enabled]), [["global", false], ["project", true]])
-      const secondTurn = requests[2].context.messages
+      const secondTurn = requestMessages(requests[2])
       assert.match(JSON.stringify(secondTurn[0]), /global-description/)
       assert.equal(JSON.stringify(secondTurn[0]).includes("project-description"), false, "新增内容只通过一次增量注入")
       assert.equal(secondTurn.filter((message) => message.role === "user" && JSON.stringify(message).includes("project-description")).length, 1)
@@ -136,7 +137,7 @@ async function main(): Promise<void> {
       await addSkill(globalDirectory, "review", "edited-description")
       await next()
       assert.equal((await notifications()).length, 1)
-      assert.equal(JSON.stringify(requests.at(-2)!.context.messages[0]).includes("edited-description"), false)
+      assert.equal(JSON.stringify(requestMessages(requests.at(-2)!)[0]).includes("edited-description"), false)
 
       await addSkill(globalDirectory, "pending", "pending-description")
       const append = runtime.appendEvent.bind(runtime)

@@ -101,6 +101,11 @@ async function testHTTP(): Promise<void> {
     const previous = manager.loadTools(names.slice(0, 3), [], 1000).loaded.map((entry, index) => ({ ...entry, lastCalledAt: index === 0 ? 100 : index === 1 ? 0 : 200 }))
     const budget = manager.loadTools([names[3]], previous, 600)
     assert.deepEqual(budget.loaded.map((entry) => entry.name), [names[0], names[2], names[3]])
+    assert.deepEqual(budget.removed, [names[1]])
+    assert.deepEqual(budget.added.map(({ entry, definition }) => [entry.name, definition.name]), [[names[3], names[3]]])
+    const repeated = manager.loadTools([names[3], names[3]], budget.loaded, 600)
+    assert.deepEqual(repeated.added, [])
+    assert.deepEqual(repeated.removed, [])
     assert.equal(manager.loadTools(names.slice(3, 8), previous, 200).loaded.length, 8, "单批超预算仍保留旧工具并整批载入")
     assert.equal(manager.loadTools([names[3]], [{ ...previous[0], serverId: "invalid" }], 600).loaded.length, 1)
 

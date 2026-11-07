@@ -12,7 +12,7 @@ import { DatabaseSync } from "node:sqlite"
 import { requireProjectId } from "./project-id.ts"
 
 import type {
-  SessionEvent, SessionEventInput, TurnStartEvent, TurnStartEventInput,
+  McpToolChangeInput, SessionEvent, SessionEventInput, TurnStartEvent, TurnStartEventInput,
   UserMessageEvent, UserMessageEventInput,
 } from "./events.ts"
 
@@ -47,6 +47,13 @@ export interface FileSessionEventLog {
    * @throws Error 当日志缺失、seq 无效或事务失败时抛出。
    */
   appendEvent(event: SessionEventInput): Promise<SessionEvent>
+  /**
+   * 原子提交同一次载入的有序工具变更。
+   * @param events 同一工具调用产生的事件，移除排在新增前。
+   * @returns 具有连续序号的已提交事件。
+   * @throws Error 日志不可写或事务失败时抛出。
+   */
+  appendMcpToolChanges(events: readonly McpToolChangeInput[]): Promise<SessionEvent[]>
   /**
    * 在一个事务内提交新 Turn 的两条首批事件。
    * @param events 按 turn/start、user/message 排列的事件对。
@@ -119,6 +126,19 @@ export function createFileSessionEventLog(options: FileSessionEventLogOptions): 
   const now = options.now ?? (() => new Date())
   const createEventId = options.createEventId ?? randomUUID
 
+  /** 在同一事务分配并提交一个批次的序号。 */
+  const append = (inputs: readonly SessionEventInput[]) => runSerializedWrite(queueKey, async () => {
+    await requireDirectory(sessionDirectory)
+    await requireDatabase(databasePath)
+    return withDatabase(databasePath, (db) => transaction(db, () => {
+      const values = readSessionEvents(db, options.projectGroupId, options.sessionId, databasePath)
+      const seq = nextSequence(values, databasePath, inputs.length)
+      const events = materializeEvents(inputs, options.sessionId, seq, now, createEventId, databasePath)
+      insertEvents(db, options.projectGroupId, events, databasePath)
+      return events
+    }))
+  })
+
   return {
     readEvents: async () => {
       await (WRITE_TAILS.get(queueKey) ?? Promise.resolve())
@@ -127,17 +147,8 @@ export function createFileSessionEventLog(options: FileSessionEventLogOptions): 
       return withDatabase(databasePath, (db) =>
         readSessionEvents(db, options.projectGroupId, options.sessionId, databasePath))
     },
-    appendEvent: (input) => runSerializedWrite(queueKey, async () => {
-      await requireDirectory(sessionDirectory)
-      await requireDatabase(databasePath)
-      return withDatabase(databasePath, (db) => transaction(db, () => {
-        const values = readSessionEvents(db, options.projectGroupId, options.sessionId, databasePath)
-        const nextSeq = nextSequence(values, databasePath, 1)
-        const [event] = materializeEvents([input], options.sessionId, nextSeq, now, createEventId, databasePath)
-        insertEvents(db, options.projectGroupId, [event], databasePath)
-        return event
-      }))
-    }),
+    appendEvent: async (input) => (await append([input]))[0],
+    appendMcpToolChanges: (inputs) => inputs.length === 0 ? Promise.resolve([]) : append(inputs),
     appendTurnStartAndUserMessage: (inputs) => runSerializedWrite(queueKey, async () => {
       await requireDirectory(sessionDirectory)
       validateTurnBatch(inputs, databasePath)

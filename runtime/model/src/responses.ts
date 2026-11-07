@@ -134,7 +134,7 @@ export function buildResponsesRequest(
   request: UnifiedModelRequest,
   config: ModelConfig,
 ): ResponseCreateParamsStreaming {
-  const { system, rest } = splitSystemMessage(request)
+  const { system, rest, tools } = splitSystemMessage(request)
 
   const params: ResponseCreateParamsStreaming = {
     model: request.model.name,
@@ -144,8 +144,8 @@ export function buildResponsesRequest(
     store: false,
   }
 
-  if (request.tools.length > 0) {
-    params.tools = toResponsesTools(request.tools)
+  if (tools.length > 0) {
+    params.tools = toResponsesTools(tools)
   }
   if (request.toolChoice === "none") params.tool_choice = "none"
 

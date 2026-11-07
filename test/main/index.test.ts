@@ -1,3 +1,4 @@
+import { requestMessages } from "../../runtime/model/test/helpers.ts"
 /** Electron 主进程启动装配的配置、IPC、Runtime 与窗口生命周期测试。 */
 
 import assert from "node:assert/strict"
@@ -384,7 +385,7 @@ async function testCreatesProjectSessionRuntime(): Promise<void> {
     )
 
     const request = await requestSeen
-    assert.deepEqual(request.context.messages, [
+    assert.deepEqual(requestMessages(request), [
       {
         role: "system",
         content: [
@@ -420,7 +421,7 @@ async function testResolvesContextForEachProject(): Promise<void> {
     const adapter: ModelAdapter = {
       contextWindow: 128000, maxOutputTokens: 4096, stream: async function* (request, _signal, options) {
         if (options?.timeoutMs !== undefined) return
-        const systemMessage = request.context.messages[0]
+        const systemMessage = requestMessages(request)[0]
         assert.equal(systemMessage.role, "system")
         assert.equal(typeof systemMessage.content, "string")
         if (typeof systemMessage.content === "string") systemMessages.push(systemMessage.content)

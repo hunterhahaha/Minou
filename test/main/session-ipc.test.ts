@@ -144,10 +144,7 @@ function runtimeHarness(options: { blockFirstLoop?: boolean; failInitialization?
       prepareExistingTurn: async () => {},
       writeCurrentModel: async (model: ModelRef) => { diskModel = structuredClone(model) },
       readCurrentModel: async () => structuredClone(diskModel),
-      buildContent: async () => [
-        { role: "system", content: "system" },
-        { role: "user", content: CONTENT },
-      ],
+      buildHistory: async () => ({ system: "system", mcpBaseline: [], events: [] }),
       createLoopOptions: async () => ({
         adapter: {
           contextWindow: 128000, maxOutputTokens: 4096, stream: async function* (
@@ -218,7 +215,7 @@ function runtimeHarness(options: { blockFirstLoop?: boolean; failInitialization?
       prepareExistingTurn: fake.prepareExistingTurn,
       writeCurrentModel: fake.writeCurrentModel,
       readCurrentModel: fake.readCurrentModel,
-      buildContent: fake.buildContent,
+      buildHistory: fake.buildHistory,
     })
     records.set(sessionId, { projectId, runtime, events, batches })
     return runtime

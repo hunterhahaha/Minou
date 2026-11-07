@@ -14,6 +14,7 @@ import type {
   ModelRef,
 } from "../../runtime/model/src/types.ts"
 import type { ConfigFilePaths } from "./config-files.ts"
+import { COMPATIBLE_PROVIDERS } from "./compatible-providers.ts"
 import { readTurnProviderSnapshot } from "./provider-store.ts"
 
 /** 创建单个 Turn Adapter 前已经解析完成的模型与协议客户端参数。 */
@@ -52,13 +53,18 @@ export async function resolveTurnModelAdapterSpecification(
     )
   }
 
+  const baseURL = snapshot.provider.baseURL
+  const nativeHistory = baseURL === undefined ? undefined : Object.values(COMPATIBLE_PROVIDERS).flat().find((definition) =>
+    definition.nativeHistory !== undefined && definition.protocol === model.protocol &&
+    normalizeServiceURL(definition.url) === normalizeServiceURL(baseURL) &&
+    definition.models.some(({ name }) => name === snapshot.model.name),
+  )?.nativeHistory
   return {
     modelConfig: snapshot.model,
     clientOptions: {
       apiKey,
-      ...(snapshot.provider.baseURL === undefined
-        ? {}
-        : { baseURL: snapshot.provider.baseURL }),
+      ...(nativeHistory === undefined ? {} : { nativeHistory }),
+      ...(baseURL === undefined ? {} : { baseURL }),
       ...(snapshot.provider.defaultHeaders === undefined
         ? {}
         : { defaultHeaders: { ...snapshot.provider.defaultHeaders } }),
@@ -102,4 +108,19 @@ export async function createTurnModelAdapter(
  */
 function formatModelRef(model: ModelRef): string {
   return `ModelRef(${model.providerId}/${model.protocol}/${model.modelId}/${model.name})`
+}
+
+/**
+ * 规范化兼容规则比较用的服务 URL，保留服务路径、凭据、查询与片段。
+ * @param value 待比较的服务地址。
+ * @returns 规范化地址，无效地址返回原值。
+ */
+function normalizeServiceURL(value: string): string {
+  try {
+    const url = new URL(value)
+    url.pathname = url.pathname.replace(/\/+$/, "") || "/"
+    return url.href
+  } catch {
+    return value
+  }
 }

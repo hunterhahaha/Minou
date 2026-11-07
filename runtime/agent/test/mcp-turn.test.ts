@@ -1,3 +1,5 @@
+import { splitSystemMessage } from "../../model/src/shared.ts"
+import { requestMessages } from "../../model/test/helpers.ts"
 /**
  * 通过本地 MCP 测试服务、脚本模型和真实 Session 存储验证动态工具载入。
  *
@@ -45,7 +47,7 @@ async function main(): Promise<void> {
     let step = 0
     return { contextWindow: 128000, maxOutputTokens: 4096, stream: async function* (request) {
       step++
-      const names = request.tools?.map((tool) => tool.name) ?? []
+      const names = splitSystemMessage(request).tools.map((tool) => tool.name)
       visible.push(names)
       if (turn === 1 && step === 1) {
         assert.equal(names.includes(name), false, "启动时不能暴露完整 Catalog")
@@ -55,14 +57,14 @@ async function main(): Promise<void> {
       if (turn === 1 && step === 1) call = { name: "tool_search", arguments: { query: "unmatchedword" } }
       else if (turn === 1 && step === 2) {
         assert.equal(names.includes(name), false)
-        assert.match(JSON.stringify(request.context.messages.at(-1)), /Loaded 0 tools/)
+        assert.match(JSON.stringify(requestMessages(request).at(-1)), /Loaded 0 tools/)
         call = { name: "mcp_list_tools", arguments: {} }
       } else if (turn === 1 && step === 3) {
-        assert.match(JSON.stringify(request.context.messages.at(-1)), /Server ID: calendar/)
+        assert.match(JSON.stringify(requestMessages(request).at(-1)), /Server ID: calendar/)
         call = { name: "mcp_load_tools", arguments: { names: [name] } }
       } else if ((turn === 1 && step === 4) || (turn > 1 && step === 1)) {
         assert.equal(names.includes(name), true, "下一 Step、Queue 和 Continue 均应看到已载入工具")
-        assert.ok(request.tools?.find((tool) => tool.name === name)?.inputSchema.properties)
+        assert.ok(splitSystemMessage(request).tools.find((tool) => tool.name === name)?.inputSchema.properties)
         call = { name, arguments: { value: `turn-${turn}` } }
       }
       if (call) {
@@ -70,8 +72,8 @@ async function main(): Promise<void> {
         yield { type: "block_end", index: 0, block: { type: "tool_call", toolCallId: `turn-${turn}-step-${step}`, ...call } }
         yield { type: "stream_end", completion: "tool_calls" }
       } else {
-        assert.equal(request.context.messages.at(-1)?.role, "tool")
-        assert.equal(JSON.stringify(request.context.messages.at(-1)).includes(`turn-${turn}`), true)
+        assert.equal(requestMessages(request).at(-1)?.role, "tool")
+        assert.equal(JSON.stringify(requestMessages(request).at(-1)).includes(`turn-${turn}`), true)
         yield { type: "stream_end", completion: "finished" }
       }
     } }
@@ -112,9 +114,9 @@ async function main(): Promise<void> {
     assert.ok(meta.loadedMcpTools![0].lastCalledAt > 0)
     const statePath = join(dir, "contextstate.json")
     const state = JSON.parse(await readFile(statePath, "utf8")) as { mcp: UnifiedToolDefinition[] }
-    assert.equal(state.mcp[0].name, name)
+    assert.deepEqual(state.mcp, [], "MCP 基线等待 Summary")
     /**
-     * 模拟 Meta 提交后 contextstate 写入中断：恢复必须使用 Meta 身份和当前 Catalog。
+     * 重新创建 Runtime，确认持久化增量决定下一次请求的工具。
      */
     await writeFile(statePath, JSON.stringify({ ...state, mcp: [] }))
     resumed = createRuntime()
@@ -124,6 +126,10 @@ async function main(): Promise<void> {
     assert.equal(continued.turn, 3)
     const events = await resumed.readEvents() as readonly SessionEvent[]
     assert.equal(events.filter((event) => event.type === "approval/request").length, 3)
+    const changes = events.filter((event) => event.type === "mcp/tools_added" || event.type === "mcp/tools_removed")
+    assert.equal(changes.length, 1)
+    assert.equal(meta.loadedMcpToolsSeq, changes[0].seq)
+    assert.ok(events.some((event) => event.type === "tool/result" && event.toolCallEventId === changes[0].toolCallEventId && event.seq > changes[0].seq))
     const results = events.filter((event) => event.type === "tool/result")
     assert.equal(results.length, 6)
     for (const result of results) {
@@ -134,7 +140,7 @@ async function main(): Promise<void> {
       assert.equal(call.blockId, result.blockId)
     }
     assert.equal(fixture.state.calls.every((call) => !Object.hasOwn(call.arguments!, "callDescription")), true)
-    assert.equal((JSON.parse(await readFile(statePath, "utf8")) as { mcp: UnifiedToolDefinition[] }).mcp[0].name, name)
+    assert.deepEqual((JSON.parse(await readFile(statePath, "utf8")) as { mcp: UnifiedToolDefinition[] }).mcp, [])
     assert.equal(global.listToolDefinitions().some((tool) => tool.name === name), false, "全局基础工具列表不能泄露其他 Session 的载入工具")
     resumed.close(); await approvalResume
     assert.equal(visible.length, 9)

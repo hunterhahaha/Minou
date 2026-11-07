@@ -12,8 +12,10 @@ import type {
   BlockType,
   ModelRef,
   ModelTextBlock,
+  UnifiedToolDefinition,
   Usage,
 } from "../../model/src/types.ts"
+import type { SessionLoadedMCPTool } from "../../mcp/src/types.ts"
 import type { AppError } from "../../error/src/types.ts"
 import type { ToolResult } from "../../tools/src/types.ts"
 import type { CurrentSessionBaseline } from "./session-state.ts"
@@ -251,6 +253,27 @@ export interface AppErrorEvent extends EventBase {
   sourceEventId?: string
 }
 
+/** 一次工具载入提交的新增记录，定义是当时对模型公开的快照。 */
+export interface McpToolsAddedEvent extends EventBase {
+  type: "mcp/tools_added"
+  turn: number
+  step: number
+  toolCallEventId: string
+  tools: { entry: SessionLoadedMCPTool; definition: UnifiedToolDefinition }[]
+}
+
+/** 同一次工具载入实际移出已载入集合的名称。 */
+export interface McpToolsRemovedEvent extends EventBase {
+  type: "mcp/tools_removed"
+  turn: number
+  step: number
+  toolCallEventId: string
+  toolNames: string[]
+}
+
+/** 载入操作的有序批次，移除先于新增。 */
+export type McpToolChangeInput = Omit<McpToolsAddedEvent, EventIdentity> | Omit<McpToolsRemovedEvent, EventIdentity>
+
 /** 压缩尝试开始；不改变上下文，只有同一 summaryId 的 end 成功提交才生效。 */
 export interface SummaryStartEvent extends EventBase {
   type: "summary/start"
@@ -279,8 +302,8 @@ export interface SummaryEndEvent extends EventBase {
   throughEventSeq: number
   /** 压缩本身的 Usage，不进入正常 Agent Usage。 */
   usage?: Usage
-  /** 最新 AGENTS.md / Skills 完整基线；不包含 MCP 状态。 */
-  baseline: Pick<CurrentSessionBaseline, "agentsmd" | "skills">
+  /** 最新 AGENTS.md / Skills 完整基线及 MCP 工具定义。 */
+  baseline: Pick<CurrentSessionBaseline, "agentsmd" | "skills" | "mcp">
 }
 
 export interface FileDiffHunk {
@@ -331,6 +354,7 @@ export type TurnFileChangesEventInput = Omit<TurnFileChangesEvent, EventIdentity
 
 /** 所有受支持的已提交 Session 事件联合。 */
 export type SessionEvent =
+  | McpToolsAddedEvent | McpToolsRemovedEvent
   | TurnStartEvent
   | TurnEndEvent
   | UserMessageEvent
@@ -351,6 +375,7 @@ export type SessionEvent =
 
 /** 上层交给 SessionEventLog 的事件：内容齐备，只缺日志分配的身份字段。 */
 export type SessionEventInput =
+  | McpToolChangeInput
   | TurnStartEventInput
   | TurnEndEventInput
   | UserMessageEventInput

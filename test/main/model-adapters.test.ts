@@ -142,9 +142,33 @@ async function testRejectsInvalidBindingsWithoutSecrets(): Promise<void> {
   })
 }
 
+/**
+ * 验证原生能力由协议、端点地址和目录模型决定。
+ * @returns 匹配和回退均通过。
+ */
+async function testNativeHistoryPolicy(): Promise<void> {
+  await withPaths(async (paths) => {
+    const database = paths.providerDatabasePath
+    const model: ModelRef = { ...MODEL, name: "claude-opus-5-5", protocol: "anthropic_messages" }
+    const provider = { id: model.providerId, protocol: model.protocol, type: "custom" as const, name: "Editable name" }
+    saveProvider(database, { ...provider, baseURL: "https://API.ANTHROPIC.COM:443/" })
+    saveModel(database, { ...model, supportsReasoning: false, contextWindow: 1000000, maxOutputTokens: 4096 })
+    setProviderApiKey(database, model.providerId, "fixture-key")
+    assert.deepEqual((await resolveTurnModelAdapterSpecification(paths, model)).clientOptions.nativeHistory, {
+      name: "anthropic", protocol: "anthropic_messages", inlineToolChanges: true,
+    })
+    saveProvider(database, { ...provider, name: "Anthropic", baseURL: "https://proxy.example.com" })
+    assert.equal((await resolveTurnModelAdapterSpecification(paths, model)).clientOptions.nativeHistory, undefined)
+    saveProvider(database, { ...provider, baseURL: "https://api.anthropic.com" })
+    updateModel(database, { providerId: model.providerId, modelId: model.modelId }, { name: "custom-model" })
+    assert.equal((await resolveTurnModelAdapterSpecification(paths, model)).clientOptions.nativeHistory, undefined)
+  })
+}
+
 /** 运行 Turn Adapter 的全部断言。 */
 async function main(): Promise<void> {
   await testResolvesCurrentDatabaseConfiguration()
+  await testNativeHistoryPolicy()
   await testRejectsInvalidBindingsWithoutSecrets()
   console.log("model-adapters.test.ts: Provider 数据库与 Adapter 断言通过")
 }

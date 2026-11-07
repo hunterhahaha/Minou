@@ -37,7 +37,9 @@ async function main(): Promise<void> {
     const entry: SessionLoadedMCPTool = { name: "mcp_s_t", serverId: "s", originalToolName: "t", estimatedTokens: 10, lastCalledAt: 0 }
     const definitions = [{ name: entry.name, description: "test", inputSchema: { type: "object", properties: {} } }]
     updateSessionMetaName(paths.metaDatabasePath, "default", "mcp-state", "保持名称")
-    await Promise.all([state.writeLoadedMCPTools([entry], definitions), state.writeSettings({ sandboxMode: "full-access" })])
+    const [added] = await log.appendMcpToolChanges([{ type: "mcp/tools_added", turn: 1, step: 1,
+      toolCallEventId: "call", tools: [{ entry, definition: definitions[0] }] }])
+    await Promise.all([state.writeLoadedMCPTools([entry], added.seq), state.writeSettings({ sandboxMode: "full-access" })])
     let meta = readSessionMeta(paths.metaDatabasePath, "default", "mcp-state") as SessionMeta
     assert.equal(meta.name, "保持名称"); assert.equal(meta.sandboxMode, "full-access"); assert.deepEqual(meta.currentModel, model)
     assert.deepEqual(meta.loadedMcpTools, [entry]); assert.equal(meta.usage.inputTokens, 0)
@@ -45,15 +47,33 @@ async function main(): Promise<void> {
     assert.equal((await state.readLoadedMCPTools())[0].lastCalledAt, 0)
     const contextPath = join(sessionDirectory, "contextstate.json")
     const context = JSON.parse(await readFile(contextPath, "utf8")) as SessionContextState
-    assert.deepEqual(context.mcp, definitions)
-    await writeFile(contextPath, JSON.stringify({ ...context, mcp: [] }))
+    assert.deepEqual(context.mcp, [])
+    await state.writeLoadedMCPTools([{ ...entry, lastCalledAt: 123 }])
+    const next = { ...entry, name: "mcp_s_other", originalToolName: "other" }
+    const evicted = { ...entry, name: "mcp_s_evicted", originalToolName: "evicted" }
+    const [loadedEvicted] = await log.appendMcpToolChanges([{ type: "mcp/tools_added", turn: 1, step: 1,
+      toolCallEventId: "preload", tools: [{ entry: evicted, definition: { ...definitions[0], name: evicted.name } }] }])
+    await state.writeLoadedMCPTools([{ ...entry, lastCalledAt: 123 }, evicted], loadedEvicted.seq)
+    const [removed, addedNext] = await log.appendMcpToolChanges([
+      { type: "mcp/tools_removed", turn: 1, step: 2, toolCallEventId: "second", toolNames: [evicted.name] },
+      { type: "mcp/tools_added", turn: 1, step: 2, toolCallEventId: "second",
+        tools: [{ entry: next, definition: { ...definitions[0], name: next.name } }] },
+    ])
+    assert.equal(removed.seq + 1, addedNext.seq)
     const restored = createFileSessionState(options)
     await restored.initializeSession()
-    assert.deepEqual(await restored.readLoadedMCPTools(), [entry])
-    await restored.writeLoadedMCPTools(await restored.readLoadedMCPTools(), definitions)
+    await restored.repairDerivedState(await log.readEvents() as import("../src/events.ts").SessionEvent[])
+    assert.deepEqual(await restored.readLoadedMCPTools(), [{ ...entry, lastCalledAt: 123 }, next])
+    assert.equal((readSessionMeta(paths.metaDatabasePath, "default", "mcp-state") as SessionMeta).loadedMcpToolsSeq, addedNext.seq)
     assert.deepEqual(JSON.parse(await readFile(contextPath, "utf8")), context)
-    await assert.rejects(state.writeLoadedMCPTools([{ ...entry, estimatedTokens: -1 }], definitions), /更新无效/)
-    await assert.rejects(state.writeLoadedMCPTools([entry, entry], definitions), /更新无效/)
+    const baseline = { ...await options.resolveCurrentBaseline(), mcp: [definitions[0], { ...definitions[0], name: next.name }] }
+    await log.appendEvent({ type: "summary/end", turn: 1, summaryId: "summary", summary: "compacted",
+      fromEventSeq: 1, throughEventSeq: addedNext.seq, baseline })
+    await writeFile(contextPath, JSON.stringify(context))
+    await restored.repairDerivedState(await log.readEvents() as import("../src/events.ts").SessionEvent[])
+    assert.deepEqual(JSON.parse(await readFile(contextPath, "utf8")).mcp, baseline.mcp)
+    await assert.rejects(state.writeLoadedMCPTools([{ ...entry, estimatedTokens: -1 }]), /更新无效/)
+    await assert.rejects(state.writeLoadedMCPTools([entry, entry]), /更新无效/)
     meta = readSessionMeta(paths.metaDatabasePath, "default", "mcp-state") as SessionMeta
     saveSessionMeta(paths.metaDatabasePath, { ...meta, loadedMcpTools: [{ ...entry, lastCalledAt: -1 }] })
     await assert.rejects(state.readLoadedMCPTools(), /Session MCP 状态无效/)

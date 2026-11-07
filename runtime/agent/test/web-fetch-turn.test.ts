@@ -1,3 +1,4 @@
+import { requestMessages } from "../../model/test/helpers.ts"
 /** 真实 Session 与抓取工具的事件关联和模型上下文回填测试。 */
 import assert from "node:assert/strict"
 import { createServer } from "node:http"
@@ -47,10 +48,10 @@ async function main(): Promise<void> {
         yield { type: "block_end", index: 1, block: { type: "tool_call", toolCallId: "fetch-large", name: "web_fetch", arguments: { url: `http://127.0.0.1:${address.port}/large` } } }
         yield { type: "stream_end", completion: "tool_calls" }
       } else {
-        const tool = request.context.messages.find((message) => message.role === "tool" && message.toolCallId === "fetch-call")
+        const tool = requestMessages(request).find((message) => message.role === "tool" && message.toolCallId === "fetch-call")
         assert.ok(tool?.role === "tool" && !tool.isError)
         assert.match(JSON.stringify(tool.content), /Session fetched \*\*context\*\*/)
-        const large = request.context.messages.find((message) => message.role === "tool" && message.toolCallId === "fetch-large")
+        const large = requestMessages(request).find((message) => message.role === "tool" && message.toolCallId === "fetch-large")
         assert.ok(large?.role === "tool" && !large.isError)
         modelText = large.content.filter((content) => content.type === "text").map((content) => content.text).join("\n")
         assert.match(modelText, /\n…\n\n\[Output truncated:/)

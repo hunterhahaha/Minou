@@ -11,11 +11,11 @@ import { createAbortError } from "../../runtime/error/src/abort.ts"
 import { MCPManager } from "../../runtime/mcp/src/index.ts"
 import type { SessionLoadedMCPTool } from "../../runtime/mcp/src/types.ts"
 import { MemoryManager } from "../../runtime/memory/src/index.ts"
-import type { ModelMessage, ModelRef } from "../../runtime/model/src/types.ts"
+import type { ModelRef } from "../../runtime/model/src/types.ts"
 import { initNetworkDispatcher } from "../../runtime/network/src/dispatcher.ts"
 import { createFileSessionEventLog, initializeSessionEventDatabase } from "../../runtime/session/src/event-log.ts"
 import type { FileSessionEventLog } from "../../runtime/session/src/event-log.ts"
-import type { ApprovalDecision, SessionEventInput } from "../../runtime/session/src/events.ts"
+import type { ApprovalDecision, SessionEvent, SessionEventInput } from "../../runtime/session/src/events.ts"
 import { TurnFileChangeTracker } from "../../runtime/session/src/file-changes.ts"
 import { SkillManager } from "../../runtime/skill/src/index.ts"
 import {
@@ -26,6 +26,7 @@ import {
 } from "../../runtime/tools/src/index.ts"
 import type { ToolExecutionContext } from "../../runtime/tools/src/types.ts"
 import { initializeConfigFilesSnapshot } from "../main/config-files.ts"
+import { mcpToolChanges, modelHistory } from "../../runtime/agent/src/model-history.ts"
 import { createTurnModelAdapter } from "../main/model-adapters.ts"
 import { listProviders, readDefaultModel } from "../main/provider-store.ts"
 import { estimateLocalTokens } from "../main/token-estimator.ts"
@@ -310,10 +311,7 @@ export async function runCli(argv: readonly string[]): Promise<number> {
     }
     checkStopped()
     const workspaceInfo = `<workspace_info>\n${JSON.stringify({ cwd: workspace, directories: [workspace], allowedRoots: roots, toolOutputDirectory: outputDirectory }, null, 2)}\n</workspace_info>`
-    const content: ModelMessage[] = [
-      { role: "system", content: [SYSTEM_PROMPT, workspaceInfo, agents, skillContent].filter(Boolean).join("\n\n") },
-      { role: "user", content: request.prompt },
-    ]
+    const system = [SYSTEM_PROMPT, workspaceInfo, agents, skillContent].filter(Boolean).join("\n\n")
     const initial = await eventLog.appendTurnStartAndUserMessage([
       { type: "turn/start", turn: 1, model },
       { type: "user/message", turn: 1, message: { id: randomUUID(), role: "user", content: [{ type: "text", text: request.prompt }] } },
@@ -334,12 +332,9 @@ export async function runCli(argv: readonly string[]): Promise<number> {
     }
     stage = "execution"
     const result = await runAgentLoop({
-      turn: 1, model, adapter, content, signal: controller.signal, appendEvent,
-      tools: async () => {
-        const definitions = mcp?.getDefinitions(loaded) ?? []
-        loaded = loaded.filter((entry) => definitions.some((definition) => definition.name === entry.name))
-        return [...tools.listDefinitions().filter((definition) => tools.get(definition.name)?.kind === "builtin"), ...definitions]
-      },
+      turn: 1, model, adapter, content: [], signal: controller.signal, appendEvent,
+      tools: tools.listDefinitions().filter((definition) => tools.get(definition.name)?.kind === "builtin"),
+      prepareHistory: async () => modelHistory(system, await eventLog!.readEvents() as SessionEvent[]),
       executeTool: async (name, args, context) => {
         if (finished) throw createAbortError()
         await emit("tool.started", { step: context.step, call_id: context.toolCallId, tool: name })
@@ -350,7 +345,11 @@ export async function runCli(argv: readonly string[]): Promise<number> {
           ...(mcp ? { mcpRuntime: {
             projectId: "default", sessionId, contextWindow: adapter.contextWindow,
             readLoadedTools: async () => structuredClone(loaded),
-            writeLoadedTools: async (entries) => { loaded = structuredClone(entries) },
+            writeLoadedTools: async (entries, change) => {
+              const inputs = change ? mcpToolChanges(change, context.turn, context.step, context.toolCallEventId) : []
+              if (inputs.length > 0) await eventLog!.appendMcpToolChanges(inputs)
+              loaded = structuredClone(entries)
+            },
             readSandboxMode: async () => mode, requestApproval: approve,
           } } : {}),
         })

@@ -1,3 +1,4 @@
+import { requestMessages } from "../../model/test/helpers.ts"
 /** 真实 Session、数据库与搜索工具的事件关联和模型上下文回填测试。 */
 import { estimateLocalTokens } from "../../../src/main/token-estimator.ts"
 import assert from "node:assert/strict"
@@ -44,7 +45,7 @@ async function main(): Promise<void> {
         yield { type: "block_end", index: 0, block: { type: "tool_call", toolCallId: "search-call", name: "web_search", arguments: { query: "session" } } }
         yield { type: "stream_end", completion: "tool_calls" }
       } else {
-        const tool = request.context.messages.find((message) => message.role === "tool" && message.toolCallId === "search-call")
+        const tool = requestMessages(request).find((message) => message.role === "tool" && message.toolCallId === "search-call")
         assert.ok(tool?.role === "tool" && !tool.isError)
         assert.match(JSON.stringify(tool.content), /Session search.*https:\/\/example.com.*Search context/)
         yield { type: "block_start", index: 0, blockType: "text" }

@@ -1,8 +1,9 @@
+import { splitSystemMessage } from "../../model/src/shared.ts"
 /**
  * 通过本地 MCP 测试服务验证配置变化后的 Session 工具定义同步。
  *
- * 在服务删除、重新连接和改名后继续同一 Session，检查请求使用当前 Catalog，
- * 并验证 Schema 更新、工具名称隔离和 contextstate 同步。
+ * 在服务删除、重新连接和改名后继续同一 Session，检查请求回放已提交的定义，
+ * 并验证 Schema 快照、工具名称隔离和 contextstate 基线。
  */
 import assert from "node:assert/strict"
 import { mkdtemp, readFile, rm } from "node:fs/promises"
@@ -47,19 +48,19 @@ async function main(): Promise<void> {
     let step = 0
     return { contextWindow: 128000, maxOutputTokens: 4096, stream: async function* (request) {
       step++
-      const definitions = request.tools ?? []
+      const definitions = splitSystemMessage(request).tools
       visible.push(definitions)
       if ((current === 1 || current === 4) && step === 1) {
-        assert.equal(definitions.some((tool) => tool.name === name), false)
+        assert.equal(definitions.some((tool) => tool.name === name), current === 4)
         yield { type: "block_start", index: 0, blockType: "tool_call" }
         yield { type: "block_end", index: 0, block: { type: "tool_call", toolCallId: `load-${current}`, name: "mcp_load_tools", arguments: { names: [current === 1 ? name : renamed] } } }
         yield { type: "stream_end", completion: "tool_calls" }
       } else {
         if (current === 1) assert.equal(definitions.some((tool) => tool.name === name), true)
-        if (current === 2) assert.equal(definitions.some((tool) => tool.name === name), false)
+        if (current === 2) assert.equal(definitions.some((tool) => tool.name === name), true)
         if (current === 3) {
           const schema = definitions.find((tool) => tool.name === name)!.inputSchema
-          assert.equal((schema.properties as Record<string, { type: string }>).value.type, "integer")
+          assert.equal((schema.properties as Record<string, { type: string }>).value.type, "string")
         }
         if (current === 4) { assert.equal(definitions.some((tool) => tool.name === name), false); assert.equal(definitions.some((tool) => tool.name === renamed), true) }
         yield { type: "stream_end", completion: "finished" }
@@ -85,14 +86,14 @@ async function main(): Promise<void> {
     await global.mcpManager.applyConfigurations([config])
     runtime = createRuntime()
     await (await runtime.continueSession(input)).completion
-    assert.equal((await context())[0].name, name)
+    assert.deepEqual(await context(), [])
     await global.mcpManager.applyConfigurations([{ ...config, name: "renamed" }])
     renamed = global.mcpManager.listTools()[0].name
     runtime = createRuntime()
     await (await runtime.continueSession(input)).completion
-    assert.equal((await context())[0].name, renamed)
+    assert.deepEqual(await context(), [])
     assert.equal(visible.length, 6)
-    console.log("mcp-reconfigure.test.ts: Session 下一请求过滤失效工具、更新 Schema、改名隔离与 contextstate 同步通过")
+    console.log("mcp-reconfigure.test.ts: Session 保留历史 Schema，载入时移除已失效的工具通过")
   } finally {
     runtime.close(); await global.disposeProcessTools(); await fixture.close()
     assert.ok(resolve(root).startsWith(resolve(tmpdir()) + sep))

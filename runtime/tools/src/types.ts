@@ -1,3 +1,4 @@
+import type { MCPLoadResult } from "../../mcp/src/manager.ts"
 /**
  * 工具调用身份、Session 资源、业务执行上下文和统一 ToolResult 的数据契约。
  *
@@ -9,7 +10,6 @@ import type { AppError } from "../../error/src/types.ts"
 import type { ApprovalDecision } from "../../session/src/events.ts"
 import type { TurnFileChangeTracker } from "../../session/src/file-changes.ts"
 import type { SessionLoadedMCPTool } from "../../mcp/src/types.ts"
-import type { UnifiedToolDefinition } from "../../model/src/types.ts"
 import type { SandboxMode } from "../../session/src/session-state.ts"
 
 /**
@@ -52,13 +52,13 @@ export interface MCPToolRuntimeContext {
    */
   readLoadedTools(): Promise<SessionLoadedMCPTool[]>
   /**
-   * 提交当前 Session 的完整 MCP 载入状态与有效定义。
+   * 更新 Session 的 MCP 状态。载入操作带变更批次，普通调用只刷新 Meta。
    * @param tools 完整新状态。
-   * @param definitions 有效定义。
+   * @param change 本次载入结果。
    * @throws Error 持久化失败，由执行边界归一化。
    * @returns 载入状态与定义保存完成后解析。
    */
-  writeLoadedTools(tools: SessionLoadedMCPTool[], definitions: UnifiedToolDefinition[]): Promise<void>
+  writeLoadedTools(tools: SessionLoadedMCPTool[], change?: MCPLoadResult): Promise<void>
   /**
    * 重新读取当前 Session 的持久化权限模式。
    * @returns 本次检查时当前权限。

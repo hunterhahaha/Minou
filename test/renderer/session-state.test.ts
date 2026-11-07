@@ -199,7 +199,7 @@ async function main(): Promise<void> {
   testProjection()
   testCompletedTurns()
   const summary = event(4, { type: "summary/end", summaryId: "summary-1", turn: 1, fromEventSeq: 2, throughEventSeq: 2, summary: "compressed",
-    baseline: { agentsmd: { path: "G:/AGENTS.md", hash: "h", content: "rules" }, skills: { content: "", entries: [], descriptions: {} } } })
+    baseline: { mcp: [], agentsmd: { path: "G:/AGENTS.md", hash: "h", content: "rules" }, skills: { content: "", entries: [], descriptions: {} } } })
   const started = event(3, { type: "summary/start", summaryId: "summary-1", turn: 1, fromEventSeq: 2, throughEventSeq: 2 })
   const view = projectSessionEvents([first, second, started, summary])
   assert.ok(view.some((item) => item.kind === "event" && item.event.eventId === second.eventId), "模型遮蔽不删除 UI 原始用户历史")

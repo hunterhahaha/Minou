@@ -45,7 +45,7 @@ const MODEL: ModelConfig = { supportsReasoning: true,
  * @returns 使用固定测试模型和空工具定义的请求。
  */
 function requestWith(
-  messages: UnifiedModelRequest["context"]["messages"],
+  messages: NonNullable<UnifiedModelRequest["context"]["messages"]>,
 ): UnifiedModelRequest {
   return {
     context: { messages },

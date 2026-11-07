@@ -55,7 +55,7 @@ export async function compressContext(options: SummaryRequest): Promise<SummaryR
   let usage: Usage | undefined
   const request = {
     model: structuredClone(model),
-    context: { messages: [...structuredClone(content), { role: "user" as const, content: COMPACT_PROMPT }] },
+    context: { purpose: "summary" as const, messages: [...structuredClone(content), { role: "user" as const, content: COMPACT_PROMPT }] },
     tools: structuredClone([...tools]),
     toolChoice: "none" as const,
   }

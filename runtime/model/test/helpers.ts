@@ -1,3 +1,6 @@
+import { splitSystemMessage } from "../src/shared.ts"
+import type { ModelMessage, UnifiedModelRequest } from "../src/types.ts"
+
 /**
  * 三种 Adapter 测试共用的本地 HTTP 与 SSE 假 Provider 及流收集辅助函数。
  *
@@ -230,3 +233,13 @@ export async function collectError<T>(source: AsyncIterable<T>): Promise<unknown
 
 /** 取消：三个 SDK 在流中途被 abort 时**不一定抛错**，可能直接结束流 */
 /** （见 `src/shared.ts` 的 `runModelStream`，取消以调用方信号为准做兜底）。 */
+
+/**
+ * 对齐使用平铺消息和使用事件历史的测试请求。
+ * @param request 脚本 Adapter 收到的请求。
+ * @returns 可断言的通用消息。
+ */
+export function requestMessages(request: UnifiedModelRequest): ModelMessage[] {
+  const { system, rest } = splitSystemMessage(request)
+  return [{ role: "system", content: system }, ...rest]
+}

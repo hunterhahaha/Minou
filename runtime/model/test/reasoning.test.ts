@@ -42,7 +42,7 @@ async function main(): Promise<void> {
     assert.equal(body.model, "test", "关闭时不会写入失效或危险的推理配置")
     assert.equal(Object.hasOwn(body, defaults.reasoningField.path[0]), false)
     for (const supportsReasoning of [false, true]) {
-      const result = await compressContext({ model: request.model, content: request.context.messages, tools: [], signal: new AbortController().signal,
+      const result = await compressContext({ model: request.model, content: request.context.messages!, tools: [], signal: new AbortController().signal,
         adapter: { stream: async function* (summaryRequest) {
           const summaryBody = build(summaryRequest, { ...config, supportsReasoning }) as unknown as Record<string, unknown>
           assert.equal(Object.hasOwn(summaryBody, defaults.reasoningField.path[0]), supportsReasoning)

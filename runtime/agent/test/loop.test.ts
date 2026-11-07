@@ -1,3 +1,4 @@
+import { requestMessages } from "../../model/test/helpers.ts"
 /**
  * 使用脚本模型流、内存事件收集器和假工具验证 AgentLoop。
  *
@@ -116,7 +117,7 @@ function adapterFromScripts(
   seen: { request: UnifiedModelRequest; roles: string[] }[],
 ): ModelAdapter {
   return adapterFrom(async function* (request): AsyncGenerator<ModelStreamEvent> {
-    seen.push({ request, roles: request.context.messages.map((message) => message.role) })
+    seen.push({ request, roles: requestMessages(request).map((message) => message.role) })
     const script = scripts.shift()
     assert.ok(script !== undefined, "假 Adapter 收到了超出脚本数量的请求")
     for (const event of script) yield event
@@ -975,7 +976,7 @@ async function testUserStopDuringToolRound(): Promise<void> {
  */
 
 /**
- * 验证模型非取消错误在 Step 错误收尾后向调用方传播。
+ * 验证模型流中断时收尾已开始的文本块，并向调用方传播原错误。
  * @returns 当前场景的断言及异步操作完成后解析。
  * @throws Error 断言或场景执行失败时向上传播，测试入口记录错误并设置失败退出码。
  */
@@ -1011,7 +1012,8 @@ async function testModelError(): Promise<void> {
    * 错误原样抛出（Turn 的收尾与 app/error 由调用方负责），Step 以 error 关闭
    */
   assert.deepEqual(thrown, modelError)
-  assert.deepEqual(eventTypes(events), ["step/start", "assistant/block_start", "step/end"])
+  assert.deepEqual(eventTypes(events), ["step/start", "assistant/block_start", "assistant/block_end", "assistant/message", "step/end"])
+  assert.equal(only(events, "assistant/message").finishReason, undefined)
   assert.equal(only(events, "step/end").reason, "error")
   assert.equal(calls.length, 0)
   assert.equal(content.length, 2)

@@ -50,7 +50,7 @@ Renderer 负责页面、路由与展示缓存，不直接打开数据库、读�
 2. [session-ipc.ts](../src/main/session-ipc.ts) 以 Project + Session 联合身份管理活动 Runtime，校验参数并转发命令。
 3. [SessionRuntime](../runtime/agent/src/session-runtime.ts) 绑定会话目录、事件日志和 SessionState。新建或继续 Turn 时，先提交 `turn/start` 与 `user/message`；提交失败不启动模型循环。
 4. Turn 真正开始时读取所选模型和推理等级，通过 `SessionRuntimeGlobal.createTurnModelAdapter()` 打开 Provider 数据库，取得同一快照的模型规格、协议配置和凭据。模型支持思考时校验所选等级后，创建仅供本 Turn 使用的 Adapter；后续 Step 复用它。
-5. Runtime 组织工作区说明、AGENTS.md / Skill 基线和已提交历史，准备当前有效 MCP 定义，再调用 `runAgentLoop()`。
+5. Runtime 组织工作区说明、AGENTS.md / Skill 基线和基础工具，再调用 `runAgentLoop()`。
 6. Loop 写入 Step、Assistant 流事件和完整消息；若产生工具调用，就运行工具小轮并把 ToolResult 回填上下文，然后进入下一 Step。
 7. Runtime 负责 Turn 完成、失败、停止、文件变化与派生状态同步，再消费 FIFO 队列。Queue 仅保存消息内容，不提前冻结后续 Turn 的模型。
 8. 主进程通过会话更新事件推送已提交内容和控制状态，Renderer 的 [session-state.ts](../src/renderer/session-state.ts) 合并历史与增量，供页面展示。
@@ -87,7 +87,7 @@ Renderer 负责页面、路由与展示缓存，不直接打开数据库、读�
 
 - [project-context.ts](../src/main/project-context.ts) 从数据库读取 Project，选择首个关联目录作为 cwd；没有关联目录时使用内置 workspace。当前 cwd 下的 AGENTS.md 和启用 Skill 组成基线，允许根包括内置 workspace 与关联目录。
 - Skill 启用项按名称合并，Project 同名来源覆盖 Global，禁用的 Project 项也可屏蔽 Global；描述进入上下文，正文通过 `skill_load` 按需读取。来源历史按 scope + path 区分，已有来源的状态变化静默同步。
-- MCPManager 共享连接和完整 Catalog，各 Session 单独记录载入身份。`tool_search` 搜索并载入，或经 `mcp_list_tools` / `mcp_load_tools` 载入。预算为模型窗口的 5%，按最近调用记录淘汰；单批自身超预算时仍整批载入。定义在请求前依据当前 Catalog 过滤，不直接沿用持久化旧 Schema。
+- MCPManager 共享连接和完整 Catalog，各 Session 单独记录载入身份。`tool_search` 搜索并载入，或经 `mcp_list_tools` / `mcp_load_tools` 载入。预算为模型窗口的 5%，按最近调用记录淘汰；单批自身超预算时仍整批载入。实际载入和淘汰产生有序增量。同一次载入先提交移除、再提交带定义快照的新增，事件提交后同步 Session Meta。模型请求使用历史定义，真正执行仍由当前 Catalog 校验工具和参数。
 - Memory 不默认把正文注入系统消息；模型通过三件记忆工具按需访问当前 Project/default 的共享 Markdown。
 - Event Log 是已执行事实的恢复依据，SessionState 据此修复 Meta、`contextstate.json` 与 `agents_md.snapshot`，不能把页面缓存作为持久化事实。
 
@@ -99,7 +99,13 @@ SessionRuntime 在正常 Step 前依据最近一次正常 Agent 请求的完整�
 min(contextWindow × 0.8, contextWindow - maxOutputTokens - (10000 + maxOutputTokens))
 ```
 
-达到阈值时写入 `summary/start`，用当前 Turn Adapter 发起独立压缩请求。该请求禁用工具，要求完整、非空、正常结束的文本。成功后提交带覆盖事件范围和完整基线的 `summary/end`，再切换后续上下文；失败不会提交成功摘要。日志保留完整事件。实现见 [summary.ts](../runtime/context/src/summary.ts) 与 SessionRuntime 的 `startLoop()`。
+达到阈值时写入 `summary/start`，用当前 Turn Adapter 发起独立压缩请求。该请求禁用工具，要求完整、非空、正常结束的文本。成功后提交带覆盖事件范围和完整基线的 `summary/end`，再切换后续上下文；失败不会提交成功摘要。日志保留完整事件。 MCP 快照按摘要覆盖的同一截止序号折叠，与摘要一并提交，随后写入 contextstate。实现见 [summary.ts](../runtime/context/src/summary.ts) 与 SessionRuntime 的 `startLoop()`。
+
+### Step 历史与协议转换
+
+每个正常 Step 从宿主取得已提交的有序历史。最近成功的 `summary/end` 是历史的首项，其 MCP 快照作为工具基线。Builder 结合基础工具、基线和后续事件构造消息与工具表。桌面和 CLI 共用这一请求形状，CLI 以空基线和 Run 内载入状态启动。标题和独立 Summary 继续传显式消息。
+
+Adapter 按兼容目录的协议、服务 URL 和模型匹配原生回放能力。当前规则覆盖目录中的官方 Anthropic 模型，来源为 `anthropic` / `anthropic_messages`。完整且匹配的 Assistant 消息逐块回放，其他消息走通用转换。首次回放带签名或加密数据的思考块时固定顶层工具表，后续增量按序作为内联变更放在整组工具结果后。官方 Anthropic 的独立 Summary 将通用消息作为文本材料。历史的系统提示和消息前缀仍需满足服务端的签名校验。
 
 ## 搜索服务配置管理
 

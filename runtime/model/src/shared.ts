@@ -12,6 +12,10 @@ import { streamWithRetry } from "../../network/src/retry.ts"
 import { isReasoningLevels, renderReasoningField } from "./reasoning.ts"
 import type {
   ModelConfig,
+  ModelHistory,
+  ModelHistoryEvent,
+  ModelMessage,
+  UnifiedToolDefinition,
   ModelStreamEvent,
   ModelTextBlock,
   Protocol,
@@ -92,7 +96,8 @@ export interface SplitModelContext {
   /** 传给协议专用 system / instructions 位置的系统文本。 */
   system: string
   /** 除首个 System Message 外的会话消息。 */
-  rest: UnifiedModelRequest["context"]["messages"]
+  rest: ModelMessage[]
+  tools: UnifiedToolDefinition[]
 }
 
 /**
@@ -109,6 +114,10 @@ export interface SplitModelContext {
  * @throws `AppError` 当首条不是 System Message 或后续仍出现 System Message 时抛出。
  */
 export function splitSystemMessage(request: UnifiedModelRequest): SplitModelContext {
+  if (request.context.history !== undefined) {
+    const { system, mcpBaseline, events } = request.context.history
+    return { system, rest: historyMessages(events), tools: foldHistoryTools([...request.tools, ...mcpBaseline], events) }
+  }
   const messages = request.context.messages
   const first = messages[0]
 
@@ -122,9 +131,42 @@ export function splitSystemMessage(request: UnifiedModelRequest): SplitModelCont
     }
   }
 
-  return { system: first.content, rest: messages.slice(1) }
+  return { system: first.content, rest: messages.slice(1), tools: request.tools }
 }
 
+
+/** 应用一条已提交的工具增量，保留定义首次加入时的顺序。 */
+export function applyHistoryToolChange(tools: Map<string, UnifiedToolDefinition>, event: ModelHistoryEvent): void {
+  if (event.type === "mcp/tools_added") {
+    for (const definition of event.definitions) tools.set(definition.name, definition)
+  } else if (event.type === "mcp/tools_removed") {
+    for (const name of event.toolNames) tools.delete(name)
+  }
+}
+
+/** 从基线折叠工具定义，用于通用请求及摘要快照。 */
+export function foldHistoryTools(baseline: UnifiedToolDefinition[], events: ModelHistory["events"]): UnifiedToolDefinition[] {
+  const tools = new Map(baseline.map((tool) => [tool.name, tool]))
+  for (const event of events) applyHistoryToolChange(tools, event)
+  return [...tools.values()]
+}
+
+/** 将一条模型相关事件投影成通用消息，工具增量另由工具转换消费。 */
+export function historyMessage(event: ModelHistoryEvent): ModelMessage | undefined {
+  switch (event.type) {
+    case "summary/end": return { role: "user", content: event.summary }
+    case "context_update":
+    case "user/message": return { role: "user", content: event.content }
+    case "assistant/message": return { role: "assistant", content: event.content }
+    case "tool/result": return { role: "tool", toolCallId: event.toolCallId, content: event.content, isError: event.isError }
+    default: return undefined
+  }
+}
+
+/** 通用历史投影，保持消息与工具结果的提交顺序。 */
+export function historyMessages(events: ModelHistoryEvent[]): ModelMessage[] {
+  return events.flatMap((event) => historyMessage(event) ?? [])
+}
 
 /** 文本与工具调用参数 */
 

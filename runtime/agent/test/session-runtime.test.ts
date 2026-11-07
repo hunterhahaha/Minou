@@ -1,3 +1,4 @@
+import { requestMessages } from "../../model/test/helpers.ts"
 /**
  * 验证 SessionRuntime 的 Turn 入口、FIFO 队列、资源绑定、取消和事件日志恢复。
  *
@@ -102,9 +103,9 @@ function fixture(
       calls.push("readCurrentModel")
       return structuredClone(pendingReadModels.shift() ?? diskModel)
     },
-    buildContent: async () => {
-      calls.push("buildContent")
-      return [{ role: "system", content: "fixed" }, { role: "user", content: MESSAGE }]
+    buildHistory: async () => {
+      calls.push("buildHistory")
+      return { system: "fixed", mcpBaseline: [], events: [] }
     },
     createLoopOptions: async (model: ModelRef) => {
       calls.push("createLoopOptions")
@@ -114,7 +115,10 @@ function fixture(
           contextWindow: 128000, maxOutputTokens: 4096, stream: async function* (request: Parameters<import("../../model/src/types.ts").ModelAdapter["stream"]>[0]) {
             calls.push("modelRequest")
             assert.deepEqual(request.model, model)
-            assert.deepEqual(request.context.messages.map((message: import("../../model/src/types.ts").ModelMessage) => message.role), ["system", "user"])
+            assert.equal(requestMessages(request)[0].role, "system")
+            assert.deepEqual(requestMessages(request).at(-1), {
+              role: "user", content: events.filter((event) => event.type === "user/message").at(-1)?.message.content,
+            })
             yield { type: "stream_end" as const, completion: "finished" as const }
           },
         },
@@ -162,7 +166,7 @@ function fixture(
     prepareExistingTurn: overrides.prepareExistingTurn,
     writeCurrentModel: overrides.writeCurrentModel,
     readCurrentModel: overrides.readCurrentModel,
-    buildContent: overrides.buildContent,
+    buildHistory: overrides.buildHistory,
   })
   return {
     ports,
@@ -311,7 +315,7 @@ async function testNewSession(): Promise<void> {
     "writeCurrentModel",
     "readCurrentModel",
     "createLoopOptions",
-    "buildContent",
+    "buildHistory",
   ])
 }
 
@@ -338,7 +342,7 @@ async function testContinueSession(): Promise<void> {
     "readCurrentModel",
     "createLoopOptions",
     "appendBatch",
-    "buildContent",
+    "buildHistory",
   ])
   assert.deepEqual(state.writtenModels, [])
   assert.deepEqual(state.batches[0]?.[0], {
@@ -928,7 +932,7 @@ async function testConcreteRuntimeBindings(): Promise<void> {
       turn: 2,
       summaryId: "summary-1",
       fromEventSeq: 2,
-      throughEventSeq: 5,
+      throughEventSeq: log.at(-1)!.seq,
     })
     await runtime.appendEvent({
       type: "summary/end",
@@ -936,13 +940,12 @@ async function testConcreteRuntimeBindings(): Promise<void> {
       summaryId: "summary-1",
       summary: "Earlier context summary.",
       fromEventSeq: 2,
-      throughEventSeq: 5,
-      baseline: { agentsmd: baseline.agentsmd, skills: baseline.skills },
+      throughEventSeq: log.at(-1)!.seq,
+      baseline: { agentsmd: baseline.agentsmd, skills: baseline.skills, mcp: [] },
     })
     assert.deepEqual(await runtime.buildContent(2), [
       { role: "system", content: "system\n\nworkspace\n\nUse pnpm.\n\nskills-1" },
       { role: "user", content: "Earlier context summary." },
-      { role: "user", content: [{ type: "text", text: "继续" }] },
     ])
     await assert.rejects(
       runtime.createLoopOptions({ ...MODEL, modelId: "missing" }),
@@ -1013,7 +1016,7 @@ async function testStoppedThinkingCanContinue(): Promise<void> {
           active!.stop()
           throw createAbortError()
         }
-        assert.ok(request.context.messages.some((message) => message.role === "assistant" &&
+        assert.ok(requestMessages(request).some((message) => message.role === "assistant" &&
           Array.isArray(message.content) && message.content.some((block) => block.type === "thinking" && block.text === "停止前的思考")))
         yield { type: "block_start", index: 0, blockType: "text" }
         yield { type: "block_end", index: 0, block: { type: "text", text: "已继续" } }

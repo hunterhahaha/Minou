@@ -1,3 +1,6 @@
+import { splitSystemMessage } from "../../model/src/shared.ts"
+import type { ToolExecutionContext } from "../../tools/src/types.ts"
+import { requestMessages } from "../../model/test/helpers.ts"
 /**
  * 使用脚本模型响应和真实临时 SQLite、派生文件验证上下文压缩。
  *
@@ -30,10 +33,10 @@ const LOADED = [{ name: MCP.name, serverId: "remote", originalToolName: "read", 
  * @param tool 是否改为产生完整工具调用，而非普通文本块。
  * @returns 合法完整流。
  */
-function response(text: string, tokens = 10, tool = false): ModelStreamEvent[] {
+function response(text: string, tokens = 10, tool = false, toolName = "read"): ModelStreamEvent[] {
   return [
     { type: "block_start", index: 0, blockType: tool ? "tool_call" : "text" },
-    { type: "block_end", index: 0, block: tool ? { type: "tool_call", toolCallId: text, name: "read", arguments: { path: text } } : { type: "text", text } },
+    { type: "block_end", index: 0, block: tool ? { type: "tool_call", toolCallId: text, name: toolName, arguments: { path: text } } : { type: "text", text } },
     { type: "stream_end", completion: tool ? "tool_calls" : "finished", usage: { inputTokens: tokens - 3, cacheReadTokens: 2, cacheWriteTokens: 1, outputTokens: 4 } },
   ]
 }
@@ -53,7 +56,7 @@ function baseline(root: string, version: string): CurrentSessionBaseline {
   return {
     agentsmd: { path: join(root, "AGENTS.md"), hash: version, content: `agents-${version}` },
     skills: { content: `skills-${version}`, entries, descriptions },
-    mcp: [MCP], additionalMeta: { loadedMcpTools: LOADED },
+    mcp: [],
   }
 }
 
@@ -83,8 +86,20 @@ function harness(root: string, name: string, respond: (request: UnifiedModelRequ
       } }
     },
     listToolDefinitions: (mcp: UnifiedToolDefinition[] = []) => [{ name: "read", inputSchema: { type: "object" } }, ...mcp],
-    mcpManager: { getDefinitions: () => structuredClone([MCP]) },
-    executeTool: async () => { executions++; return { status: "success", content: [{ type: "text", text: "tool result" }] } },
+    executeTool: async (name: string, _args: unknown, context: ToolExecutionContext) => {
+      executions++
+      if (name === "mcp_load_tools") {
+        try {
+          await context.mcpRuntime!.writeLoadedTools(LOADED, {
+            loaded: LOADED, loadedCount: 1, added: [{ entry: LOADED[0], definition: MCP }], removed: [],
+          })
+        } catch {
+          const error = { source: "mcp", code: "MCP_LOAD_FAILED", message: "MCP 工具状态保存失败" }
+          return { status: "error", error, content: [{ type: "text", text: error.message }] }
+        }
+      }
+      return { status: "success", content: [{ type: "text", text: "tool result" }] }
+    },
     estimateSkillTokens: (value: string) => value.length,
     interruptTerminals: () => [],
   } as unknown as SessionRuntimeGlobal
@@ -173,7 +188,7 @@ async function testRepeatedCompression(root: string): Promise<void> {
       yield* response(`summary-${summaries}`, 999999)
     } else {
       normals++
-      if (normals < 3) { h.setBaseline(`v${normals + 1}`); yield* response(`call-${normals}`, HIGH, true) }
+      if (normals < 3) { h.setBaseline(`v${normals + 1}`); yield* response(`call-${normals}`, HIGH, true, normals === 1 ? "mcp_load_tools" : "read") }
       else yield* response("final")
     }
   })
@@ -205,20 +220,22 @@ async function testRepeatedCompression(root: string): Promise<void> {
     assert.equal(events.find((value) => value.seq === event.throughEventSeq)!.type, "step/end")
   }
   const compactRequests = h.requests.filter((request) => request.toolChoice === "none")
-  assert.equal(compactRequests[0].context.messages[0].content, "original system\n\nworkspace\n\nagents-v2\n\nskills-v2")
-  assert.ok(compactRequests[0].context.messages.some((message) => message.role === "tool"))
-  assert.ok(compactRequests[1].context.messages.some((message) => message.content === "summary-1"))
-  assert.deepEqual(h.requests[4].context.messages, [
+  assert.equal(requestMessages(compactRequests[0])[0].content, "original system\n\nworkspace\n\nagents-v2\n\nskills-v2")
+  assert.ok(requestMessages(compactRequests[0]).some((message) => message.role === "tool"))
+  assert.ok(requestMessages(compactRequests[1]).some((message) => message.content === "summary-1"))
+  assert.deepEqual(requestMessages(h.requests[4]), [
     { role: "system", content: "original system\n\nworkspace\n\nagents-v3\n\nskills-v3" }, { role: "user", content: "summary-2" },
   ])
   for (let index = 0; index < h.requests.length; index++) {
-    assert.deepEqual(h.requests[index].tools.map((tool) => tool.name), ["read", MCP.name])
-    if (h.requests[index].toolChoice === "none") assert.deepEqual(h.requests[index].tools, h.requests[index + 1].tools)
+    assert.deepEqual(splitSystemMessage(h.requests[index]).tools.map((tool) => tool.name), index === 0 ? ["read"] : ["read", MCP.name])
+    if (h.requests[index].toolChoice === "none") assert.deepEqual(h.requests[index].tools, splitSystemMessage(h.requests[index + 1]).tools)
   }
   assert.equal(events.filter((event) => event.type === "user/message").length, 1)
   assert.equal(events.filter((event) => event.type === "assistant/message").length, 3)
   assert.equal(events.some((event) => event.type === "user/message" && event.message.content.some((block) => block.text === COMPACT_PROMPT)), false)
   assert.deepEqual(h.meta().loadedMcpTools, LOADED)
+  assert.deepEqual(compressed[0].baseline.mcp, [MCP])
+  assert.deepEqual(compressed[1].baseline.mcp, [MCP])
   assert.deepEqual((await h.context()).mcp, [MCP])
   assert.equal((await h.context()).skills.id, compressed[1].eventId)
   assert.deepEqual(h.counts(), { factoryCalls: 1, executions: 2 })
@@ -244,8 +261,8 @@ async function testNewTurnAndRecovery(root: string): Promise<void> {
   const events = await next.readEvents() as SessionEvent[]
   const summary = events.find((event) => event.type === "summary/end")!
   assert.equal(events.find((event) => event.seq === summary.throughEventSeq)!.type, "user/message")
-  assert.ok(h.requests[1].context.messages.some((message) => JSON.stringify(message).includes("new user")))
-  assert.deepEqual(h.requests[2].context.messages.slice(1), [{ role: "user", content: "new turn summary" }])
+  assert.ok(requestMessages(h.requests[1]).some((message) => JSON.stringify(message).includes("new user")))
+  assert.deepEqual(requestMessages(h.requests[2]).slice(1), [{ role: "user", content: "new turn summary" }])
   const before = JSON.stringify(events)
   await writeFile(join(h.directory, "contextstate.json"), "invalid state")
   await writeFile(join(h.directory, "agents_md.snapshot"), "stale")
@@ -293,7 +310,7 @@ async function testQueueDuringCompression(root: string): Promise<void> {
   const users = events.filter((event) => event.type === "user/message")
   assert.equal(compressed[0].throughEventSeq, users[0].seq)
   assert.equal(compressed[1].throughEventSeq, users[1].seq)
-  assert.ok(h.requests[2].context.messages.some((message) => JSON.stringify(message).includes("queued during compression")))
+  assert.ok(requestMessages(h.requests[2]).some((message) => JSON.stringify(message).includes("queued during compression")))
   assert.deepEqual(h.counts(), { factoryCalls: 2, executions: 0 })
 }
 
@@ -368,7 +385,7 @@ async function testInvalidCoverage(root: string): Promise<void> {
     await h.runtime.appendEvent({ type: "step/end", turn: 1, step: 1, reason: "completed" })
     const value = baseline(root, "v1")
     await h.runtime.appendEvent({ type: "summary/start", summaryId: "invalid", turn: 1, fromEventSeq, throughEventSeq })
-    await h.runtime.appendEvent({ type: "summary/end", summaryId: "invalid", turn: 1, summary: "invalid", fromEventSeq, throughEventSeq, baseline: { agentsmd: value.agentsmd, skills: value.skills } })
+    await h.runtime.appendEvent({ type: "summary/end", summaryId: "invalid", turn: 1, summary: "invalid", fromEventSeq, throughEventSeq, baseline: { agentsmd: value.agentsmd, skills: value.skills, mcp: [] } })
     const before = await h.runtime.readEvents()
     await assert.rejects(h.runtime.repairSession(), (error: unknown) => error instanceof SessionLogCorruptedError && /覆盖端点|截断/.test(error.message))
     assert.deepEqual(await h.runtime.readEvents(), before)
@@ -392,7 +409,7 @@ async function testInvalidPairing(root: string): Promise<void> {
     await h.runtime.initializeSession()
     const value = baseline(root, "v1")
     const start = { type: "summary/start" as const, summaryId: "pair", turn: 1, fromEventSeq: 2, throughEventSeq: 2 }
-    const end = { ...start, type: "summary/end" as const, summary: "summary", baseline: { agentsmd: value.agentsmd, skills: value.skills } }
+    const end = { ...start, type: "summary/end" as const, summary: "summary", baseline: { agentsmd: value.agentsmd, skills: value.skills, mcp: [] } }
     if (mode !== "orphan") await h.runtime.appendEvent(start)
     if (mode === "duplicate-start") await h.runtime.appendEvent(start)
     else {
@@ -490,6 +507,73 @@ async function testUsageAtOtherStepOutcomes(root: string): Promise<void> {
 }
 
 /**
+ * 验证日志已经提交、Meta 写入失败时结束 Turn 并在恢复时补应用。
+ * @param root 隔离测试目录。
+ * @returns 恢复后的模型请求和 Meta 通过校验。
+ */
+async function testMcpMetaFailure(root: string): Promise<void> {
+  let requests = 0
+  const h = harness(root, "mcp-meta-failure", async function* (request) {
+    if (++requests === 1) yield* response("load", 10, true, "mcp_load_tools")
+    else {
+      assert.deepEqual(splitSystemMessage(request).tools.map((tool) => tool.name), ["read", MCP.name])
+      yield* response("resumed")
+    }
+  })
+  h.state().writeLoadedMCPTools = async () => { throw new Error("fixture Meta write failed") }
+  const failed = await h.runtime.startNewSession({ model: MODEL, content: MESSAGE })
+  await assert.rejects(failed.completion, /fixture Meta write failed/)
+  const before = await h.runtime.readEvents() as SessionEvent[]
+  const added = before.find((event) => event.type === "mcp/tools_added")!
+  assert.ok(added)
+  assert.equal(h.meta().loadedMcpToolsSeq, 0)
+  assert.deepEqual((await h.context()).mcp, [])
+  assert.ok(before.some((event) => event.type === "tool/result" && event.result.status === "error"))
+  assert.ok(before.some((event) => event.type === "turn/end" && event.reason === "error"))
+  h.runtime.close()
+  const restored = h.create()
+  try {
+    await (await restored.continueSession({ content: MESSAGE })).completion
+    assert.equal(requests, 2)
+    assert.equal(h.meta().loadedMcpToolsSeq, added.seq)
+    assert.deepEqual(h.meta().loadedMcpTools, LOADED)
+    assert.deepEqual((await h.context()).mcp, [])
+  } finally { restored.close() }
+}
+
+/**
+ * 验证协议中断后已经提交的原生块仍可恢复，部分 Assistant 缺少回放终止标记。
+ * @param root 隔离测试目录。
+ * @returns 下次请求保留可通用转换的历史。
+ */
+async function testInterruptedReplay(root: string): Promise<void> {
+  const replay = { name: "anthropic", protocol: "anthropic_messages" as const, payloadJson: '{"type":"thinking","thinking":"","signature":"signed"}' }
+  let requests = 0
+  const h = harness(root, "interrupted-replay", async function* (request) {
+    if (++requests === 1) {
+      yield { type: "block_start", index: 0, blockType: "thinking" }
+      yield { type: "block_end", index: 0, block: { type: "thinking", text: "", replay } }
+      yield { type: "block_start", index: 1, blockType: "text" }
+      yield { type: "block_delta", index: 1, delta: { type: "text", text: "partial" } }
+      throw new Error("fixture interrupted stream")
+    }
+    const assistant = request.context.history?.events.find((event) => event.type === "assistant/message")
+    assert.ok(assistant)
+    assert.equal(assistant.finishReason, undefined)
+    assert.deepEqual(assistant.content, [{ type: "thinking", text: "", replay }, { type: "text", text: "partial" }])
+    yield* response("resumed")
+  })
+  const failed = await h.runtime.startNewSession({ model: MODEL, content: MESSAGE })
+  await assert.rejects(failed.completion, /fixture interrupted stream/)
+  h.runtime.close()
+  const restored = h.create()
+  try {
+    await (await restored.continueSession({ content: MESSAGE })).completion
+    assert.equal(requests, 2)
+  } finally { restored.close() }
+}
+
+/**
  * 依次执行真实持久化的 Usage、压缩、队列与恢复场景，完成后清理临时目录。
  *
  * @returns 所有真实持久化场景完成；临时目录在成功或失败后均清理。
@@ -500,6 +584,8 @@ async function main(): Promise<void> {
   try {
     await testImmediateUsage(root)
     await testRepeatedCompression(root)
+    await testMcpMetaFailure(root)
+    await testInterruptedReplay(root)
     await testNewTurnAndRecovery(root)
     await testFailures(root)
     await testInvalidCoverage(root)

@@ -1,3 +1,4 @@
+import { requestMessages } from "../../model/test/helpers.ts"
 /**
  * 使用脚本模型和真实本机 Shell、PTY 后端验证 Session 进程工具链。
  *
@@ -27,7 +28,7 @@ const MESSAGE = [{ type: "text" as const, text: "测试进程工具" }]
  * @throws AssertionError - 工具结果缺失、关联错误或属于失败结果。
  */
 function toolText(request: UnifiedModelRequest, id: string): string {
-  const result = request.context.messages.find((message) => message.role === "tool" && message.toolCallId === id)
+  const result = requestMessages(request).find((message) => message.role === "tool" && message.toolCallId === id)
   assert.ok(result?.role === "tool" && !result.isError)
   return result.content.filter((block) => block.type === "text").map((block) => block.text).join("\n")
 }

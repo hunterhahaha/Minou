@@ -97,7 +97,7 @@ async function testInitializationAndRename(root: string): Promise<void> {
     assert.deepEqual(JSON.parse(row.current_model_json as string), MODEL)
     assert.deepEqual(JSON.parse(row.usage_json as string), meta.usage)
     assert.deepEqual(JSON.parse(row.skills_json as string), meta.skills)
-    assert.deepEqual(JSON.parse(row.additional_meta_json as string), { loadedMcpTools: meta.loadedMcpTools })
+    assert.deepEqual(JSON.parse(row.additional_meta_json as string), { loadedMcpTools: meta.loadedMcpTools, loadedMcpToolsSeq: 0 })
     assert.equal(JSON.parse(row.sandbox_mode_json as string), meta.sandboxMode)
   } finally {
     db.close()

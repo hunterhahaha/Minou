@@ -1,3 +1,4 @@
+import { requestMessages } from "../../model/test/helpers.ts"
 /** 独立压缩调用测试：无真实网络、工具执行器或 Session 持久化。 */
 import assert from "node:assert/strict"
 import { compressContext, summaryThreshold } from "../src/summary.ts"
@@ -53,7 +54,7 @@ async function main(): Promise<void> {
   assert.deepEqual(tools, TOOLS)
   assert.match(COMPACT_PROMPT, /checkpoint/i)
   const hostile: ModelAdapter = { async *stream(request) {
-    request.context.messages.length = 0; request.tools.length = 0
+    requestMessages(request).length = 0; request.tools.length = 0
     yield* textStream()
   } }
   await compressContext({ ...options, adapter: hostile })

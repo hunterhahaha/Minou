@@ -25,7 +25,8 @@ export function mcpError(code: string, message: string): AppError { return { sou
 export interface MCPLoadResult {
   /** 新加入的工具数，不含已经载入项。 */ loadedCount: number
   /** 预算治理后的完整载入记录。 */ loaded: SessionLoadedMCPTool[]
-  /** 当前有效的模型定义。 */ definitions: UnifiedToolDefinition[]
+  /** 此次新增的载入记录与模型定义快照。 */ added: { entry: SessionLoadedMCPTool; definition: UnifiedToolDefinition }[]
+  /** 此次载入移除的工具名。 */ removed: string[]
 }
 
 /** 应用启动时创建一次的 MCP 连接、Catalog、搜索和调用管理器。 */
@@ -169,7 +170,13 @@ export class MCPManager {
       }
     }
     loaded.push(...batch)
-    return { loadedCount: batch.length, loaded, definitions: this.getDefinitions(loaded) }
+    const retained = new Set(loaded.map((entry) => entry.name))
+    return {
+      loadedCount: batch.length,
+      loaded,
+      added: batch.map((entry) => ({ entry, definition: this.exposeDefinition(this.catalog.get(entry.name)!.definition) })),
+      removed: previous.filter((entry) => !retained.has(entry.name)).map((entry) => entry.name),
+    }
   }
 
   /**
@@ -215,7 +222,7 @@ export class MCPManager {
       // 审批等待期间 Catalog 可能更新，发送前按最新业务 Schema 再检查一次。
       if (!tool.validate(args).valid) return mcpError("INVALID_TOOL_ARGUMENTS", "MCP 工具参数不符合当前 Schema。")
       const updated = loaded.map((entry) => entry.name === name ? { ...entry, lastCalledAt: Date.now() } : entry)
-      await runtime.writeLoadedTools(updated, this.getDefinitions(updated))
+      await runtime.writeLoadedTools(updated)
       if (context.signal.aborted) return mcpError("CANCELLED", "MCP 工具调用已取消。")
       // 持久化让出执行权期间目录也可能更新，真正发送前必须重新定位和校验。
       tool = this.catalog.get(name)

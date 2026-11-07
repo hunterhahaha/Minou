@@ -69,8 +69,19 @@ export interface ModelConfig {
 /** 块类型。 */
 export type BlockType = "thinking" | "text" | "tool_call"
 
+/** 由端点能力规则分配的原生块来源。 */
+export interface ReplaySource {
+  name: string
+  protocol: Protocol
+}
+
+/** 已完整接收的原生块，由对应协议验证并回放。 */
+export interface BlockReplay extends ReplaySource {
+  payloadJson: string
+}
+
 /** Assistant 内容块，也是 `assistant/message.content` 的元素类型。 */
-export type AssistantContentBlock =
+export type AssistantContentBlock = (
   | { type: "thinking"; text: string }
   | { type: "text"; text: string }
   | {
@@ -79,6 +90,8 @@ export type AssistantContentBlock =
       name: string
       arguments: unknown
     }
+
+  ) & { replay?: BlockReplay }
 
 /** `assistant/block_delta.delta` 的增量形态。 */
 export type AssistantBlockDelta =
@@ -255,14 +268,35 @@ export function cacheHitRate(accumulated: Usage): number | undefined {
 
 
 /**
- * ContextBuilder 的有序消息数组。`messages[0]` 必须是唯一的 System Message；
+ * 正常 Step 提供已裁剪的事件历史，由 Adapter 构建消息和工具。
+ * 标题与独立 Summary 直接提供有序消息数组。`messages[0]` 必须是唯一的 System Message；
  * `messages[1...]` 是真实会话上下文。Adapter 将首项分别映射到 Anthropic `system`、
  * Chat Completions `developer/system`、Responses `instructions`，其余项进入消息或 input。
  * 固定上下文与会话上下文的分界由位置表示，不增加重复的元信息字段。
  */
-export interface UnifiedModelContext {
-  /** 按送入模型的顺序排列；第一个元素必须是唯一的 System Message。 */
-  messages: ModelMessage[]
+export type UnifiedModelContext =
+  | { messages: ModelMessage[]; purpose?: "summary"; history?: never }
+  | { history: ModelHistory; messages?: never; purpose?: never }
+
+/** 经宿主裁剪后，转换器按序消费的模型相关事件。 */
+export type ModelHistoryEvent = { seq: number } & (
+  | { type: "summary/end"; summary: string }
+  | { type: "context_update"; content: string }
+  | { type: "user/message"; content: ModelTextBlock[] }
+  | { type: "assistant/message"; content: AssistantContentBlock[]; finishReason?: string }
+  | { type: "tool/result"; turn: number; step: number; toolCallEventId: string; toolCallId: string; content: ModelTextBlock[]; isError: boolean }
+  | { type: "mcp/tools_added"; turn: number; step: number; definitions: UnifiedToolDefinition[] }
+  | { type: "mcp/tools_removed"; turn: number; step: number; toolNames: string[] }
+)
+
+/** 请求起点的固定信息与从该起点开始的有序事件。 */
+export interface ModelHistory {
+  /** 转换到协议系统提示字段的文本。 */
+  system: string
+  /** 最近一次成功 Summary 截止时的 MCP 工具定义。 */
+  mcpBaseline: UnifiedToolDefinition[]
+  /** 以 Summary 为起点的模型相关事件，按持久化序号排列。 */
+  events: ModelHistoryEvent[]
 }
 
 /**

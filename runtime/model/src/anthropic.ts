@@ -2,15 +2,18 @@
  * Anthropic Messages 的请求与统一流事件转换。
  *
  * 请求映射 system、messages、tool_use 与 tool_result；max_tokens 使用模型最大输出配置。
- * 历史 thinking 缺少签名，不回传到协议请求；未支持的服务端块不进入统一流。
+ * 启用兼容规则时回放完整原生历史，在签名边界之后发送内联工具变更。
  * SDK 自动重试关闭，流请求通过共享入口处理重试、取消与错误归一化。
  */
 
 import Anthropic from "@anthropic-ai/sdk"
 
-import type { ProtocolClientOptions } from "./adapter.ts"
+import type { NativeHistoryPolicy, ProtocolClientOptions } from "./adapter.ts"
 import {
+  applyHistoryToolChange,
   assertRequestMatchesModel,
+  historyMessage,
+  invalidRequest,
   joinTextBlocks,
   parseToolCallArguments,
   reasoningRequestFragment,
@@ -30,6 +33,8 @@ import type {
   ModelCompletion,
   ModelConfig,
   ModelMessage,
+  ModelHistory,
+  ReplaySource,
   ModelStreamEvent,
   ModelTextBlock,
   UnifiedModelRequest,
@@ -45,6 +50,15 @@ type ToolUnion = Anthropic.Messages.ToolUnion
 type RawMessageStreamEvent = Anthropic.Messages.RawMessageStreamEvent
 type MessageCreateParamsStreaming = Anthropic.Messages.MessageCreateParamsStreaming
 type ToolInputSchema = Anthropic.Messages.Tool.InputSchema
+type NativeBlock = Extract<Anthropic.Messages.RawContentBlockStartEvent["content_block"],
+  { type: "text" | "thinking" | "redacted_thinking" | "tool_use" }>
+type InlineToolBlock =
+  | { type: "tool_addition"; tool: { type: "tool_definition"; definition: ToolUnion } }
+  | { type: "tool_removal"; tool: { type: "tool_reference"; name: string } }
+type AnthropicRequest = Omit<MessageCreateParamsStreaming, "messages"> & {
+  messages: Array<MessageParam | { role: "system"; content: InlineToolBlock[] }>
+}
+const INLINE_TOOLS_BETA = "inline-tools-2026-09-15"
 
 
 /** 请求方向：统一上下文 → Anthropic Messages */
@@ -166,31 +180,152 @@ function toAnthropicTools(tools: UnifiedToolDefinition[]): ToolUnion[] {
 }
 
 /**
+ * 读取同来源的完整块，任一块不可用时交给通用消息转换。
+ * @param blocks 按响应顺序提交的内容块。
+ * @param source 当前端点的回放来源。
+ * @returns 可按顺序重放的原生内容。
+ */
+function replayBlocks(blocks: AssistantContentBlock[], source: ReplaySource): NativeBlock[] | undefined {
+  const result: NativeBlock[] = []
+  for (const block of blocks) {
+    const replay = block.replay
+    if (replay?.name !== source.name || replay.protocol !== source.protocol) return undefined
+    try {
+      const native = JSON.parse(replay.payloadJson) as NativeBlock | null
+      if (native === null) return undefined
+      if (block.type === "text" && native.type === "text" && native.text === block.text ||
+        block.type === "thinking" && native.type === "thinking" && native.thinking === block.text &&
+          typeof native.signature === "string" && native.signature.length > 0 ||
+        block.type === "thinking" && native.type === "redacted_thinking" &&
+          typeof native.data === "string" && native.data.length > 0 ||
+        block.type === "tool_call" && native.type === "tool_use" && native.id === block.toolCallId &&
+          native.name === block.name && isToolInput(native.input)) {
+        result.push(native)
+      } else return undefined
+    } catch {
+      return undefined
+    }
+  }
+  return result
+}
+
+/**
+ * 重建有原生回放能力的请求历史及签名所绑定的顶层工具表。
+ * @param history 宿主裁剪后的有序历史。
+ * @param baseTools 每次请求提供的基础工具。
+ * @param policy 当前端点能力与回放来源。
+ * @returns 原生协议消息与顶层工具列表。
+ */
+function buildNativeHistory(history: ModelHistory, baseTools: UnifiedToolDefinition[], policy: NativeHistoryPolicy): {
+  messages: AnthropicRequest["messages"]; tools: UnifiedToolDefinition[]
+} {
+  const tools = new Map([...baseTools, ...history.mcpBaseline].map((tool) => [tool.name, tool]))
+  const messages: AnthropicRequest["messages"] = []
+  let frozen = false
+  let changes: InlineToolBlock[] = []
+  let resultRound: { turn: number; step: number } | undefined
+  const flushChanges = () => {
+    if (changes.length === 0) return
+    if (messages.at(-1)?.role !== "user") throw invalidRequest("Anthropic 内联工具变更缺少前置的用户消息或工具结果。")
+    messages.push({ role: "system", content: changes })
+    changes = []
+  }
+
+  for (const event of history.events) {
+    if (event.type === "mcp/tools_added" || event.type === "mcp/tools_removed") {
+      if (!frozen || !policy.inlineToolChanges) applyHistoryToolChange(tools, event)
+      else if (event.type === "mcp/tools_added") {
+        for (const definition of toAnthropicTools(event.definitions)) {
+          changes.push({ type: "tool_addition", tool: { type: "tool_definition", definition } })
+        }
+      } else {
+        for (const name of event.toolNames) changes.push({ type: "tool_removal", tool: { type: "tool_reference", name } })
+      }
+      continue
+    }
+    const projection = historyMessage(event)
+    if (projection === undefined) continue
+    if (event.type === "assistant/message") {
+      const replay = event.finishReason ? replayBlocks(event.content, policy) : undefined
+      const content = replay ?? toAssistantContent(event.content)
+      if (content.length === 0) continue
+      flushChanges()
+      messages.push({ role: "assistant", content })
+      if (replay?.some((block) => block.type === "thinking" || block.type === "redacted_thinking")) frozen = true
+      resultRound = undefined
+      continue
+    }
+    const converted = toAnthropicMessages([projection])[0]
+    if (converted === undefined) continue
+    const last = messages.at(-1)
+    if (event.type === "tool/result" && last?.role === "user" &&
+      resultRound?.turn === event.turn && resultRound.step === event.step) {
+      ;(last.content as ContentBlockParam[]).push(...converted.content as ContentBlockParam[])
+    } else {
+      messages.push(converted)
+    }
+    resultRound = event.type === "tool/result" ? event : undefined
+  }
+  flushChanges()
+  return { messages, tools: [...tools.values()] }
+}
+
+/**
+ * 将独立摘要所需的通用历史编码为文本材料。
+ * @param messages 通用消息，末项为摘要指令。
+ * @returns 单条包含材料和指令的 user 消息。
+ */
+function summaryMessages(messages: ModelMessage[]): MessageParam[] {
+  const material = messages.slice(0, -1).map((message) => message.role !== "assistant" ? message : {
+    ...message, content: message.content.map(({ replay: _replay, ...block }) => block),
+  })
+  const instruction = messages.at(-1)
+  const prompt = instruction?.role === "user" ? joinTextBlocks(toUserContent(instruction.content)) : ""
+  return [{ role: "user", content: JSON.stringify(material) + "\n\n" + prompt }]
+}
+
+/**
  * 构建一次 Anthropic Messages 流式请求。
  *
  * `system` 取 `messages[0]`；`tools` 为空时不传该字段（协议不接受空数组）。
  *
  * @param request 待转换的统一模型请求。
  * @param config 当前 Adapter 绑定的完整模型配置。
+ * @param policy 可选的原生块回放与工具变更规则。
  * @returns SDK 可接受的流式 Messages 请求参数。
  * @throws `AppError` 当统一上下文或推理等级配置无效时抛出。
  */
 export function buildAnthropicRequest(
   request: UnifiedModelRequest,
   config: ModelConfig,
-): MessageCreateParamsStreaming {
-  const { system, rest } = splitSystemMessage(request)
+  policy?: NativeHistoryPolicy,
+): AnthropicRequest {
+  const history = request.context.history
+  let system: string
+  let messages: AnthropicRequest["messages"]
+  let definitions: UnifiedToolDefinition[]
+  if (policy && history) {
+    system = history.system
+    const native = buildNativeHistory(history, request.tools, policy)
+    messages = native.messages
+    definitions = native.tools
+  } else {
+    const context = splitSystemMessage(request)
+    system = context.system
+    definitions = context.tools
+    messages = policy && request.context.purpose === "summary" ? summaryMessages(context.rest) : toAnthropicMessages(context.rest)
+  }
 
-  const params: MessageCreateParamsStreaming = {
+  const params: AnthropicRequest = {
     model: request.model.name,
     max_tokens: config.maxOutputTokens,
     system,
-    messages: toAnthropicMessages(rest),
+    messages,
     stream: true,
   }
 
-  if (request.tools.length > 0) {
-    params.tools = toAnthropicTools(request.tools)
+  if (definitions.length > 0) {
+    params.tools = toAnthropicTools(definitions)
   }
   if (request.toolChoice === "none") params.tool_choice = { type: "none" }
 
@@ -217,6 +352,9 @@ interface PendingBlock {
   name: string
   /** 已收到的工具参数 JSON 文本。 */
   argumentsJson: string
+  /** 原生起始块及随流更新的协议字段。 */
+  native?: NativeBlock
+  signatureStarted?: boolean
 }
 
 /**
@@ -321,11 +459,13 @@ function resolveCompletion(
  * 流在 `message_stop` 之前结束（连接被截断等）时抛错，不产出 `stream_end`。
  *
  * @param events Anthropic SDK 产生的原始流事件。
+ * @param source 需要收取完整原生内容块时的来源。
  * @returns 按统一块协议产生的异步事件流。
  * @throws `Error` 当原始流在 `message_stop` 前结束时抛出。
  */
 export async function* mapAnthropicStream(
   events: AsyncIterable<RawMessageStreamEvent>,
+  source?: ReplaySource,
 ): AsyncGenerator<ModelStreamEvent> {
   /** key 是协议侧的 content block index；不在表里表示该 index 已被忽略。 */
   const blocks = new Map<number, PendingBlock>()
@@ -367,6 +507,23 @@ export async function* mapAnthropicStream(
     if (block === undefined) return undefined
     blocks.delete(protocolIndex)
 
+    const native = block.native
+    if (native?.type === "text") native.text = block.text
+    if (native?.type === "thinking") {
+      native.thinking = block.text
+      if (typeof native.signature !== "string" || native.signature.length === 0) throw streamInterruptedError("anthropic_messages")
+    }
+    if (native?.type === "redacted_thinking" && (typeof native.data !== "string" || native.data.length === 0)) {
+      throw streamInterruptedError("anthropic_messages")
+    }
+    if (native?.type === "tool_use" && block.argumentsJson.length > 0) {
+      try { native.input = JSON.parse(block.argumentsJson) }
+      catch { throw streamInterruptedError("anthropic_messages") }
+    }
+    if (native?.type === "tool_use" && (!native.id || !native.name || !isToolInput(native.input))) {
+      throw streamInterruptedError("anthropic_messages")
+    }
+    const replay = source && native ? { name: source.name, protocol: source.protocol, payloadJson: JSON.stringify(native) } : undefined
     if (block.blockType === "tool_call") {
       endedToolCalls += 1
       return {
@@ -376,7 +533,8 @@ export async function* mapAnthropicStream(
           type: "tool_call",
           toolCallId: block.toolCallId,
           name: block.name,
-          arguments: parseToolCallArguments(block.argumentsJson),
+          arguments: native?.type === "tool_use" ? native.input : parseToolCallArguments(block.argumentsJson),
+          ...(replay ? { replay } : {}),
         },
       }
     }
@@ -384,7 +542,7 @@ export async function* mapAnthropicStream(
     return {
       type: "block_end",
       index: block.index,
-      block: { type: block.blockType, text: block.text },
+      block: { type: block.blockType, text: block.text, ...(replay ? { replay } : {}) },
     }
   }
 
@@ -415,11 +573,13 @@ export async function* mapAnthropicStream(
 
       case "content_block_start": {
         const content = event.content_block
+        if (source && (event.index !== nextIndex || blocks.size > 0)) throw streamInterruptedError("anthropic_messages")
 
         if (content.type === "text" || content.type === "thinking") {
           const blockType: BlockType = content.type
           const text = content.type === "text" ? content.text : content.thinking
           const block = openBlock(event.index, blockType)
+          if (source) block.native = structuredClone(content)
           yield { type: "block_start", index: block.index, blockType }
           /** 起始事件里已经带文本时补一条增量，避免增量之和与 block_end 的内容不一致。 */
           if (text.length > 0) {
@@ -435,10 +595,11 @@ export async function* mapAnthropicStream(
 
         if (content.type === "tool_use") {
           const block = openBlock(event.index, "tool_call")
+          if (source) block.native = structuredClone(content)
           block.toolCallId = content.id
           block.name = content.name
           /** 非流式给出 input 时（空对象是常态）把它当作已拼装的参数起点。 */
-          if (hasKeys(content.input)) block.argumentsJson = serializeToolCallArguments(content.input)
+          if (!source && hasKeys(content.input)) block.argumentsJson = serializeToolCallArguments(content.input)
 
           yield { type: "block_start", index: block.index, blockType: "tool_call" }
           /** 先给出 id 与 name：下游不必等到第一个参数增量才知道调用的是哪个工具。 */
@@ -450,14 +611,23 @@ export async function* mapAnthropicStream(
           break
         }
 
-        /** 其余块类型（redacted_thinking / server_tool_use / 各类 server tool result 等） */
+        if (source) {
+          if (content.type !== "redacted_thinking") throw streamInterruptedError("anthropic_messages")
+          const block = openBlock(event.index, "thinking")
+          block.native = structuredClone(content)
+          yield { type: "block_start", index: block.index, blockType: "thinking" }
+        }
+        /** 未启用原生回放时，其余类型继续走通用投影。 */
         /** 没有统一表达，忽略该 index 的后续增量与结束事件。 */
         break
       }
 
       case "content_block_delta": {
         const block = blocks.get(event.index)
-        if (block === undefined) break
+        if (block === undefined) {
+          if (source) throw streamInterruptedError("anthropic_messages")
+          break
+        }
 
         const delta = event.delta
         if (delta.type === "text_delta" && block.blockType === "text") {
@@ -490,13 +660,19 @@ export async function* mapAnthropicStream(
           break
         }
 
-        /** signature_delta / citations_delta：统一格式没有对应表达，忽略。 */
+        if (block.native?.type === "thinking" && delta.type === "signature_delta") {
+          block.native.signature = (block.signatureStarted ? block.native.signature : "") + delta.signature
+          block.signatureStarted = true
+        } else if (block.native?.type === "text" && delta.type === "citations_delta") {
+          ;(block.native.citations ??= []).push(delta.citation)
+        } else if (source) throw streamInterruptedError("anthropic_messages")
         break
       }
 
       case "content_block_stop": {
         const closed = closeBlock(event.index)
         if (closed !== undefined) yield closed
+        else if (source) throw streamInterruptedError("anthropic_messages")
         break
       }
 
@@ -507,6 +683,7 @@ export async function* mapAnthropicStream(
       }
 
       case "message_stop": {
+        if (source && (blocks.size > 0 || stopReason === undefined)) throw streamInterruptedError("anthropic_messages")
         sawMessageStop = true
         for (const flushed of flushTextBlocks()) yield flushed
         yield {
@@ -524,6 +701,15 @@ export async function* mapAnthropicStream(
   }
 
   if (!sawMessageStop) throw streamInterruptedError("anthropic_messages")
+}
+
+/**
+ * 校验原生 tool_use 的最终参数对象。
+ * @param value 由起始块或 JSON 增量获得的参数。
+ * @returns 参数是否为工具输入对象。
+ */
+function isToolInput(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
 }
 
 /**
@@ -555,6 +741,7 @@ export function createAnthropicAdapter(
   config: ModelConfig,
   options: ProtocolClientOptions,
 ): ModelAdapter {
+  const { nativeHistory } = options
   const client = new Anthropic({
     apiKey: options.apiKey,
     baseURL: options.baseURL,
@@ -577,10 +764,11 @@ export function createAnthropicAdapter(
   ): AsyncGenerator<ModelStreamEvent> {
     /** 校验与请求构建在迭代时抛出：AgentLoop 只需在一处处理 Adapter 的错误。 */
     assertRequestMatchesModel(request, config)
-    const params = buildAnthropicRequest(request, config)
+    const source = request.context.history ? nativeHistory : undefined
+    const params = buildAnthropicRequest(request, config, nativeHistory)
 
     yield* runModelStream((attemptSignal) => {
-      return mapAnthropicStream(requestAnthropicStream(client, params, attemptSignal, options?.timeoutMs))
+      return mapAnthropicStream(requestAnthropicStream(client, params, attemptSignal, source !== undefined, options?.timeoutMs), source)
     }, signal)
   }
 
@@ -593,16 +781,27 @@ export function createAnthropicAdapter(
  * @param client Anthropic SDK 客户端。
  * @param params 已构建的流式请求参数。
  * @param signal 当前请求尝试的取消信号。
+ * @param beta 正常请求是否使用端点启用的 beta Messages 接口。
  * @param timeout SDK 超时毫秒数；省略时沿用默认值。
  * @returns 原始 Anthropic 流事件异步生成器。
  * @throws SDK 请求失败或取消时抛出底层异常。
  */
 async function* requestAnthropicStream(
   client: Anthropic,
-  params: MessageCreateParamsStreaming,
+  params: AnthropicRequest,
   signal: AbortSignal,
+  beta: boolean,
   timeout?: number,
 ): AsyncGenerator<RawMessageStreamEvent> {
-  const stream = await client.messages.create(params, { signal, ...(timeout === undefined ? {} : { timeout }) })
+  const options = { signal, ...(timeout === undefined ? {} : { timeout }) }
+  if (beta) {
+    const betas = params.messages.some((message) => message.role === "system") ? [INLINE_TOOLS_BETA] : undefined
+    // 锁定版本的 SDK 可以发送 inline tool_definition，类型定义只包含引用。
+    const request = { ...params, ...(betas ? { betas } : {}) } as unknown as Anthropic.Beta.Messages.MessageCreateParamsStreaming
+    const stream = await client.beta.messages.create(request, options)
+    for await (const event of stream) yield event as RawMessageStreamEvent
+    return
+  }
+  const stream = await client.messages.create(params as MessageCreateParamsStreaming, options)
   for await (const event of stream) yield event
 }

@@ -102,7 +102,7 @@ export interface AgentLoopOptions {
    * beforeStep 可在压缩成功后原地替换内容，后续请求使用更新后的同一数组。
    */
   content: ModelMessage[]
-  /** 当前工具快照，或每次模型请求前解析 Session Tool Exposure State 的提供函数；Loop 不解释工具内容。 */
+  /** 正常历史请求的基础工具，或平铺请求的工具列表。 */
   tools: UnifiedToolDefinition[] | (() => Promise<UnifiedToolDefinition[]>)
   /** 工具执行入口；模型产生 Tool Call 时由 Loop 调用。 */
   executeTool: ExecuteToolCall
@@ -110,6 +110,10 @@ export interface AgentLoopOptions {
   signal: AbortSignal
   /** 事件出口，由 SessionEventLog 提供。 */
   appendEvent: AppendSessionEvent
+  /** 宿主正常请求读取已提交历史，覆盖直接调用者提供的平面消息。 */
+  prepareHistory?(): Promise<NonNullable<UnifiedModelRequest["context"]["history"]>>
+  /** 在工具结果落库后报告宿主检测到的 Turn 级故障。 */
+  afterTools?(): void
   /**
    * Step 创建前的异步检查；可原地替换 content，不得创建 Step 或执行工具。
    * @param input 即将执行的 Step、当前完整消息与本次实际工具快照。
@@ -137,11 +141,13 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
 
   while (true) {
     const step = result.steps + 1
+    let history: UnifiedModelRequest["context"]["history"]
     let currentTools: UnifiedToolDefinition[] | undefined
-    if (options.beforeStep !== undefined) {
+    if (options.beforeStep !== undefined || options.prepareHistory !== undefined) {
       try {
         currentTools = typeof tools === "function" ? await tools() : tools
-        await options.beforeStep({ step, content, tools: currentTools })
+        await options.beforeStep?.({ step, content, tools: currentTools })
+        history = await options.prepareHistory?.()
         if (signal.aborted) throw createAbortError()
       } catch (error) {
         if (signal.aborted || isAbortError(error)) {
@@ -158,14 +164,15 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
     let outcome: ModelStepOutcome
     try {
       currentTools ??= typeof tools === "function" ? await tools() : tools
-      outcome = await runModelStep({ turn, step, model, adapter, content, tools: currentTools, executeTool, signal, appendEvent })
+      outcome = await runModelStep({ turn, step, model, adapter, content, history, tools: currentTools, executeTool, signal, appendEvent })
 
       /**
        * 工具小轮完成后才写 step/end，
        * 且因为工具结果必须交还模型，本 Step 一定会进入下一轮。
        */
       if (outcome.toolCalls.length > 0) {
-        await runToolRound({ turn, step, toolCalls: outcome.toolCalls, executeTool, content, signal, appendEvent })
+        await runToolRound({ turn, step, toolCalls: outcome.toolCalls, executeTool, content: history === undefined ? content : undefined, signal, appendEvent })
+        options.afterTools?.()
       }
     } catch (error) {
       /**
@@ -218,6 +225,8 @@ interface ModelStepParams {
   adapter: ModelAdapter
   /** 当前请求使用并由后续 Step 原地追加的会话上下文。 */
   content: ModelMessage[]
+  /** 正常 Step 的已提交历史。 */
+  history?: UnifiedModelRequest["context"]["history"]
   /** 当前请求向模型暴露的工具定义。 */
   tools: UnifiedToolDefinition[]
   /** 已结束的工具调用在模型流取消时通过此入口形成取消结果。 */
@@ -251,9 +260,9 @@ interface ModelStepOutcome {
  * @throws Adapter 流或事件持久化失败时向调用方传播原始错误。
  */
 async function runModelStep(params: ModelStepParams): Promise<ModelStepOutcome> {
-  const { turn, step, model, adapter, content, tools, executeTool, signal, appendEvent } = params
+  const { turn, step, model, adapter, content, history, tools, executeTool, signal, appendEvent } = params
 
-  const request: UnifiedModelRequest = { context: { messages: content }, tools, model }
+  const request: UnifiedModelRequest = { context: history === undefined ? { messages: content } : { history }, tools, model }
   /**
    * 已结束的块，key 为统一流的 `index`；未结束的块不在这里，也不进 `assistant/message`。
    * 连同 `block_end` 事件的 eventId 一起记录：工具小轮要用它关联 `tool/result`。
@@ -261,7 +270,7 @@ async function runModelStep(params: ModelStepParams): Promise<ModelStepOutcome> 
   const endedBlocks = new Map<number, { block: AssistantContentBlock; eventId: string }>()
   /** 只累计已成功提交的文本 Delta；收到 BlockEnd 后移出，避免停止时重复收尾。 */
   const openTextBlocks = new Map<number, Extract<AssistantContentBlock, { type: "text" | "thinking" }>>()
-  /** 事件处理失败不属于模型流取消，不能以收尾重试掩盖持久化失败。 */
+  /** 记录持久化阶段，避免把事件保存失败当作模型流中断处理。 */
   let handlingEvent = false
 
   /**
@@ -327,7 +336,8 @@ async function runModelStep(params: ModelStepParams): Promise<ModelStepOutcome> 
     }
     if (signal.aborted) throw createAbortError()
   } catch (error) {
-    if (handlingEvent || !(signal.aborted || isAbortError(error))) throw error
+    if (handlingEvent) throw error
+    const stopped = signal.aborted || isAbortError(error)
 
     for (const [index, block] of openTextBlocks) {
       const persisted = await appendEvent({
@@ -349,7 +359,7 @@ async function runModelStep(params: ModelStepParams): Promise<ModelStepOutcome> 
         message: { id: randomUUID(), role: "assistant", content: ordered.map(([, ended]) => ended.block) },
         model,
         ...(usage === undefined ? {} : { usage }),
-        ...(finishReason === undefined ? {} : { finishReason }),
+        ...(!stopped || finishReason === undefined ? {} : { finishReason }),
       })
     }
     const toolCalls: AgentLoopToolCall[] = []
@@ -388,7 +398,7 @@ async function runModelStep(params: ModelStepParams): Promise<ModelStepOutcome> 
    * 正常模型响应直接追加到内存上下文，供下一 Step 使用。
    * 空内容的消息不追加：三个协议生成请求时都无法表达空 content 的 assistant 消息。
    */
-  if (blockList.length > 0) {
+  if (history === undefined && blockList.length > 0) {
     content.push({ role: "assistant", content: blockList })
   }
 
@@ -421,7 +431,7 @@ interface ToolRoundParams {
   /** 统一的工具执行入口。 */
   executeTool: ExecuteToolCall
   /** 将工具结果追加到的会话上下文。 */
-  content: ModelMessage[]
+  content: ModelMessage[] | undefined
   /** 当前 AgentLoop 的取消信号。 */
   signal: AbortSignal
   /** 将工具结果写入 Session Event Log 的事件出口。 */
@@ -478,7 +488,7 @@ async function runToolRound(params: ToolRoundParams): Promise<void> {
       result,
     })
 
-    content.push(toToolMessage(call.block.toolCallId, result))
+    content?.push(toToolMessage(call.block.toolCallId, result))
   }
 }
 

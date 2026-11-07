@@ -21,6 +21,7 @@ import { createAbortError } from "../../error/src/abort.ts"
 import { CANCELLED, normalizeError } from "../../error/src/normalizer.ts"
 import type { AppError } from "../../error/src/types.ts"
 import type {
+  ModelHistory,
   ModelMessage,
   ModelRef,
   ModelTextBlock,
@@ -46,7 +47,7 @@ import type {
 import { createFileSessionEventLog } from "../../session/src/event-log.ts"
 import type { FileSessionEventLog } from "../../session/src/event-log.ts"
 import { skillSourceKey } from "../../skill/src/context.ts"
-import { createFileSessionState, validateCurrentBaseline } from "../../session/src/session-state.ts"
+import { createFileSessionState, isLoadedMCPTools, isUnifiedToolDefinition, validateCurrentBaseline } from "../../session/src/session-state.ts"
 import { TurnFileChangeTracker } from "../../session/src/file-changes.ts"
 import type { ApprovalDecision, FileChange } from "../../session/src/events.ts"
 import type {
@@ -57,6 +58,8 @@ import type {
   SessionSettingsPatch,
 } from "../../session/src/session-state.ts"
 import type { ToolExecutionContext, ToolResult } from "../../tools/src/types.ts"
+import { foldHistoryTools, historyMessages } from "../../model/src/shared.ts"
+import { mcpToolChanges, modelHistory } from "./model-history.ts"
 import { runAgentLoop } from "./loop.ts"
 import type { AgentLoopOptions, AgentLoopResult } from "./loop.ts"
 import type { SessionRuntimeGlobal } from "../../../src/main/session-runtime-global.ts"
@@ -116,58 +119,6 @@ function composeSystemMessage(
   return [systemPrompt, workspaceInfo, baseline.agentsmd.content, baseline.skills.content]
     .filter((part) => part.length > 0)
     .join("\n\n")
-}
-
-/**
- * 将已提交的 Session 事件回放为模型上下文；存在 Summary 时从最新摘要及其覆盖范围之后继续回放。
- *
- * @param events 已通过结构、生命周期、Block 与 Summary 校验的事件。
- * @param systemMessage 当前 Turn 新建的固定 System Message。
- * @returns 首项为 System Message、其余按日志顺序排列的模型消息。
- */
-function replayModelContent(
-  events: readonly SessionEvent[],
-  systemMessage: string,
-): ModelMessage[] {
-  const content: ModelMessage[] = [{ role: "system", content: systemMessage }]
-  const summary = events
-    .filter((event) => event.type === "summary/end")
-    .sort((left, right) => left.seq - right.seq)
-    .at(-1)
-  const throughEventSeq = summary?.throughEventSeq ?? 0
-  if (summary !== undefined) content.push({ role: "user", content: summary.summary })
-
-  for (const event of events) {
-    if (event.seq <= throughEventSeq) continue
-    switch (event.type) {
-      case "context_update":
-        content.push({ role: "user", content: event.content })
-        break
-      case "user/message":
-        content.push({
-          role: "user",
-          content: event.message.content.map((block) => ({ ...block })),
-        })
-        break
-      case "assistant/message":
-        content.push({
-          role: "assistant",
-          content: structuredClone(event.message.content),
-        })
-        break
-      case "tool/result":
-        content.push({
-          role: "tool",
-          toolCallId: event.toolCallId,
-          content: event.result.content
-            .filter((block): block is ModelTextBlock => block.type === "text")
-            .map((block) => ({ ...block })),
-          isError: event.result.status === "error",
-        })
-        break
-    }
-  }
-  return content
 }
 
 /**
@@ -626,6 +577,17 @@ export class SessionRuntime implements SessionRepairPorts {
    * @throws Error Turn 非当前开放 Turn 或日志损坏。
    */
   async buildContent(turn: number): Promise<ModelMessage[]> {
+    const history = await this.buildHistory(turn)
+    return [{ role: "system", content: history.system }, ...historyMessages(history.events)]
+  }
+
+  /**
+   * 校验当前 Turn 的日志并计算首次请求使用的系统提示和历史。
+   * @param turn 当前开放 Turn。
+   * @returns 最近摘要起点之后的模型历史。
+   * @throws Error 日志不完整或 Turn 身份不匹配时抛出。
+   */
+  private async buildHistory(turn: number): Promise<ModelHistory> {
     this.assertOpen()
     const baseline = await this.resolveTurnBaseline()
     const events = validateEventLog(this.sessionId, await this.eventLog.readEvents())
@@ -637,11 +599,11 @@ export class SessionRuntime implements SessionRepairPorts {
         (lifecycle.openTurn ?? "无") + "，实际 " + turn)
     }
     const fixedSkills = await this.sessionState.readSkillBaseline()
-    return replayModelContent(events, composeSystemMessage(
+    return modelHistory(composeSystemMessage(
       this.systemPrompt,
       this.projectContext.workspaceInfo,
       { ...baseline, skills: { ...baseline.skills, content: fixedSkills.content } },
-    ))
+    ), events)
   }
 
   /**
@@ -711,39 +673,55 @@ export class SessionRuntime implements SessionRepairPorts {
   ): Promise<Omit<AgentLoopOptions, "turn" | "model" | "content">> {
     this.assertOpen()
     const adapter = await this.global.createTurnModelAdapter(structuredClone(model))
+    let synchronizationFailure: { error: unknown } | undefined
     return {
       adapter,
-      tools: async () => {
-        const loaded = await this.sessionState.readLoadedMCPTools()
-        const definitions = this.global.mcpManager?.getDefinitions(loaded) ?? []
-        await this.sessionState.writeLoadedMCPTools(loaded, definitions)
-        return this.global.listToolDefinitions(definitions)
+      tools: this.global.listToolDefinitions(),
+      executeTool: async (name, args, context) => {
+        if (synchronizationFailure) {
+          const error: AppError = { source: "storage", code: "MCP_META_SYNC_FAILED", message: "MCP 状态同步失败，工具未执行。" }
+          return { status: "error", error, content: [{ type: "text", text: error.message }] }
+        }
+        return this.global.executeTool(name, args, {
+          ...context,
+          projectId: this.projectGroupId,
+          mcpRuntime: {
+            projectId: this.projectGroupId,
+            sessionId: this.sessionId,
+            contextWindow: adapter.contextWindow,
+            readLoadedTools: () => this.sessionState.readLoadedMCPTools(),
+            writeLoadedTools: async (tools, change) => {
+              const inputs = change ? mcpToolChanges(change, context.turn, context.step, context.toolCallEventId) : []
+              const committed = inputs.length > 0 ? await this.eventLog.appendMcpToolChanges(inputs) : []
+              try {
+                await this.sessionState.writeLoadedMCPTools(tools, committed.at(-1)?.seq)
+              } catch (error) {
+                if (committed.length > 0) synchronizationFailure = { error }
+                throw error
+              } finally {
+                for (const event of committed) this.publishPersistedEvent(event, event.type)
+              }
+            },
+            readSandboxMode: async () => (await this.sessionState.readSettings()).sandboxMode,
+            requestApproval: (toolName, reason, execution) => this.requestToolApproval(toolName, reason, execution),
+          },
+          fileRuntime: {
+            projectId: this.projectGroupId,
+            sessionId: this.sessionId,
+            tracker: this.trackerFor(context.turn),
+            requestApproval: (toolName, path, execution) => this.requestToolApproval(toolName, `文件路径需要授权：${path}`, execution),
+          },
+          processRuntime: {
+            projectId: this.projectGroupId,
+            sessionId: this.sessionId,
+            outputDirectory: join(this.sessionDirectory, "tool_output"),
+            requestApproval: (toolName, reason, execution) => this.requestToolApproval(toolName, reason, execution),
+          },
+        })
       },
-      executeTool: (name, args, context) => this.global.executeTool(name, args, {
-        ...context,
-        projectId: this.projectGroupId,
-        mcpRuntime: {
-          projectId: this.projectGroupId,
-          sessionId: this.sessionId,
-          contextWindow: adapter.contextWindow,
-          readLoadedTools: () => this.sessionState.readLoadedMCPTools(),
-          writeLoadedTools: (tools, definitions) => this.sessionState.writeLoadedMCPTools(tools, definitions),
-          readSandboxMode: async () => (await this.sessionState.readSettings()).sandboxMode,
-          requestApproval: (toolName, reason, execution) => this.requestToolApproval(toolName, reason, execution),
-        },
-        fileRuntime: {
-          projectId: this.projectGroupId,
-          sessionId: this.sessionId,
-          tracker: this.trackerFor(context.turn),
-          requestApproval: (toolName, path, execution) => this.requestToolApproval(toolName, `文件路径需要授权：${path}`, execution),
-        },
-        processRuntime: {
-          projectId: this.projectGroupId,
-          sessionId: this.sessionId,
-          outputDirectory: join(this.sessionDirectory, "tool_output"),
-          requestApproval: (toolName, reason, execution) => this.requestToolApproval(toolName, reason, execution),
-        },
-      }),
+      afterTools: () => {
+        if (synchronizationFailure) throw synchronizationFailure.error
+      },
       signal: this.abortController.signal,
       appendEvent: (event) => this.appendEvent(event),
     }
@@ -1196,14 +1174,15 @@ export class SessionRuntime implements SessionRepairPorts {
     model: ModelRef,
     options: Omit<AgentLoopOptions, "turn" | "model" | "content">,
   ): Promise<AgentLoopResult> {
-    const content = await this.buildContent(turn)
+    let { system } = await this.buildHistory(turn)
     const threshold = summaryThreshold(options.adapter.contextWindow, options.adapter.maxOutputTokens)
     return runAgentLoop({
-      ...options, turn, model, content,
+      ...options, turn, model, content: [],
+      prepareHistory: async () => modelHistory(system, validateEventLog(this.sessionId, await this.eventLog.readEvents())),
       /**
        * 检查正常请求的输入量，达到阈值时使用本 Turn Adapter 压缩上下文。
-       * 成功提交 summary/end 并修复派生状态后，原地替换下一 Step 的消息内容。
-       * @param input 下一 Step 的当前内容及本次工具快照。
+       * 成功提交 summary/end 并修复派生状态后，下一 Step 从已提交摘要重建历史。
+       * @param input 下一 Step 的基础工具。
        * @returns 未达阈值时直接完成；达到阈值时等待压缩及状态更新完成。
        * @throws Error 取消、基线无效、压缩或持久化失败时传播，由 Loop 交给 Turn 收尾。
        */
@@ -1230,23 +1209,25 @@ export class SessionRuntime implements SessionRepairPorts {
           events.find((event) => event.type === "user/message" || event.type === "context_update")?.seq
         if (throughEventSeq === undefined || fromEventSeq === undefined) throw new Error("Summary 缺少可覆盖的输入事件。")
         const systemMessage = composeSystemMessage(this.systemPrompt, this.projectContext.workspaceInfo, baseline)
+        const history = modelHistory(systemMessage, events)
+        baseline.mcp = foldHistoryTools(history.mcpBaseline, history.events)
         const summaryId = randomUUID()
         await this.appendEvent({ type: "summary/start", turn, summaryId, fromEventSeq, throughEventSeq })
         const result = await compressContext({
-          adapter: options.adapter, model, signal: options.signal, tools: input.tools,
-          content: [{ role: "system", content: systemMessage }, ...input.content.slice(1)],
+          adapter: options.adapter, model, signal: options.signal,
+          tools: foldHistoryTools([...input.tools, ...baseline.mcp], []),
+          content: [{ role: "system", content: systemMessage }, ...historyMessages(history.events)],
         })
         if (options.signal.aborted) throw createAbortError()
         await this.appendEvent({
           type: "summary/end", turn, summaryId, fromEventSeq, throughEventSeq, ...result,
-          baseline: { agentsmd: baseline.agentsmd, skills: baseline.skills },
+          baseline,
         })
         const committed = validateEventLog(this.sessionId, await this.eventLog.readEvents())
         validateSummaries(this.sessionId, committed)
         await this.sessionState.repairDerivedState(committed)
         this.turnBaseline = Promise.resolve(baseline)
-        const replacement = replayModelContent(committed, systemMessage)
-        input.content.splice(0, input.content.length, ...replacement)
+        system = systemMessage
       },
     })
   }
@@ -1399,6 +1380,7 @@ export async function repairSession(
   const lifecycle = validateLifecycle(sessionId, events)
   validateBlockStreams(sessionId, events)
   validateSummaries(sessionId, events)
+  validateMcpChanges(sessionId, events)
 
   await ports.initializeSession()
   await ports.repairDerivedState(events)
@@ -1722,6 +1704,24 @@ function validateSessionEvent(sessionId: string, value: unknown, index: number):
         corrupted(sessionId, `第 ${index + 1} 条事件的 sourceEventId 无效`)
       }
       break
+    case "mcp/tools_added":
+    case "mcp/tools_removed":
+      requireTurn(sessionId, event, index)
+      if (!isPositiveInteger(event.step) || !isNonEmptyString(event.toolCallEventId)) {
+        corrupted(sessionId, "MCP 工具增量的调用身份无效")
+      }
+      if (event.type === "mcp/tools_added") {
+        if (!Array.isArray(event.tools) || event.tools.length === 0 || event.tools.some((tool) =>
+          !isRecord(tool) || !isRecord(tool.entry) || !isRecord(tool.definition) ||
+          tool.entry.name !== tool.definition.name || !isUnifiedToolDefinition(tool.definition)) ||
+          !isLoadedMCPTools(event.tools.map((tool) => tool.entry))) {
+          corrupted(sessionId, "MCP 新增工具的快照无效")
+        }
+      } else if (!Array.isArray(event.toolNames) || event.toolNames.length === 0 || !event.toolNames.every(isNonEmptyString) ||
+        new Set(event.toolNames).size !== event.toolNames.length) {
+        corrupted(sessionId, "MCP 移除工具的名称无效")
+      }
+      break
     case "summary/start":
     case "summary/end":
       requireTurn(sessionId, event, index)
@@ -1731,7 +1731,7 @@ function validateSessionEvent(sessionId: string, value: unknown, index: number):
       }
       if (event.type === "summary/end") {
         if (!isNonEmptyString(event.summary) || event.summary.trim().length === 0) corrupted(sessionId, `第 ${index + 1} 条事件的 Summary 正文无效`)
-        try { validateCurrentBaseline({ ...(event.baseline as Pick<CurrentSessionBaseline, "agentsmd" | "skills">), mcp: [] }) }
+        try { validateCurrentBaseline(event.baseline as CurrentSessionBaseline) }
         catch { corrupted(sessionId, `第 ${index + 1} 条事件的 Summary 基线无效`) }
         if (event.usage !== undefined) requireUsage(sessionId, event.usage, index)
       }
@@ -2229,6 +2229,34 @@ function collectAuthoritativeToolCalls(
 }
 
 /**
+ * 校验增量来自同一 Step 中已经提交的发现工具调用。
+ * @param sessionId 会话身份。
+ * @param events 已校验基本结构的日志。
+ * @throws SessionLogCorruptedError 增量关联无效时抛出。
+ */
+function validateMcpChanges(sessionId: string, events: SessionEvent[]): void {
+  const calls = new Map<string, AssistantBlockEndEvent>()
+  let previous: SessionEvent | undefined
+  const seen = new Set<string>()
+  for (const event of events) {
+    if (event.type === "assistant/block_end") calls.set(event.eventId, event)
+    if (event.type === "mcp/tools_added" || event.type === "mcp/tools_removed") {
+      const call = calls.get(event.toolCallEventId)
+      const key = event.toolCallEventId + "/" + event.type
+      if (call?.block.type !== "tool_call" || call.turn !== event.turn || call.step !== event.step ||
+        (call.block.name !== "tool_search" && call.block.name !== "mcp_load_tools") || seen.has(key) ||
+        (event.type === "mcp/tools_removed" && seen.has(event.toolCallEventId + "/mcp/tools_added")) ||
+        (event.type === "mcp/tools_added" && seen.has(event.toolCallEventId + "/mcp/tools_removed") &&
+          (previous?.type !== "mcp/tools_removed" || previous.toolCallEventId !== event.toolCallEventId))) {
+        corrupted(sessionId, "MCP 工具增量的调用关联或提交顺序无效")
+      }
+      seen.add(key)
+    }
+    previous = event
+  }
+}
+
+/**
  * 根据审批决定选择 Session 恢复时应使用的工具错误码。
  *
  * @param decision 关联审批的决定；缺失表示执行状态未知。
@@ -2381,6 +2409,10 @@ function requireAssistantMessage(sessionId: string, message: unknown, index: num
  */
 function requireAssistantBlock(sessionId: string, block: unknown, index: number): void {
   if (!isRecord(block)) corrupted(sessionId, `第 ${index + 1} 条事件的 Assistant Block 无效`)
+  if (block.replay !== undefined && (!isRecord(block.replay) || !isNonEmptyString(block.replay.name) ||
+    !isNonEmptyString(block.replay.protocol) || typeof block.replay.payloadJson !== "string")) {
+    corrupted(sessionId, "Assistant Block 的原生回放记录无效")
+  }
   if (block.type === "thinking" || block.type === "text") {
     if (typeof block.text !== "string") corrupted(sessionId, `第 ${index + 1} 条事件的文本 Block 无效`)
     return
@@ -2475,7 +2507,9 @@ function isStepScopedEvent(
     event.type === "assistant/message" ||
     event.type === "tool/result" ||
     event.type === "approval/request" ||
-    event.type === "approval/result"
+    event.type === "approval/result" ||
+    event.type === "mcp/tools_added" ||
+    event.type === "mcp/tools_removed"
 }
 
 /**
