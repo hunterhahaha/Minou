@@ -598,11 +598,15 @@ export class SessionRuntime implements SessionRepairPorts {
       throw new Error("无法为非当前开放 Turn 构建 Context：期望 " +
         (lifecycle.openTurn ?? "无") + "，实际 " + turn)
     }
-    const fixedSkills = await this.sessionState.readSkillBaseline()
+    const fixed = await this.sessionState.readSystemBaseline()
     return modelHistory(composeSystemMessage(
       this.systemPrompt,
       this.projectContext.workspaceInfo,
-      { ...baseline, skills: { ...baseline.skills, content: fixedSkills.content } },
+      {
+        ...baseline,
+        agentsmd: { ...baseline.agentsmd, ...fixed.agentsmd },
+        skills: { ...baseline.skills, content: fixed.skills.content },
+      },
     ), events)
   }
 

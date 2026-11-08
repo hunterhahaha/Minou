@@ -205,11 +205,11 @@ export interface FileSessionState {
    */
   synchronizeUsage(): Promise<void>
   /**
-   * 读取持久化的固定 Skill 内容，供普通 Turn 继续使用同一上下文基线。
-   * @returns 从 Session Context State 重读并复制的 Skill 固定内容。
+   * 读取持久化的 AGENTS.md 与 Skill 固定内容，普通 Turn 的更新另由事件追加。
+   * @returns 从 Session Context State 重读并复制的系统提示基线；成功 Summary 才替换它。
    * @throws Error 状态文件无效或无法读取时抛出。
    */
-  readSkillBaseline(): Promise<SessionContextState["skills"]>
+  readSystemBaseline(): Promise<Pick<SessionContextState, "agentsmd" | "skills">>
   /**
    * 按当前有效来源静默更新已载入记录的 enabled 状态。
    * @param current 已完成目录同步和来源合并的当前 Skill 条目。
@@ -491,13 +491,6 @@ export function createFileSessionState(options: FileSessionStateOptions): FileSe
 
       const latestAgentsUpdate = findLatestAgentsUpdate(effectiveEvents)
       if (latestAgentsUpdate !== undefined) {
-        const agentsmd = {
-          hash: latestAgentsUpdate.source.hash,
-          content: latestAgentsUpdate.source.fullContent,
-        }
-        if (!isDeepStrictEqual(nextContextState.agentsmd, agentsmd)) {
-          nextContextState = { ...nextContextState, agentsmd }
-        }
         nextSnapshot = latestAgentsUpdate.source.fullContent
       }
 
@@ -555,9 +548,9 @@ export function createFileSessionState(options: FileSessionStateOptions): FileSe
       const meta = readRequiredMeta(paths)
       if (!isDeepStrictEqual(meta.usage, usage)) saveSessionMeta(paths.metaDatabasePath, { ...meta, usage })
     }),
-    readSkillBaseline: () => runSerialized(queue, async () => {
+    readSystemBaseline: () => runSerialized(queue, async () => {
       const state = await readRequiredJson(paths.contextStatePath, isSessionContextState, "Session Context State")
-      return structuredClone(state.skills)
+      return structuredClone({ agentsmd: state.agentsmd, skills: state.skills })
     }),
     synchronizeSkillStatus: (current) => runSerialized(queue, async () => {
       if (!isSkillEntries(current)) throw new Error("当前 Skill 来源状态无效。")
