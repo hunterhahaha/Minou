@@ -5,7 +5,7 @@ import { mkdtemp, mkdir, realpath, rm, symlink, truncate, unlink, writeFile } fr
 import { tmpdir } from "node:os"
 import { join, resolve, sep } from "node:path"
 import type { IpcMain, IpcMainInvokeEvent } from "electron"
-import { registerFileExplorerIpc } from "../../src/main/file-explorer-ipc.ts"
+import { registerFileExplorerIpc, validateMessageFileReferences } from "../../src/main/file-explorer-ipc.ts"
 import { initializeWorkspaceDatabase, insertProjectWorkspace, readProjectWorkspace, saveProjectWorkspace } from "../../src/main/workspace-store.ts"
 import { FILE_EXPLORER_CHANNELS as channels, type FileExplorerRoot } from "../../src/preload/browser-api.ts"
 
@@ -56,6 +56,19 @@ async function main(): Promise<void> {
     assert.deepEqual(await invoke(channels.list, root.handle, "空 格/"), [{ name: "read.txt", kind: "file" }])
     assert.deepEqual(await invoke(channels.read, root.handle, "空 格/read.txt"),
       { size: Buffer.byteLength("NiCode 文件"), kind: "text", text: "NiCode 文件" })
+    const [found] = await invoke(channels.search, projectId, "READ.TXT")
+    assert.deepEqual(found, { projectId, directoryPath: workspace, relativePath: "空 格/read.txt", absolutePath: await realpath(join(folder, "read.txt")), name: "read.txt" })
+    assert.deepEqual(await invoke(channels.search, projectId, "secret.txt"), [], "搜索不跟随越界链接")
+    assert.deepEqual(await invoke(channels.search, "default", "read"), [])
+    await assert.rejects(invoke(channels.read, root.handle, found.relativePath, join(outside, "secret.txt")), /绝对路径已更改/)
+    const prefix = "📁 检查 "
+    const message = prefix + found.absolutePath
+    const reference = { ...found, offset: prefix.length }
+    assert.deepEqual(await validateMessageFileReferences(database, projectId, message, [reference]), [reference])
+    await assert.rejects(validateMessageFileReferences(database, projectId, message, [{ ...reference, offset: 0 }]), /正文不符/)
+    await assert.rejects(validateMessageFileReferences(database, projectId, message, [reference, reference]), /正文不符/)
+    await assert.rejects(validateMessageFileReferences(database, projectId, message, [{ ...reference, directoryPath: outside }]), /不属于当前项目/)
+    await assert.rejects(validateMessageFileReferences(database, projectId, message, [{ ...reference, relativePath: "escape/secret.txt" }]), /链接|超出根目录/)
     assert.deepEqual(await invoke(channels.read, root.handle, "icon.PNG"),
       { size: 3, kind: "image", mimeType: "image/png", bytes: new Uint8Array([1, 2, 3]) })
     assert.deepEqual(await invoke(channels.read, root.handle, "binary.dat"),
@@ -80,6 +93,7 @@ async function main(): Promise<void> {
 
     await unlink(join(folder, "read.txt"))
     await assert.rejects(invoke(channels.read, root.handle, "空 格/read.txt"), /ENOENT/)
+    await assert.rejects(validateMessageFileReferences(database, projectId, message, [reference]), /ENOENT/)
     const project = readProjectWorkspace(database, projectId)
     saveProjectWorkspace(database, { ...project, directories: [workspace] })
     await assert.rejects(invoke(channels.list, secondRoot.handle, ""), /取消项目关联/)

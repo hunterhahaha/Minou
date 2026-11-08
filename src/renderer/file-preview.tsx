@@ -3,7 +3,9 @@ import { Component, lazy, Suspense, useEffect, useState, type ReactNode } from "
 import { getFiletypeFromFileName } from "@pierre/diffs"
 import { File } from "@pierre/diffs/react"
 import type { FileExplorerFile } from "../preload/browser-api.ts"
+import type { FileReference } from "../../runtime/session/src/events.ts"
 import { MarkdownContent } from "./markdown-content.tsx"
+import "./file-explorer.css"
 
 const PdfPreview = lazy(() => import("./pdf-preview.tsx"))
 
@@ -15,6 +17,43 @@ interface FilePreviewProps {
   handle: string
   path: string
   theme: "light" | "dark"
+  /** 引用需要核对的绝对路径；文件树直接使用当前根目录。 */
+  absolutePath?: string
+}
+
+/**
+ * 为引用标签申请现有查看器授权，离开标签或切换文件时释放句柄。
+ * @param props 要预览的文件引用及主题。
+ * @returns 使用既有文件预览器显示的只读文件。
+ */
+export function ReferencedFilePreview({ reference, theme }: { reference: FileReference; theme: "light" | "dark" }) {
+  const { projectId, directoryPath, relativePath, absolutePath, name } = reference
+  const [result, setResult] = useState<{ handle: string } | { error: string }>()
+  useEffect(() => {
+    let active = true
+    let handle: string | undefined
+    void window.nicodeBrowser.openFileExplorer({ projectId, directoryPath }).then(
+      (root) => {
+        if (!active) void window.nicodeBrowser.closeFileExplorer(root.handle).catch(console.error)
+        else { handle = root.handle; setResult({ handle }) }
+      },
+      (error: unknown) => { if (active) setResult({ error: error instanceof Error ? error.message : String(error) }) },
+    )
+    return () => {
+      active = false
+      if (handle) void window.nicodeBrowser.closeFileExplorer(handle).catch(console.error)
+    }
+  }, [projectId, directoryPath])
+  return <section className="file-explorer" aria-label="文件预览">
+    <header className="file-explorer-header"><div className="file-explorer-heading">
+      <h2 title={absolutePath}>{name}</h2>{relativePath.includes("/") && <span title={absolutePath}>{relativePath}</span>}
+    </div></header>
+    <div className="file-explorer-preview">
+      {!result ? <p className="file-explorer-message" role="status">正在打开文件…</p>
+        : "error" in result ? <p className="file-explorer-message" role="alert">无法打开文件。{result.error}</p>
+          : <FilePreview handle={result.handle} path={relativePath} absolutePath={absolutePath} theme={theme} />}
+    </div>
+  </section>
 }
 
 /**
@@ -67,17 +106,17 @@ function ImagePreview({ name, path, file }: {
  * @param props 根句柄、相对路径及高亮主题。
  * @returns 左侧预览正文和读取状态。
  */
-export function FilePreview({ handle, path, theme }: FilePreviewProps) {
+export function FilePreview({ handle, path, absolutePath, theme }: FilePreviewProps) {
   const [result, setResult] = useState<PreviewResult>()
   const [attempt, setAttempt] = useState(0)
   useEffect(() => {
     let active = true
-    void window.nicodeBrowser.readExplorerFile(handle, path).then(
+    void window.nicodeBrowser.readExplorerFile(handle, path, absolutePath).then(
       (file) => { if (active) setResult({ file }) },
       (error: unknown) => { if (active) setResult({ error: error instanceof Error ? error.message : String(error) }) },
     )
     return () => { active = false }
-  }, [handle, path, attempt])
+  }, [handle, path, absolutePath, attempt])
 
   if (!result) return <p className="file-explorer-message" role="status">正在读取文件…</p>
   if ("error" in result) return <div className="file-explorer-message" role="alert">

@@ -1,6 +1,6 @@
 /** 使用真实 Electron、preload 和构建后的 React 页面进行本机交互验证，不访问网络或用户数据。 */
 const assert = require("node:assert/strict")
-const { mkdtemp, rm, writeFile } = require("node:fs/promises")
+const { mkdir, mkdtemp, realpath, rm, writeFile } = require("node:fs/promises")
 const { tmpdir } = require("node:os")
 const { join, resolve, sep } = require("node:path")
 const { createServer } = require("node:http")
@@ -12,12 +12,15 @@ const { readSessionMeta } = require("../../dist/runtime/session/src/meta-store.j
 const { SessionRuntime } = require("../../dist/runtime/agent/src/session-runtime.js")
 const { registerSessionIpcHandlers } = require("../../dist/src/main/session-ipc.js")
 const { registerStartupDataIpcHandlers } = require("../../dist/src/main/startup-data-ipc.js")
+const { registerFileExplorerIpc } = require("../../dist/src/main/file-explorer-ipc.js")
+const { insertProjectWorkspace } = require("../../dist/src/main/workspace-store.js")
 const { SESSION_IPC_CHANNELS: channels, STARTUP_DATA_IPC_CHANNELS } = require("../../dist/src/preload/session-api.js")
 const model = { providerId: "p", protocol: "responses", modelId: "m", name: "本机测试模型", reasoningLevel: "medium" }
 let providerSupportsReasoning = true
 let window, profile, failed = false
 const rendererErrors = []
 const failures = []
+const modelUserInputs = []
 let historyQueries = 0
 let releaseTitle
 const titleGate = new Promise((done) => { releaseTitle = done })
@@ -40,9 +43,10 @@ const evaluate = (script) => window.webContents.executeJavaScript(script)
 /** @param label 输入框名称。 @param text 输入内容。 @returns React 输入事件处理完成。 */
 async function type(label, text) {
   await evaluate(`(() => {
-    const node = document.querySelector('textarea[aria-label=' + ${JSON.stringify(JSON.stringify(label))} + ']')
-    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(node, ${JSON.stringify(text)})
-    node.dispatchEvent(new Event('input', { bubbles: true }))
+    const node = document.querySelector('.composer-editor[aria-label=' + ${JSON.stringify(JSON.stringify(label))} + ']')
+    node.focus()
+    window.getSelection().selectAllChildren(node)
+    document.execCommand('insertText', false, ${JSON.stringify(text)})
   })()`)
 }
 /** @param name 截图文件名。 @returns 样式过渡完成后的实际窗口截图已写入 dist。 */
@@ -66,7 +70,7 @@ async function main() {
     estimateSkillTokens: () => 0, listToolDefinitions: () => [],
     executeTool: async () => { throw new Error("unexpected tool") },
     /** 对话展示测试使用足够大的窗口，避免进入另有专门测试的 Summary 压缩流程。 */
-    createTurnModelAdapter: async () => ({  contextWindow: 256000, maxOutputTokens: 32000, stream: async function* (_request, _signal, options) {
+    createTurnModelAdapter: async () => ({  contextWindow: 256000, maxOutputTokens: 32000, stream: async function* (request, _signal, options) {
       if (options?.timeoutMs !== undefined) {
         await titleGate
         yield { type: "block_start", index: 0, blockType: "text" }
@@ -74,6 +78,7 @@ async function main() {
         yield { type: "stream_end", completion: "finished" }
         return
       }
+      modelUserInputs.push(...(request.context.history?.events.filter((event) => event.type === "user/message") ?? []))
       await loopGate
       yield { type: "block_start", index: 0, blockType: "thinking" }
       yield { type: "block_delta", index: 0, delta: { type: "thinking", text: "本机思考过程" } }
@@ -103,6 +108,7 @@ async function main() {
     if (window && !window.isDestroyed()) window.webContents.send(channels.update, update)
   } }, paths)
   registerStartupDataIpcHandlers(port, paths)
+  registerFileExplorerIpc(ipcMain, paths.workspaceDatabasePath)
   ipcMain.removeHandler(STARTUP_DATA_IPC_CHANNELS.listProviders)
   ipcMain.handle(STARTUP_DATA_IPC_CHANNELS.listProviders, () => [{ providerId: "p", name: "测试", type: "custom", protocol: "responses",
     models: [{ supportsReasoning: providerSupportsReasoning, modelId: "m", name: model.name, isDefault: true, contextWindow: 256000, maxOutputTokens: 32000,
@@ -123,7 +129,7 @@ async function main() {
       window.copiedMessages.push(text)
     } })
   })()`)
-  await until(() => evaluate(`document.querySelector('textarea[aria-label="任务描述"]') !== null`))
+  await until(() => evaluate(`document.querySelector('.composer-editor[aria-label="任务描述"]') !== null`))
   const sendAppearance = `(() => {
     const button = document.querySelector('.send-button'), style = getComputedStyle(button)
     const probe = document.createElement('span')
@@ -188,7 +194,7 @@ async function main() {
   await until(() => evaluate(`document.querySelector('[aria-label="停止"]')?.disabled === false`))
   assert.equal(await evaluate(`document.querySelector('[aria-label="停止"]').dataset.testIdentity`), "same-button", "加入队列并清空输入后同一按钮恢复停止")
   await evaluate(`document.querySelector('.new-chat').click()`)
-  await until(() => evaluate(`document.querySelector('textarea[aria-label="任务描述"]') !== null`))
+  await until(() => evaluate(`document.querySelector('.composer-editor[aria-label="任务描述"]') !== null`))
   await type("任务描述", "切换保留的草稿")
   const beforeReturn = historyQueries
   await evaluate("location.hash = " + JSON.stringify(route))
@@ -229,11 +235,11 @@ async function main() {
   const restingSessionSelectors = await evaluate(sessionSelectorAppearance)
   assert.equal(restingSessionSelectors.every(control => control.background === "rgba(0, 0, 0, 0)"), true, "已有对话的权限与模型没有独立底色")
   assert.equal(await evaluate("document.querySelectorAll('.chat-select-label svg').length === 1 && [...document.querySelectorAll('.chat-select-label select')].every(node => getComputedStyle(node, '::picker-icon').display === 'none')"), true, "模型无图标，权限图标与文字绑定，两个入口均无箭头")
-  const composerPoint = await evaluate("(() => { const rect = document.querySelector('.chat-footer textarea').getBoundingClientRect(); return { x: Math.round(rect.x + rect.width / 2), y: Math.round(rect.y + rect.height / 2) } })()")
+  const composerPoint = await evaluate("(() => { const rect = document.querySelector('.chat-footer .composer-editor').getBoundingClientRect(); return { x: Math.round(rect.x + rect.width / 2), y: Math.round(rect.y + rect.height / 2) } })()")
   window.webContents.sendInputEvent({ type: "mouseMove", ...composerPoint })
   await copyScreenshot("electron-composer-selectors-hover")
   assert.deepEqual(await evaluate(sessionSelectorAppearance), restingSessionSelectors, "悬停对话输入框不改变权限与模型外观")
-  await evaluate("document.querySelector('.chat-footer textarea').focus()")
+  await evaluate("document.querySelector('.chat-footer .composer-editor').focus()")
   await copyScreenshot("electron-composer-selectors-focus")
   assert.deepEqual(await evaluate(sessionSelectorAppearance), restingSessionSelectors, "聚焦对话输入框不改变权限与模型外观")
   const permissionIconPoint = await evaluate("(() => { const icon = document.querySelector('.chat-permission-select > svg').getBoundingClientRect(); const select = document.querySelector('[aria-label=\"对话权限\"]').getBoundingClientRect(); return { x: Math.round(icon.x + icon.width / 2), y: Math.round(icon.y + icon.height / 2), inside: icon.left >= select.left && icon.right <= select.right && icon.top >= select.top && icon.bottom <= select.bottom } })()")
@@ -283,7 +289,7 @@ async function main() {
   await until(() => evaluate(`document.querySelectorAll('.turn-process').length === 3 && document.querySelector('.session-phase')?.textContent === '准备就绪'`))
   assert.equal(await evaluate(`document.querySelector('.turn-process').open`), true, "后续 Turn 事件不能关闭已展开过程")
   await evaluate(`document.querySelector('.new-chat').click()`)
-  await until(() => evaluate(`document.querySelector('textarea[aria-label="任务描述"]')?.value === '切换保留的草稿'`))
+  await until(() => evaluate(`document.querySelector('.composer-editor[aria-label="任务描述"]')?.textContent === '切换保留的草稿'`))
   await evaluate("location.hash = " + JSON.stringify(route))
   await until(() => evaluate(`document.querySelectorAll('.user-bubble').length === 3`))
   assert.equal(historyQueries, beforeReturn)
@@ -291,7 +297,7 @@ async function main() {
   await evaluate(`document.querySelector('.turn-process > summary').click()`)
   await until(() => evaluate(`document.querySelector('.turn-process').open`))
   await evaluate(`document.querySelector('.new-chat').click()`)
-  await until(() => evaluate(`document.querySelector('textarea[aria-label="任务描述"]') !== null`))
+  await until(() => evaluate(`document.querySelector('.composer-editor[aria-label="任务描述"]') !== null`))
   await type("任务描述", "不同对话的第一轮")
   await until(() => evaluate(`document.querySelector('[aria-label="发送消息"]')?.disabled === false`))
   await evaluate(`document.querySelector('[aria-label="发送消息"]').click()`)
@@ -845,14 +851,14 @@ async function main() {
   window.webContents.sendInputEvent({ type: "mouseMove", ...finalUserPoint })
   await until(() => evaluate("getComputedStyle(document.querySelectorAll('.user-message-actions').item(2)).opacity === '1'"))
   await copyScreenshot("electron-message-copy-light")
-  await evaluate("document.querySelector('.chat-footer textarea').focus()")
+  await evaluate("document.querySelector('.chat-footer .composer-editor').focus()")
   await copyScreenshot("electron-composer-selectors-focus-light")
   await evaluate("document.querySelector('[aria-label=\"切换深色外观\"]').click()")
   await until(() => evaluate("document.documentElement.dataset.theme === 'dark'"))
   await copyScreenshot("electron-message-copy-dark")
   await evaluate("document.activeElement.blur()")
   const restingDarkSelectors = await evaluate(sessionSelectorAppearance)
-  await evaluate("document.querySelector('.chat-footer textarea').focus()")
+  await evaluate("document.querySelector('.chat-footer .composer-editor').focus()")
   await copyScreenshot("electron-composer-selectors-focus-dark")
   assert.deepEqual(await evaluate(sessionSelectorAppearance), restingDarkSelectors, "深色输入框聚焦也不改变权限与模型外观")
   window.setContentSize(640, 760)
@@ -877,9 +883,131 @@ async function main() {
   await until(() => evaluate("Boolean(document.querySelector('.composer-model-panel:popover-open'))"))
   assert.equal(await evaluate("Boolean(document.querySelector('[aria-label=设置推理等级]'))"), false)
   assert.equal(await evaluate("Boolean(document.querySelector('[aria-label=切换模型]'))"), true)
+  await verifyComposerFiles(paths)
   assert.deepEqual(failures, [])
   assert.deepEqual(rendererErrors, [])
   console.log("electron-session.test.cjs: 每 Turn 单一助手标题、多步骤与审批继续运行无 AI 复制入口、仅最终回答复制、停止/失败/无正文、Markdown、用户复制反馈与重试、触屏常显、浅深色、窄窗口、新建、Queue、折叠交互、路由缓存与草稿验证通过；历史查询 " + historyQueries + " 次")
+}
+
+/** 验证真实编辑器、文件授权、发送给模型的文本与重载后的预览。
+ * @param paths 隔离夹具的数据路径。
+ */
+async function verifyComposerFiles(paths) {
+  const projectId = "d782d218-4419-49b4-ab76-96322ef8f08c"
+  const root = join(profile, "引用目录")
+  await mkdir(root)
+  await mkdir(join(paths.rootDir, "sessions", projectId), { recursive: true })
+  await writeFile(join(root, "main.ts"), "export const fixture = true\n")
+  await writeFile(join(root, "config.json"), '{"composer":true}')
+  insertProjectWorkspace(paths.workspaceDatabasePath, {
+    version: 1, id: projectId, name: "文件引用测试", updatedAt: new Date().toISOString(), directories: [root], sessions: [],
+  })
+  await new Promise((resolve) => { window.webContents.once("did-finish-load", resolve); window.webContents.reload() })
+  await evaluate(`location.hash = '#/projects/${projectId}/new-chat'`)
+  await until(() => evaluate("document.querySelector('.composer-editor[aria-label=任务描述]') && document.body.innerText.includes('文件引用测试')"))
+  window.setContentSize(1200, 800)
+  await until(() => evaluate("innerWidth === 1200"))
+  await evaluate("document.querySelector('[aria-label=\"切换浅色外观\"]')?.click()")
+  const editor = "document.querySelector('.composer-editor')"
+  const key = (name, options = {}) => evaluate(`${editor}.dispatchEvent(new KeyboardEvent('keydown', ${JSON.stringify({ key: name, bubbles: true, cancelable: true, ...options })}))`)
+  const append = (text) => evaluate(`document.execCommand('insertText', false, ${JSON.stringify(text)})`)
+  const count = () => evaluate("document.querySelectorAll('.composer-editor .file-reference-chip').length")
+  const result = (name) => evaluate(`document.querySelector('[role=option][aria-selected=true] strong')?.textContent === ${JSON.stringify(name)}`)
+  const previewContains = (text) => evaluate(`document.querySelector('.chat-browser-explorer-page:not([hidden]) diffs-container')?.shadowRoot?.querySelector('[data-code]')?.textContent.includes(${JSON.stringify(text)})`)
+
+  await type("任务描述", "@")
+  await until(() => evaluate("document.querySelectorAll('.composer-file-menu [role=option]').length === 2"))
+  const selected = await evaluate("document.querySelector('.composer-file-menu [aria-selected=true]').id")
+  await key("ArrowDown")
+  await until(() => evaluate(`document.querySelector('.composer-file-menu [aria-selected=true]')?.id !== ${JSON.stringify(selected)}`))
+  await key("Escape")
+  await until(() => evaluate("!document.querySelector('.composer-file-menu')"))
+  await type("任务描述", "检查 @main")
+  try { await until(() => result("main.ts")) }
+  catch (error) {
+    const editorState = await evaluate(`({ html: ${editor}.innerHTML, focused: document.activeElement === ${editor}, selection: window.getSelection().anchorOffset, menu: document.querySelector('.composer-file-menu')?.innerText })`)
+    const files = await evaluate(`window.nicodeBrowser.searchProjectFiles(${JSON.stringify(projectId)}, 'main')`).catch(String)
+    throw new Error(JSON.stringify({ editorState, files }), { cause: error })
+  }
+  await copyScreenshot("composer-files-menu-light")
+  await key("Enter", { isComposing: true })
+  assert.equal(await count(), 0, "输入法确认键不选文件也不发送")
+  assert.equal(await result("main.ts"), true, "组合输入确认保持当前菜单")
+  await key("Enter")
+  await until(async () => (await count()) === 1)
+  await append("和 @config")
+  await until(() => result("config.json"))
+  await evaluate("document.querySelector('[role=option][aria-selected=true]').click()")
+  await until(async () => (await count()) === 2)
+  await new Promise((resolve) => setTimeout(resolve, 550))
+  await evaluate(`(() => {
+    const instance = ${editor}.editor
+    instance.state.doc.descendants((node, pos) => {
+      if (node.type.name === 'fileReference' && node.attrs.name === 'config.json') instance.commands.setNodeSelection(pos)
+    })
+  })()`)
+  await key("Backspace")
+  await until(async () => (await count()) === 1)
+  await key("z", { ctrlKey: true })
+  await until(async () => (await count()) === 2)
+  await key("y", { ctrlKey: true })
+  await until(async () => (await count()) === 1)
+  await key("z", { ctrlKey: true })
+  await until(async () => (await count()) === 2)
+
+  const copied = await evaluate(`(() => {
+    const editor = ${editor}; window.getSelection().selectAllChildren(editor)
+    return new Promise(resolve => requestAnimationFrame(() => {
+      const data = new DataTransfer()
+      editor.dispatchEvent(new ClipboardEvent('copy', { clipboardData: data, bubbles: true, cancelable: true }))
+      resolve({ html: data.getData('text/html'), text: data.getData('text/plain') })
+    }))
+  })()`)
+  const mainPath = await realpath(join(root, "main.ts"))
+  const configPath = await realpath(join(root, "config.json"))
+  assert.equal(copied.text, `检查 ${mainPath} 和 ${configPath} `)
+  assert.match(copied.html, /data-file-reference/)
+  await evaluate(`(() => {
+    const data = new DataTransfer(); data.setData('text/html', ${JSON.stringify(copied.html)})
+    const editor = ${editor}; editor.dispatchEvent(new ClipboardEvent('paste', { clipboardData: data, bubbles: true, cancelable: true }))
+    window.getSelection().collapseToEnd()
+  })()`)
+  await until(async () => (await count()) === 2)
+  await key("Enter", { shiftKey: true })
+  await append("普通文本 dev@example.test 和 @literal。"); await key("Escape")
+  await copyScreenshot("composer-file-chips-light")
+  await evaluate("document.querySelector('.composer-editor [aria-label=\"预览 main.ts\"]').click()")
+  await until(() => previewContains("export const fixture = true"))
+  await evaluate("document.querySelector('.composer-editor [aria-label=\"预览 main.ts\"]').click()")
+  assert.equal(await evaluate("document.querySelectorAll('.chat-browser-tab').length"), 1)
+  await evaluate("document.querySelector('[aria-label=\"关闭 main.ts\"]').click()")
+  await until(() => evaluate("!document.querySelector('.new-chat-composer .send-button').disabled"))
+  await evaluate("document.querySelector('.new-chat-composer .send-button').click()")
+  await until(() => evaluate("document.querySelectorAll('.user-bubble .file-reference-chip').length === 2"))
+  const expected = `检查 ${mainPath} 和 ${configPath} \n普通文本 dev@example.test 和 @literal。`
+  const stored = await evaluate(`window.nicode.getSessionData(${JSON.stringify(projectId)}, document.querySelector('.chat-page').dataset.sessionId)`)
+  const message = stored.events.find((event) => event.type === "user/message").message
+  assert.equal(message.content[0].text, expected)
+  assert.deepEqual(message.fileReferences.map(({ absolutePath, offset }) => [absolutePath, offset]),
+    [[mainPath, expected.indexOf(mainPath)], [configPath, expected.indexOf(configPath)]])
+  await until(() => modelUserInputs.some((event) => event.content[0].text === expected))
+  assert.deepEqual(Object.keys(modelUserInputs.find((event) => event.content[0].text === expected)).sort(), ["content", "seq", "type"])
+
+  await new Promise((resolve) => { window.webContents.once("did-finish-load", resolve); window.webContents.reload() })
+  await until(() => evaluate("document.querySelectorAll('.user-bubble .file-reference-chip').length === 2"))
+  window.setContentSize(640, 760)
+  await until(() => evaluate("innerWidth === 640"))
+  await evaluate("document.querySelector('[aria-label=\"切换深色外观\"]')?.click()")
+  await until(() => evaluate("document.documentElement.dataset.theme === 'dark'"))
+  await copyScreenshot("composer-file-history-dark-narrow")
+  await evaluate("document.querySelector('.user-bubble [aria-label=\"预览 config.json\"]').click()")
+  await until(() => previewContains('"composer":true'))
+  await evaluate("document.querySelector('.chat-browser-chat-tab').click()")
+  await evaluate("document.querySelector('.user-bubble [aria-label=\"预览 config.json\"]').click()")
+  await until(() => previewContains('"composer":true'))
+  assert.equal(await evaluate("document.querySelectorAll('.chat-browser-tab').length"), 1, "窄窗口内再次打开同一文件仍复用标签")
+  await copyScreenshot("composer-file-preview-dark-narrow")
+  console.log("Composer 文件引用：菜单导航、键盘与点击插入、IME 守卫、原子删除与撤销重做、复制粘贴、纯文本发送、落盘恢复和标签复用通过")
 }
 void main().catch((error) => { console.error(error); failed = true }).finally(async () => {
   try {

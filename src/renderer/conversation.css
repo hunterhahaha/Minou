@@ -69,7 +69,7 @@
 .approval-actions > span { margin-right: auto; color: var(--muted); font-size: var(--font-size-note); line-height: var(--line-height-note); }
 .approval-popover > .chat-error { flex: none; margin: 0; }
 .approval-result > p { margin: 6px 0; overflow-wrap: anywhere; }
-.composer-anchor:has(.approval-popover) .composer textarea { max-height: 96px; }
+.composer-anchor:has(.approval-popover) .composer-editor { max-height: 96px; }
 @keyframes approval-appear { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
 @media (prefers-reduced-motion: reduce) { .approval-popover { animation: none; } }
 .chat-selectors { display: flex; align-items: center; gap: 7px; min-width: 0; }

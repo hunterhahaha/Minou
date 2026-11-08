@@ -32,6 +32,7 @@ import { SessionPage } from "./session-page.tsx"
 import { WorkspaceSearch } from "./workspace-search.tsx"
 import { useDialogFocus } from "./dialog-focus.tsx"
 import { ComposerInput } from "./composer-input.tsx"
+import { serializeComposerMessage } from "./composer-message.ts"
 import { ComposerModelPicker } from "./composer-model-picker.tsx"
 import { WindowControls } from "./window-controls.tsx"
 import "./workspace.css"
@@ -148,6 +149,7 @@ function SessionRoute() {
   }, [state, projectId, sessionId])
   if (projectId === undefined || sessionId === undefined) return null
   return <SessionPage projectId={projectId} sessionId={sessionId} state={state} providers={providers}
+      onOpenFile={(file) => browserTags.openFileReference(sessionId, file)}
       onOpenWeb={(url) => browserTags.openWeb(sessionId, url)}
       onOpenDiff={(eventId, file) => browserTags.open(sessionId, { kind: "diff", id: JSON.stringify([eventId, file.path]), eventId, file })} />
 }
@@ -242,7 +244,7 @@ function Workspace() {
   const [projectsOpen, setProjectsOpen] = useState(true)
   const [chatsOpen, setChatsOpen] = useState(true)
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(new Set())
-  const composerRef = useRef<HTMLTextAreaElement>(null)
+  const composerRef = useRef<HTMLElement>(null)
   const createdProjectsRef = useRef<ProjectSummary[]>([])
   const [projectDialogOpen, setProjectDialogOpen] = useState(false)
   const [projectName, setProjectName] = useState("")
@@ -712,16 +714,17 @@ function Workspace() {
    * @returns 新对话首批事件提交后清理当前分组草稿并导航；失败保留草稿。
    */
   async function sendNewChat(): Promise<void> {
-    const text = sessionsState.draftsByKey[newDraftKey] ?? ""
-    if (!text.trim() || !selectedModel || !selectedReasoningLevel || savingDefaultModel || sessionsState.view(newDraftKey).busy) return
+    const draft = sessionsState.draftsByKey[newDraftKey]
+    const message = serializeComposerMessage(draft)
+    if (!message.content[0].text.trim() || !selectedModel || !selectedReasoningLevel || savingDefaultModel || sessionsState.view(newDraftKey).busy) return
     sessionsState.setView(newDraftKey, { busy: true, operationError: undefined })
     try {
       const { providerId, protocol, modelId, name } = selectedModel
       const response = await window.nicode.startNewSession(groupId, {
-        content: [{ type: "text", text }], model: { providerId, protocol, modelId, name, reasoningLevel: selectedReasoningLevel },
+        ...message, model: { providerId, protocol, modelId, name, reasoningLevel: selectedReasoningLevel },
         sandboxMode: permission === "workspace-read-only" ? "sandbox-read-only" : permission === "full-access" ? "full-access" : "sandbox-full-access",
       })
-      if (sessionsState.draftsByKey[newDraftKey] === text) sessionsState.setDraft(newDraftKey, "")
+      if (sessionsState.draftsByKey[newDraftKey] === draft) sessionsState.setDraft(newDraftKey)
       void refreshSessionSummaries(groupId)
       navigateToSession(groupId, response.sessionId)
     } catch (error) { sessionsState.setView(newDraftKey, { operationError: errorMessage(error) }) }
@@ -808,7 +811,9 @@ function Workspace() {
           {newChatView.operationError && <p className="chat-error" role="alert">{newChatView.operationError}</p>}
           {defaultModelError && <p className="chat-error" role="alert">{defaultModelError}</p>}
           <div className="composer new-chat-composer">
-            <ComposerInput inputRef={composerRef} aria-label="任务描述" placeholder="描述你想做的事，剩下的一起完成…" value={sessionsState.draftsByKey[newDraftKey] ?? ""} onChange={(event) => sessionsState.setDraft(newDraftKey, event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void sendNewChat() } }} />
+            <ComposerInput key={newDraftKey} inputRef={composerRef} projectId={groupId} label="任务描述" placeholder="描述你想做的事，剩下的一起完成…"
+              value={sessionsState.draftsByKey[newDraftKey]} onChange={(document) => sessionsState.setDraft(newDraftKey, document)}
+              onSend={() => void sendNewChat()} onOpenFile={(file) => browserTags.openFileReference(browserOwner, file)} />
             <div className="composer-toolbar">
               <div className="composer-controls">
                 <div className="selector-anchor"><button className="selector-trigger" type="button" aria-label="权限" aria-haspopup="menu" aria-expanded={openMenu === "permission"} onClick={() => setOpenMenu((current) => current === "permission" ? null : "permission")}><IconShieldCheck size={15} aria-hidden="true" /><span>{permission === "default" ? "工作区读写" : permissionLabels[permission]}</span></button>
@@ -823,7 +828,7 @@ function Workspace() {
                       selectedKey={selectedModel?.selectionKey ?? ""} modelName={selectedModel?.name ?? "选择模型"}
                       supportsReasoning={selectedModel?.supportsReasoning ?? false} reasoningLevel={selectedReasoningLevel ?? ""} reasoningLevels={selectedModel?.reasoningLevels ?? []}
                       disabled={savingDefaultModel || Boolean(newChatView.busy)} onModelChange={(key) => { void selectDefaultModel(key) }} onReasoningChange={setNewChatReasoningLevel} />)}
-                <button className="send-button" type="button" disabled={!selectedModel || !selectedReasoningLevel || savingDefaultModel || newChatView.busy || !(sessionsState.draftsByKey[newDraftKey] ?? "").trim()} onClick={() => void sendNewChat()} aria-label="发送消息"><IconArrowUp size={18} stroke={2} /></button>
+                <button className="send-button" type="button" disabled={!selectedModel || !selectedReasoningLevel || savingDefaultModel || newChatView.busy || !serializeComposerMessage(sessionsState.draftsByKey[newDraftKey]).content[0].text.trim()} onClick={() => void sendNewChat()} aria-label="发送消息"><IconArrowUp size={18} stroke={2} /></button>
               </div>
             </div>
           </div>

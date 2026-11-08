@@ -31,7 +31,8 @@ const browserApi: NiCodeBrowserApi = {
   present: (presentation) => browserCommand({ action: "present", presentation }),
   openFileExplorer: (source) => ipcRenderer.invoke(FILE_EXPLORER_CHANNELS.open, source),
   listExplorerDirectory: (handle, path) => ipcRenderer.invoke(FILE_EXPLORER_CHANNELS.list, handle, path),
-  readExplorerFile: (handle, path) => ipcRenderer.invoke(FILE_EXPLORER_CHANNELS.read, handle, path),
+  searchProjectFiles: (projectId, query) => ipcRenderer.invoke(FILE_EXPLORER_CHANNELS.search, projectId, query),
+  readExplorerFile: (handle, path, absolutePath) => ipcRenderer.invoke(FILE_EXPLORER_CHANNELS.read, handle, path, absolutePath),
   closeFileExplorer: (handle) => ipcRenderer.invoke(FILE_EXPLORER_CHANNELS.close, handle),
   onWebTagState(listener) {
     const receive = (_event: Electron.IpcRendererEvent, state: WebTagState) => listener(state)

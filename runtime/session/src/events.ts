@@ -45,10 +45,36 @@ export interface EventBase {
  */
 type EventIdentity = "eventId" | "sessionId" | "seq" | "createdAt"
 
-/** V1 入口用户输入：模型用于确定 turn/start.model，不写入 user/message。 */
-export interface UserMessageInput {
+/** 项目关联目录中的普通文件，由主进程验证后用于只读预览。 */
+export interface FileReference {
+  /** 所属项目。 */
+  projectId: string
+  /** 项目配置中的关联目录。 */
+  directoryPath: string
+  /** 从关联目录到文件的斜杠分隔路径。 */
+  relativePath: string
+  /** 发送给模型的绝对路径。 */
+  absolutePath: string
+  /** 标签显示的文件名。 */
+  name: string
+}
+
+/** 引用在首个文本块中的位置，长度由 absolutePath 决定。 */
+export interface MessageFileReference extends FileReference {
+  /** 零基 UTF-16 偏移。 */
+  offset: number
+}
+
+/** 用户消息的模型文本及仅供展示的引用位置。 */
+export interface UserMessageContent {
   /** 当前消息或上下文记录的内容。 */
   content: ModelTextBlock[]
+  /** 仅结构化 Composer 消息携带，按文本位置排列。 */
+  fileReferences?: MessageFileReference[]
+}
+
+/** V1 入口用户输入：模型用于确定 turn/start.model，不写入 user/message。 */
+export interface UserMessageInput extends UserMessageContent {
   /** 本次输入选定的完整模型引用。 */
   model: ModelRef
 }
@@ -67,10 +93,9 @@ export interface UserMessageEvent extends EventBase {
   type: "user/message"
   /** 运行层分配的 Turn 编号。 */
   turn: number
-  message: {
+  message: UserMessageContent & {
     id: string
     role: "user"
-    content: ModelTextBlock[]
   }
 }
 

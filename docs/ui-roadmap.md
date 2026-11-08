@@ -481,3 +481,13 @@
 - 已完成「设置 → 通用」的窗口关闭偏好。保存成功即生效，重启后保留。主进程统一处理标题栏和系统关闭请求。托盘隐藏后恢复原窗口，Linux 和托盘初始化失败时保留任务栏入口。
 - Windows 真实 Electron 回归覆盖原生托盘对象、点击和菜单回调、第二实例、主窗口销毁后重建、草稿保留、设置保存失败与重试、并发保存顺序及退出清理。窗口 IPC、preload、配置和现有工作台回归通过，类型检查与构建通过。
 - 已复核浅色及窄窗深色设置截图。Windows 通知区域的实体点击、macOS 和 Linux 桌面交互，以及系统关机和注销未实测。
+
+## 13. Composer 文件引用（2026-11-08）
+
+- 已完成。`composer-input.tsx` 定义 Tiptap 行内文件节点、`@` 菜单和按键处理。`composer-message.ts` 按顺序生成纯文本与引用偏移。`main.tsx`、`session-page.tsx` 和 `session-state.ts` 接入结构化草稿、发送、队列重试与历史标签；`workspace.css` 和 `conversation.css` 延续 Composer 外观和输入高度限制。
+- `browser-api.ts`、preload `index.ts`、`electron-main.ts` 和 `file-explorer-ipc.ts` 将项目文件查询接到既有 ripgrep 枚举和文件查看器授权。搜索范围为当前项目的关联目录。独立对话显示无关联目录提示。`chat-browser.tsx` 和 `file-preview.tsx` 按对话、项目和绝对路径复用预览标签。
+- `session-ipc.ts` 验证文件存在、目录关联、路径边界和正文偏移。`events.ts` 与 `session-runtime.ts` 将可选的 `fileReferences` 随消息排队并原子提交到现有事件载荷。模型历史仍读取 `content`。`package.json` 和锁文件新增 Tiptap 3.33.0 的 core、pm 和 starter-kit。
+- `npm run typecheck`、`npm run build`、文件查看器与 Session IPC、SessionRuntime 和 Renderer 状态测试通过。文件验证覆盖正常搜索、越界链接、过期文件、错误偏移、重叠范围和预览路径不符。Runtime 回归覆盖引用随 FIFO 队列提交及快照复制。
+- 隐藏窗口 Electron 会话测试覆盖菜单导航、点击和键盘插入、组合输入按键守卫、原子删除、撤销重做、复制粘贴、Agent 纯文本输入、事件恢复和标签复用。工作台、审批、文件查看器、默认模型和网页抓取回归通过。构建仍有依赖模块指令和大分块提示。
+- 复核浅色宽窗搜索与编辑、深色窄窗历史和预览。截图为 `dist/composer-files-menu-light.png`、`dist/composer-file-chips-light.png`、`dist/composer-file-history-dark-narrow.png` 和 `dist/composer-file-preview-dark-narrow.png`。组合输入验证使用浏览器事件夹具，未手工验证系统中文输入法、实体触屏或屏幕阅读器。
+- 静态样式扫描返回空列表，`git diff --check` 通过。GitNexus 索引落后 HEAD 3 个提交，整体变化报告为 CRITICAL。会话、工作台、审批与预览入口另外用当前源码及以上回归核对。

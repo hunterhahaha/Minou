@@ -1,3 +1,5 @@
+import type { FileReference } from "../../runtime/session/src/events.ts"
+
 /** 内置浏览器的跨进程身份、布局及状态契约。 */
 export interface WebTagRef {
   sessionId: string
@@ -70,12 +72,15 @@ export type FileExplorerFile = { size: number } & (
 export const FILE_EXPLORER_CHANNELS = {
   open: "browser:explorer:open",
   list: "browser:explorer:list",
+  search: "browser:explorer:search",
   read: "browser:explorer:read",
   close: "browser:explorer:close",
 } as const
 
 /** 仅允许浏览器面板所需的命令及状态订阅。 */
 export interface NiCodeBrowserApi {
+  /** 搜索项目关联目录。 @param projectId 当前项目。 @param query 文件名或路径片段。 @returns 有界的已验证文件结果。 */
+  searchProjectFiles(projectId: string, query: string): Promise<FileReference[]>
   /** 创建网页实例。 @param ref 标签身份 @param url 初始地址 @returns 实例创建结果。 */
   createWebTag(ref: WebTagRef, url: string): Promise<void>
   /** 销毁实例。 @param ref 标签身份 @returns 销毁结果。 */
@@ -96,8 +101,8 @@ export interface NiCodeBrowserApi {
   openFileExplorer(source: FileExplorerSource): Promise<FileExplorerRoot>
   /** 枚举直属条目。 @param handle 根目录句柄。 @param relativePath 相对目录，空字符串表示根。 @returns 直属条目。 */
   listExplorerDirectory(handle: string, relativePath: string): Promise<FileExplorerEntry[]>
-  /** 读取有界文件预览。 @param handle 根目录句柄。 @param relativePath 相对文件路径。 @returns 元数据及可预览内容。 */
-  readExplorerFile(handle: string, relativePath: string): Promise<FileExplorerFile>
+  /** 读取有界文件预览。 @param handle 根目录句柄。 @param relativePath 相对文件路径。 @param absolutePath 引用中要核对的绝对路径。 @returns 元数据及可预览内容。 */
+  readExplorerFile(handle: string, relativePath: string, absolutePath?: string): Promise<FileExplorerFile>
   /** 释放目录句柄。 @param handle 根目录句柄。 @returns 释放结果。 */
   closeFileExplorer(handle: string): Promise<void>
 }

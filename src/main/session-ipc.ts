@@ -4,15 +4,16 @@ import { normalizeError } from "../../runtime/error/src/index.ts"
 import { requireProjectId } from "../../runtime/session/src/project-id.ts"
 import type { ProjectId } from "../../runtime/session/src/project-id.ts"
 import type { AssistantContentBlock } from "../../runtime/model/src/types.ts"
-import type { SessionEvent, UserMessageInput } from "../../runtime/session/src/events.ts"
+import type { SessionEvent, UserMessageContent } from "../../runtime/session/src/events.ts"
 import type { SandboxMode, SessionSettingsPatch } from "../../runtime/session/src/session-state.ts"
 import { SessionRuntime } from "../../runtime/agent/src/session-runtime.ts"
-import type { ContinueSessionInput, SessionRuntimeSnapshot, StartNewSessionInput, StartedSessionTurn } from "../../runtime/agent/src/session-runtime.ts"
+import type { SessionRuntimeSnapshot, StartNewSessionInput, StartedSessionTurn } from "../../runtime/agent/src/session-runtime.ts"
 import { INITIAL_SESSION_NAME, updateSessionMetaNameIfDefault } from "../../runtime/session/src/meta-store.ts"
 import { SESSION_IPC_CHANNELS } from "../preload/session-api.ts"
 import type { SessionControl, SessionData, SessionSummary, SessionUpdate } from "../preload/session-api.ts"
 import type { ConfigFilePaths } from "./config-files.ts"
 import { reconcileWorkspaceSessions } from "./workspace-store.ts"
+import { validateMessageFileReferences } from "./file-explorer-ipc.ts"
 
 /**
  * 投影可向渲染进程公开的事件字段，保留日志序号和块索引。
@@ -71,6 +72,12 @@ interface SessionIpcState {
   control?: SessionControl
 }
 
+/** IPC 形状校验后的正文与尚未验证的文件引用。 */
+interface RawMessageContent {
+  content: UserMessageContent["content"]
+  fileReferences?: unknown
+}
+
 /**
  * 注册 Session IPC，管理活动实例，并在成功持久化后发送更新。
  * @param ipcMain 主进程注册端口。
@@ -89,6 +96,20 @@ export function registerSessionIpcHandlers(
 ): void {
   const activeSessions = new Map<string, SessionRuntime>()
   const sessionIpcStates = new Map<string, SessionIpcState>()
+
+  /**
+   * 附加经主进程校验的文件引用；没有引用时沿用纯文本输入。
+   * @param projectId 当前对话所属项目。
+   * @param input 已通过请求形状校验的消息。
+   * @returns 文本与可选引用，供 Runtime 原子提交或排队。
+   * @throws Error 当引用缺少关联目录、文件或正确的正文位置时抛出。
+   */
+  async function messageContent(projectId: ProjectId, input: RawMessageContent): Promise<UserMessageContent> {
+    const { content, fileReferences } = input
+    if (fileReferences === undefined) return { content }
+    if (!paths || content.length !== 1) throw new TypeError("文件引用需要单个项目消息文本块")
+    return { content, fileReferences: await validateMessageFileReferences(paths.workspaceDatabasePath, projectId, content[0].text, fileReferences) }
+  }
 
   /**
    * @param projectId 分组。
@@ -240,10 +261,11 @@ export function registerSessionIpcHandlers(
 
   ipcMain.handle(SESSION_IPC_CHANNELS.startNewSession, async (_event, rawProjectId, rawInput) => {
     const projectId = requireProjectId(rawProjectId)
-    const input = requireUserMessageInput(rawInput)
+    const { model, sandboxMode, ...rawMessage } = requireUserMessageInput(rawInput)
     const sessionId = SessionRuntime.createSessionId()
     const key = keyOf(projectId, sessionId)
     return serial(key, async () => {
+      const input = { ...await messageContent(projectId, rawMessage), model, ...(sandboxMode === undefined ? {} : { sandboxMode }) }
       const runtime = createActive(projectId, sessionId)
       try {
         const started = await runtime.startNewSession(input, paths === undefined ? undefined : async (title, stopSignal) => {
@@ -267,10 +289,11 @@ export function registerSessionIpcHandlers(
   })
   ipcMain.handle(SESSION_IPC_CHANNELS.continueSession, async (_event, rawProjectId, rawSessionId, rawInput) => {
     const projectId = requireProjectId(rawProjectId), sessionId = requireSessionId(rawSessionId)
-    const input = requireContinueSessionInput(rawInput)
+    const rawMessage = requireContinueSessionInput(rawInput)
     const key = keyOf(projectId, sessionId)
     return serial(key, async () => {
       if (activeSessions.has(key)) throw new Error(`Session 正在运行，请使用 enqueueSessionMessage：${sessionId}`)
+      const input = await messageContent(projectId, rawMessage)
       const runtime = createActive(projectId, sessionId)
       try {
         const started = await runtime.continueSession(input)
@@ -281,11 +304,11 @@ export function registerSessionIpcHandlers(
   })
   ipcMain.handle(SESSION_IPC_CHANNELS.enqueueSessionMessage, async (_event, rawProjectId, rawSessionId, rawInput) => {
     const projectId = requireProjectId(rawProjectId), sessionId = requireSessionId(rawSessionId)
-    if (!isRecord(rawInput) || Object.keys(rawInput).length !== 1 || !isTextContent(rawInput.content)) throw new TypeError("enqueueSessionMessage 输入无效")
+    const input = requireContinueSessionInput(rawInput, "enqueueSessionMessage 输入无效")
     return serial(keyOf(projectId, sessionId), async () => {
       const runtime = activeSessions.get(keyOf(projectId, sessionId))
       if (!runtime) throw new Error(`Session 当前未运行，不能追加消息：${sessionId}`)
-      const response = runtime.enqueueSessionMessage({ content: rawInput.content as UserMessageInput["content"] })
+      const response = runtime.enqueueSessionMessage(await messageContent(projectId, input))
       try { await publishState(projectId, runtime) }
       catch (error) { await report(projectId, runtime, "runtime", error) }
       return response
@@ -375,22 +398,23 @@ export function registerSessionIpcHandlers(
  * @returns 已校验首轮输入。
  * @throws TypeError 无效文本、模型或权限。
  */
-function requireUserMessageInput(value: unknown): StartNewSessionInput {
+function requireUserMessageInput(value: unknown): RawMessageContent & Pick<StartNewSessionInput, "model" | "sandboxMode"> {
   if (!isRecord(value) || !isTextContent(value.content) || !isModelRef(value.model) ||
     (value.sandboxMode !== undefined && !isSandboxMode(value.sandboxMode))) throw new TypeError("Session 输入无效")
-  return { content: value.content, model: value.model, ...(value.sandboxMode === undefined ? {} : { sandboxMode: value.sandboxMode }) }
+  return { content: value.content, model: value.model, sandboxMode: value.sandboxMode, fileReferences: value.fileReferences }
 }
 /**
- * 校验已有对话的 content-only 输入，模型选择由 Session Meta 提供。
+ * 校验已有对话的文本与可选引用字段，模型选择由 Session Meta 提供。
  * @param value Renderer 发来的未知值。
- * @returns 只含文本内容的继续输入。
+ * @param errorMessage 请求形状错误时的提示。
+ * @returns 含文本与待验证引用的继续输入。
  * @throws TypeError 当内容无效或试图覆盖模型、权限时抛出。
  */
-function requireContinueSessionInput(value: unknown): ContinueSessionInput {
-  if (!isRecord(value) || Object.keys(value).length !== 1 || !isTextContent(value.content)) {
-    throw new TypeError("继续对话输入无效")
+function requireContinueSessionInput(value: unknown, errorMessage = "继续对话输入无效"): RawMessageContent {
+  if (!isRecord(value) || Object.keys(value).some((key) => key !== "content" && key !== "fileReferences") || !isTextContent(value.content)) {
+    throw new TypeError(errorMessage)
   }
-  return { content: value.content }
+  return { content: value.content, fileReferences: value.fileReferences }
 }
 /**
  * @param value IPC patch。
@@ -431,7 +455,7 @@ function isModelRef(value: unknown): value is ModelRef {
  * @param value IPC 文本数组。
  * @returns 是否只有文本块。
  */
-function isTextContent(value: unknown): value is UserMessageInput["content"] {
+function isTextContent(value: unknown): value is UserMessageContent["content"] {
   return Array.isArray(value) && value.every((block) => isRecord(block) && block.type === "text" && typeof block.text === "string")
 }
 /**

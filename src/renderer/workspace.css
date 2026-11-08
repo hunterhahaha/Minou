@@ -181,9 +181,23 @@ kbd { font: var(--font-size-caption)/var(--line-height-caption) var(--font-ui); 
 .composer { display: flex; flex-direction: column; width: 100%; min-width: 0; border: 0; border-radius: var(--radius-panel); background: var(--surface); box-shadow: var(--shadow-small); transition: background .18s, box-shadow .18s; }
 .composer:hover { background: var(--surface-focus); }
 .composer:focus-within { background: var(--surface-focus); box-shadow: var(--shadow-focus), var(--shadow-pressed); }
-.composer textarea { display: block; width: 100%; min-height: 0; max-height: 200px; padding: 13px 16px 8px; border: 0; border-radius: var(--radius-panel) var(--radius-panel) 0 0; outline: 0; resize: none; color: var(--text); background: transparent; font-size: var(--font-size-input); line-height: var(--line-height-input); }
-.composer textarea:focus-visible { outline: 0; box-shadow: none; }
-.composer textarea::placeholder { color: var(--muted); }
+.composer-input { position: relative; min-width: 0; }
+.composer-editor { display: block; width: 100%; min-height: 0; max-height: 200px; padding: 13px 16px 8px; border-radius: var(--radius-panel) var(--radius-panel) 0 0; outline: 0; overflow-y: auto; overflow-wrap: anywhere; color: var(--text); font-size: var(--font-size-input); line-height: var(--line-height-input); }
+.composer-editor:focus-visible { outline: 0; box-shadow: none; }
+.composer-editor p { position: relative; margin: 0; }
+.composer-input [data-empty="true"] .composer-editor::before { position: absolute; content: attr(aria-placeholder); color: var(--muted); pointer-events: none; }
+.file-reference-chip, .queue-list .file-reference-chip { display: inline-block; vertical-align: baseline; max-width: min(100%, 32ch); padding: 0 var(--space-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; border: 0; border-radius: var(--radius-xs); color: var(--text-strong); background: var(--accent-soft); font-size: var(--font-size-ui); line-height: var(--line-height-ui); cursor: pointer; }
+.file-reference-chip:hover, .file-reference-chip.ProseMirror-selectednode { background: var(--hover); }
+.file-reference-chip:focus-visible, .file-reference-chip.ProseMirror-selectednode { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
+.composer-file-menu { position: absolute; z-index: 11; inset: auto var(--space-2) calc(100% + var(--space-1)); max-height: min(240px, 36vh); padding: var(--space-1); overflow: auto; border-radius: var(--radius-panel); color: var(--text); background: var(--popover); box-shadow: var(--shadow-popover); }
+.composer-file-menu button { display: flex; align-items: center; gap: var(--space-2); width: 100%; min-height: var(--size-control); padding: var(--space-1) var(--space-2); border: 0; border-radius: var(--radius-control); background: transparent; color: inherit; text-align: start; }
+.composer-file-menu button[aria-selected="true"] { background: var(--selected); }
+.composer-file-menu svg { flex: none; }
+.composer-file-menu button span { min-width: 0; }
+.composer-file-menu strong, .composer-file-menu small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.composer-file-menu strong { font-size: var(--font-size-ui); font-weight: 500; }
+.composer-file-menu small, .composer-file-menu p { color: var(--secondary); font-size: var(--font-size-note); line-height: var(--line-height-note); }
+.composer-file-menu p { margin: var(--space-2); }
 .composer-toolbar { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); min-height: 40px; padding: 0 10px 9px; }
 .composer-controls { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
 .composer-controls-right { margin-left: auto; justify-content: flex-end; }

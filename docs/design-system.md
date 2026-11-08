@@ -33,7 +33,7 @@
 
 - 使用既有 React、Vite、普通 CSS 和 `@tabler/icons-react`。不因参考项目使用 Tailwind、Framer Motion 或 Lucide 就增加这些依赖。
 - `main.tsx` 中的 Workspace 持有工作区状态与跨路由缓存，SessionRoute 定位会话，SessionPage 消费现有事件投影并展示消息。
-- ComposerInput 只负责受控输入的 DOM 高度；ComposerModelPicker 展示选项并把选择交回页面，持久化由现有页面流程负责。
+- ComposerInput 用 Tiptap 编辑文本与文件引用，草稿由 Workspace 按路由保存；ComposerModelPicker 展示选项并把选择交回页面，持久化由现有页面流程负责。
 - `workspace.css` 是样式入口，导入 `conversation.css` 和 `settings.css`。先在入口收敛共用 Token，再由各区域消费。
 - 不新增转发层、全局 UI 状态容器或通用组件框架。相同意图出现明确重复需求后，才考虑局部复用。
 
@@ -226,7 +226,7 @@
 - 首页与会话页共用相同的输入外壳、12px 圆角、14/22px 正文、32px 操作尺寸。
 - 输入区和底部工具栏构成一个实体，内部文本域透明；常态、悬停、聚焦层级依次增强。
 - 首页和会话使用圆形发送入口；会话运行时草稿为空（包括只有空白）则同一入口显示停止，草稿有内容则显示加入队列。停止中显示禁用的停止状态；继续沿用现有发送、排队和停止流程及忙碌保护，Enter 仍只发送。
-- ComposerInput 的单行起步、增长、上限后内部滚动和清空收缩由现有实现负责；样式不得同时引入另一套高度控制。
+- Composer 输入区从单行起步，随内容增长，达到上限后在输入区内滚动。`@` 文件菜单沿用现有浮层和选中态 Token，文件引用使用可聚焦的行内标签。菜单内方向键选择、Enter 插入、Escape 关闭，编辑器中的 Shift+Enter 换行。
 - 保持 Enter / Shift+Enter 和输入法处理。额外的 keyCode 229 保护属于事件任务，不得顺带加入。
 - ComposerModelPicker 保留现有顶层原生 popover、定位、外部关闭、方向键、Home / End、Escape 和焦点恢复。
 - 模型名称使用 13px 界面字号，推理等级等辅助信息使用 12px；长名可截断，菜单内允许完整内容换行。

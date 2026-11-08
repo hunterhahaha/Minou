@@ -1,13 +1,14 @@
 /** 从工作区事件字典派生聊天页面；输入操作仅走 preload 的固定 Session API。 */
-import { useEffect, useLayoutEffect, useRef, useState } from "react"
+import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react"
 import { IconArrowDown, IconArrowUp, IconBrain, IconCheck, IconCode, IconCopy, IconGitCompare, IconPlayerStop, IconShieldCheck, IconSparkles, IconTool } from "@tabler/icons-react"
 import type { AssistantContentBlock } from "../../runtime/model/src/types.ts"
 import { preferredReasoningLevel } from "../../runtime/model/src/reasoning.ts"
-import type { FileChange, SessionEvent } from "../../runtime/session/src/events.ts"
+import type { FileChange, FileReference, SessionEvent, UserMessageContent } from "../../runtime/session/src/events.ts"
 import type { ProviderSummary, SandboxMode, SessionSettingsPatch } from "../preload/session-api.ts"
 import { errorMessage, projectSessionEvents, sessionKey, WorkspaceSessionState, type ChatItem } from "./session-state.ts"
 import { MarkdownContent } from "./markdown-content.tsx"
 import { ComposerInput } from "./composer-input.tsx"
+import { serializeComposerMessage } from "./composer-message.ts"
 import { ComposerModelPicker } from "./composer-model-picker.tsx"
 
 /** 已确定的 Session 权限展示。 */
@@ -28,6 +29,8 @@ export interface SessionPageProps {
   onOpenDiff(eventId: string, file: FileChange): void
   /** 在当前对话的浏览器标签中打开网页。 */
   onOpenWeb(url: string): void
+  /** 在当前对话的浏览器标签中预览项目文件。 */
+  onOpenFile(reference: FileReference): void
 }
 /**
  * @param value 工具参数或结果。
@@ -101,12 +104,13 @@ function MessageCopyButton({ text, label }: { text: string; label: "复制AI回�
  * @param props 联合身份、工作区状态、模型选项与浏览器打开回调。
  * @returns 消息、审批、Queue、权限与固定在底部的输入区。
  */
-export function SessionPage({ projectId, sessionId, state, providers, onOpenDiff, onOpenWeb }: SessionPageProps) {
+export function SessionPage({ projectId, sessionId, state, providers, onOpenDiff, onOpenWeb, onOpenFile }: SessionPageProps) {
   const key = sessionKey(projectId, sessionId)
   const events = state.sessionEventsByKey[key] ?? []
   const view = state.view(key)
   const control = view.control
-  const showStop = control?.phase === "stopping" || (control?.phase === "running" && !(state.draftsByKey[key] ?? "").trim())
+  const hasDraft = Boolean(serializeComposerMessage(state.draftsByKey[key]).content[0].text.trim())
+  const showStop = control?.phase === "stopping" || (control?.phase === "running" && !hasDraft)
   const endRef = useRef<HTMLDivElement>(null)
   const scrollingRef = useRef<HTMLDivElement>(null)
   const pageRef = useRef<HTMLElement>(null)
@@ -185,16 +189,17 @@ export function SessionPage({ projectId, sessionId, state, providers, onOpenDiff
     finally { state.setView(key, { busy: false }) }
   }
   /**
-   * @param text 可选的未发送消息重试。
+   * @param retry 可选的未发送消息及其引用。
    * @returns 发送完成，成功时仅清理未改变的原草稿。
    */
-  async function send(text = state.draftsByKey[key] ?? ""): Promise<void> {
-    if (!text.trim() || !control || control.phase === "stopping") return
+  async function send(retry?: UserMessageContent): Promise<void> {
+    const draft = state.draftsByKey[key]
+    const message = retry ? { content: retry.content, ...(retry.fileReferences && { fileReferences: retry.fileReferences }) } : serializeComposerMessage(draft)
+    if (!message.content.some((block) => block.text.trim()) || !control || control.phase === "stopping") return
     await operate(async () => {
-      const content = [{ type: "text" as const, text }]
-      if (control.phase === "running") await window.nicode.enqueueSessionMessage(projectId, sessionId, { content })
-      else await window.nicode.continueSession(projectId, sessionId, { content })
-      if (state.draftsByKey[key] === text) state.setDraft(key, "")
+      if (control.phase === "running") await window.nicode.enqueueSessionMessage(projectId, sessionId, message)
+      else await window.nicode.continueSession(projectId, sessionId, message)
+      if (!retry && state.draftsByKey[key] === draft) state.setDraft(key)
     })
   }
   /**
@@ -218,12 +223,30 @@ export function SessionPage({ projectId, sessionId, state, providers, onOpenDiff
       const result = await window.nicode.decideSessionApproval(projectId, sessionId, event.approvalId, decision)
       if (result.accepted) {
         setSubmittedApprovalId(event.approvalId)
-        if (approvalRef.current?.contains(document.activeElement)) composerRef.current?.querySelector("textarea")?.focus()
+        if (approvalRef.current?.contains(document.activeElement)) composerRef.current?.querySelector<HTMLElement>(".composer-editor")?.focus()
       } else {
         state.setView(key, { operationError: "这项审批已结束。" })
         await state.load(projectId, sessionId, true)
       }
     })
+  }
+
+  /**
+   * 将消息中记录的路径范围替换为可点击的文件标签。
+   * @param message 已发送或排队的文本及引用。
+   * @returns 保持原文顺序的文本与 React 按钮。
+   */
+  function messageBody(message: UserMessageContent) {
+    const text = message.content.map((block) => block.text).join("\n")
+    let end = 0
+    const parts = (message.fileReferences ?? []).flatMap((file) => {
+      if (file.projectId !== projectId || file.offset < end || !text.startsWith(file.absolutePath, file.offset)) return []
+      const before = text.slice(end, file.offset)
+      end = file.offset + file.absolutePath.length
+      return <Fragment key={file.offset}>{before}<button className="file-reference-chip" type="button"
+        title={file.absolutePath} aria-label={"预览 " + file.name} onClick={() => onOpenFile(file)}>{file.name}</button></Fragment>
+    })
+    return <>{parts}{text.slice(end)}</>
   }
   /**
    * @param event 展示所需的持久化事件。
@@ -232,7 +255,7 @@ export function SessionPage({ projectId, sessionId, state, providers, onOpenDiff
   function eventView(event: SessionEvent) {
     if (event.type === "user/message") {
       const text = event.message.content.map((block) => block.text).join("\n")
-      return <div className="user-message"><div className="user-bubble">{text}</div><div className="message-actions user-message-actions"><MessageCopyButton text={text} label="复制用户消息" /></div></div>
+      return <div className="user-message"><div className="user-bubble">{messageBody(event.message)}</div><div className="message-actions user-message-actions"><MessageCopyButton text={text} label="复制用户消息" /></div></div>
     }
     if (event.type === "app/error") return <p className="chat-error" role="alert">{event.error.message}</p>
     if (event.type === "approval/result") {
@@ -313,9 +336,9 @@ export function SessionPage({ projectId, sessionId, state, providers, onOpenDiff
     <div className="chat-footer">
       {showScrollToBottom && <button type="button" className="scroll-to-bottom" aria-label="回到最新消息" onClick={() => { followsRef.current = true; setShowScrollToBottom(false); endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" }) }}><IconArrowDown size={15} />最新消息</button>}
       {pendingMessages.length > 0 && <section className="queue-list" aria-label="待处理消息">{pendingMessages.map((message) =>
-        <div key={message.messageId}><span>{message.status === "starting" ? "正在准备" : "排队中"}</span><p>{message.content.map((block) => block.text).join("\n")}</p></div>)}</section>}
+        <div key={message.messageId}><span>{message.status === "starting" ? "正在准备" : "排队中"}</span><p>{messageBody(message)}</p></div>)}</section>}
       {control && control.discardedMessages.length > 0 && <section className="queue-list" aria-label="未发送消息">{control.discardedMessages.map((message) =>
-        <div key={message.messageId}><span>未发送</span><p>{message.content.map((block) => block.text).join("\n")}</p><button disabled={view.busy || control.phase === "stopping"} onClick={() => void send(message.content.map((block) => block.text).join("\n"))}>重试发送</button></div>)}</section>}
+        <div key={message.messageId}><span>未发送</span><p>{messageBody(message)}</p><button disabled={view.busy || control.phase === "stopping"} onClick={() => void send(message)}>重试发送</button></div>)}</section>}
       {!pendingApproval && view.operationError && <p className="chat-error" role="alert">{view.operationError}</p>}
       <div className="composer-anchor" ref={composerRef}>
       {pendingApproval && <section className="approval-popover" role="dialog" aria-modal="false" aria-labelledby="approval-title" tabIndex={-1} ref={approvalRef} key={pendingApproval.approvalId} data-approval-id={pendingApproval.approvalId}>
@@ -328,9 +351,9 @@ export function SessionPage({ projectId, sessionId, state, providers, onOpenDiff
         {view.operationError && <p className="chat-error" role="alert">{view.operationError}</p>}
       </section>}
       <div className="composer">
-        <ComposerInput aria-label="消息内容" placeholder={control?.phase === "running" ? "输入下一条消息，发送后加入队列…" : "继续这段对话…"}
-          value={state.draftsByKey[key] ?? ""} onChange={(event) => state.setDraft(key, event.target.value)}
-          onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void send() } }} />
+        <ComposerInput key={key} projectId={projectId} label="消息内容" placeholder={control?.phase === "running" ? "输入下一条消息，发送后加入队列…" : "继续这段对话…"}
+          value={state.draftsByKey[key]} onChange={(document) => state.setDraft(key, document)}
+          onSend={() => void send()} onOpenFile={onOpenFile} />
         <div className="composer-toolbar">
           <div className="chat-selectors">
             <label className="chat-select-label chat-permission-select"><IconShieldCheck size={15} aria-hidden="true" /><select aria-label="对话权限" disabled={!control || view.busy} value={control?.sandboxMode ?? "sandbox-full-access"} onChange={(event) => void settings({ sandboxMode: event.target.value as SandboxMode })}>
@@ -347,7 +370,7 @@ export function SessionPage({ projectId, sessionId, state, providers, onOpenDiff
                   ...reference, reasoningLevel: preferredReasoningLevel(reasoningLevels, control?.currentModel.reasoningLevel),
                 } }) }
               }} onReasoningChange={(reasoningLevel) => { if (control) void settings({ model: { ...control.currentModel, reasoningLevel } }) }} />
-            <button type="button" className="send-button" aria-label={showStop ? (control?.phase === "stopping" ? "正在停止" : "停止") : (control?.phase === "running" ? "加入队列" : "发送消息")} title={showStop ? (control?.phase === "stopping" ? "正在停止" : "停止") : (control?.phase === "running" ? "加入队列" : "发送消息")} disabled={!control || view.busy || control.phase === "stopping" || (!showStop && !(state.draftsByKey[key] ?? "").trim())} onClick={() => { if (showStop) void operate(() => window.nicode.stopSession(projectId, sessionId)); else void send() }}>{showStop ? <IconPlayerStop size={16} stroke={2} aria-hidden="true" /> : <IconArrowUp size={18} stroke={2} aria-hidden="true" />}</button>
+            <button type="button" className="send-button" aria-label={showStop ? (control?.phase === "stopping" ? "正在停止" : "停止") : (control?.phase === "running" ? "加入队列" : "发送消息")} title={showStop ? (control?.phase === "stopping" ? "正在停止" : "停止") : (control?.phase === "running" ? "加入队列" : "发送消息")} disabled={!control || view.busy || control.phase === "stopping" || (!showStop && !hasDraft)} onClick={() => { if (showStop) void operate(() => window.nicode.stopSession(projectId, sessionId)); else void send() }}>{showStop ? <IconPlayerStop size={16} stroke={2} aria-hidden="true" /> : <IconArrowUp size={18} stroke={2} aria-hidden="true" />}</button>
           </div>
         </div>
       </div>

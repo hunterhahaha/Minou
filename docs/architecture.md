@@ -50,7 +50,7 @@ Renderer 负责页面、路由与展示缓存，不直接打开数据库、读�
 
 ## 一次桌面对话调用
 
-1. [session-page.tsx](../src/renderer/session-page.tsx) 经 preload 请求新建或继续会话；运行中发送的消息请求入队。
+1. 首页与 [session-page.tsx](../src/renderer/session-page.tsx) 把 [Composer](../src/renderer/composer-input.tsx) 的 Tiptap JSON [序列化](../src/renderer/composer-message.ts) 为一个文本块，经 preload 请求新建或继续会话；运行中发送的消息请求入队。文件节点展开为绝对路径，并附上供展示的 `fileReferences`。
 2. [session-ipc.ts](../src/main/session-ipc.ts) 以 Project + Session 联合身份管理活动 Runtime，校验参数并转发命令。
 3. [SessionRuntime](../runtime/agent/src/session-runtime.ts) 绑定会话目录、事件日志和 SessionState。新建或继续 Turn 时，先提交 `turn/start` 与 `user/message`；提交失败不启动模型循环。
 4. Turn 真正开始时读取所选模型和推理等级，通过 `SessionRuntimeGlobal.createTurnModelAdapter()` 打开 Provider 数据库，取得同一快照的模型规格、协议配置和凭据。模型支持思考时校验所选等级后，创建仅供本 Turn 使用的 Adapter；后续 Step 复用它。
@@ -58,6 +58,8 @@ Renderer 负责页面、路由与展示缓存，不直接打开数据库、读�
 6. Loop 写入 Step、Assistant 流事件和完整消息；若产生工具调用，就运行工具小轮并把 ToolResult 回填上下文，然后进入下一 Step。
 7. Runtime 负责 Turn 完成、失败、停止、文件变化与派生状态同步，再消费 FIFO 队列。Queue 仅保存消息内容，不提前冻结后续 Turn 的模型。
 8. 主进程通过会话更新事件推送已提交内容和控制状态，Renderer 的 [session-state.ts](../src/renderer/session-state.ts) 合并历史与增量，供页面展示。
+
+Composer 的 `@` 查询调用 [文件查看器 IPC](../src/main/file-explorer-ipc.ts)，用现有 ripgrep 枚举能力搜索当前项目的关联目录。会话 IPC 在接收结构化引用时校验目录关联、真实文件与正文位置。队列与 `user/message` 事件携带引用，模型历史只读取 `content`。历史和 Composer 的文件标签共用内置浏览器标签管理器及只读预览，打开时再次检查目录授权和目标文件。
 
 模型配置的必填 `supportsReasoning` 从 Provider 数据库快照传入 Adapter。三个协议共用的推理请求片段仅在该字段为 true 时校验等级并拼装字段；普通请求和上下文压缩遵循相同规则。false 时忽略会话中保留的等级，不改变 ModelRef 或 Meta 的结构，CLI 也使用相同的能力判断。
 

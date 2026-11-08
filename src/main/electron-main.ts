@@ -54,8 +54,9 @@ async function main(): Promise<void> {
   initNetworkDispatcher()
   const toolRegistry = new ToolRegistry()
   const renderRegistry = new RenderRegistry()
+  const rgPath = bundledRipgrepPath(join(__dirname, "../../.."))
   registerFileTools(toolRegistry, renderRegistry, {
-    rgPath: bundledRipgrepPath(join(__dirname, "../../..")),
+    rgPath,
     loadAccess: (projectId, sessionId) => loadFileAccessState(paths, projectId, sessionId),
   })
   const memoryManager = new MemoryManager(paths.rootDir)
@@ -80,7 +81,7 @@ async function main(): Promise<void> {
   })
   const tray = new ElectronTray(windows, desktopSettings)
   registerWindowIpcHandlers(trustedIpcMain, BrowserWindow, tray)
-  registerFileExplorerIpc(trustedIpcMain, paths.workspaceDatabasePath)
+  registerFileExplorerIpc(trustedIpcMain, paths.workspaceDatabasePath, rgPath)
   await startElectronApp({
     app,
     ipcMain: trustedIpcMain,

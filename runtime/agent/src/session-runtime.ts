@@ -42,6 +42,7 @@ import type {
   SkillContextChange,
   TurnStartEventInput,
   UserMessageInput,
+  UserMessageContent,
   UserMessageEventInput,
 } from "../../session/src/events.ts"
 import { createFileSessionEventLog } from "../../session/src/event-log.ts"
@@ -295,16 +296,10 @@ export interface StartedSessionTurn {
 /**
  * 继续已有 Session 的用户文本；模型在 Turn 启动时从持久化设置读取。
  */
-export interface ContinueSessionInput {
-  /** 要写入新 Turn 的用户文本内容。 */
-  content: ModelTextBlock[]
-}
+export type ContinueSessionInput = UserMessageContent
 
-/** 运行中 Queue 使用的 content-only 输入；队列不捕获模型选择。 */
-export interface EnqueueSessionMessageInput {
-  /** 真正开始下一 Turn 时才与当时磁盘模型组合的用户文本。 */
-  content: ModelTextBlock[]
-}
+/** 运行中 Queue 使用的消息输入；队列不捕获模型选择。 */
+export type EnqueueSessionMessageInput = UserMessageContent
 
 /** 新对话的消息及首轮工具执行前保存的权限选择。 */
 export interface StartNewSessionInput extends UserMessageInput {
@@ -853,6 +848,7 @@ export class SessionRuntime implements SessionRepairPorts {
     }
     const queued: PendingSessionMessage = {
       messageId: randomUUID(), content: cloneMessageContent(input.content), status: "queued",
+      ...(input.fileReferences && { fileReferences: structuredClone(input.fileReferences) }),
     }
     this.pendingMessages.push(queued)
     this.onStateChanged?.()
@@ -1056,7 +1052,7 @@ export class SessionRuntime implements SessionRepairPorts {
   ): Promise<StartedSessionTurn> {
     const turn = 1
     await this.createSessionDirectory()
-    await this.appendTurnStartAndUserMessage(turnEvents(turn, input.model, input.content))
+    await this.appendTurnStartAndUserMessage(turnEvents(turn, input.model, input))
     const completion = this.runCommittedTurn(turn, async () => {
       this.initialization = (async () => {
         await this.initializeSession()
@@ -1092,7 +1088,7 @@ export class SessionRuntime implements SessionRepairPorts {
     const model = await this.readCurrentModel()
     const loopOptions = await this.createLoopOptions(model)
     const turn = state.lastTurn + 1
-    await this.appendTurnStartAndUserMessage(turnEvents(turn, model, input.content))
+    await this.appendTurnStartAndUserMessage(turnEvents(turn, model, input))
     return {
       sessionId: this.sessionId,
       turn,
@@ -1113,7 +1109,7 @@ export class SessionRuntime implements SessionRepairPorts {
     const model = await this.readCurrentModel()
     const loopOptions = await this.createLoopOptions(model)
     const turn = state.lastTurn + 1
-    await this.appendTurnStartAndUserMessage(turnEvents(turn, model, input.content, input.messageId))
+    await this.appendTurnStartAndUserMessage(turnEvents(turn, model, input, input.messageId))
     return {
       sessionId: this.sessionId,
       turn,
@@ -1437,19 +1433,19 @@ export async function repairSession(
  *
  * @param turn 新 Turn 编号。
  * @param model 新 Turn 固定使用的模型引用。
- * @param content 用户消息的文本块内容。
+ * @param input 用户消息文本和可选的展示引用。
  * @param messageId Queue 入队身份；普通发送省略时生成新身份。
  * @returns 顺序固定的两条事件输入。
  */
 function turnEvents(
   turn: number,
   model: ModelRef,
-  content: ModelTextBlock[],
+  { content, fileReferences }: UserMessageContent,
   messageId: string = randomUUID(),
 ): readonly [TurnStartEventInput, UserMessageEventInput] {
   return [
     { type: "turn/start", turn, model },
-    { type: "user/message", turn, message: { id: messageId, role: "user", content } },
+    { type: "user/message", turn, message: { id: messageId, role: "user", content, ...(fileReferences && { fileReferences }) } },
   ]
 }
 

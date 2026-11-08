@@ -1,5 +1,6 @@
 /** 无框架断言覆盖工作区缓存与流式投影；不需要 React 或浏览器。 */
 import assert from "node:assert/strict"
+import { serializeComposerMessage } from "../../src/renderer/composer-message.ts"
 import { WorkspaceSessionState, mergeSessionEvents, projectSessionEvents, sessionKey, throughSeq } from "../../src/renderer/session-state.ts"
 import type { SessionControl, SessionData } from "../../src/preload/session-api.ts"
 import type { SessionEvent, SessionEventInput } from "../../runtime/session/src/events.ts"
@@ -62,8 +63,11 @@ async function testCache(): Promise<void> {
   assert.deepEqual(state.view(key).summary, generatedSummary, "旧查询不能覆盖已推送的标题")
   await state.load("default", "s"); await state.load("default", "s")
   assert.equal(calls, 1, "切换回缓存对话不查询历史")
-  state.setDraft(key, "未发送"); state.setDraft(sessionKey("project", "$new-chat"), "新任务")
-  assert.equal(state.draftsByKey[key], "未发送")
+  const draft = { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "未发送" }] }] }
+  state.setDraft(key, draft)
+  state.setDraft(sessionKey("project", "$new-chat"), { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: "新任务" }] }] })
+  assert.equal(state.draftsByKey[key], draft)
+  assert.equal(serializeComposerMessage(state.draftsByKey[key]).content[0].text, "未发送")
   assert.equal(state.view(key).loading, false)
   assert.ok(changed > 0)
   const newer = new WorkspaceSessionState({ getSessionData: async () => { throw new Error("unexpected query") } }, () => {})

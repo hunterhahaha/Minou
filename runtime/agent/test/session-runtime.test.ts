@@ -415,10 +415,11 @@ async function testQueuedMessagesRunInOrder(): Promise<void> {
   }
   const started = await state.ports.startNewSession({ content: MESSAGE, model: MODEL })
   const processing = state.ports.processMessageQueue(started)
-  const second = [{ type: "text" as const, text: "第二条" }]
+  const reference = { projectId: "project", directoryPath: "/workspace", relativePath: "main.ts", absolutePath: "/workspace/main.ts", name: "main.ts", offset: 4 }
+  const second = [{ type: "text" as const, text: "第二条 " + reference.absolutePath }]
   const third = [{ type: "text" as const, text: "第三条" }]
   state.queueReadModels(MODEL, OTHER_MODEL, MODEL)
-  const queued = state.ports.enqueueSessionMessage({ content: second })
+  const queued = state.ports.enqueueSessionMessage({ content: second, fileReferences: [reference] })
   assert.ok(queued.messageId)
   assert.deepEqual(queued, {
     sessionId: "session-queue",
@@ -431,6 +432,8 @@ async function testQueuedMessagesRunInOrder(): Promise<void> {
 
   assert.deepEqual(state.batches.map((batch) => batch[0].turn), [1, 2, 3])
   assert.equal(state.batches[1]?.[1].message.id, queued.messageId)
+  assert.deepEqual(state.batches[1]?.[1].message.fileReferences, [reference])
+  assert.notEqual(state.batches[1]?.[1].message.fileReferences?.[0], reference, "队列独立持有引用快照")
   assert.deepEqual(
     state.batches.map((batch) => batch[1].message.content),
     [MESSAGE, second, third],

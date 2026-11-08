@@ -28,9 +28,10 @@ async function until(predicate) {
 const evaluate = script => window.webContents.executeJavaScript(script)
 /** @param label 输入框名称。 @param text 当前输入。 @returns React 输入更新完成。 */
 async function type(label, text) {
-  await evaluate(`(() => { const node = document.querySelector('textarea[aria-label=' + ${JSON.stringify(JSON.stringify(label))} + ']');
-    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(node, ${JSON.stringify(text)});
-    node.dispatchEvent(new Event('input', { bubbles: true })) })()`)
+  await evaluate(`(() => { const node = document.querySelector('.composer-editor[aria-label=' + ${JSON.stringify(JSON.stringify(label))} + ']');
+    node.focus()
+    window.getSelection().selectAllChildren(node)
+    document.execCommand('insertText', false, ${JSON.stringify(text)}) })()`)
 }
 /** @param name 输出截图名。 @returns 当前动画与布局稳定后的窗口截图已写入 dist。 */
 async function screenshot(name) {
@@ -139,7 +140,7 @@ async function main() {
   await until(() => evaluate("!document.querySelector('.approval-popover') && Boolean(document.querySelector('[aria-label=\"任务描述\"]'))"))
   await evaluate("location.hash = " + JSON.stringify(route))
   await until(() => evaluate("Boolean(document.querySelector('.approval-popover'))"))
-  assert.equal(await evaluate("document.querySelector('[aria-label=\"消息内容\"]').value"), "保留待发送草稿")
+  assert.equal(await evaluate("document.querySelector('[aria-label=\"消息内容\"]').textContent"), "保留待发送草稿")
   await evaluate("document.querySelector('[aria-label=\"切换深色外观\"]').click()")
   await screenshot("electron-approval-dark")
   await fits()

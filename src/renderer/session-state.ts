@@ -1,4 +1,5 @@
 /** 工作区生命周期内的原始事件缓存与纯展示投影，不保存凭据或模型 Adapter。 */
+import type { JSONContent } from "@tiptap/core"
 import type { AssistantContentBlock, ModelTextBlock } from "../../runtime/model/src/types.ts"
 import type { SessionEvent } from "../../runtime/session/src/events.ts"
 import type { NiCodePreloadApi, SessionControl, SessionData, SessionSummary, SessionUpdate } from "../preload/session-api.ts"
@@ -73,7 +74,7 @@ export class WorkspaceSessionState {
   /** 各对话控制、加载和操作状态。 */
   readonly sessionViewsByKey: Record<SessionKey, SessionView> = {}
   /** 对话及分组新聊天草稿。 */
-  readonly draftsByKey: Record<SessionKey, string> = {}
+  readonly draftsByKey: Partial<Record<SessionKey, JSONContent>> = {}
   /** 同一身份只允许一个历史请求。 */
   readonly sessionLoadsRef = new Map<SessionKey, Promise<void>>()
   /** 未初始化历史对话先收到的事件。 */
@@ -101,9 +102,13 @@ export class WorkspaceSessionState {
   view(key: SessionKey): SessionView { return this.sessionViewsByKey[key] ??= {} }
   /**
    * @param key 草稿身份。
-   * @param text 新草稿。
+   * @param document 新草稿；省略时清除。
    */
-  setDraft(key: SessionKey, text: string): void { this.draftsByKey[key] = text; this.changed() }
+  setDraft(key: SessionKey, document?: JSONContent): void {
+    if (document === undefined) delete this.draftsByKey[key]
+    else this.draftsByKey[key] = document
+    this.changed()
+  }
   /**
    * @param key 对话身份。
    * @param patch 操作或加载状态。

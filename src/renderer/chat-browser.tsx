@@ -1,12 +1,13 @@
 import { Component, lazy, Suspense, useLayoutEffect, useRef, useState, type ReactNode } from "react"
-import { IconArrowLeft, IconArrowRight, IconFileDiff, IconFolderOpen, IconMaximize, IconMessage, IconMinimize, IconPlus, IconRefresh, IconWorld, IconX } from "@tabler/icons-react"
-import type { FileChange } from "../../runtime/session/src/events.ts"
+import { IconArrowLeft, IconArrowRight, IconFile, IconFileDiff, IconFolderOpen, IconMaximize, IconMessage, IconMinimize, IconPlus, IconRefresh, IconWorld, IconX } from "@tabler/icons-react"
+import type { FileChange, FileReference } from "../../runtime/session/src/events.ts"
 import type { BrowserPresentation, WebTagRef, WebTagState } from "../preload/browser-api.ts"
 import type { ProjectSummary } from "../preload/session-api.ts"
 import "./chat-browser.css"
 
 const PatchDiff = lazy(async () => ({ default: (await import("@pierre/diffs/react")).PatchDiff }))
 const FileExplorerViewer = lazy(() => import("./file-explorer-viewer.tsx"))
+const ReferencedFilePreview = lazy(async () => ({ default: (await import("./file-preview.tsx")).ReferencedFilePreview }))
 const minimumSplitPercent = 25
 const maximumSplitPercent = 100 - minimumSplitPercent
 
@@ -15,6 +16,7 @@ export type BrowserTag =
   | { kind: "blank"; id: string }
   | { kind: "diff"; id: string; eventId: string; file: FileChange }
   | { kind: "file-explorer"; id: string; projectId: string }
+  | { kind: "file-reference"; id: string; file: FileReference }
   | ({ kind: "web"; id: string } & Omit<WebTagState, "ref" | "opened" | "closed">)
 
 /** 一个浏览器工作区的标签顺序、选中项和面板可见状态。 */
@@ -81,6 +83,19 @@ export class TagManager {
   openFileExplorer(sessionId: string, projectId: string): void {
     const tag = this.get(sessionId).tags.find((item) => item.kind === "file-explorer" && item.projectId === projectId)
     this.open(sessionId, tag ?? { kind: "file-explorer", id: crypto.randomUUID(), projectId })
+  }
+
+  /**
+   * 按项目与已解析路径打开文件预览或选中现有标签。
+   * @param sessionId 浏览器所属对话。
+   * @param file Composer 或历史消息里的文件引用。
+   */
+  openFileReference(sessionId: string, file: FileReference): void {
+    const id = JSON.stringify(["file", file.projectId, file.absolutePath])
+    const state = this.get(sessionId)
+    const tag: BrowserTag = { kind: "file-reference", id, file }
+    const tags = state.tags.some((item) => item.id === id) ? state.tags.map((item) => item.id === id ? tag : item) : [...state.tags, tag]
+    this.set(sessionId, { tags, activeTagId: id, narrowPanel: "browser" })
   }
 
   /**
@@ -196,8 +211,13 @@ export function BrowserWorkspace({ manager, sessionId, projectId, projects, obsc
   const [error, setError] = useState("")
   const project = projects.find((item) => item.projectId === projectId)
   // Draft routes share browser tabs, so project file tabs also require a project match.
-  const visibleTags = browser.tags.filter((tag) => tag.kind !== "file-explorer" || tag.projectId === projectId)
+  const visibleTags = browser.tags.filter((tag) => {
+    if (tag.kind === "file-explorer") return tag.projectId === projectId
+    if (tag.kind === "file-reference") return tag.file.projectId === projectId
+    return true
+  })
   const active = visibleTags.find((tag) => tag.id === browser.activeTagId) ?? visibleTags.at(-1)
+  const activeFile = active?.kind === "file-reference" ? active : undefined
   const web = active?.kind === "web" ? active : undefined
   const webId = web?.id
   const webUrl = web?.url
@@ -222,7 +242,7 @@ export function BrowserWorkspace({ manager, sessionId, projectId, projects, obsc
 
   useLayoutEffect(() => {
     setChatTabSelected(false)
-  }, [sessionId, showBrowser, showDivider, active?.id])
+  }, [sessionId, showBrowser, showDivider, active?.id, activeFile])
 
   useLayoutEffect(() => {
     const element = workspace.current
@@ -370,15 +390,15 @@ export function BrowserWorkspace({ manager, sessionId, projectId, projects, obsc
           </button></div>}
             {visibleTags.map((tag) => {
               const label = tag.kind === "diff" ? tag.file.path : tag.kind === "web" ? tag.title || tag.url
-                : tag.kind === "file-explorer" ? "项目文件" : "新标签页"
+                : tag.kind === "file-explorer" ? "项目文件" : tag.kind === "file-reference" ? tag.file.name : "新标签页"
               return <div className="chat-browser-tab chat-browser-tab-item" data-active={!showChatTabContent && active?.id === tag.id} key={tag.id}>
-                <button type="button" title={label} aria-pressed={!showChatTabContent && active?.id === tag.id} onClick={() => {
+                <button type="button" title={tag.kind === "file-reference" ? tag.file.absolutePath : label} aria-pressed={!showChatTabContent && active?.id === tag.id} onClick={() => {
                   setChatTabSelected(false)
                   manager.open(sessionId, tag)
                 }}>
                   {tag.kind === "diff" ? <IconFileDiff size={15} aria-hidden="true" />
                     : tag.kind === "file-explorer" ? <IconFolderOpen size={15} aria-hidden="true" />
-                      : <IconWorld size={15} aria-hidden="true" />}
+                      : tag.kind === "file-reference" ? <IconFile size={15} aria-hidden="true" /> : <IconWorld size={15} aria-hidden="true" />}
                   <span>{label}</span>
                 </button>
                 <button type="button" aria-label={"关闭 " + label} onClick={() => close(tag)}><IconX size={14} /></button>
@@ -400,7 +420,7 @@ export function BrowserWorkspace({ manager, sessionId, projectId, projects, obsc
             {browserMaximized ? <IconMinimize size={16} aria-hidden="true" /> : <IconMaximize size={16} aria-hidden="true" />}
           </button>}
         </div>
-        {active?.kind !== "diff" && active?.kind !== "file-explorer" && <form className="chat-browser-toolbar" onSubmit={(event) => { event.preventDefault(); openAddress() }}>
+        {(!active || active.kind === "blank" || active.kind === "web") && <form className="chat-browser-toolbar" onSubmit={(event) => { event.preventDefault(); openAddress() }}>
           {ref && <div className="chat-browser-navigation" role="group" aria-label="网页导航">
             <button type="button" aria-label="后退" disabled={!web?.canGoBack} onClick={() => run(api.goBack(ref))}><IconArrowLeft size={16} /></button>
             <button type="button" aria-label="前进" disabled={!web?.canGoForward} onClick={() => run(api.goForward(ref))}><IconArrowRight size={16} /></button>
@@ -418,6 +438,14 @@ export function BrowserWorkspace({ manager, sessionId, projectId, projects, obsc
                 <PatchDiff patch={fileChangePatch(active.file)} options={{ diffStyle: "unified", overflow: "wrap", themeType: theme }} />
               </Suspense>
             </BrowserPageBoundary>}
+        </div> : active?.kind === "file-reference" ? <div className="chat-browser-explorer-page" hidden={showChatTabContent}>
+          <BrowserPageBoundary key={active.id} message="无法显示此文件的预览。">
+            <Suspense fallback={<p className="chat-browser-message" role="status">正在加载文件预览…</p>}>
+              {project?.directories.includes(active.file.directoryPath)
+                ? <ReferencedFilePreview reference={active.file} theme={theme} />
+                : <p className="chat-browser-message" role="alert">此文件的目录未关联到当前项目。</p>}
+            </Suspense>
+          </BrowserPageBoundary>
         </div> : active?.kind !== "file-explorer" && <div className="chat-browser-slot" ref={slot}>
           {!web && <div className="chat-browser-start">
             <IconWorld size={32} stroke={1.4} aria-hidden="true" />
