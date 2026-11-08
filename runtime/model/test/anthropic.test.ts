@@ -228,6 +228,26 @@ async function testNativeReplay(): Promise<void> {
         name: "mcp_after", description: request.tools[0].description, input_schema: request.tools[0].inputSchema,
       } } },
     ])
+    const refreshed = structuredClone(history)
+    const updatedTool = { ...tool("mcp_after"), inputSchema: { type: "object", properties: { value: { type: "integer" } } } }
+    refreshed.events.push(
+      { ...assistant, seq: 8 },
+      { type: "mcp/tools_added", seq: 9, turn: 1, step: 3, definitions: [updatedTool] },
+      { type: "tool/result", seq: 10, turn: 1, step: 3, toolCallEventId: "next-end", toolCallId: "call-1", content: [], isError: false },
+      { type: "tool/result", seq: 11, turn: 1, step: 3, toolCallEventId: "next-end", toolCallId: "call-2", content: [], isError: false },
+    )
+    const replacement = buildAnthropicRequest({ ...request, context: { history: refreshed } }, MODEL, policy)
+    assert.deepEqual(replacement.tools, initial.body.tools, "同名刷新不能改动顶层工具表")
+    assert.deepEqual(replacement.messages.slice(0, messages.length), messages, "已签名的消息前缀必须保持不变")
+    assert.deepEqual(replacement.messages.at(-1), { role: "system", content: [
+      { type: "tool_addition", tool: { type: "tool_definition", definition: {
+        name: "mcp_after", description: updatedTool.description, input_schema: updatedTool.inputSchema,
+      } } },
+    ] })
+    const latest = buildAnthropicRequest({ ...request, context: { history: refreshed } }, MODEL)
+    assert.deepEqual(latest.tools?.find((tool) => "name" in tool && tool.name === "mcp_after"), {
+      name: "mcp_after", description: updatedTool.description, input_schema: updatedTool.inputSchema,
+    })
     const historicalRequest = { ...request, context: { history } }
     const generic = buildAnthropicRequest(historicalRequest, MODEL)
     assert.deepEqual(generic.tools?.map((definition) => "name" in definition ? definition.name : undefined), ["read_file", "mcp_base", "mcp_after"])
