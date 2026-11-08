@@ -26,6 +26,8 @@ export interface SessionPageProps {
   providers: ProviderSummary[]
   /** 打开已提交文件变更的差异。 */
   onOpenDiff(eventId: string, file: FileChange): void
+  /** 在当前对话的浏览器标签中打开网页。 */
+  onOpenWeb(url: string): void
 }
 /**
  * @param value 工具参数或结果。
@@ -44,11 +46,11 @@ type ToolResultEvent = Extract<SessionEvent, { type: "tool/result" }>
 function toolDisplayKey(turn: number, step: number, toolCallId: string): string { return JSON.stringify([turn, step, toolCallId]) }
 /**
  * 正文渲染 Markdown；思考、工具参数和对应结果在展开后以纯文本代码块展示。
- * @param props Assistant 内容块及可选的唯一对应工具结果事件。
+ * @param props Assistant 内容块、可选的唯一对应工具结果事件与网页打开回调。
  * @returns Markdown 正文或思考/工具展开区域；结果不创建独立展开入口。
  */
-function AssistantBlock({ block, toolResult }: { block: AssistantContentBlock; toolResult?: ToolResultEvent }) {
-  if (block.type === "text") return <div className="assistant-text"><MarkdownContent text={block.text} /></div>
+function AssistantBlock({ block, toolResult, onOpenWeb }: { block: AssistantContentBlock; toolResult?: ToolResultEvent; onOpenWeb: SessionPageProps["onOpenWeb"] }) {
+  if (block.type === "text") return <div className="assistant-text"><MarkdownContent text={block.text} onOpenWeb={onOpenWeb} /></div>
   if (block.type === "thinking") return <details className="chat-detail thinking-detail"><summary><IconBrain size={15} />思考过程</summary><pre className="process-content"><code className="language-text">{block.text}</code></pre></details>
   return <details className="chat-detail tool-detail"><summary><IconTool size={15} />工具：{block.name || "准备调用…"}{toolResult && (toolResult.result.status === "success" ? " · 完成" : " · 失败")}</summary>
     <div className="tool-section-label">调用参数</div>
@@ -96,10 +98,10 @@ function MessageCopyButton({ text, label }: { text: string; label: "复制AI回�
 }
 /**
  * 渲染一个对话。加载由 SessionRoute 决定；此组件只读取字典并发送明确的用户操作。
- * @param props 联合身份、工作区状态与可选模型。
+ * @param props 联合身份、工作区状态、模型选项与浏览器打开回调。
  * @returns 消息、审批、Queue、权限与固定在底部的输入区。
  */
-export function SessionPage({ projectId, sessionId, state, providers, onOpenDiff }: SessionPageProps) {
+export function SessionPage({ projectId, sessionId, state, providers, onOpenDiff, onOpenWeb }: SessionPageProps) {
   const key = sessionKey(projectId, sessionId)
   const events = state.sessionEventsByKey[key] ?? []
   const view = state.view(key)
@@ -277,7 +279,7 @@ export function SessionPage({ projectId, sessionId, state, providers, onOpenDiff
     if (item.kind === "event" && pairedResultIds.has(item.id)) return null
     return <div className={"chat-entry " + (item.kind === "assistant" ? "assistant-entry" : "")} key={JSON.stringify([key, item.id])}>
       {item.kind === "assistant" && showAssistantLabel && <div className="message-label"><span className="assistant-avatar"><IconSparkles size={13} /></span><strong>NiCode</strong><span>协作伙伴</span></div>}
-      {item.kind === "assistant" ? item.blocks.map((content, index) => <AssistantBlock block={content} key={index}
+      {item.kind === "assistant" ? item.blocks.map((content, index) => <AssistantBlock block={content} key={index} onOpenWeb={onOpenWeb}
         toolResult={content.type === "tool_call" ? toolResults.get(toolDisplayKey(item.turn, item.step, content.toolCallId)) ?? undefined : undefined} />) : eventView(item.event)}
     </div>
   }
@@ -298,7 +300,7 @@ export function SessionPage({ projectId, sessionId, state, providers, onOpenDiff
             <div className="message-label"><span className="assistant-avatar"><IconSparkles size={13} /></span><strong>NiCode</strong><span>协作伙伴</span></div>
             {process.length > 0 && <details className="chat-detail turn-process"><summary><IconTool size={15} /><span className="process-title">执行过程</span><span className="process-count">{process.length} 项</span></summary>{process.map((item) => itemView(item))}</details>}
             {block.finalAnswer.length > 0 && <div className="final-answer">
-              {block.finalAnswer.map((content, index) => <AssistantBlock block={content} key={index} />)}
+              {block.finalAnswer.map((content, index) => <AssistantBlock block={content} key={index} onOpenWeb={onOpenWeb} />)}
             </div>}
             {fileChanges.map((item) => itemView(item))}
             {block.finalAnswer.some((content) => content.text.trim()) && <div className="message-actions"><MessageCopyButton text={block.finalAnswer.map((content) => content.text).join("\n\n")} label="复制AI回复" /></div>}

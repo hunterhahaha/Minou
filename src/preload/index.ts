@@ -1,7 +1,7 @@
 /** Electron preload 入口：只把经过约束的 NiCode API 暴露给 Renderer。 */
 
 import { contextBridge, ipcRenderer } from "electron"
-import { BROWSER_COMMAND, BROWSER_STATE, type BrowserCommand, type NiCodeBrowserApi, type WebTagState } from "./browser-api.ts"
+import { BROWSER_COMMAND, BROWSER_STATE, FILE_EXPLORER_CHANNELS, type BrowserCommand, type NiCodeBrowserApi, type WebTagState } from "./browser-api.ts"
 
 /** 向主进程提交浏览器命令。
  * @param command 受限浏览器命令
@@ -29,6 +29,10 @@ const browserApi: NiCodeBrowserApi = {
   goForward: (ref) => browserCommand({ action: "forward", ref }),
   reload: (ref) => browserCommand({ action: "reload", ref }),
   present: (presentation) => browserCommand({ action: "present", presentation }),
+  openFileExplorer: (source) => ipcRenderer.invoke(FILE_EXPLORER_CHANNELS.open, source),
+  listExplorerDirectory: (handle, path) => ipcRenderer.invoke(FILE_EXPLORER_CHANNELS.list, handle, path),
+  readExplorerFile: (handle, path) => ipcRenderer.invoke(FILE_EXPLORER_CHANNELS.read, handle, path),
+  closeFileExplorer: (handle) => ipcRenderer.invoke(FILE_EXPLORER_CHANNELS.close, handle),
   onWebTagState(listener) {
     const receive = (_event: Electron.IpcRendererEvent, state: WebTagState) => listener(state)
     ipcRenderer.on(BROWSER_STATE, receive)

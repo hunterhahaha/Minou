@@ -30,6 +30,7 @@ import { startElectronApp } from "./index.ts"
 import { SessionRuntimeGlobal } from "./session-runtime-global.ts"
 import { loadFileAccessState } from "./file-access.ts"
 import { registerWindowIpcHandlers } from "./window-ipc.ts"
+import { registerFileExplorerIpc } from "./file-explorer-ipc.ts"
 import { DesktopSettings } from "./desktop-settings.ts"
 import { ElectronTray } from "./electron-tray.ts"
 
@@ -79,6 +80,7 @@ async function main(): Promise<void> {
   })
   const tray = new ElectronTray(windows, desktopSettings)
   registerWindowIpcHandlers(trustedIpcMain, BrowserWindow, tray)
+  registerFileExplorerIpc(trustedIpcMain, paths.workspaceDatabasePath)
   await startElectronApp({
     app,
     ipcMain: trustedIpcMain,

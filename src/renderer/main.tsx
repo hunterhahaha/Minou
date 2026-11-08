@@ -148,6 +148,7 @@ function SessionRoute() {
   }, [state, projectId, sessionId])
   if (projectId === undefined || sessionId === undefined) return null
   return <SessionPage projectId={projectId} sessionId={sessionId} state={state} providers={providers}
+      onOpenWeb={(url) => browserTags.openWeb(sessionId, url)}
       onOpenDiff={(eventId, file) => browserTags.open(sessionId, { kind: "diff", id: JSON.stringify([eventId, file.path]), eventId, file })} />
 }
 
@@ -779,7 +780,8 @@ function Workspace() {
         </div>
       </aside>}
       <main className="main-panel">
-        <BrowserWorkspace manager={browserTags} sessionId={browserOwner} theme={theme}
+        <BrowserWorkspace manager={browserTags} sessionId={browserOwner} projectId={groupId}
+          projects={projects.status === "ready" ? projects.value : []} theme={theme}
           obscured={settingsDialogOpen || projectDialogOpen || searchOpen || openMenu !== null || sidebarMenu !== null || sidebarDialog !== null}
           toggle={<button className="settings-icon-button browser-toggle" type="button" aria-expanded={browserExpanded} aria-controls="chat-browser-pane"
               aria-label={browserExpanded ? "收起内置浏览器" : "展开内置浏览器"} title={browserExpanded ? "收起内置浏览器" : "展开内置浏览器"}

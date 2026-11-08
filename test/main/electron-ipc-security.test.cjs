@@ -8,6 +8,7 @@ const { app, BrowserWindow, ipcMain } = require('electron')
 const { createElectronWindowManager, createTrustedIpcMain } = require('../../dist/src/main/electron-windows.js')
 const { TagManager } = require('../../dist/src/main/tag-manager.js')
 const { registerMcpIpcHandlers } = require('../../dist/src/main/mcp-ipc.js')
+const { registerFileExplorerIpc } = require('../../dist/src/main/file-explorer-ipc.js')
 const { MCPManager } = require('../../dist/runtime/mcp/src/manager.js')
 
 /** @returns 外部导航被拦截，绕过导航的外部文档也无法启动 MCP。 */
@@ -36,6 +37,7 @@ async function main() {
     rendererHtmlPath: html, openExternal: url => opened.push(url), onWindowLoadFailure: error => { throw error },
   })
   registerMcpIpcHandlers(guarded, { configPath }, manager)
+  registerFileExplorerIpc(guarded, join(root, 'workspace.sqlite'))
   try {
     windows.createMainWindow()
     const window = BrowserWindow.getAllWindows()[0]
@@ -53,6 +55,8 @@ async function main() {
     await window.loadURL(external)
     const config = { name: 'must-not-start', enabled: true, transport: 'stdio', command: process.execPath, args: ['--version'] }
     await assert.rejects(window.webContents.executeJavaScript(`window.nicode.createMcpServer(${JSON.stringify(config)})`), /IPC 请求来源无效/)
+    await assert.rejects(window.webContents.executeJavaScript('window.nicodeBrowser.openFileExplorer()'), /IPC 请求来源无效/)
+    await assert.rejects(window.webContents.executeJavaScript('window.nicodeBrowser.listExplorerDirectory("unknown", "")'), /IPC 请求来源无效/)
     assert.equal(await readFile(configPath, 'utf8'), initial)
     assert.deepEqual(manager.getConnectionStates(), [])
     window.destroy()

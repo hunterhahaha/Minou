@@ -42,6 +42,38 @@ export type BrowserCommand =
 export const BROWSER_COMMAND = "browser:command"
 export const BROWSER_STATE = "browser:state"
 
+/** 指定项目及其一个已关联的绝对目录。 */
+export type FileExplorerSource = { projectId: string; directoryPath: string }
+
+/** 已授权的根目录及仅在发起窗口有效的读取句柄。 */
+export interface FileExplorerRoot {
+  handle: string
+  path: string
+  name: string
+}
+
+/** 根目录或某个子目录中的单个直属条目。 */
+export interface FileExplorerEntry {
+  name: string
+  kind: "directory" | "file"
+}
+
+/** 有界的只读预览结果，包含读取时的文件大小。 */
+export type FileExplorerFile = { size: number } & (
+  | { kind: "text"; text: string }
+  | { kind: "image"; mimeType: string; bytes: Uint8Array<ArrayBuffer> }
+  | { kind: "pdf"; bytes: Uint8Array<ArrayBuffer> }
+  | { kind: "unsupported"; reason: "binary" | "size" }
+)
+
+/** 文件资源查看器的固定 IPC 通道。 */
+export const FILE_EXPLORER_CHANNELS = {
+  open: "browser:explorer:open",
+  list: "browser:explorer:list",
+  read: "browser:explorer:read",
+  close: "browser:explorer:close",
+} as const
+
 /** 仅允许浏览器面板所需的命令及状态订阅。 */
 export interface NiCodeBrowserApi {
   /** 创建网页实例。 @param ref 标签身份 @param url 初始地址 @returns 实例创建结果。 */
@@ -60,4 +92,12 @@ export interface NiCodeBrowserApi {
   present(presentation: BrowserPresentation): Promise<void>
   /** 订阅网页状态。 @param listener 状态接收器 @returns 取消订阅函数。 */
   onWebTagState(listener: (state: WebTagState) => void): () => void
+  /** 授权查看项目关联目录。 @param source 项目及其关联目录。 @returns 已授权的根目录。 */
+  openFileExplorer(source: FileExplorerSource): Promise<FileExplorerRoot>
+  /** 枚举直属条目。 @param handle 根目录句柄。 @param relativePath 相对目录，空字符串表示根。 @returns 直属条目。 */
+  listExplorerDirectory(handle: string, relativePath: string): Promise<FileExplorerEntry[]>
+  /** 读取有界文件预览。 @param handle 根目录句柄。 @param relativePath 相对文件路径。 @returns 元数据及可预览内容。 */
+  readExplorerFile(handle: string, relativePath: string): Promise<FileExplorerFile>
+  /** 释放目录句柄。 @param handle 根目录句柄。 @returns 释放结果。 */
+  closeFileExplorer(handle: string): Promise<void>
 }

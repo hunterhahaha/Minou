@@ -624,6 +624,32 @@ async function main() {
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve))
   try {
     const base = "http://127.0.0.1:" + server.address().port
+    const views = () => window.contentView.children.filter((view) => view.webContents && view.webContents !== window.webContents)
+    const linkedReply = [
+      { type: "turn/start", turn: 2, model },
+      { type: "assistant/message", turn: 2, step: 1, model, message: { id: "links", role: "assistant", content: [
+        { type: "text", text: `[**网页**](${base}/from-chat)\n\n${base}/auto-link` },
+      ] } },
+      { type: "turn/end", turn: 2, reason: "completed" },
+    ]
+    for (const [index, event] of linkedReply.entries()) window.webContents.send(channels.update, {
+      kind: "event", projectId: "default", sessionId: finalOnlySession,
+      event: { ...event, eventId: "browser-link-" + index, sessionId: finalOnlySession, seq: index + 6, createdAt: "2026-10-24T00:00:00.000Z" },
+    })
+    await until(() => evaluate("document.querySelectorAll('.final-answer .markdown-content a').length === 2"))
+    const mainUrl = window.webContents.getURL()
+    await evaluate("document.querySelector('.browser-toggle[aria-expanded=true]').click()")
+    await until(() => evaluate("document.querySelector('#chat-browser-pane').hidden"))
+    await evaluate("document.querySelector('.final-answer .markdown-content a strong').click()")
+    await until(() => views().some((view) => view.getVisible() && view.webContents.getURL() === base + "/from-chat"))
+    await evaluate("document.querySelector('.final-answer .markdown-content a:last-child[href$=auto-link]').click()")
+    await until(() => views().some((view) => view.getVisible() && view.webContents.getURL() === base + "/auto-link"))
+    assert.equal(views().length, 2, "链接新建标签并保留原网页")
+    assert.equal(window.webContents.getURL(), mainUrl, "聊天主窗口保持原路由")
+    assert.equal(await evaluate("document.querySelectorAll('.chat-browser-tab').length"), changes.length + 2)
+    for (let i = 0; i < 2; i++) await evaluate("document.querySelector('.chat-browser-tab:last-child button:last-child').click()")
+    await until(() => views().length === 0)
+    console.log("聊天链接：收起时自动展开、Markdown 链接、自动链接、新标签与主窗口路由通过")
     const enterAddress = async (url) => {
       await evaluate(`(() => {
         const input = document.querySelector('.chat-browser-address')
@@ -634,7 +660,6 @@ async function main() {
     }
     await evaluate("document.querySelector('[aria-label=新建网页]').click()")
     await enterAddress(base)
-    const views = () => window.contentView.children.filter((view) => view.webContents && view.webContents !== window.webContents)
     await until(() => views().some((view) => view.getVisible() && view.webContents.getTitle() === "本机网页/"))
     const first = views()[0]
     const contents = first.webContents
