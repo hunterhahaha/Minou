@@ -1,7 +1,7 @@
-/** 设置弹窗：维护模型、搜索服务、MCP 配置与按来源管理的技能。 */
+/** 设置弹窗：维护桌面偏好、模型、搜索服务、MCP 配置与技能。 */
 
 import { type FormEvent, useEffect, useId, useRef, useState } from "react"
-import { IconChevronRight, IconCpu, IconHelpCircle, IconPlugConnected, IconPlus, IconSettings, IconSparkles, IconX } from "@tabler/icons-react"
+import { IconChevronRight, IconCpu, IconDeviceDesktop, IconHelpCircle, IconPlugConnected, IconPlus, IconSettings, IconSparkles, IconX } from "@tabler/icons-react"
 import { useDialogFocus } from "./dialog-focus.tsx"
 
 import type {
@@ -19,11 +19,12 @@ import { McpSettings } from "./mcp-settings.tsx"
 import { WebSearchSettings } from "./web-search-settings.tsx"
 import { SkillSettings } from "./skill-settings.tsx"
 import type { SkillSettingsProps } from "./skill-settings.tsx"
+import { DesktopSettings } from "./desktop-settings.tsx"
 
 /** 设置弹窗的关闭出口与工作区 Provider 列表同步出口。 */
 interface SettingsDialogProps extends Omit<SkillSettingsProps, "onBusyChange"> {
   /** 由工作台入口决定的初始分区；不改变各分区的按需加载时机。 */
-  initialSection?: "models" | "mcp" | "skills" | "search"
+  initialSection?: "models" | "mcp" | "skills" | "search" | "general"
   /** 关闭设置弹窗。 */
   onClose: () => void
   /** 将完整 Provider 列表同步到工作区模型选择器。 */
@@ -267,7 +268,7 @@ function isHttpURL(value: string): boolean {
  * @returns 设置弹窗。
  */
 export function SettingsDialog({ initialSection = "models", onClose, onProvidersChange, projects, onReloadProjects, skillsByScope, onSkillsChange }: SettingsDialogProps) {
-  const [section, setSection] = useState<"models" | "mcp" | "skills" | "search">(initialSection)
+  const [section, setSection] = useState(initialSection)
   const dialogRef = useRef<HTMLElement>(null)
   useDialogFocus(dialogRef)
   const [loadState, setLoadState] = useState<"loading" | "ready" | "error">("loading")
@@ -277,11 +278,11 @@ export function SettingsDialog({ initialSection = "models", onClose, onProviders
   const [page, setPage] = useState<"create" | "manage">("create")
   const [selectedProviderId, setSelectedProviderId] = useState<string | null>(null)
   const [creating, setCreating] = useState(false)
-  /** 同步守住模型创建、搜索服务、MCP 或技能请求期间的关闭和导航路径。 */
+  /** 同步守住各分区请求期间的关闭和导航路径。 */
   const creatingRef = useRef(false)
 
   /**
-   * 接收 Provider/模型创建、搜索服务、MCP 及技能请求的生命周期，统一控制外层关闭和导航。
+   * 接收分区请求的生命周期，统一控制外层关闭和导航。
    * @param pending 请求进行中时为 true，成功或失败后为 false。
    */
   function handleCreatingChange(pending: boolean): void {
@@ -429,6 +430,7 @@ export function SettingsDialog({ initialSection = "models", onClose, onProviders
       <div className="settings-dialog-body">
         <nav className="settings-dialog-nav" aria-label="设置选项">
           <p className="settings-nav-label">工作空间</p>
+          <button className={`settings-nav-option${section === "general" ? " settings-nav-option-active" : ""}`} type="button" aria-current={section === "general" ? "page" : undefined} disabled={creating} onClick={() => { if (!creatingRef.current) setSection("general") }}><IconDeviceDesktop size={18} stroke={1.6} /><span>通用</span></button>
           <button className={`settings-nav-option${section === "models" ? " settings-nav-option-active" : ""}`} type="button" aria-current={section === "models" ? "page" : undefined} disabled={creating} onClick={() => { if (!creatingRef.current) setSection("models") }}>
             <IconCpu size={18} stroke={1.6} /><span>模型</span>
           </button>
@@ -500,6 +502,7 @@ export function SettingsDialog({ initialSection = "models", onClose, onProviders
             </section>
           </div>}
         </section>}
+        {section === "general" && <DesktopSettings onBusyChange={handleCreatingChange} />}
         {section === "search" && <section className="settings-dialog-content" aria-label="搜索服务设置"><WebSearchSettings onBusyChange={handleCreatingChange} /></section>}
         {section === "mcp" && <section className="settings-dialog-content" aria-label="MCP 设置"><McpSettings onBusyChange={handleCreatingChange} /></section>}
         {section === "skills" && <section className="settings-dialog-content" aria-label="技能设置"><SkillSettings projects={projects} onReloadProjects={onReloadProjects} skillsByScope={skillsByScope} onSkillsChange={onSkillsChange} onBusyChange={handleCreatingChange} /></section>}

@@ -6,6 +6,7 @@
  */
 
 import { join } from "node:path"
+import { homedir } from "node:os"
 
 import { app, BrowserWindow, dialog, ipcMain, shell } from "electron"
 
@@ -29,6 +30,8 @@ import { startElectronApp } from "./index.ts"
 import { SessionRuntimeGlobal } from "./session-runtime-global.ts"
 import { loadFileAccessState } from "./file-access.ts"
 import { registerWindowIpcHandlers } from "./window-ipc.ts"
+import { DesktopSettings } from "./desktop-settings.ts"
+import { ElectronTray } from "./electron-tray.ts"
 
 const SYSTEM_PROMPT = "You are an AI agent powered by NiCode."
 
@@ -39,7 +42,13 @@ const SYSTEM_PROMPT = "You are an AI agent powered by NiCode."
  * @throws Error 当启动配置、窗口端口或 Electron 生命周期初始化失败时抛出。
  */
 async function main(): Promise<void> {
-  const { paths, config } = await initializeConfigFilesSnapshot()
+  let activateMainWindow: (() => void) | undefined
+  // 监听必须早于异步启动。首窗尚未创建时，正常启动会显示它。
+  app.on("second-instance", () => activateMainWindow?.())
+  const userProfile = process.env.USERPROFILE ?? (process.platform === "win32" ? undefined : homedir())
+  const { paths, config } = await initializeConfigFilesSnapshot(userProfile)
+  const desktopSettings = new DesktopSettings(join(paths.rootDir, "desktop-settings.json"))
+  await desktopSettings.load()
 
   initNetworkDispatcher()
   const toolRegistry = new ToolRegistry()
@@ -53,10 +62,6 @@ async function main(): Promise<void> {
   registerWebSearchTool(toolRegistry, renderRegistry, join(paths.rootDir, WEB_SEARCH_DATABASE_FILE), estimateLocalTokens)
   registerWebFetchTool(toolRegistry, renderRegistry)
   const sessionRuntimeGlobal = new SessionRuntimeGlobal(paths, toolRegistry, renderRegistry)
-  await sessionRuntimeGlobal.mcpManager.initialize(config.mcpServers)
-  for (const state of sessionRuntimeGlobal.mcpManager.getConnectionStates()) {
-    if (state.error) console.error(`MCP Server ${state.name} 初始化失败。`, state.error)
-  }
   let windows: ElectronWindowManager | undefined
   const trustedIpcMain = createTrustedIpcMain(ipcMain, (event) => windows?.isTrustedSender(event) ?? false)
   windows = createElectronWindowManager(BrowserWindow, {
@@ -64,6 +69,7 @@ async function main(): Promise<void> {
     preloadPath: join(__dirname, "../preload/index.js"),
     rendererHtmlPath: join(__dirname, "../renderer/index.html"),
     rendererUrl: process.env.NICODE_RENDERER_URL,
+    onWindowCreated: (window) => tray.attachWindow(window),
     openExternal: (url) => {
       void shell.openExternal(url).catch((error: unknown) => console.error("无法打开外部链接。", error))
     },
@@ -71,14 +77,16 @@ async function main(): Promise<void> {
       console.error("NiCode 主窗口页面装载失败。", error)
     },
   })
-  registerWindowIpcHandlers(trustedIpcMain, BrowserWindow)
-
+  const tray = new ElectronTray(windows, desktopSettings)
+  registerWindowIpcHandlers(trustedIpcMain, BrowserWindow, tray)
   await startElectronApp({
     app,
     ipcMain: trustedIpcMain,
     dialog,
     windows,
+    tray,
     configPaths: paths,
+    mcpServers: config.mcpServers,
     sessionRuntime: {
       systemPrompt: SYSTEM_PROMPT,
       global: sessionRuntimeGlobal,
@@ -87,10 +95,16 @@ async function main(): Promise<void> {
       console.error(`Session ${sessionId} 的 Turn ${turn} 在后台失败。`, error)
     },
   })
+  // 启动装配完成后才允许第二实例触发窗口创建。
+  activateMainWindow = () => tray.showMainWindow()
 }
 
-void main().catch((error: unknown) => {
-  console.error("NiCode 启动失败。", error)
-  process.exitCode = 1
+if (!app.requestSingleInstanceLock()) {
   app.quit()
-})
+} else {
+  void main().catch((error: unknown) => {
+    console.error("NiCode 启动失败。", error)
+    process.exitCode = 1
+    app.quit()
+  })
+}

@@ -66,6 +66,7 @@
 .settings-nav-footer .brand-name { color: var(--muted); font-size: var(--font-size-note); line-height: var(--line-height-note); }
 .settings-nav-footer p { margin: 7px 0 0; color: var(--muted); font-size: var(--font-size-caption); line-height: var(--line-height-caption); }
 .settings-dialog-content { flex: 1; min-width: 0; min-height: 0; overflow: auto; background: var(--panel-gradient); }
+.desktop-settings-form { display: grid; gap: var(--space-4); max-width: 460px; padding: 0 var(--space-8) var(--space-6); }
 .settings-state { display: flex; align-items: center; justify-content: center; gap: var(--space-3); min-height: 180px; margin: 0; padding: 24px; color: var(--muted); font-size: var(--font-size-note); line-height: var(--line-height-note); }
 .settings-state-error { flex-direction: column; color: var(--error); }
 .settings-page-heading, .provider-detail-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-4); }
@@ -213,7 +214,7 @@
 }
 @media (max-width: 850px) {
   .settings-dialog-backdrop { padding: 18px; } .settings-title-caption { display: none; }
-  .settings-page-heading, .skill-settings { padding: 24px; } .provider-create-form { padding-right: 24px; padding-left: 24px; }
+  .settings-page-heading, .skill-settings { padding: 24px; } .provider-create-form, .desktop-settings-form { padding-right: 24px; padding-left: 24px; }
 }
 @media (max-width: 680px) {
   .settings-dialog-backdrop { padding: 16px; } .settings-dialog-header { flex-basis: 55px; padding: 0 15px; }
@@ -225,6 +226,7 @@
   .provider-sidebar-heading { margin-bottom: 5px; } .provider-list { flex-direction: row; overflow: auto; }
   .provider-list-item { width: auto; min-width: 120px; min-height: 49px; padding: 9px; } .provider-list-name { max-width: 150px; }
   .provider-detail, .mcp-detail { padding: 20px 17px; } .settings-page-heading { align-items: flex-start; padding: 22px 18px; }
+  .desktop-settings-form { padding-inline: 18px; }
   .settings-page-heading h3, .provider-detail-heading h3, .mcp-toolbar h3, .skill-toolbar h3 { font-size: var(--font-size-title); line-height: var(--line-height-title); }
   .provider-create-form { padding: 0 18px 22px; } .provider-form-grid, .model-input-grid, .mcp-timeouts { grid-template-columns: minmax(0, 1fr); }
   .settings-field-wide { grid-column: auto; } .settings-section-heading { gap: var(--space-2); }

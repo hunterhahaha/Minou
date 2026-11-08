@@ -8,7 +8,7 @@ import { join } from "node:path"
 
 import { SessionRuntime } from "../../runtime/agent/src/session-runtime.ts"
 import type { SessionRuntimeGlobal } from "./session-runtime-global.ts"
-import type { ConfigFilePaths } from "./config-files.ts"
+import type { ConfigFilePaths, ValidatedStartupConfig } from "./config-files.ts"
 import { registerModelIpcHandlers } from "./provider-ipc.ts"
 import { registerWebSearchIpcHandlers } from "./web-search-ipc.ts"
 import { registerMcpIpcHandlers } from "./mcp-ipc.ts"
@@ -24,6 +24,7 @@ import type {
   IpcMainHandlePort,
 } from "./session-ipc.ts"
 import type { SessionUpdate } from "../preload/session-api.ts"
+import type { ElectronTray } from "./electron-tray.ts"
 
 /** Electron 主进程启动装配使用的应用生命周期事件。 */
 export type ElectronAppLifecycleEvent = "activate" | "window-all-closed" | "before-quit"
@@ -80,8 +81,12 @@ export interface ElectronStartupOptions {
   dialog: DirectoryDialogPort
   /** 主窗口创建与存活状态端口。 */
   windows: MainWindowLifecyclePort
+  /** 桌面宿主的托盘及关闭策略；无托盘的宿主可以省略。 */
+  tray?: Pick<ElectronTray, "available" | "start" | "showMainWindow" | "beginQuit">
   /** 启动入口已经初始化并校验的配置路径。 */
   configPaths: ConfigFilePaths
+  /** 真实桌面入口传入待连接的 MCP 配置；其它宿主可以自行初始化。 */
+  mcpServers?: ValidatedStartupConfig["mcpServers"]
   /** 每个 Project Session 共用的 Runtime 宿主依赖。 */
   sessionRuntime: SessionRuntimeStartupDependencies
   /** 后台 Turn 或 Renderer 事件发送失败时的错误出口。 */
@@ -105,6 +110,9 @@ export interface ElectronStartupOptions {
  */
 export async function startElectronApp(options: ElectronStartupOptions): Promise<void> {
   const sessionsDirectory = join(options.configPaths.rootDir, "sessions")
+  let processesDisposed = false
+  let disposingProcesses = false
+  let started = false
 
   /**
    * 为 IPC 请求构建绑定到指定 Project 分组的 Session Runtime。
@@ -142,28 +150,41 @@ export async function startElectronApp(options: ElectronStartupOptions): Promise
   registerMcpIpcHandlers(options.ipcMain, options.configPaths, options.sessionRuntime.global.mcpManager)
   registerSkillIpcHandlers(options.ipcMain, options.configPaths, options.sessionRuntime.global.skillManager)
 
-  await options.app.whenReady()
-  let processesDisposed = false
-  let disposingProcesses = false
   options.app.on("before-quit", (event) => {
     if (processesDisposed) return
     event?.preventDefault()
     if (disposingProcesses) return
     disposingProcesses = true
-    void options.sessionRuntime.global.disposeProcessTools().catch((error: unknown) => {
-      options.onSessionCompletionFailure({ sessionId: "application", turn: 0, error })
-    }).finally(() => {
+    void Promise.all([
+      options.tray?.beginQuit(),
+      options.sessionRuntime.global.disposeProcessTools().catch((error: unknown) => {
+        options.onSessionCompletionFailure({ sessionId: "application", turn: 0, error })
+      }),
+    ]).finally(() => {
       processesDisposed = true
       options.app.quit()
     })
   })
   options.app.on("activate", () => {
-    if (!options.windows.hasOpenWindows()) options.windows.createMainWindow()
+    if (!started || disposingProcesses) return
+    if (options.tray) options.tray.showMainWindow()
+    else if (!options.windows.hasOpenWindows()) options.windows.createMainWindow()
   })
   options.app.on("window-all-closed", () => {
-    if ((options.platform ?? process.platform) !== "darwin") options.app.quit()
+    if (!disposingProcesses && !options.tray?.available && (options.platform ?? process.platform) !== "darwin") options.app.quit()
   })
+  if (options.mcpServers) {
+    const manager = options.sessionRuntime.global.mcpManager
+    await manager.initialize(options.mcpServers)
+    for (const state of manager.getConnectionStates()) {
+      if (state.error) console.error(`MCP Server ${state.name} 初始化失败。`, state.error)
+    }
+  }
+  await options.app.whenReady()
+  if (disposingProcesses) return
+  options.tray?.start()
   options.windows.createMainWindow()
+  started = true
 }
 
 export { initializeConfigFiles } from "./config-files.ts"

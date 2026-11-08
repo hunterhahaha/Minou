@@ -42,6 +42,8 @@
 
 [scripts/dev-electron.mjs](../scripts/dev-electron.mjs) 在 `127.0.0.1:5173` 启动 Vite，并通过 `NICODE_RENDERER_URL` 交给 Electron。React / CSS 变更使用 HMR；主进程和 preload 改动需要重新启动命令。
 
+构建后运行 `node test/main/electron-tray.test.cjs` 可验证桌面入口的原生托盘对象、窗口恢复、单实例、设置写入失败和重启持久化、退出清理。测试使用临时用户目录与真实 Electron 进程，通过托盘事件和菜单回调触发操作。通知区域的实体点击仍需在对应平台桌面核对。
+
 [tsconfig.json](../tsconfig.json) 输出主进程、CLI 与 Runtime 到 `dist/`；[tsconfig.test.json](../tsconfig.test.json) 纳入测试并关闭产出；[tsconfig.renderer.json](../tsconfig.renderer.json) 单独检查 Renderer TSX 与 DOM 类型。[vite.config.mts](../vite.config.mts) 构建页面到 `dist/src/renderer/`。
 
 ## 按模块选择测试

@@ -418,6 +418,10 @@ async function main() {
     preloadPath: join(process.cwd(), "dist/src/preload/index.js"),
     rendererHtmlPath: join(process.cwd(), "dist/src/renderer/index.html"),
     onWindowLoadFailure: (error) => { throw error },
+    onWindowCreated: (window) => window.on("close", (event) => {
+      event.preventDefault()
+      window.minimize()
+    }),
   })
   manager.createMainWindow()
   window.webContents.on("console-message", (details) => { if (details.level === "error") errors.push(details.message) })
@@ -1024,7 +1028,7 @@ async function main() {
   await until(() => evaluate("Boolean(document.querySelector('[aria-label=\"还原窗口\"]'))"))
   window.unmaximize()
   await until(() => evaluate("Boolean(document.querySelector('[aria-label=\"最大化窗口\"]'))"))
-  await click('[aria-label="关闭窗口并最小化"]')
+  await click('[aria-label="关闭窗口"]')
   await until(() => window.isMinimized())
   assert.equal(window.isDestroyed(), false, "关闭按钮保留窗口及应用")
   window.restore()

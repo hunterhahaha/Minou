@@ -4,11 +4,12 @@
 
 ## 用户目录与启动初始化
 
-桌面入口调用 [initializeConfigFilesSnapshot](../src/main/config-files.ts)，默认要求 `USERPROFILE` 是绝对路径。CLI 传入 `USERPROFILE`，未设置时回退到 Node 用户主目录。所有数据集中在其下的 `.nicode`。
+桌面入口调用 [initializeConfigFilesSnapshot](../src/main/config-files.ts)，Windows 要求 `USERPROFILE` 是绝对路径。macOS、Linux 桌面和 CLI 在未设置 `USERPROFILE` 时回退到 Node 用户主目录。所有数据集中在其下的 `.nicode`。
 
 ```text
 .nicode/
 ├─ config.json                    全局普通配置 V2
+├─ desktop-settings.json          窗口关闭偏好，首次保存时创建
 ├─ providers.sqlite               Provider、Model、API Key 与默认模型
 ├─ web-search.sqlite              搜索服务商、启用状态、fetch 请求原文与 JMESPath
 ├─ workspace.sqlite               Project/default 分组、关联目录、对话索引
@@ -37,6 +38,8 @@
 这是各功能实际使用位置的汇总，不表示首次启动会生成所有文件。启动补齐根目录、默认 workspace、空配置和数据库；已登记 Project 的 Skill 来源也会初始化并扫描。会话派生文件、项目记忆和 CLI 运行目录由对应功能按需生成。CLI 隔离 Skill 时通过 `skipSkills` 跳过来源初始化、扫描和同步。
 
 既有 `config.json` 必须是普通文件并通过 V2 校验，失败时保留原文件并报告路径。当前启动不迁移旧全局 JSON、旧 Provider 库、`credentials.json` 或 `workspace.json`。各存储对已有数据的检查与修复范围并不相同，不能假定所有数据库都会在启动时完整校验。
+
+桌面设置由 [desktop-settings.ts](../src/main/desktop-settings.ts) 管理。`desktop-settings.json` 的 `closeBehavior` 接受 `"tray"` 或 `"quit"`。缺少文件或读取无效时使用 `"tray"`。在「设置 → 通用」保存时，主进程串行写入并原子替换文件，成功后立即应用，失败时继续使用上次生效值。
 
 ## config.json V2
 

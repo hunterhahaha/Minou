@@ -40,9 +40,11 @@ Renderer 负责页面、路由与展示缓存，不直接打开数据库、读�
 
 [electron-main.ts](../src/main/electron-main.ts) 依次初始化配置快照、网络 Dispatcher、ToolRegistry / RenderRegistry，注册文件和记忆工具，然后创建一个 `SessionRuntimeGlobal`。该对象持有共享 SkillManager、MCPManager、ShellRouter、TerminalRouter 和统一工具执行入口；构造时登记相应工具。
 
-入口依据配置连接 MCP 服务，登记窗口 IPC，再调用 [startElectronApp](../src/main/index.ts) 注册对话、项目、供应商、MCP、Skill 等 IPC。Electron ready 后创建窗口；退出前释放进程工具和 MCP 资源。单个 MCP 服务初始化失败会记录错误，其余启动流程继续。
+入口在读取配置前获取单实例锁，重复启动时由主实例显示并聚焦窗口。入口登记窗口 IPC，再调用 [startElectronApp](../src/main/index.ts) 注册对话、项目、供应商、MCP、Skill 等 IPC 并按配置连接 MCP。单个 MCP 服务初始化失败会记录错误，其余启动流程继续。Electron ready 后创建原生托盘与首个窗口。
 
-[electron-windows.ts](../src/main/electron-windows.ts) 加载编译 preload 和 Vite 页面；开发时由 `NICODE_RENDERER_URL` 改为加载 Vite 地址。窗口无系统边框。页面关闭操作使用最小化接口；最小化、最大化和状态同步见 [window-ipc.ts](../src/main/window-ipc.ts) 与 [window-controls.tsx](../src/renderer/window-controls.tsx)。
+[electron-windows.ts](../src/main/electron-windows.ts) 持有主窗口并加载编译 preload 和 Vite 页面。开发时由 `NICODE_RENDERER_URL` 改为加载 Vite 地址。窗口无系统边框，自绘关闭按钮通过 [window-ipc.ts](../src/main/window-ipc.ts) 发起原生窗口关闭请求。最小化、最大化和状态同步也使用窗口 IPC。
+
+[electron-tray.ts](../src/main/electron-tray.ts) 持有原生托盘并处理窗口关闭。默认在 Windows、macOS 隐藏窗口，Linux 或托盘初始化失败时最小化。托盘点击切换窗口状态，「显示 NiCode」、macOS Dock 激活和第二实例请求恢复同一窗口，窗口已销毁时由窗口管理器重建。设置选择「退出 NiCode」时，关闭按钮与托盘退出走同一个应用退出流程。退出期间禁止恢复窗口，等待桌面设置写入和 Shell、PTY、MCP 清理完成，最终在 `will-quit` 释放托盘。Windows 系统会话结束时由窗口事件触发尽力清理。
 
 桌面入口通过 `createTrustedIpcMain` 注册管理接口。每次调用都要求发送者是存活主窗口的主 frame，且 frame 和 WebContents 的当前地址均匹配入口文档，允许 hash 路由。主窗口拒绝导航到其他文档和外部重定向，并将直接打开的 HTTP(S) 外链和弹窗交给系统浏览器。会话更新仅广播给仍在入口文档的主窗口。内置浏览器继续使用自己的网页视图管理流程。
 

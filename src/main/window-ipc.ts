@@ -1,16 +1,21 @@
-/** 桌面窗口控制，不访问 Session、模型、配置或 Runtime。 */
+/** 桌面窗口控制与关闭偏好。 */
 import type { BrowserWindow, IpcMain, IpcMainInvokeEvent } from "electron"
-import { WINDOW_IPC_CHANNELS } from "../preload/window-api.ts"
+import { isCloseBehavior, WINDOW_IPC_CHANNELS } from "../preload/window-api.ts"
 import type { WindowState } from "../preload/window-api.ts"
+import type { ElectronTray } from "./electron-tray.ts"
 
 /**
  * 注册窗口专用请求；每次根据发送者解析当前窗口，拒绝子 frame 和失效窗口。
  * @param ipcMain 主进程 handler 注册能力；启动期间仅注册一次。
  * @param windows Electron 的发送者到窗口解析能力。
- * @returns 注册完成；不创建窗口或退出应用。
+ * @param closeSettings 桌面关闭偏好接口；无此能力的宿主可以省略。
  * @throws Error 重复注册时由 Electron 抛出；无效请求在对应 IPC Promise 中拒绝。
  */
-export function registerWindowIpcHandlers(ipcMain: Pick<IpcMain, "handle">, windows: Pick<typeof BrowserWindow, "fromWebContents">): void {
+export function registerWindowIpcHandlers(
+  ipcMain: Pick<IpcMain, "handle">,
+  windows: Pick<typeof BrowserWindow, "fromWebContents">,
+  closeSettings?: Pick<ElectronTray, "getCloseSettings" | "setCloseBehavior">,
+): void {
   /**
    * 根据 IPC 发送者定位存活且属于主 frame 的窗口。
    *
@@ -24,6 +29,18 @@ export function registerWindowIpcHandlers(ipcMain: Pick<IpcMain, "handle">, wind
     return window
   }
   ipcMain.handle(WINDOW_IPC_CHANNELS.minimize, (event): void => { currentWindow(event).minimize() })
+  ipcMain.handle(WINDOW_IPC_CHANNELS.close, (event): void => { currentWindow(event).close() })
+  if (closeSettings) {
+    ipcMain.handle(WINDOW_IPC_CHANNELS.getCloseSettings, (event) => {
+      currentWindow(event)
+      return closeSettings.getCloseSettings()
+    })
+    ipcMain.handle(WINDOW_IPC_CHANNELS.setCloseBehavior, (event, behavior: unknown) => {
+      currentWindow(event)
+      if (!isCloseBehavior(behavior)) throw new TypeError("窗口关闭偏好无效")
+      return closeSettings.setCloseBehavior(behavior)
+    })
+  }
   ipcMain.handle(WINDOW_IPC_CHANNELS.toggleMaximize, (event): WindowState => {
     const window = currentWindow(event)
     if (window.isMaximized()) window.unmaximize()

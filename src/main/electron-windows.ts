@@ -38,6 +38,8 @@ export interface ElectronWindowOptions {
   rendererUrl?: string
   /** 在系统浏览器中打开已检查的 HTTP(S) 外链；不复用带 preload 的主窗口。 */
   openExternal?(url: string): void
+  /** 为已创建的主窗口登记桌面关闭策略。 */
+  onWindowCreated?(window: BrowserWindow): void
   /**
    * Renderer 页面后台装载失败时的进程级错误出口。
    * @param error 后台页面加载时捕获的原始错误。
@@ -47,6 +49,13 @@ export interface ElectronWindowOptions {
 
 /** 桌面窗口生命周期及其 IPC 来源检查。 */
 export interface ElectronWindowManager extends MainWindowLifecyclePort {
+  /** 显示并聚焦已有主窗口，或创建一个新窗口。 */
+  showMainWindow(): void
+  /**
+   * 切换主窗口的显示状态，关闭或最小化后可再次恢复。
+   * @param keepTaskbar 隐藏方向改为任务栏最小化时为 true。
+   */
+  toggleMainWindowVisibility(keepTaskbar: boolean): void
   /**
    * 检查存活主窗口、主 frame 和当前文档地址，不信任仅有同源地址的其它窗口。
    * @param event Electron IPC 请求身份。
@@ -115,11 +124,42 @@ export function createElectronWindowManager(
     if (address?.protocol === "https:" || address?.protocol === "http:") options.openExternal?.(address.href)
   }
   const retainedWindows = new Set<BrowserWindow>()
-  return {
+  const awaitingFirstShow = new Set<BrowserWindow>()
+  /**
+   * 选择一个仍存活的 NiCode 主窗口。
+   * @returns 聚焦窗口优先，否则返回最近创建的主窗口或 undefined。
+   */
+  function mainWindow(): BrowserWindow | undefined {
+    const alive = [...retainedWindows].filter((window) => !window.isDestroyed())
+    return alive.find((window) => window.isFocused()) ?? alive.at(-1)
+  }
+  const manager: ElectronWindowManager = {
+    showMainWindow(): void {
+      const window = mainWindow()
+      if (!window) {
+        manager.createMainWindow()
+        return
+      }
+      if (awaitingFirstShow.has(window)) return
+      if (window.isMinimized()) window.restore()
+      window.show()
+      window.focus()
+    },
+    toggleMainWindowVisibility(keepTaskbar): void {
+      const window = mainWindow()
+      if (!window || !window.isVisible() || window.isMinimized()) {
+        manager.showMainWindow()
+      } else if (keepTaskbar) {
+        window.minimize()
+      } else {
+        window.hide()
+      }
+    },
     isTrustedSender(event): boolean {
       for (const window of retainedWindows) {
+        if (window.isDestroyed()) continue
         const contents = window.webContents
-        if (window.isDestroyed() || contents.isDestroyed() || event.sender !== contents) continue
+        if (contents.isDestroyed() || event.sender !== contents) continue
         return event.senderFrame !== null && event.senderFrame === contents.mainFrame
           && isRendererAddress(event.senderFrame.url) && isRendererAddress(contents.getURL())
       }
@@ -164,6 +204,8 @@ export function createElectronWindowManager(
         },
       })
       retainedWindows.add(window)
+      awaitingFirstShow.add(window)
+      options.onWindowCreated?.(window)
       window.webContents.on("will-navigate", (event, url) => {
         const target = event.url ?? url
         if (isRendererAddress(target)) return
@@ -184,23 +226,25 @@ export function createElectronWindowManager(
       }
       window.on("maximize", sendWindowState)
       window.on("unmaximize", sendWindowState)
-      let windowHasBeenShown = false
       /**
        * Electron 首帧事件或页面装载结束后只显示一次主窗口。
        * @returns 窗口显示完成时无返回值。
        */
       const showWindow = (): void => {
-        if (windowHasBeenShown) return
-        windowHasBeenShown = true
+        if (!awaitingFirstShow.delete(window) || window.isDestroyed()) return
         window.show()
       }
 
       window.once("ready-to-show", showWindow)
-      window.once("closed", () => retainedWindows.delete(window))
+      window.once("closed", () => {
+        awaitingFirstShow.delete(window)
+        retainedWindows.delete(window)
+      })
       const pageLoad = options.rendererUrl === undefined
         ? window.loadFile(options.rendererHtmlPath)
         : window.loadURL(options.rendererUrl)
       void pageLoad.then(showWindow).catch((error: unknown) => {
+        if (window.isDestroyed()) return
         options.onWindowLoadFailure(error)
         showWindow()
       })
@@ -214,4 +258,5 @@ export function createElectronWindowManager(
       return BrowserWindowClass.getAllWindows().length > 0
     },
   }
+  return manager
 }

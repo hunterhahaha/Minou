@@ -4,6 +4,9 @@ import type { ContextBridge, IpcRenderer, IpcRendererEvent } from "electron"
 /** 窗口专用通道，不复用或改动 Session 等业务通道。 */
 export const WINDOW_IPC_CHANNELS = {
   minimize: "nicode:window:minimize",
+  close: "nicode:window:close",
+  getCloseSettings: "nicode:window:get-close-settings",
+  setCloseBehavior: "nicode:window:set-close-behavior",
   toggleMaximize: "nicode:window:toggle-maximize",
   getState: "nicode:window:get-state",
   stateChanged: "nicode:window:state-changed",
@@ -15,7 +18,41 @@ export interface WindowState {
   maximized: boolean
 }
 
-/** 提供当前窗口的控制和状态订阅，不暴露窗口对象、标识或应用退出能力。 */
+/** 主窗口关闭时采用的用户偏好。 */
+export type CloseBehavior = "tray" | "quit"
+
+/** 已保存的关闭偏好及当前桌面可用的后台方式。 */
+export interface CloseSettings {
+  /** 下次关闭窗口时生效的偏好。 */
+  behavior: CloseBehavior
+  /** 选择关闭到托盘时实际隐藏窗口或保留任务栏入口。 */
+  backgroundAction: "hide" | "minimize"
+}
+
+/**
+ * 检查窗口关闭偏好是否属于允许值。
+ * @param value 来自 IPC 或磁盘的未知偏好。
+ * @returns 偏好为 tray 或 quit 时返回 true。
+ */
+export function isCloseBehavior(value: unknown): value is CloseBehavior {
+  return value === "tray" || value === "quit"
+}
+
+/**
+ * 校验主进程返回的设置快照。
+ * @param value 未知 IPC 响应。
+ * @returns 供界面使用的关闭设置。
+ * @throws TypeError 响应字段无效时由调用方处理。
+ */
+function requireCloseSettings(value: unknown): CloseSettings {
+  if (typeof value !== "object" || value === null || !("behavior" in value) || !isCloseBehavior(value.behavior)
+    || !("backgroundAction" in value) || (value.backgroundAction !== "hide" && value.backgroundAction !== "minimize")) {
+    throw new TypeError("窗口关闭设置无效")
+  }
+  return { behavior: value.behavior, backgroundAction: value.backgroundAction }
+}
+
+/** 提供当前窗口的控制、关闭偏好和状态订阅，不暴露 Electron 对象。 */
 export interface NiCodeWindowApi {
   /**
    * 请求将当前窗口最小化。
@@ -23,6 +60,16 @@ export interface NiCodeWindowApi {
    * @returns 当前窗口最小化完成；IPC 失败由调用方展示。
    */
   minimize(): Promise<void>
+  /** @returns 发起当前窗口的正常关闭请求。应用退出时页面随窗口销毁。 */
+  close(): Promise<void>
+  /** @returns 当前已保存的关闭偏好及关闭到托盘的实际方式。 */
+  getCloseSettings(): Promise<CloseSettings>
+  /**
+   * 保存全局桌面关闭偏好。
+   * @param behavior 下次关闭窗口时生效的偏好。
+   * @returns 持久化成功后的设置，失败时 Promise 拒绝。
+   */
+  setCloseBehavior(behavior: CloseBehavior): Promise<CloseSettings>
   /**
    * 请求切换当前窗口最大化状态并读取确认结果。
    *
@@ -69,6 +116,12 @@ export function createWindowApi(ipcRenderer: Pick<IpcRenderer, "invoke" | "on" |
      * @returns 当前窗口最小化完成；失败由调用方捕获。
      */
     async minimize(): Promise<void> { await ipcRenderer.invoke(WINDOW_IPC_CHANNELS.minimize) },
+    async close(): Promise<void> { await ipcRenderer.invoke(WINDOW_IPC_CHANNELS.close) },
+    async getCloseSettings(): Promise<CloseSettings> { return requireCloseSettings(await ipcRenderer.invoke(WINDOW_IPC_CHANNELS.getCloseSettings)) },
+    async setCloseBehavior(behavior: CloseBehavior): Promise<CloseSettings> {
+      if (!isCloseBehavior(behavior)) throw new TypeError("窗口关闭偏好无效")
+      return requireCloseSettings(await ipcRenderer.invoke(WINDOW_IPC_CHANNELS.setCloseBehavior, behavior))
+    },
     /**
      * 请求切换当前窗口最大化状态并读取确认结果。
      *

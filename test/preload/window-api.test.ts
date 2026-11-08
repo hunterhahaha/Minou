@@ -15,9 +15,17 @@ async function main(): Promise<void> {
   const api = createWindowApi(ipc)
   assert.equal(Object.isFrozen(api), true)
   await api.minimize()
+  await api.close()
   assert.deepEqual(await api.toggleMaximize(), { maximized: false })
   assert.deepEqual(await api.getState(), { maximized: false })
-  assert.deepEqual(calls, [[WINDOW_IPC_CHANNELS.minimize], [WINDOW_IPC_CHANNELS.toggleMaximize], [WINDOW_IPC_CHANNELS.getState]])
+  assert.deepEqual(calls, [[WINDOW_IPC_CHANNELS.minimize], [WINDOW_IPC_CHANNELS.close], [WINDOW_IPC_CHANNELS.toggleMaximize], [WINDOW_IPC_CHANNELS.getState]])
+  response = { behavior: "quit", backgroundAction: "hide", extra: true }
+  assert.deepEqual(await api.getCloseSettings(), { behavior: "quit", backgroundAction: "hide" })
+  assert.deepEqual(await api.setCloseBehavior("quit"), { behavior: "quit", backgroundAction: "hide" })
+  assert.deepEqual(calls.slice(-2), [[WINDOW_IPC_CHANNELS.getCloseSettings], [WINDOW_IPC_CHANNELS.setCloseBehavior, "quit"]])
+  await assert.rejects(api.setCloseBehavior("invalid" as "quit"), /窗口关闭偏好无效/)
+  response = { behavior: "quit", backgroundAction: "invalid" }
+  await assert.rejects(api.getCloseSettings(), /窗口关闭设置无效/)
   response = { maximized: "invalid" }
   await assert.rejects(api.getState(), /窗口状态无效/)
   const received: unknown[][] = []

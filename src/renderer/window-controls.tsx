@@ -1,4 +1,4 @@
-/** 顶部栏的自绘窗口按钮；关闭入口按产品约定只最小化窗口。 */
+/** 顶部栏的自绘窗口按钮，关闭行为由主进程的桌面偏好决定。 */
 import { useEffect, useState } from "react"
 import { IconMinus, IconSquare, IconSquares, IconX } from "@tabler/icons-react"
 import type { WindowState } from "../preload/window-api.ts"
@@ -23,10 +23,11 @@ export function WindowControls() {
    * @param action 用户触发的窗口操作。
    * @returns 操作完成；失败时保留可重试的按钮。
    */
-  async function operate(action: "minimize" | "maximize"): Promise<void> {
+  async function operate(action: "minimize" | "maximize" | "close"): Promise<void> {
     setError(null)
     try {
       if (action === "minimize") await window.nicodeWindow.minimize()
+      else if (action === "close") await window.nicodeWindow.close()
       else setState(await window.nicodeWindow.toggleMaximize())
     } catch { setError("窗口操作失败，请重试") }
   }
@@ -34,6 +35,6 @@ export function WindowControls() {
     {error && <span className="window-control-error" role="alert">{error}</span>}
     <button type="button" aria-label="最小化窗口" title="最小化" onClick={() => void operate("minimize")}><IconMinus size={15} stroke={1.4} /></button>
     <button type="button" aria-label={state.maximized ? "还原窗口" : "最大化窗口"} title={state.maximized ? "还原" : "最大化"} onClick={() => void operate("maximize")}>{state.maximized ? <IconSquares size={14} stroke={1.4} /> : <IconSquare size={13} stroke={1.4} />}</button>
-    <button className="window-close" type="button" aria-label="关闭窗口并最小化" title="关闭到任务栏，应用继续运行" onClick={() => void operate("minimize")}><IconX size={16} stroke={1.4} /></button>
+    <button className="window-close" type="button" aria-label="关闭窗口" title="关闭窗口" onClick={() => void operate("close")}><IconX size={16} stroke={1.4} /></button>
   </div>
 }
