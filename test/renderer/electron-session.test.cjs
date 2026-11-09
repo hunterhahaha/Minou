@@ -16,6 +16,9 @@ const { registerFileExplorerIpc } = require("../../dist/src/main/file-explorer-i
 const { insertProjectWorkspace } = require("../../dist/src/main/workspace-store.js")
 const { SESSION_IPC_CHANNELS: channels, STARTUP_DATA_IPC_CHANNELS } = require("../../dist/src/preload/session-api.js")
 const model = { providerId: "p", protocol: "responses", modelId: "m", name: "本机测试模型", reasoningLevel: "medium" }
+const alternateModel = { ...model, modelId: "alternate", name: "短上下文模型" }
+const firstUsage = { inputTokens: 8000, cacheReadTokens: 2000, cacheWriteTokens: 1000, outputTokens: 15 }
+const alternateUsage = { inputTokens: 6000, cacheReadTokens: 4000, cacheWriteTokens: 2000, outputTokens: 15 }
 let providerSupportsReasoning = true
 let window, profile, failed = false
 const rendererErrors = []
@@ -40,6 +43,11 @@ async function until(predicate) {
 }
 /** @param script Renderer 主世界的 DOM 操作。 @returns 执行结果。 */
 const evaluate = (script) => window.webContents.executeJavaScript(script)
+/** @returns 输入框下各项用量的可见文字，保留展示顺序。 */
+const readUsage = () => evaluate(`["context", "cache", "turns", "tools"].flatMap(metric => {
+  const node = document.querySelector('[data-usage-metric="' + metric + '"]')
+  return node ? [node.textContent] : []
+})`)
 /** @param label 输入框名称。 @param text 输入内容。 @returns React 输入事件处理完成。 */
 async function type(label, text) {
   await evaluate(`(() => {
@@ -70,7 +78,7 @@ async function main() {
     estimateSkillTokens: () => 0, listToolDefinitions: () => [],
     executeTool: async () => { throw new Error("unexpected tool") },
     /** 对话展示测试使用足够大的窗口，避免进入另有专门测试的 Summary 压缩流程。 */
-    createTurnModelAdapter: async () => ({  contextWindow: 256000, maxOutputTokens: 32000, stream: async function* (request, _signal, options) {
+    createTurnModelAdapter: async (selectedModel) => ({  contextWindow: 256000, maxOutputTokens: 32000, stream: async function* (request, _signal, options) {
       if (options?.timeoutMs !== undefined) {
         await titleGate
         yield { type: "block_start", index: 0, blockType: "text" }
@@ -90,7 +98,7 @@ async function main() {
       yield { type: "block_start", index: 2, blockType: "text" }
       yield { type: "block_delta", index: 2, delta: { type: "text", text: "最终第二段" } }
       yield { type: "block_end", index: 2, block: { type: "text", text: "最终第二段" } }
-      yield { type: "stream_end", completion: "finished" }
+      yield { type: "stream_end", completion: "finished", usage: selectedModel.modelId === alternateModel.modelId ? alternateUsage : firstUsage }
     } }),
   }
   const historyFixtures = new Map()
@@ -112,7 +120,9 @@ async function main() {
   ipcMain.removeHandler(STARTUP_DATA_IPC_CHANNELS.listProviders)
   ipcMain.handle(STARTUP_DATA_IPC_CHANNELS.listProviders, () => [{ providerId: "p", name: "测试", type: "custom", protocol: "responses",
     models: [{ supportsReasoning: providerSupportsReasoning, modelId: "m", name: model.name, isDefault: true, contextWindow: 256000, maxOutputTokens: 32000,
-      reasoningLevels: ["low", "medium", "high"], reasoningField: { path: ["reasoning", "effort"] } }] }])
+      reasoningLevels: ["low", "medium", "high"], reasoningField: { path: ["reasoning", "effort"] } },
+      { supportsReasoning: false, modelId: alternateModel.modelId, name: alternateModel.name, isDefault: false, contextWindow: 128000, maxOutputTokens: 16000,
+        reasoningLevels: ["medium"], reasoningField: { path: ["reasoning", "effort"] } }] }])
   window = new BrowserWindow({ show: false, width: 1200, height: 800, webPreferences: {
     preload: join(process.cwd(), "dist/src/preload/index.js"), contextIsolation: true, nodeIntegration: false, sandbox: false, backgroundThrottling: false,
   } })
@@ -130,6 +140,7 @@ async function main() {
     } })
   })()`)
   await until(() => evaluate(`document.querySelector('.composer-editor[aria-label="任务描述"]') !== null`))
+  assert.deepEqual(await readUsage(), [], "新聊天页不显示会话用量")
   const sendAppearance = `(() => {
     const button = document.querySelector('.send-button'), style = getComputedStyle(button)
     const probe = document.createElement('span')
@@ -191,6 +202,8 @@ async function main() {
   assert.equal(await evaluate(`document.querySelector('[aria-label="加入队列"]').dataset.testIdentity`), "same-button", "输入变化时保持同一操作按钮和焦点身份")
   await evaluate(`document.querySelector('[aria-label="加入队列"]').click()`)
   await until(() => evaluate(`document.querySelector('[aria-label="待处理消息"]')?.textContent.includes('排队中的真实页面消息')`))
+  assert.deepEqual(await readUsage(), ["上下文 — / 256,000 Token", "缓存命中率 —", "轮数 1", "工具调用 0"], "未开始的排队消息不计轮数")
+  assert.equal(await evaluate("document.querySelector('.chat-footer .composer-caption')?.textContent"), "发送的消息将加入队列")
   await until(() => evaluate(`document.querySelector('[aria-label="停止"]')?.disabled === false`))
   assert.equal(await evaluate(`document.querySelector('[aria-label="停止"]').dataset.testIdentity`), "same-button", "加入队列并清空输入后同一按钮恢复停止")
   await evaluate(`document.querySelector('.new-chat').click()`)
@@ -207,6 +220,11 @@ async function main() {
   assert.equal(await evaluate(`document.querySelectorAll('.turn-process, .final-answer').length`), 0, "没有 turn/end 时保持流式展示")
   releaseAnswer()
   await until(() => evaluate(`document.querySelectorAll('.user-bubble').length === 2 && document.querySelector('.session-phase')?.textContent === '准备就绪'`))
+  assert.deepEqual(await readUsage(), ["上下文 11,000 / 256,000 Token", "缓存命中率 20%", "轮数 2", "工具调用 0"], "流式回复提交后显示完整输入量，排队消息开始后计入轮数")
+  await until(() => evaluate(`(() => {
+    const scroll = document.querySelector('.chat-scroll')
+    return scroll.scrollHeight > scroll.clientHeight && scroll.scrollHeight - scroll.clientHeight - scroll.scrollTop <= 2
+  })()`))
   assert.deepEqual(await evaluate(`Array.from(document.querySelectorAll('.assistant-entry[data-turn]')).map(node => ({
     turn: Number(node.dataset.turn), parent: node.tagName,
     process: node.querySelector(':scope > .turn-process')?.tagName,
@@ -278,6 +296,40 @@ async function main() {
   assert.notEqual(readSessionMeta(paths.metaDatabasePath, "default", reasoningSessionId)?.currentModel.reasoningLevel, "high", "打开等级列表不修改对话设置")
   await evaluate("[...document.querySelectorAll('.reasoning-menu button')].find(node => node.querySelector('span').textContent === 'high').click()")
   await until(() => readSessionMeta(paths.metaDatabasePath, "default", reasoningSessionId)?.currentModel.reasoningLevel === "high")
+  await until(() => evaluate("Boolean(document.querySelector('[aria-label=对话模型]:not(:disabled)'))"))
+  await evaluate("document.querySelector('[aria-label=对话模型]').click()")
+  await until(() => evaluate("Boolean(document.querySelector('.composer-model-panel:popover-open'))"))
+  await evaluate("document.querySelector('[aria-label=切换模型]').click()")
+  await until(() => evaluate("Boolean(document.querySelector('.model-menu'))"))
+  await evaluate("document.querySelector('.model-menu [title=\"测试 / 短上下文模型\"]').click()")
+  await until(async () => (await readUsage())[0] === "上下文 11,000（来自其他模型） / 128,000 Token")
+  assert.deepEqual((await readUsage()).slice(1), ["缓存命中率 20%", "轮数 2", "工具调用 0"], "切换模型时保留会话统计")
+  assert.equal(await evaluate("document.querySelector('[data-usage-metric=pressure]').textContent"), "8.6%", "占用比例使用当前模型上限")
+  assert.equal(await evaluate(`(() => {
+    const usage = document.querySelector('.session-usage'), { top } = usage.getBoundingClientRect()
+    return usage.previousElementSibling.getBoundingClientRect().bottom < top &&
+      !usage.nextElementSibling && !document.querySelector('.chat-footer .composer-caption') &&
+      [...usage.children].every(item => item.getBoundingClientRect().top === top)
+  })()`), true, "宽窗用量保持一行且会话就绪时没有快捷键提示")
+  await copyScreenshot("electron-session-usage-light")
+  await evaluate("document.querySelector('[aria-label=切换深色外观]').click()")
+  await evaluate("document.querySelector('[aria-label=收起侧栏]').click()")
+  window.setContentSize(480, 760)
+  window.webContents.setZoomFactor(1.5)
+  await until(() => evaluate("innerWidth <= 320 && document.documentElement.dataset.theme === 'dark'"))
+  assert.equal(await evaluate(`(() => {
+    const row = document.querySelector('.session-usage'), { left, right } = row.getBoundingClientRect()
+    const items = [...row.children].map(item => item.getBoundingClientRect())
+    return getComputedStyle(row).fontSize === '12px' && new Set(items.map(item => item.top)).size > 1 &&
+      items.every(item => item.left >= left && item.right <= right)
+  })()`), true, "150% 窄窗换行显示用量，不缩小字号或溢出")
+  await copyScreenshot("electron-session-usage-dark-narrow")
+  window.webContents.setZoomFactor(1)
+  window.setContentSize(1200, 800)
+  await evaluate("document.querySelector('[aria-label=展开侧栏]').click()")
+  await until(() => evaluate("Boolean(document.querySelector('[aria-label=切换浅色外观]'))"))
+  await evaluate("document.querySelector('[aria-label=切换浅色外观]').click()")
+  await until(() => evaluate("innerWidth === 1200 && document.documentElement.dataset.theme === 'light'"))
   await evaluate(`document.querySelector('.turn-process > summary').click()`)
   await until(() => evaluate(`document.querySelector('.turn-process').open`))
   await evaluate(`document.querySelector('.turn-process details > summary').click()`)
@@ -287,6 +339,7 @@ async function main() {
   await until(() => evaluate(`document.querySelector('[aria-label="发送消息"]')?.disabled === false`))
   await evaluate(`document.querySelector('[aria-label="发送消息"]').click()`)
   await until(() => evaluate(`document.querySelectorAll('.turn-process').length === 3 && document.querySelector('.session-phase')?.textContent === '准备就绪'`))
+  assert.deepEqual(await readUsage(), ["上下文 12,000 / 128,000 Token", "缓存命中率 26.7%", "轮数 3", "工具调用 0"], "所选模型提交用量后撤去来源提示，命中率继续按会话累计")
   assert.equal(await evaluate(`document.querySelector('.turn-process').open`), true, "后续 Turn 事件不能关闭已展开过程")
   await evaluate(`document.querySelector('.new-chat').click()`)
   await until(() => evaluate(`document.querySelector('.composer-editor[aria-label="任务描述"]')?.textContent === '切换保留的草稿'`))
@@ -303,6 +356,7 @@ async function main() {
   await evaluate(`document.querySelector('[aria-label="发送消息"]').click()`)
   await until(() => evaluate(`document.querySelector('.turn-process') !== null && document.querySelector('.session-phase')?.textContent === '准备就绪'`))
   assert.notEqual(await evaluate(`document.querySelector('.chat-page').dataset.sessionId`), originalSession)
+  assert.deepEqual(await readUsage(), ["上下文 11,000 / 256,000 Token", "缓存命中率 20%", "轮数 1", "工具调用 0"], "会话之间不共享统计")
   assert.equal(await evaluate(`document.querySelector('.turn-process').open`), false, "不同对话的相同 Turn 编号不能继承展开状态")
   await evaluate("location.hash = " + JSON.stringify(route))
   await until(() => evaluate(`document.querySelectorAll('.turn-process').length === 3`))
@@ -501,15 +555,17 @@ async function main() {
   ])
   await evaluate("location.hash = " + JSON.stringify(route.replace(originalSession, mergedToolSession)))
   await until(() => evaluate("document.querySelector('.chat-page')?.dataset.sessionId === 'merged-tool-display' && Boolean(document.querySelector('.tool-detail'))"))
+  assert.deepEqual((await readUsage()).slice(1), ["缓存命中率 —", "轮数 1", "工具调用 0"], "流式工具片段尚未计入调用数")
   assert.equal(await evaluate("document.querySelector('.tool-detail').open"), false)
   await evaluate("window.originalToolNode = document.querySelector('.tool-detail'); window.originalToolNode.querySelector('summary').focus()")
   for (const type of ["keyDown", "keyUp"]) window.webContents.sendInputEvent({ type, keyCode: "Space" })
   await until(() => evaluate("window.originalToolNode.open"))
   await pushToolEvents([
     { type: "assistant/block_end", turn: 1, step: 1, blockId: "block-shared", index: 0, block: toolBlock("shared", "first.ts") },
-    { type: "assistant/message", turn: 1, step: 1, model, message: { id: "tools1", role: "assistant", content: [toolBlock("shared", "first.ts"), toolBlock("second", "second.ts")] } },
+    { type: "assistant/message", turn: 1, step: 1, model, usage: firstUsage, message: { id: "tools1", role: "assistant", content: [toolBlock("shared", "first.ts"), toolBlock("second", "second.ts")] } },
     toolResult(1, 1, "second", "第二调用先返回"),
   ])
+  assert.equal((await readUsage())[3], "工具调用 2", "权威回复中的调用只统计一次，工具结果不增加次数")
   assert.equal(await evaluate("document.querySelector('.tool-detail') === window.originalToolNode && window.originalToolNode.open"), true, "权威消息不重建已展开的调用区域")
   assert.equal(await evaluate("document.querySelectorAll('.tool-detail')[1].open"), false, "结果不自动展开工具")
   assert.deepEqual((await toolSnapshot()).tools.map(tool => tool.content), [
@@ -568,6 +624,7 @@ async function main() {
   await evaluate("location.hash = " + JSON.stringify(route.replace(originalSession, historySession)))
   await until(() => evaluate("document.querySelector('.chat-page')?.dataset.sessionId === 'merged-tool-history' && document.querySelectorAll('.tool-detail').length === 6"))
   assert.deepEqual(await toolSnapshot(), mergedSnapshot, "历史 IPC 一次加载和实时逐条推送展示一致")
+  assert.deepEqual(await readUsage(), ["上下文 11,000 / 256,000 Token", "缓存命中率 20%", "轮数 3", "工具调用 6"], "历史恢复完整统计，后续未报告用量的消息保留最近已知输入")
   await evaluate("location.hash = " + JSON.stringify(route.replace(originalSession, mergedToolSession)))
   await until(() => evaluate("document.querySelector('.chat-page')?.dataset.sessionId === 'merged-tool-display'"))
   await pushToolEvents([
@@ -728,10 +785,12 @@ async function main() {
     const historyFixture = historyFixtures.get(historySession)
     historyFixtures.set(secondSession, { ...historyFixture, sessionId: secondSession,
       summary: { ...historyFixture.summary, sessionId: secondSession },
-      events: [], latestSeq: 0, control: { ...historyFixture.control, throughSeq: 0, currentTurn: 0 } })
+      events: [], latestSeq: 0, control: { ...historyFixture.control, throughSeq: 0, currentTurn: undefined, currentModel: { ...model, modelId: "missing-model" } } })
     await evaluate("location.hash = " + JSON.stringify(route.replace(originalSession, secondSession)))
     await until(() => !first.getVisible())
     await until(() => evaluate("document.querySelector('.chat-page')?.dataset.sessionId === 'browser-second-session'"))
+    await until(async () => (await readUsage())[2] === "轮数 0")
+    assert.deepEqual(await readUsage(), ["上下文 — / — Token", "缓存命中率 —", "轮数 0", "工具调用 0"], "空历史显示零计数，缺失模型配置显示占位")
     assert.equal(await evaluate("document.querySelectorAll('.chat-browser-tab').length"), 0)
     await evaluate("document.querySelector('.browser-toggle[aria-expanded=false]').click()")
     await until(() => evaluate("Boolean(document.querySelector('[aria-label=\"关闭 新标签页\"]'))"))

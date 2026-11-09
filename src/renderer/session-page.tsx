@@ -1,6 +1,6 @@
 /** 从工作区事件字典派生聊天页面；输入操作仅走 preload 的固定 Session API。 */
-import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react"
-import { IconArrowDown, IconArrowUp, IconBrain, IconCheck, IconCode, IconCopy, IconGitCompare, IconPlayerStop, IconShieldCheck, IconSparkles, IconTool } from "@tabler/icons-react"
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
+import { IconArrowDown, IconArrowUp, IconBrain, IconCheck, IconCode, IconCopy, IconDashboard, IconDatabase, IconGitCompare, IconPlayerStop, IconShieldCheck, IconSparkles, IconTool } from "@tabler/icons-react"
 import type { AssistantContentBlock } from "../../runtime/model/src/types.ts"
 import { preferredReasoningLevel } from "../../runtime/model/src/reasoning.ts"
 import type { FileChange, FileReference, SessionEvent, UserMessageContent } from "../../runtime/session/src/events.ts"
@@ -10,6 +10,9 @@ import { MarkdownContent } from "./markdown-content.tsx"
 import { ComposerInput } from "./composer-input.tsx"
 import { serializeComposerMessage } from "./composer-message.ts"
 import { ComposerModelPicker } from "./composer-model-picker.tsx"
+
+const usageCountFormat = new Intl.NumberFormat("zh-CN")
+const usagePercentFormat = new Intl.NumberFormat("zh-CN", { style: "percent", maximumFractionDigits: 1 })
 
 /** 已确定的 Session 权限展示。 */
 export const sandboxLabels: Record<SandboxMode, string> = {
@@ -107,8 +110,33 @@ function MessageCopyButton({ text, label }: { text: string; label: "复制AI回�
 export function SessionPage({ projectId, sessionId, state, providers, onOpenDiff, onOpenWeb, onOpenFile }: SessionPageProps) {
   const key = sessionKey(projectId, sessionId)
   const events = state.sessionEventsByKey[key] ?? []
+  const hasHistory = state.has(key)
   const view = state.view(key)
   const control = view.control
+  const usage = useMemo(() => {
+    let turns = 0
+    let toolCalls = 0
+    let latest: Extract<SessionEvent, { type: "assistant/message" }> | undefined
+    let cacheRead = 0
+    let uncachedInput = 0
+    for (const event of events) {
+      if (event.type === "turn/start") turns++
+      if (event.type !== "assistant/message") continue
+      for (const block of event.message.content) if (block.type === "tool_call") toolCalls++
+      if (!event.usage) continue
+      latest = event
+      cacheRead += event.usage.cacheReadTokens ?? 0
+      uncachedInput += event.usage.inputTokens
+    }
+    const latestUsage = latest?.usage
+    const total = cacheRead + uncachedInput
+    return {
+      turns, toolCalls, model: latest?.model,
+      inputTokens: latestUsage && latestUsage.inputTokens + (latestUsage.cacheReadTokens ?? 0) + (latestUsage.cacheWriteTokens ?? 0),
+      /** 沿用 Session Meta 的命中率口径，缓存写入量只计入完整输入量。 */
+      cacheHitRate: latestUsage && (total === 0 ? 0 : cacheRead / total),
+    }
+  }, [events])
   const hasDraft = Boolean(serializeComposerMessage(state.draftsByKey[key]).content[0].text.trim())
   const showStop = control?.phase === "stopping" || (control?.phase === "running" && !hasDraft)
   const endRef = useRef<HTMLDivElement>(null)
@@ -155,12 +183,17 @@ export function SessionPage({ projectId, sessionId, state, providers, onOpenDiff
     ? [...approvalRequests.values()].find((event) => event.turn === control.currentTurn && !approvalResults.has(event.approvalId)) : undefined
   const modelOptions = providers.flatMap((provider) => provider.models.map((model) => ({
     providerId: provider.providerId, protocol: provider.protocol, modelId: model.modelId, name: model.name,
+    contextWindow: model.contextWindow,
     supportsReasoning: model.supportsReasoning,
     reasoningLevels: model.reasoningLevels,
     providerName: provider.name,
   })))
   const selectedKey = control ? JSON.stringify([control.currentModel.providerId, control.currentModel.modelId]) : ""
   const currentModelOption = modelOptions.find((model) => JSON.stringify([model.providerId, model.modelId]) === selectedKey)
+  const contextWindow = currentModelOption?.contextWindow
+  const contextUsage = usage.inputTokens !== undefined && contextWindow !== undefined ? usage.inputTokens / contextWindow : undefined
+  const inputFromOtherModel = control && usage.model &&
+    (usage.model.providerId !== control.currentModel.providerId || usage.model.modelId !== control.currentModel.modelId)
   const reasoningOptions = currentModelOption?.reasoningLevels ?? []
   useEffect(() => { followsRef.current = true; setShowScrollToBottom(false); endRef.current?.scrollIntoView() }, [key])
   useEffect(() => { if (followsRef.current) endRef.current?.scrollIntoView({ block: "end" }) }, [events.length, key])
@@ -313,7 +346,7 @@ export function SessionPage({ projectId, sessionId, state, providers, onOpenDiff
       if (node) { followsRef.current = node.scrollHeight - node.scrollTop - node.clientHeight < 100; setShowScrollToBottom(!followsRef.current) }
     }}>
       <div className="chat-messages">
-        {!state.has(key) && <p role="status">{view.loading ? "正在加载对话…" : "等待加载对话"}</p>}
+        {!hasHistory && <p role="status">{view.loading ? "正在加载对话…" : "等待加载对话"}</p>}
         {view.loadError && <p className="chat-error" role="alert">{view.loadError} <button onClick={() => void state.load(projectId, sessionId, true).catch(() => {})}>重试</button></p>}
         {blocks.map((block) => {
           if (block.kind !== "completed-turn") return itemView(block, block.kind === "assistant" && firstAssistantByTurn.get(block.turn) === block.id)
@@ -366,7 +399,7 @@ export function SessionPage({ projectId, sessionId, state, providers, onOpenDiff
               supportsReasoning={currentModelOption?.supportsReasoning ?? false} reasoningLevels={reasoningOptions} disabled={!control || Boolean(view.busy)}
               onModelChange={(selection) => {
                 const model = modelOptions.find((item) => JSON.stringify([item.providerId, item.modelId]) === selection)
-                if (model) { const { providerName: _provider, supportsReasoning: _supportsReasoning, reasoningLevels, ...reference } = model; void settings({ model: {
+                if (model) { const { providerName: _provider, supportsReasoning: _supportsReasoning, contextWindow: _contextWindow, reasoningLevels, ...reference } = model; void settings({ model: {
                   ...reference, reasoningLevel: preferredReasoningLevel(reasoningLevels, control?.currentModel.reasoningLevel),
                 } }) }
               }} onReasoningChange={(reasoningLevel) => { if (control) void settings({ model: { ...control.currentModel, reasoningLevel } }) }} />
@@ -375,7 +408,31 @@ export function SessionPage({ projectId, sessionId, state, providers, onOpenDiff
         </div>
       </div>
       </div>
-      <div className="composer-caption"><span>{control?.phase === "running" ? "发送的消息将加入队列" : "Enter 发送 · Shift + Enter 换行"}</span></div>
+      <ul className="session-usage" aria-label="会话用量">
+        <li>
+          <IconDashboard aria-hidden="true" />
+          <span className="session-usage-metrics">
+            <span data-usage-metric="turns">轮数 {hasHistory ? usageCountFormat.format(usage.turns) : "—"}</span>
+            <span data-usage-metric="tools">工具调用 {hasHistory ? usageCountFormat.format(usage.toolCalls) : "—"}</span>
+          </span>
+        </li>
+        <li>
+          <IconDatabase aria-hidden="true" />
+          <span className="session-usage-metrics">
+            <span data-usage-metric="context">上下文 {usage.inputTokens === undefined ? "—" : usageCountFormat.format(usage.inputTokens)}{inputFromOtherModel && "（来自其他模型）"} / {contextWindow === undefined ? "—" : usageCountFormat.format(contextWindow)} Token</span>
+            <span data-usage-metric="cache">缓存命中率 {usage.cacheHitRate === undefined ? "—" : usagePercentFormat.format(usage.cacheHitRate)}</span>
+          </span>
+        </li>
+        <li aria-label="上下文占用" title="上下文占用">
+          <svg viewBox="0 0 20 20" aria-hidden="true" fill="none" strokeWidth="2.5">
+            <circle cx="10" cy="10" r="7" className="session-usage-track" />
+            {contextUsage !== undefined && contextUsage > 0 && <circle cx="10" cy="10" r="7" pathLength="100"
+              stroke="currentColor" strokeLinecap="round" strokeDasharray={`${Math.min(contextUsage * 100, 100)} 100`} transform="rotate(-90 10 10)" />}
+          </svg>
+          <span data-usage-metric="pressure">{contextUsage === undefined ? "—" : usagePercentFormat.format(contextUsage)}</span>
+        </li>
+      </ul>
+      {control?.phase === "running" && <div className="composer-caption"><span>发送的消息将加入队列</span></div>}
     </div>
   </section>
 }
