@@ -12,6 +12,7 @@ import { SessionRuntime } from "../src/session-runtime.ts"
 import type { SessionRuntimeGlobal } from "../../../src/main/session-runtime-global.ts"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
+import { fakeSessionQueue } from "../../../test/fixtures/session-queue.ts"
 
 const MODEL: ModelRef = { providerId: "p", protocol: "responses", modelId: "m", name: "Model", reasoningLevel: "medium" }
 const MESSAGE = [{ type: "text" as const, text: "test" }]
@@ -109,6 +110,7 @@ async function run(scenario: Scenario): Promise<SessionEvent[]> {
     } as unknown as SessionRuntimeGlobal,
   })
   Object.assign(ports, {
+    messageQueue: fakeSessionQueue(),
     eventLog: {
       readEvents: fake.repairPorts.readEvents,
       appendEvent: fake.repairPorts.appendEvent,

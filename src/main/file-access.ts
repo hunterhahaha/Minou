@@ -1,5 +1,6 @@
 /** 文件工具单次调用使用的真实数据库访问端口。 */
 import { join } from "node:path"
+import { existsSync } from "node:fs"
 import { readSessionMeta } from "../../runtime/session/src/meta-store.ts"
 import { SANDBOX_MODES } from "../../runtime/session/src/session-state.ts"
 import type { FileAccessState } from "../../runtime/tools/src/file/index.ts"
@@ -19,7 +20,9 @@ export function loadFileAccessState(
   projectId: string,
   sessionId: string,
 ): FileAccessState {
-  const meta = readSessionMeta(paths.metaDatabasePath, projectId, sessionId)
+  const eventDatabase = join(paths.rootDir, "events.sqlite")
+  const meta = readSessionMeta(paths.metaDatabasePath, projectId, sessionId) ??
+    (existsSync(eventDatabase) ? readSessionMeta(eventDatabase, projectId, sessionId, true) : undefined)
   if (typeof meta !== "object" || meta === null || !("sandboxMode" in meta) ||
       typeof meta.sandboxMode !== "string" || !SANDBOX_MODES.includes(meta.sandboxMode as typeof SANDBOX_MODES[number])) {
     throw new Error(`Session Meta 缺失或沙箱模式无效：${paths.metaDatabasePath}（${projectId}/${sessionId}）`)

@@ -9,6 +9,9 @@ import { randomUUID } from "node:crypto"
 import { lstat } from "node:fs/promises"
 import { isAbsolute, resolve } from "node:path"
 import { DatabaseSync } from "node:sqlite"
+import { MESSAGE_QUEUE_SCHEMA, sessionTransaction } from "./message-queue.ts"
+import { TEAM_SCHEMA } from "./team-store.ts"
+import { TEAM_META_SCHEMA } from "./meta-store.ts"
 import { requireProjectId } from "./project-id.ts"
 
 import type {
@@ -18,6 +21,10 @@ import type {
 
 /** 单个 Session 的存储位置和事件身份来源。 */
 export interface FileSessionEventLogOptions {
+  /** Team Session 使用独立事件表，并允许尚未开始首轮。 */
+  team?: boolean
+  /** 当前日志由具备持久队列的 SessionRuntime 使用。 */
+  desktop?: boolean
   /** 当前日志绑定的 Session ID。 */
   sessionId: string
   /** 所属 Project/default 分组 ID。 */
@@ -55,13 +62,17 @@ export interface FileSessionEventLog {
    */
   appendMcpToolChanges(events: readonly McpToolChangeInput[]): Promise<SessionEvent[]>
   /**
-   * 在一个事务内提交新 Turn 的两条首批事件。
+   * 在一个事务内提交新 Turn 的两条首批事件，并按需出队或写入 Team 身份。
    * @param events 按 turn/start、user/message 排列的事件对。
+   * @param queuedMessageId 应在同一事务移除的持久队首消息。
+   * @param onCommit 提交前执行的同步初始化；抛出时一并回滚。
    * @returns 已提交的完整事件对。
    * @throws Error 当 Turn 身份或事务无效时抛出。
    */
   appendTurnStartAndUserMessage(
     events: readonly [TurnStartEventInput, UserMessageEventInput],
+    queuedMessageId?: string,
+    onCommit?: (db: DatabaseSync) => void,
   ): Promise<readonly [TurnStartEvent, UserMessageEvent]>
 }
 
@@ -78,14 +89,16 @@ const CREATE_EVENTS_TABLE = `CREATE TABLE IF NOT EXISTS session_events (
   PRIMARY KEY (project_group_id, session_id, seq),
   UNIQUE (project_group_id, session_id, event_id)
 ) STRICT`
+const CREATE_TEAM_EVENTS_TABLE = CREATE_EVENTS_TABLE.replace("session_events", "team_session_events")
 
 /**
- * 缺失时创建共享 Event Log 数据库和事件表；已有普通文件只确认存在，不读取或检查其内容。
+ * 初始化 Event Log 数据库；桌面启用共享消息队列及 Team 存储。
  * @param databasePath `.nicode/events.sqlite` 的绝对路径。
+ * @param desktop 是否初始化桌面协作表；独立 CLI 仅使用普通事件表。
  * @returns 缺失数据库创建完成，或已有普通文件确认存在后解析的 Promise。
  * @throws Error 当路径不是普通文件或缺失数据库无法创建时抛出。
  */
-export async function initializeSessionEventDatabase(databasePath: string): Promise<void> {
+export async function initializeSessionEventDatabase(databasePath: string, desktop = false): Promise<void> {
   if (!isAbsolute(databasePath)) {
     throw new Error(`Session Event Log 数据库必须是绝对路径：${databasePath}`)
   }
@@ -94,11 +107,11 @@ export async function initializeSessionEventDatabase(databasePath: string): Prom
   if (kind !== "missing" && kind !== "file") {
     throw new Error(`Session Event Log 数据库不是普通文件：${path}`)
   }
-  if (kind === "file") return
-
+  if (kind === "file" && !desktop) return
   try {
     withDatabase(path, (db) => {
       db.exec(CREATE_EVENTS_TABLE)
+      if (desktop) db.exec(CREATE_TEAM_EVENTS_TABLE + ";" + MESSAGE_QUEUE_SCHEMA + TEAM_SCHEMA + TEAM_META_SCHEMA)
     })
   } catch (error) {
     throw new Error(`无法初始化 Session Event Log 数据库：${path}`, { cause: error })
@@ -125,6 +138,7 @@ export function createFileSessionEventLog(options: FileSessionEventLogOptions): 
   const queueKey = JSON.stringify([databasePath, options.projectGroupId, options.sessionId])
   const now = options.now ?? (() => new Date())
   const createEventId = options.createEventId ?? randomUUID
+  const table = options.team ? "team_session_events" : "session_events"
 
   /**
    * 在同一事务分配序号并提交事件。
@@ -136,11 +150,11 @@ export function createFileSessionEventLog(options: FileSessionEventLogOptions): 
   const append = (inputs: readonly SessionEventInput[], history: "all" | "tail" = "all") => runSerializedWrite(queueKey, async () => {
     await requireDirectory(sessionDirectory)
     await requireDatabase(databasePath)
-    return withDatabase(databasePath, (db) => transaction(db, () => {
-      const values = readSessionEvents(db, options.projectGroupId, options.sessionId, databasePath, false, history)
+    return withDatabase(databasePath, (db) => sessionTransaction(db, () => {
+      const values = readSessionEvents(db, options.projectGroupId, options.sessionId, databasePath, false, history, table)
       const seq = nextSequence(values, databasePath, inputs.length)
       const events = materializeEvents(inputs, options.sessionId, seq, now, createEventId, databasePath)
-      insertEvents(db, options.projectGroupId, events, databasePath)
+      insertEvents(db, options.projectGroupId, events, databasePath, table)
       return events
     }))
   })
@@ -151,20 +165,24 @@ export function createFileSessionEventLog(options: FileSessionEventLogOptions): 
       await requireDirectory(sessionDirectory)
       await requireDatabase(databasePath)
       return withDatabase(databasePath, (db) =>
-        readSessionEvents(db, options.projectGroupId, options.sessionId, databasePath))
+        readSessionEvents(db, options.projectGroupId, options.sessionId, databasePath, options.team, "all", table))
     },
     appendEvent: async (input) => (await append([input], "tail"))[0],
     appendMcpToolChanges: (inputs) => inputs.length === 0 ? Promise.resolve([]) : append(inputs),
-    appendTurnStartAndUserMessage: (inputs) => runSerializedWrite(queueKey, async () => {
+    appendTurnStartAndUserMessage: (inputs, queuedMessageId, onCommit) => runSerializedWrite(queueKey, async () => {
       await requireDirectory(sessionDirectory)
       validateTurnBatch(inputs, databasePath)
+      if (queuedMessageId !== undefined && queuedMessageId !== inputs[1].message.id) {
+        throw new Error("Turn 用户消息身份与持久队首不一致")
+      }
       const kind = await pathKind(databasePath)
       if (kind !== "missing" && kind !== "file") {
         throw new Error(`Session Event Log 数据库不是普通文件：${databasePath}`)
       }
-      return withDatabase(databasePath, (db) => transaction(db, () => {
-        db.exec(CREATE_EVENTS_TABLE)
-        const values = readSessionEvents(db, options.projectGroupId, options.sessionId, databasePath, true)
+      return withDatabase(databasePath, (db) => sessionTransaction(db, () => {
+        db.exec(options.team ? CREATE_TEAM_EVENTS_TABLE : CREATE_EVENTS_TABLE)
+        if (options.desktop) db.exec(MESSAGE_QUEUE_SCHEMA)
+        const values = readSessionEvents(db, options.projectGroupId, options.sessionId, databasePath, true, "all", table)
         let nextSeq = 1
         if (values.length === 0) {
           if (inputs[0].turn !== 1) {
@@ -177,7 +195,15 @@ export function createFileSessionEventLog(options: FileSessionEventLogOptions): 
         const written = materializeEvents(
           inputs, options.sessionId, nextSeq, now, createEventId, databasePath,
         ) as [TurnStartEvent, UserMessageEvent]
-        insertEvents(db, options.projectGroupId, written, databasePath)
+        if (queuedMessageId !== undefined) {
+          const removed = db.prepare(`DELETE FROM session_message_queue WHERE message_id = ?
+            AND position = (SELECT MIN(position) FROM session_message_queue WHERE project_id = ? AND session_id = ?)
+            AND NOT EXISTS (SELECT 1 FROM session_queue_pauses WHERE project_id = ? AND session_id = ?)`)
+            .run(queuedMessageId, options.projectGroupId, options.sessionId, options.projectGroupId, options.sessionId)
+          if (removed.changes !== 1) throw new Error("队首消息已变更或队列已暂停")
+        }
+        insertEvents(db, options.projectGroupId, written, databasePath, table)
+        onCommit?.(db)
         return written
       }))
     }),
@@ -223,25 +249,6 @@ function withDatabase<T>(path: string, operation: (db: DatabaseSync) => T): T {
 }
 
 /**
- * 以一次 SQLite 事务执行操作。
- * @param db 已打开的数据库。
- * @param operation 事务内的同步操作。
- * @returns 已提交操作的结果。
- * @throws Error 当操作或提交失败时回滚并抛出。
- */
-function transaction<T>(db: DatabaseSync, operation: () => T): T {
-  db.exec("BEGIN IMMEDIATE")
-  try {
-    const result = operation()
-    db.exec("COMMIT")
-    return result
-  } catch (error) {
-    db.exec("ROLLBACK")
-    throw error
-  }
-}
-
-/**
  * 读取当前 Session 的事件并核对索引列。
  * @param db 已打开的数据库。
  * @param projectGroupId Project/default 分组 ID。
@@ -249,17 +256,19 @@ function transaction<T>(db: DatabaseSync, operation: () => T): T {
  * @param path 错误定位用的数据库路径。
  * @param allowMissing 是否允许新 Session 没有日志。
  * @param history 完整读取，或只读取末尾事件以分配单条追加的序号。
+ * @param table 当前角色对应的独立事件表。
  * @returns 按 seq 排序的事件值。
  * @throws Error 当表、日志或事件内容无效时抛出。
  */
 function readSessionEvents(
   db: DatabaseSync, projectGroupId: string, sessionId: string, path: string,
   allowMissing = false, history: "all" | "tail" = "all",
+  table: "session_events" | "team_session_events" = "session_events",
 ): unknown[] {
   let rows: Array<Record<string, unknown>>
   try {
     rows = db.prepare(`SELECT seq, event_id, type, created_at, event_json
-      FROM session_events WHERE project_group_id = ? AND session_id = ? ORDER BY seq ${history === "tail" ? "DESC LIMIT 1" : "ASC"}`)
+      FROM ${table} WHERE project_group_id = ? AND session_id = ? ORDER BY seq ${history === "tail" ? "DESC LIMIT 1" : "ASC"}`)
       .all(projectGroupId, sessionId) as Array<Record<string, unknown>>
   } catch (error) {
     throw new Error(`无法读取 Session Event Log：${path}`, { cause: error })
@@ -294,10 +303,13 @@ function readSessionEvents(
  * @param projectGroupId Project/default 分组 ID。
  * @param events 已分配身份的事件。
  * @param path 错误定位用的数据库路径。
+ * @param table 当前角色对应的独立事件表。
  * @throws Error 当序列化或插入失败时抛出。
  */
-function insertEvents(db: DatabaseSync, projectGroupId: string, events: readonly SessionEvent[], path: string): void {
-  const insert = db.prepare(`INSERT INTO session_events
+function insertEvents(db: DatabaseSync, projectGroupId: string, events: readonly SessionEvent[], path: string,
+  table: "session_events" | "team_session_events",
+): void {
+  const insert = db.prepare(`INSERT INTO ${table}
     (project_group_id, session_id, seq, event_id, type, created_at, event_json)
     VALUES (?, ?, ?, ?, ?, ?, ?)`)
   for (const event of events) {

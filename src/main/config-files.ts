@@ -228,7 +228,7 @@ export async function initializeConfigFilesSnapshot(
   ]
   await Promise.all(sources.map(({ directory }) => initializeSkillSource(directory)))
   await Promise.all(sources.map(({ directory, scope }) => synchronizeSkillSource(directory, scope)))
-  await initializeSessionEventDatabase(join(rootDir, "events.sqlite"))
+  await initializeSessionEventDatabase(join(rootDir, "events.sqlite"), true)
   initializeSessionMetaDatabase(metaDatabasePath)
 
   return {

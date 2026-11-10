@@ -23,6 +23,8 @@ import type { ModelAdapter, ModelRef } from "../../runtime/model/src/types.ts"
 import type { SessionEvent } from "../../runtime/session/src/events.ts"
 import type { CurrentSessionBaseline } from "../../runtime/session/src/session-state.ts"
 import { INITIAL_SESSION_NAME, initializeSessionMetaDatabase, readSessionMeta } from "../../runtime/session/src/meta-store.ts"
+import { initializeSessionEventDatabase } from "../../runtime/session/src/event-log.ts"
+import { START_TEAM_SESSION_CHANNEL, TEAM_WAKEUP_CHANNELS } from "../../src/main/session-ipc.ts"
 import { initializeWorkspaceDatabase, readDefaultWorkspace, readProjectWorkspace, saveProjectWorkspace } from "../../src/main/workspace-store.ts"
 import type { SessionData, SessionUpdate } from "../../src/preload/session-api.ts"
 import {
@@ -153,6 +155,7 @@ async function withTempProfile(test: (profile: string) => Promise<void>): Promis
   try {
     await mkdir(join(profile, ".nicode"))
     initializeSessionMetaDatabase(join(profile, ".nicode", "meta.sqlite"))
+    await initializeSessionEventDatabase(join(profile, ".nicode", "events.sqlite"), true)
     const workspacePath = join(profile, ".nicode", "workspace.sqlite")
     initializeWorkspaceDatabase(workspacePath)
     for (const id of [PROJECT_ID, "00000000-0000-4000-8000-000000000018"]) {
@@ -257,6 +260,8 @@ async function testRegistersIpcAndWindowLifecycle(): Promise<void> {
     assert.equal(skillReads, 0, "注册 Skill IPC 不主动读取列表")
     assert.deepEqual([...fixture.ipcMain.handlers.keys()], [
       SESSION_IPC_CHANNELS.startNewSession,
+      START_TEAM_SESSION_CHANNEL,
+      ...Object.values(TEAM_WAKEUP_CHANNELS),
       SESSION_IPC_CHANNELS.continueSession,
       SESSION_IPC_CHANNELS.enqueueSessionMessage,
       SESSION_IPC_CHANNELS.stopSession,

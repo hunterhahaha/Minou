@@ -14,6 +14,7 @@ import { resolveProjectContext } from "./project-context.ts"
 import { estimateLocalTokens } from "./token-estimator.ts"
 import { loadFileAccessState } from "./file-access.ts"
 import { readProjectWorkspace } from "./workspace-store.ts"
+import { registerTeamTools } from "../../runtime/tools/src/team/index.ts"
 
 /**
  * 持有应用启动时确定的配置路径、工具注册表和共享进程路由。
@@ -62,7 +63,22 @@ export class SessionRuntimeGlobal {
     registerTerminalTools(toolRegistry, renderRegistry, this.terminalRouter, loadProcessAccess)
     registerMCPTools(toolRegistry, renderRegistry, this.mcpManager)
     registerSkillTools(toolRegistry, renderRegistry, this.skillManager)
+    registerTeamTools(toolRegistry, renderRegistry)
     this.toolExecutor = createExecuteToolCall(toolRegistry, renderRegistry)
+  }
+
+  /**
+   * 关闭永久退出协作的 Team Session 所持有的活动终端。
+   * @param projectId 当前成员所属 Project。
+   * @param sessionId 已提交关闭状态的成员 ID。
+   * @returns 所有活动终端已完成清理后解析。
+   * @throws AggregateError 当某个终端无法清理时抛出。
+   */
+  async closeSessionTerminals(projectId: string, sessionId: string): Promise<void> {
+    const results = await Promise.allSettled(this.terminalRouter.list(projectId, sessionId)
+      .map(({ id }) => this.terminalRouter.close(projectId, sessionId, id)))
+    const failures = results.flatMap((result) => result.status === "rejected" ? [result.reason] : [])
+    if (failures.length) throw new AggregateError(failures, "Team Session 终端清理失败")
   }
 
   /**

@@ -25,6 +25,7 @@ import type {
 } from "./session-ipc.ts"
 import type { SessionUpdate } from "../preload/session-api.ts"
 import type { ElectronTray } from "./electron-tray.ts"
+import { MEMBER_PROMPT, ROUTER_PROMPT, TeamMode } from "./team-mode.ts"
 
 /** Electron 主进程启动装配使用的应用生命周期事件。 */
 export type ElectronAppLifecycleEvent = "activate" | "window-all-closed" | "before-quit"
@@ -110,6 +111,9 @@ export interface ElectronStartupOptions {
  */
 export async function startElectronApp(options: ElectronStartupOptions): Promise<void> {
   const sessionsDirectory = join(options.configPaths.rootDir, "sessions")
+  const eventsPath = join(options.configPaths.rootDir, "events.sqlite")
+  const team = new TeamMode(eventsPath, options.onSessionCompletionFailure,
+    (projectId, sessionId) => options.sessionRuntime.global.closeSessionTerminals(projectId, sessionId))
   let processesDisposed = false
   let disposingProcesses = false
   let started = false
@@ -121,20 +125,23 @@ export async function startElectronApp(options: ElectronStartupOptions): Promise
    * @param sessionId 要绑定的 Session 身份。
    * @returns 使用 `sessions/<project-id>/<session-id>` 目录的 Runtime。
    */
-  const createRuntime: CreateSessionRuntime = (projectId, sessionId, onStateChanged) => {
+  const createRuntime: CreateSessionRuntime = (projectId, sessionId, onStateChanged, pendingTeam) => {
+    const identity = pendingTeam ?? team.store.identity(projectId, sessionId)
     return new SessionRuntime({
       sessionId,
       sessionDirectory: join(sessionsDirectory, String(projectId), sessionId),
       projectGroupId: String(projectId),
-      databasePath: join(options.configPaths.rootDir, "events.sqlite"),
-      metaDatabasePath: options.configPaths.metaDatabasePath,
-      systemPrompt: options.sessionRuntime.systemPrompt,
+      databasePath: eventsPath,
+      metaDatabasePath: identity?.role === "member" ? eventsPath : options.configPaths.metaDatabasePath,
+      systemPrompt: identity ? `${options.sessionRuntime.systemPrompt}\n\n${identity.role === "router" ? ROUTER_PROMPT : MEMBER_PROMPT}`
+        : options.sessionRuntime.systemPrompt,
       global: options.sessionRuntime.global,
       onStateChanged,
+      ...(identity && { team: team.runtime(identity) }),
     })
   }
 
-  registerSessionIpcHandlers(
+  const sessionDispatch = registerSessionIpcHandlers(
     options.ipcMain,
     createRuntime,
     options.onSessionCompletionFailure,
@@ -142,7 +149,9 @@ export async function startElectronApp(options: ElectronStartupOptions): Promise
       sendSessionUpdateToRenderer: (update) => options.windows.sendSessionUpdate?.(update),
     },
     options.configPaths,
+    team,
   )
+  team.connect(sessionDispatch)
   registerStartupDataIpcHandlers(options.ipcMain, options.configPaths)
   registerModelIpcHandlers(options.ipcMain, options.configPaths)
   registerWebSearchIpcHandlers(options.ipcMain, options.configPaths)
@@ -155,8 +164,12 @@ export async function startElectronApp(options: ElectronStartupOptions): Promise
     event?.preventDefault()
     if (disposingProcesses) return
     disposingProcesses = true
+    team.shutdown()
     void Promise.all([
       options.tray?.beginQuit(),
+      sessionDispatch.shutdown().catch((error: unknown) => {
+        options.onSessionCompletionFailure({ sessionId: "application", turn: 0, error })
+      }),
       options.sessionRuntime.global.disposeProcessTools().catch((error: unknown) => {
         options.onSessionCompletionFailure({ sessionId: "application", turn: 0, error })
       }),
@@ -185,6 +198,7 @@ export async function startElectronApp(options: ElectronStartupOptions): Promise
   options.tray?.start()
   options.windows.createMainWindow()
   started = true
+  sessionDispatch.restore()
 }
 
 export { initializeConfigFiles } from "./config-files.ts"

@@ -29,6 +29,8 @@ export const BUILTIN_TOOL_NAMES = [
   "tool_search",
   "web_search",
   "web_fetch",
+  "communication",
+  "blackboard",
 ] as const
 
 /** NiCode 自带工具的稳定名称。 */

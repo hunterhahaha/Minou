@@ -25,14 +25,18 @@ const CREATE_META_TABLE = `CREATE TABLE session_meta (
   usage_json TEXT NOT NULL,
   skills_json TEXT NOT NULL,
   additional_meta_json TEXT NOT NULL,
+  kind TEXT NOT NULL DEFAULT 'ordinary' CHECK(kind IN ('ordinary', 'router', 'member')),
   PRIMARY KEY (project_id, session_id)
 ) STRICT`
 
+/** Team Session Meta 表与普通会话使用相同字段和独立身份空间。 */
+export const TEAM_META_SCHEMA = CREATE_META_TABLE.replace("CREATE TABLE session_meta", "CREATE TABLE IF NOT EXISTS team_session_meta")
+
 const META_COLUMNS = [
   "project_id", "session_id", "name", "version", "current_model_json",
-  "sandbox_mode_json", "usage_json", "skills_json", "additional_meta_json",
+  "sandbox_mode_json", "usage_json", "skills_json", "additional_meta_json", "kind",
 ] as const
-const META_TYPES = ["TEXT", "TEXT", "TEXT", "INTEGER", "TEXT", "TEXT", "TEXT", "TEXT", "TEXT"] as const
+const META_TYPES = ["TEXT", "TEXT", "TEXT", "INTEGER", "TEXT", "TEXT", "TEXT", "TEXT", "TEXT", "TEXT"] as const
 
 /** 一条数据库记录的原始列值；JSON 列尚未解析。 */
 interface MetaRow {
@@ -87,7 +91,7 @@ export function initializeSessionMetaDatabase(databasePath: string): void {
     const db = new DatabaseSync(path)
     try {
       db.exec(CREATE_META_TABLE)
-      db.exec("PRAGMA user_version = 1")
+      db.exec("PRAGMA user_version = 2")
     } finally {
       db.close()
     }
@@ -95,7 +99,7 @@ export function initializeSessionMetaDatabase(databasePath: string): void {
   }
   withDatabase(path, true, (db) => {
     const version = db.prepare("PRAGMA user_version").get() as { user_version: number }
-    if (version.user_version !== 1) throw new Error(`Session Meta 数据库版本无效：${path}`)
+    if (version.user_version !== 2) throw new Error(`Session Meta 数据库版本无效：${path}`)
     const columns = db.prepare("PRAGMA table_info(session_meta)").all() as Array<{
       name: string; type: string; notnull: number; pk: number
     }>
@@ -118,14 +122,15 @@ export function initializeSessionMetaDatabase(databasePath: string): void {
  * @param databasePath 共享 Meta 数据库路径。
  * @param projectId Project UUID 或 default。
  * @param sessionId Session ID。
+ * @param team 是否读取独立的 Team Session Meta 表。
  * @returns 由各列合成的未校验 Meta，或 undefined。
  * @throws Error 当数据库本身不可读取时抛出。
  */
-export function readSessionMeta(databasePath: string, projectId: string, sessionId: string): unknown | undefined {
+export function readSessionMeta(databasePath: string, projectId: string, sessionId: string, team = false): unknown | undefined {
   requireProjectId(projectId)
   requireMetaSessionId(sessionId)
   return withDatabase(databasePath, true, (db) => {
-    const row = db.prepare(`SELECT ${META_COLUMNS.join(", ")} FROM session_meta
+    const row = db.prepare(`SELECT ${META_COLUMNS.join(", ")} FROM ${team ? "team_session_meta" : "session_meta"}
       WHERE project_id = ? AND session_id = ?`).get(projectId, sessionId) as MetaRow | undefined
     if (row === undefined) return undefined
     try {
@@ -153,17 +158,18 @@ export function readSessionMeta(databasePath: string, projectId: string, session
  * 原子保存 Meta 的结构字段；冲突更新不触及名称列。
  * @param databasePath 共享 Meta 数据库路径。
  * @param meta 已通过 SessionState 校验的完整 Meta。
+ * @param kind 决定 Meta 写入的表与新增记录的类型。
  * @throws Error 当身份无效或数据库写入失败时抛出。
  */
-export function saveSessionMeta(databasePath: string, meta: SessionMeta): void {
+export function saveSessionMeta(databasePath: string, meta: SessionMeta, kind: "ordinary" | "router" | "member" = "ordinary"): void {
   requireProjectId(meta.projectId)
   requireMetaSessionId(meta.sessionId)
   const { projectId, sessionId, name, version, currentModel, sandboxMode, usage, skills, ...additional } = meta
   withDatabase(databasePath, false, (db) => {
-    db.prepare(`INSERT INTO session_meta
+    db.prepare(`INSERT INTO ${kind === "member" ? "team_session_meta" : "session_meta"}
       (project_id, session_id, name, version, current_model_json, sandbox_mode_json,
-       usage_json, skills_json, additional_meta_json)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+       usage_json, skills_json, additional_meta_json, kind)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(project_id, session_id) DO UPDATE SET
         version = excluded.version,
         current_model_json = excluded.current_model_json,
@@ -172,7 +178,7 @@ export function saveSessionMeta(databasePath: string, meta: SessionMeta): void {
         skills_json = excluded.skills_json,
         additional_meta_json = excluded.additional_meta_json`)
       .run(projectId, sessionId, name, version, JSON.stringify(currentModel),
-        JSON.stringify(sandboxMode), JSON.stringify(usage), JSON.stringify(skills), JSON.stringify(additional))
+        JSON.stringify(sandboxMode), JSON.stringify(usage), JSON.stringify(skills), JSON.stringify(additional), kind)
   })
 }
 
@@ -182,14 +188,15 @@ export function saveSessionMeta(databasePath: string, meta: SessionMeta): void {
  * @param projectId Project UUID 或 default。
  * @param sessionId Session ID。
  * @param name 新名称；保留调用方提供的非空原文。
+ * @param team 是否更新独立的 Team Session Meta 表。
  * @throws Error 当身份、名称无效，记录不存在或数据库写入失败时抛出。
  */
-export function updateSessionMetaName(databasePath: string, projectId: string, sessionId: string, name: string): void {
+export function updateSessionMetaName(databasePath: string, projectId: string, sessionId: string, name: string, team = false): void {
   requireProjectId(projectId)
   requireMetaSessionId(sessionId)
   if (typeof name !== "string" || name.trim() === "") throw new TypeError("Session 名称不能为空")
   withDatabase(databasePath, false, (db) => {
-    const result = db.prepare(`UPDATE session_meta SET name = ? WHERE project_id = ? AND session_id = ?`)
+    const result = db.prepare(`UPDATE ${team ? "team_session_meta" : "session_meta"} SET name = ? WHERE project_id = ? AND session_id = ?`)
       .run(name, projectId, sessionId)
     if (result.changes === 0) throw new Error(`Session Meta 不存在：${projectId}/${sessionId}`)
   })

@@ -11,6 +11,7 @@ import type { ApprovalDecision } from "../../session/src/events.ts"
 import type { TurnFileChangeTracker } from "../../session/src/file-changes.ts"
 import type { SessionLoadedMCPTool } from "../../mcp/src/types.ts"
 import type { SandboxMode } from "../../session/src/session-state.ts"
+import type { BlackboardInput, CommunicationInput, TeamToolOutput } from "./team/types.ts"
 
 /**
  * AgentLoop 交给统一工具执行入口的调用身份。
@@ -18,6 +19,12 @@ import type { SandboxMode } from "../../session/src/session-state.ts"
  * 这些字段由 Runtime 产生，不来自模型参数；Session 专属资源由调用方通过闭包提供。
  */
 export interface ToolCallContext {
+  /** 仅 Team Runtime 注入的协作权限与操作。 */
+  teamRuntime?: {
+    role: "router" | "member"
+    communicate(input: CommunicationInput, signal: AbortSignal): Promise<TeamToolOutput>
+    blackboard(input: BlackboardInput): TeamToolOutput
+  }
   /** SessionRuntime 注入的 Project/default 身份；记忆工具要求此字段，模型不可指定。 */
   projectId?: string
   /** 当前工具调用所属的 Turn 编号。 */

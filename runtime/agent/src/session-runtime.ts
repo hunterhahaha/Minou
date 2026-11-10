@@ -14,6 +14,7 @@ import { randomUUID } from "node:crypto"
 import { mkdir } from "node:fs/promises"
 import { isAbsolute, join, resolve } from "node:path"
 import { isDeepStrictEqual } from "node:util"
+import type { DatabaseSync } from "node:sqlite"
 import { compressContext, summaryThreshold } from "../../context/src/index.ts"
 import { generateSessionTitle } from "./session-title.ts"
 import { createAbortError } from "../../error/src/abort.ts"
@@ -47,6 +48,8 @@ import type {
 } from "../../session/src/events.ts"
 import { createFileSessionEventLog } from "../../session/src/event-log.ts"
 import type { FileSessionEventLog } from "../../session/src/event-log.ts"
+import { SessionMessageQueue, type QueuedMessage } from "../../session/src/message-queue.ts"
+import type { TeamIdentity } from "../../session/src/team-store.ts"
 import { skillSourceKey } from "../../skill/src/context.ts"
 import { createFileSessionState, isLoadedMCPTools, isUnifiedToolDefinition, validateCurrentBaseline } from "../../session/src/session-state.ts"
 import { TurnFileChangeTracker } from "../../session/src/file-changes.ts"
@@ -58,7 +61,8 @@ import type {
   SandboxMode,
   SessionSettingsPatch,
 } from "../../session/src/session-state.ts"
-import type { ToolExecutionContext, ToolResult } from "../../tools/src/types.ts"
+import type { ToolCallContext, ToolExecutionContext, ToolResult } from "../../tools/src/types.ts"
+import { communicationDefinition, teamAllowsTool } from "../../tools/src/team/index.ts"
 import { foldHistoryTools, historyMessages } from "../../model/src/shared.ts"
 import { mcpToolChanges, modelHistory } from "./model-history.ts"
 import { runAgentLoop } from "./loop.ts"
@@ -67,6 +71,8 @@ import type { SessionRuntimeGlobal } from "../../../src/main/session-runtime-glo
 
 /** 单个 SessionRuntime 的身份、存储位置和全局能力。 */
 export interface SessionRuntimeOptions {
+  /** 桌面宿主提供的持久化 Team 身份及协作工具端口。 */
+  team?: TeamRuntimeOptions
   /** 当前实例绑定的唯一 Session ID。 */
   sessionId: string
   /** 当前 Session 的绝对目录。 */
@@ -93,6 +99,18 @@ export interface SessionRuntimeOptions {
   createEventId?: () => string
   /** Queue、停止和关闭变化时通知宿主；回调不得抛出或等待模型执行。 */
   onStateChanged?: () => void
+}
+
+/** 当前活动实例与 Team 调度器共享的会话级端口。 */
+export interface TeamRuntimeOptions {
+  identity: TeamIdentity
+  /** 使用当前 Runtime 的模型和权限创建成员，协作授权不经工具审批。 */
+  tools(readSettings: FileSessionState["readSettings"]): NonNullable<ToolCallContext["teamRuntime"]>
+}
+
+/** SessionRuntime 组装 Loop 请求时使用的附加工具策略。 */
+type SessionLoopOptions = Omit<AgentLoopOptions, "turn" | "model" | "content"> & {
+  finalOnly?(): boolean
 }
 
 /**
@@ -267,7 +285,7 @@ export interface EnqueuedSessionMessageResponse {
   sessionId: string
   /** 随后写入 user/message.message.id 的稳定消息身份。 */
   messageId: string
-  /** 已复制并加入后端内存队列的消息内容。 */
+  /** 已持久化到后端队列的消息内容副本。 */
   content: ModelTextBlock[]
 }
 
@@ -315,7 +333,7 @@ export interface PendingSessionMessage extends EnqueueSessionMessageInput {
   status: "queued" | "starting"
 }
 
-/** 宿主查询使用的快照；事件事实与内存活动状态分开保存。 */
+/** 宿主查询使用的快照，汇集持久事件、持久队列和运行状态。 */
 export interface SessionRuntimeSnapshot {
   /** 查询时已经提交的事件。 */
   events: SessionEvent[]
@@ -329,7 +347,7 @@ export interface SessionRuntimeSnapshot {
   throughSeq: number
   /** 尚未提交的 Queue 消息。 */
   pendingMessages: PendingSessionMessage[]
-  /** 关闭时丢弃的消息，仅在本实例内存中保留。 */
+  /** 会话 IPC 保留的字段，持久队列下始终为空。 */
   discardedMessages: PendingSessionMessage[]
 }
 
@@ -375,6 +393,7 @@ export interface SessionRepairPorts {
  * 消息进入当前实例的 FIFO 队列；消费循环在每个 Turn 完整结束后才会启动下一条消息。
  */
 export class SessionRuntime implements SessionRepairPorts {
+  private readonly team?: TeamRuntimeOptions
   /** 当前实例唯一绑定的 Session ID。 */
   readonly sessionId: string
   /** 当前活动期已经持久化的 Session 事件流。 */
@@ -392,13 +411,13 @@ export class SessionRuntime implements SessionRepairPorts {
   /** 活动期共用的取消控制器，停止后不为后续 Turn 重置。 */
   private readonly abortController = new AbortController()
   private readonly eventStream = new SessionEventStream()
-  /** 尚未提交新 Turn 的 FIFO 消息队列，仅保存在当前实例内存中。 */
-  private readonly pendingMessages: PendingSessionMessage[] = []
-  /** 已离开队列但首批事件尚未提交的消息，供快照和关闭时保留其状态。 */
-  private startingMessage: PendingSessionMessage | undefined
-  /** 关闭时丢弃的未提交消息快照，不写入 Event Log。 */
-  private discardedMessages: PendingSessionMessage[] = []
-  /** 新 Session 首轮的派生状态与设置初始化任务，设置更新需等待它完成。 */
+  /** 尚未提交新 Turn 的持久 FIFO 队列。 */
+  private readonly messageQueue: SessionMessageQueue
+  /** 正在准备 Turn、尚未出队的队首 ID，用于快照。 */
+  private startingMessageId: string | undefined
+  /** 宿主退出或成员永久关闭时的取消无需另设队列暂停。 */
+  private exiting = false
+  /** 首轮初始化或队首恢复任务，快照和设置更新在任务完成后读取。 */
   private initialization: Promise<void> | undefined
   /** 已发布事件的最后序号，供宿主合并事件流和快照。 */
   private lastCommittedSeq = 0
@@ -440,6 +459,8 @@ export class SessionRuntime implements SessionRepairPorts {
     this.systemPrompt = options.systemPrompt
     this.global = options.global
     this.onStateChanged = options.onStateChanged
+    this.team = options.team
+    this.messageQueue = new SessionMessageQueue(options.databasePath, this.projectGroupId, this.sessionId)
     this.projectContext = this.global.resolveProjectContext(options.projectGroupId)
     this.events = this.eventStream
     this.eventLog = createFileSessionEventLog({
@@ -447,6 +468,8 @@ export class SessionRuntime implements SessionRepairPorts {
       sessionDirectory: this.sessionDirectory,
       projectGroupId: this.projectGroupId,
       databasePath: options.databasePath,
+      team: this.team?.identity.role === "member",
+      desktop: true,
       now: options.now,
       createEventId: options.createEventId,
     })
@@ -456,6 +479,7 @@ export class SessionRuntime implements SessionRepairPorts {
       sessionDirectory: this.sessionDirectory,
       databasePath: options.databasePath,
       metaDatabasePath: options.metaDatabasePath,
+      team: this.team?.identity,
       readEvents: () => this.eventLog.readEvents(),
       resolveCurrentBaseline: () => this.resolveTurnBaseline(),
       estimateSkillTokens: (description) => this.global.estimateSkillTokens(description),
@@ -485,18 +509,22 @@ export class SessionRuntime implements SessionRepairPorts {
   /**
    * 原子提交新 Turn 的首批事件，并在成功后依次发布。
    * @param events 顺序固定的 turn/start 与 user/message。
+   * @param queuedMessageId 在同一事务移除的持久队首 ID。
+   * @param onCommit 提交前执行的 Team 初始化。
    * @returns 已持久化的两条事件。
    * @throws Error 持久化失败或实例已关闭。
    */
   async appendTurnStartAndUserMessage(
     events: readonly [TurnStartEventInput, UserMessageEventInput],
+    queuedMessageId?: string,
+    onCommit?: (db: DatabaseSync) => void,
   ): Promise<readonly [TurnStartEvent, UserMessageEvent]> {
     this.assertOpen()
-    const written = await this.eventLog.appendTurnStartAndUserMessage(events)
+    const written = await this.eventLog.appendTurnStartAndUserMessage(events, queuedMessageId, onCommit)
     this.activeTurn = written[0].turn
     this.publishPersistedEvent(written[0], "turn/start")
     this.publishPersistedEvent(written[1], "user/message")
-    this.startingMessage = undefined
+    this.startingMessageId = undefined
     this.onStateChanged?.()
     return written
   }
@@ -506,8 +534,9 @@ export class SessionRuntime implements SessionRepairPorts {
    * @returns 当前日志事件。
    * @throws Error 日志不可读或实例已关闭。
    */
-  readEvents(): Promise<readonly unknown[]> {
+  async readEvents(): Promise<readonly unknown[]> {
     this.assertOpen()
+    if (this.team?.identity.role === "member") await mkdir(this.sessionDirectory, { recursive: true })
     return this.eventLog.readEvents()
   }
 
@@ -538,9 +567,9 @@ export class SessionRuntime implements SessionRepairPorts {
    * @throws SessionLogCorruptedError 日志不一致时抛出。
    * @throws Error 实例已关闭，或日志读取、派生状态修复及恢复事件补写失败时传播。
    */
-  repairSession(): Promise<{ lastTurn: number }> {
+  async repairSession(): Promise<{ lastTurn: number }> {
     this.assertOpen()
-    return repairSession(this.sessionId, this)
+    return repairSession(this.sessionId, this, this.team?.identity.role === "member")
   }
 
   /**
@@ -585,7 +614,7 @@ export class SessionRuntime implements SessionRepairPorts {
   private async buildHistory(turn: number): Promise<ModelHistory> {
     this.assertOpen()
     const baseline = await this.resolveTurnBaseline()
-    const events = validateEventLog(this.sessionId, await this.eventLog.readEvents())
+    const events = validateEventLog(this.sessionId, await this.eventLog.readEvents(), this.team?.identity.role === "member")
     const lifecycle = validateLifecycle(this.sessionId, events)
     validateBlockStreams(this.sessionId, events)
     validateSummaries(this.sessionId, events)
@@ -629,18 +658,22 @@ export class SessionRuntime implements SessionRepairPorts {
    */
   async readSnapshot(): Promise<SessionRuntimeSnapshot> {
     await this.initialization?.catch(() => {})
+    if (this.team?.identity.role === "member") {
+      await mkdir(this.sessionDirectory, { recursive: true })
+      await this.sessionState.initializeSession()
+    }
     const settings = await this.sessionState.readSettings()
-    const events = validateEventLog(this.sessionId, await this.eventLog.readEvents())
+    const events = validateEventLog(this.sessionId, await this.eventLog.readEvents(), this.team?.identity.role === "member")
     return {
       events: structuredClone(events), settings,
       phase: this.closed || (!this.processing && this.activeTurn === undefined)
         ? "idle" : this.abortController.signal.aborted ? "stopping" : "running",
       currentTurn: this.closed ? undefined : this.activeTurn,
       throughSeq: Math.max(this.lastCommittedSeq, events.at(-1)?.seq ?? 0),
-      pendingMessages: structuredClone([
-        ...(this.startingMessage === undefined ? [] : [this.startingMessage]), ...this.pendingMessages,
-      ]),
-      discardedMessages: structuredClone(this.discardedMessages),
+      pendingMessages: this.messageQueue.read().map(({ origin: _origin, ...message }) => ({
+        ...message, status: message.messageId === this.startingMessageId ? "starting" : "queued",
+      })),
+      discardedMessages: [],
     }
   }
 
@@ -665,14 +698,24 @@ export class SessionRuntime implements SessionRepairPorts {
    */
   async createLoopOptions(
     model: ModelRef,
-  ): Promise<Omit<AgentLoopOptions, "turn" | "model" | "content">> {
+  ): Promise<SessionLoopOptions> {
     this.assertOpen()
     const adapter = await this.global.createTurnModelAdapter(structuredClone(model))
     let synchronizationFailure: { error: unknown } | undefined
+    let finalOnly = false
+    const team = this.team?.tools(() => this.sessionState.readSettings())
+    const definitions = this.global.listToolDefinitions()
+      .filter(({ name }) => teamAllowsTool(name, team?.role))
+      .map((definition) => definition.name === "communication" && team ? communicationDefinition(team.role) : definition)
     return {
       adapter,
-      tools: this.global.listToolDefinitions(),
+      tools: team ? () => Promise.resolve(finalOnly ? [] : definitions) : definitions,
+      ...(team && { finalOnly: () => finalOnly }),
       executeTool: async (name, args, context) => {
+        if (!context.signal.aborted && (finalOnly || !teamAllowsTool(name, team?.role))) {
+          const error: AppError = { source: "tool", code: "TEAM_TOOL_FORBIDDEN", message: "当前会话角色或任务状态不能执行此工具" }
+          return { status: "error", error, content: [{ type: "text", text: error.message }] }
+        }
         if (synchronizationFailure) {
           const error: AppError = { source: "storage", code: "MCP_META_SYNC_FAILED", message: "MCP 状态同步失败，工具未执行。" }
           return { status: "error", error, content: [{ type: "text", text: error.message }] }
@@ -680,6 +723,14 @@ export class SessionRuntime implements SessionRepairPorts {
         return this.global.executeTool(name, args, {
           ...context,
           projectId: this.projectGroupId,
+          ...(team && { teamRuntime: {
+            ...team,
+            communicate: async (input: Parameters<typeof team.communicate>[0]) => {
+              const result = await team.communicate(input, context.signal)
+              if (input.event === "report_completion" || input.event === "request_authorization") finalOnly = true
+              return result
+            },
+          } }),
           mcpRuntime: {
             projectId: this.projectGroupId,
             sessionId: this.sessionId,
@@ -838,21 +889,18 @@ export class SessionRuntime implements SessionRepairPorts {
    * 把运行中的新用户消息复制后加入当前 Session 的 FIFO 队列。
    *
    * @param input 用户文本内容；队列不保存模型或 Turn。
+   * @param resume 用户主动发起新一轮时是否恢复暂停的队列。
    * @returns Renderer 可保存到内存队列的确认数据。
    * @throws Error 当前实例已经关闭或正在停止时抛出。
    */
-  enqueueSessionMessage(input: EnqueueSessionMessageInput): EnqueuedSessionMessageResponse {
+  enqueueSessionMessage(input: EnqueueSessionMessageInput, resume = false): EnqueuedSessionMessageResponse {
     this.assertOpen()
     if (this.abortController.signal.aborted) {
       throw new Error(`Session 正在停止，不能追加消息：${this.sessionId}`)
     }
-    const queued: PendingSessionMessage = {
-      messageId: randomUUID(), content: cloneMessageContent(input.content), status: "queued",
-      ...(input.fileReferences && { fileReferences: structuredClone(input.fileReferences) }),
-    }
-    this.pendingMessages.push(queued)
+    const messageId = this.messageQueue.enqueue(input, resume)
     this.onStateChanged?.()
-    return { sessionId: this.sessionId, messageId: queued.messageId, content: cloneMessageContent(queued.content) }
+    return { sessionId: this.sessionId, messageId, content: cloneMessageContent(input.content) }
   }
 
   /**
@@ -870,7 +918,7 @@ export class SessionRuntime implements SessionRepairPorts {
     if (this.processing) {
       throw new Error(`Session 消息队列已经在处理：${this.sessionId}`)
     }
-    if (initialTurn === undefined && this.pendingMessages.length === 0) {
+    if (initialTurn === undefined && this.messageQueue.read(true).length === 0) {
       throw new Error(`Session 消息队列为空，无法启动：${this.sessionId}`)
     }
     if (initialTurn !== undefined && initialTurn.sessionId !== this.sessionId) {
@@ -905,9 +953,16 @@ export class SessionRuntime implements SessionRepairPorts {
    * 同一实例中的所有 Turn / Loop 观察同一个信号；首次调用会使其永久进入
    * aborted 状态，并向此对话全部活动 PTY 发送一次 Ctrl+C；终端状态仍等待后端完成标记。
    * 重复停止或实例已关闭时不产生额外效果。
+   * @param pauseQueue 显式停止时持久暂停；应用退出只取消本轮执行。
    */
-  stop(): void {
-    if (this.closed || this.abortController.signal.aborted) return
+  stop(pauseQueue = true): void {
+    if (this.closed) {
+      if (pauseQueue && this.messageQueue.read(true).length > 0) this.messageQueue.pause()
+      return
+    }
+    if (this.abortController.signal.aborted) return
+    if (pauseQueue) this.messageQueue.pause()
+    else this.exiting = true
     this.abortController.abort()
     const failures = this.global.interruptTerminals(this.projectGroupId, this.sessionId)
     for (const error of failures) console.error("PTY Ctrl+C 发送失败：", error)
@@ -915,17 +970,13 @@ export class SessionRuntime implements SessionRepairPorts {
   }
 
   /**
-   * 关闭当前活动实例，丢弃尚未启动的消息并结束事件流。
+   * 关闭当前活动实例并结束事件流，尚未启动的消息保留在数据库中。
    * 重复关闭不会产生额外效果。
    */
   close(): void {
     if (this.closed) return
     this.closed = true
-    this.discardedMessages = structuredClone([
-      ...(this.startingMessage === undefined ? [] : [this.startingMessage]), ...this.pendingMessages,
-    ])
-    this.startingMessage = undefined
-    this.pendingMessages.length = 0
+    this.startingMessageId = undefined
     this.eventStream.close()
     this.onStateChanged?.()
   }
@@ -947,9 +998,9 @@ export class SessionRuntime implements SessionRepairPorts {
     try {
       while (true) {
         if (current === undefined) {
-          const input = this.pendingMessages.shift()
+          const input = this.messageQueue.read(true)[0]
           if (input === undefined) return
-          this.startingMessage = { ...input, status: "starting" }
+          this.startingMessageId = input.messageId
           this.onStateChanged?.()
           current = await this.continueQueuedSession(input)
           resolveStarted?.(current)
@@ -962,10 +1013,11 @@ export class SessionRuntime implements SessionRepairPorts {
         if (result.stopped || this.abortController.signal.aborted) return
 
         current = undefined
-        if (this.pendingMessages.length === 0) return
       }
     } catch (error) {
       rejectStarted?.(error)
+      if (!this.exiting) this.messageQueue.pause()
+      if (this.abortController.signal.aborted && current === undefined) return
       throw error
     }
   }
@@ -1043,16 +1095,19 @@ export class SessionRuntime implements SessionRepairPorts {
    * 首次提交并启动本 Session 的首个 Turn。
    * @param input 首个用户消息和模型选择。
    * @param onGeneratedTitle 宿主接收有效标题及活动期停止信号的回调；缺省时跳过标题请求。
+   * @param onCommit 与首轮事件共同提交的 Team 身份初始化。
    * @returns 已提交的 Turn 身份、事件流与后台运行任务。
    * @throws Error 目录创建或首批事件提交失败。
    */
   async startNewSession(
     input: StartNewSessionInput,
     onGeneratedTitle?: (title: string, stopSignal: AbortSignal) => Promise<void>,
+    onCommit?: (db: DatabaseSync) => void,
   ): Promise<StartedSessionTurn> {
     const turn = 1
     await this.createSessionDirectory()
-    await this.appendTurnStartAndUserMessage(turnEvents(turn, input.model, input))
+    if (this.abortController.signal.aborted) throw createAbortError()
+    await this.appendTurnStartAndUserMessage(turnEvents(turn, input.model, input), undefined, onCommit)
     const completion = this.runCommittedTurn(turn, async () => {
       this.initialization = (async () => {
         await this.initializeSession()
@@ -1103,13 +1158,16 @@ export class SessionRuntime implements SessionRepairPorts {
    * @returns 已提交并启动的下一 Turn。
    * @throws Error 恢复、准备、Adapter 创建或首批提交失败。
    */
-  private async continueQueuedSession(input: PendingSessionMessage): Promise<StartedSessionTurn> {
-    const state = await this.repairSession()
-    await this.prepareExistingTurn()
+  private async continueQueuedSession(input: QueuedMessage): Promise<StartedSessionTurn> {
+    const repair = this.repairSession()
+    this.initialization = repair.then(() => {}, () => {})
+    const state = await repair
+    if (state.lastTurn > 0) await this.prepareExistingTurn()
     const model = await this.readCurrentModel()
     const loopOptions = await this.createLoopOptions(model)
+    if (this.abortController.signal.aborted) throw createAbortError()
     const turn = state.lastTurn + 1
-    await this.appendTurnStartAndUserMessage(turnEvents(turn, model, input, input.messageId))
+    await this.appendTurnStartAndUserMessage(turnEvents(turn, model, input, input.messageId), input.messageId)
     return {
       sessionId: this.sessionId,
       turn,
@@ -1168,13 +1226,19 @@ export class SessionRuntime implements SessionRepairPorts {
   private async startLoop(
     turn: number,
     model: ModelRef,
-    options: Omit<AgentLoopOptions, "turn" | "model" | "content">,
+    options: SessionLoopOptions,
   ): Promise<AgentLoopResult> {
     let { system } = await this.buildHistory(turn)
     const threshold = summaryThreshold(options.adapter.contextWindow, options.adapter.maxOutputTokens)
     return runAgentLoop({
       ...options, turn, model, content: [],
-      prepareHistory: async () => modelHistory(system, validateEventLog(this.sessionId, await this.eventLog.readEvents())),
+      prepareHistory: async () => {
+        const history = modelHistory(system, validateEventLog(this.sessionId, await this.eventLog.readEvents()))
+        if (!options.finalOnly?.() && this.team?.identity.role !== "router") return history
+        return { ...history, mcpBaseline: [], events: history.events.filter(
+          ({ type }) => type !== "mcp/tools_added" && type !== "mcp/tools_removed",
+        ) }
+      },
       /**
        * 检查正常请求的输入量，达到阈值时使用本 Turn Adapter 压缩上下文。
        * 成功提交 summary/end 并修复派生状态后，下一 Step 从已提交摘要重建历史。
@@ -1184,6 +1248,7 @@ export class SessionRuntime implements SessionRepairPorts {
        */
       beforeStep: async (input) => {
         if (options.signal.aborted) throw createAbortError()
+        if (options.finalOnly?.()) return
         if (await this.sessionState.readAgentInputTokens() < threshold) return
         const baseline = structuredClone(await this.projectContext.resolveCurrentBaseline())
         validateCurrentBaseline(baseline)
@@ -1206,7 +1271,7 @@ export class SessionRuntime implements SessionRepairPorts {
         if (throughEventSeq === undefined || fromEventSeq === undefined) throw new Error("Summary 缺少可覆盖的输入事件。")
         const systemMessage = composeSystemMessage(this.systemPrompt, this.projectContext.workspaceInfo, baseline)
         const history = modelHistory(systemMessage, events)
-        baseline.mcp = foldHistoryTools(history.mcpBaseline, history.events)
+        baseline.mcp = this.team?.identity.role === "router" ? [] : foldHistoryTools(history.mcpBaseline, history.events)
         const summaryId = randomUUID()
         await this.appendEvent({ type: "summary/start", turn, summaryId, fromEventSeq, throughEventSeq })
         const result = await compressContext({
@@ -1328,8 +1393,8 @@ class SessionEventStream implements AsyncIterable<SessionEvent> {
 }
 
 /**
- * 复制文本块，隔离调用方与内存队列之间的对象引用。
- * @param content 要保存到内存队列或返回给 Renderer 的文本内容。
+ * 复制文本块，避免向宿主返回调用方提供的对象引用。
+ * @param content 要返回给 Renderer 的文本内容。
  * @returns 顺序一致且每个块均为新对象的文本块数组。
  */
 function cloneMessageContent(content: readonly ModelTextBlock[]): ModelTextBlock[] {
@@ -1364,6 +1429,7 @@ export class SessionLogCorruptedError extends Error {
  *
  * @param sessionId 要读取和修复的 Session ID。
  * @param ports 提供 Event Log 访问、初始化、派生状态修复和事件追加能力的端口。
+ * @param allowEmpty 是否允许尚未开始首轮的 Team Session。
  * @returns 修复前 Event Log 中的最后 Turn 编号，用于分配下一 Turn。
  * @throws Error 日志读取、初始化、派生状态修复或事件补写失败时传播，调用方应中止继续入口。
  * @throws SessionLogCorruptedError 当日志结构、生命周期或恢复关联不一致时抛出。
@@ -1371,8 +1437,13 @@ export class SessionLogCorruptedError extends Error {
 export async function repairSession(
   sessionId: string,
   ports: SessionRepairPorts,
+  allowEmpty = false,
 ): Promise<{ lastTurn: number }> {
-  const events = validateEventLog(sessionId, await ports.readEvents())
+  const events = validateEventLog(sessionId, await ports.readEvents(), allowEmpty)
+  if (events.length === 0) {
+    await ports.initializeSession()
+    return { lastTurn: 0 }
+  }
   const lifecycle = validateLifecycle(sessionId, events)
   validateBlockStreams(sessionId, events)
   validateSummaries(sessionId, events)
@@ -1523,10 +1594,12 @@ type RecoveryToolErrorCode =
  *
  * @param sessionId 期望所有事件所属的 Session ID。
  * @param values 从持久化层读取、尚未信任的事件值。
+ * @param allowEmpty 是否允许尚未开始首轮的 Team Session。
  * @returns 通过基础结构校验并保持原日志顺序的 SessionEvent 数组。
  * @throws SessionLogCorruptedError 当日志为空、事件无效、序号不递增或首批事件不完整时抛出。
  */
-function validateEventLog(sessionId: string, values: readonly unknown[]): SessionEvent[] {
+function validateEventLog(sessionId: string, values: readonly unknown[], allowEmpty = false): SessionEvent[] {
+  if (allowEmpty && values.length === 0) return []
   if (values.length < 2) {
     corrupted(sessionId, "缺少同批提交的首个 turn/start 与 user/message")
   }

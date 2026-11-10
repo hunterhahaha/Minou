@@ -231,7 +231,7 @@ async function main(): Promise<void> {
 
 /**
  * @param profile 临时目录。
- * @returns Stop 丢弃 Queue、传输与索引错误不撤销已提交数据的验证。
+ * @returns Stop 保留 Queue、传输与索引错误不撤销已提交数据的验证。
  */
 async function testStopAndFailures(profile: string): Promise<void> {
   const stopped = await fixture(join(profile, "stop"))
@@ -240,10 +240,11 @@ async function testStopAndFailures(profile: string): Promise<void> {
   const queued = await stopped.ipc.invoke<{ messageId: string }>(channels.enqueueSessionMessage, "default", first.sessionId, { content })
   await stopped.ipc.invoke(channels.stopSession, "default", first.sessionId)
   await until(() => latest(stopped, first.sessionId)?.phase === "idle")
-  assert.deepEqual(latest(stopped, first.sessionId)?.discardedMessages.map((message) => message.messageId), [queued.messageId])
+  assert.deepEqual(latest(stopped, first.sessionId)?.pendingMessages.map((message) => message.messageId), [queued.messageId])
   const stoppedData = await stopped.ipc.invoke<SessionData>(channels.getSessionData, "default", first.sessionId)
   assert.equal(stoppedData.events.filter((event) => event.type === "user/message").length, 1)
-  assert.deepEqual(stoppedData.control.discardedMessages.map((message) => message.messageId), [queued.messageId])
+  assert.deepEqual(stoppedData.control.pendingMessages.map((message) => message.messageId), [queued.messageId])
+  assert.deepEqual(stoppedData.control.discardedMessages, [])
 
   const sending = await fixture(join(profile, "transport"))
   const second = await sending.ipc.invoke<StartedSessionResponse>(channels.startNewSession, "default", { content, model })

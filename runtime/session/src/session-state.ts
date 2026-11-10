@@ -162,6 +162,8 @@ export interface CurrentSessionBaseline {
 
 /** 文件型 SessionState 创建参数。 */
 export interface FileSessionStateOptions {
+  /** Team 身份及重建初始 Meta 所需的可信默认设置。 */
+  team?: { role: "router" | "member"; sandboxMode: SandboxMode; initialModel?: ModelRef }
   /** 当前 Session 所属 Project UUID 或 default。 */
   projectId: ProjectId
   /** 当前 SessionState 唯一绑定的 Session ID。 */
@@ -317,7 +319,7 @@ export function createFileSessionState(options: FileSessionStateOptions): FileSe
   }
   const paths = resolveStatePaths(
     resolve(options.sessionDirectory), resolve(options.databasePath), resolve(options.metaDatabasePath),
-    options.projectId, options.sessionId,
+    options.projectId, options.sessionId, options.team?.role,
   )
   const queue = getSessionStateQueue(paths.sessionDirectory)
 
@@ -330,7 +332,7 @@ export function createFileSessionState(options: FileSessionStateOptions): FileSe
    * @throws Error SQLite 或文件保存失败；重试此流程可幂等完成。
    */
   const saveSkillBaseline = async (meta: SessionMeta, state: SessionContextState, skills: CurrentSessionBaseline["skills"]): Promise<void> => {
-    saveSessionMeta(paths.metaDatabasePath, { ...meta, skills: { id: meta.skills.id, entries: cloneSkillEntries(skills.entries) } })
+    saveSessionMeta(paths.metaDatabasePath, { ...meta, skills: { id: meta.skills.id, entries: cloneSkillEntries(skills.entries) } }, paths.kind)
     await atomicWriteJson(paths.contextStatePath, { ...state, skills: { ...state.skills, content: skills.content } })
   }
 
@@ -344,7 +346,7 @@ export function createFileSessionState(options: FileSessionStateOptions): FileSe
       await requireDirectory(paths.sessionDirectory, "Session 目录")
 
       const [rawMeta, contextState, snapshot] = await Promise.all([
-        Promise.resolve(readSessionMeta(paths.metaDatabasePath, paths.projectId, paths.sessionId)),
+        Promise.resolve(readSessionMeta(paths.metaDatabasePath, paths.projectId, paths.sessionId, paths.kind === "member")),
         readOptionalJson(paths.contextStatePath, isSessionContextState),
         readOptionalTextFile(paths.agentsSnapshotPath),
       ])
@@ -362,7 +364,8 @@ export function createFileSessionState(options: FileSessionStateOptions): FileSe
         ? await options.resolveCurrentBaseline()
         : summary.baseline
       validateCurrentBaseline(baseline)
-      const turnModel = findLastTurnModel(rawEvents, paths.eventsPath)
+      const turnModel = rawEvents.length === 0 && options.team?.initialModel
+        ? options.team.initialModel : findLastTurnModel(rawEvents, paths.eventsPath)
       const latestSkillEventId = summary === undefined ? findLatestSkillEventId(rawEvents)
         : findLatestSkillEventId(rawEvents.filter((event) => isRecord(event) && typeof event.seq === "number" && event.seq > summary.throughEventSeq)) ?? summary.eventId
 
@@ -381,7 +384,7 @@ export function createFileSessionState(options: FileSessionStateOptions): FileSe
           name: INITIAL_SESSION_NAME,
           version: SESSION_META_VERSION,
           currentModel: turnModel,
-          sandboxMode: DEFAULT_SESSION_SANDBOX_MODE,
+          sandboxMode: options.team?.sandboxMode ?? DEFAULT_SESSION_SANDBOX_MODE,
           usage: { ...EMPTY_USAGE },
           skills: {
             id: latestSkillEventId,
@@ -523,7 +526,7 @@ export function createFileSessionState(options: FileSessionStateOptions): FileSe
         }
       }
 
-      if (!isDeepStrictEqual(meta, nextMeta)) saveSessionMeta(paths.metaDatabasePath, nextMeta)
+      if (!isDeepStrictEqual(meta, nextMeta)) saveSessionMeta(paths.metaDatabasePath, nextMeta, paths.kind)
       if (!isDeepStrictEqual(contextState, nextContextState)) {
         await atomicWriteJson(paths.contextStatePath, nextContextState)
       }
@@ -553,7 +556,7 @@ export function createFileSessionState(options: FileSessionStateOptions): FileSe
     synchronizeUsage: () => runSerialized(queue, async () => {
       const usage = rebuildUsage(await options.readEvents() as SessionEvent[])
       const meta = readRequiredMeta(paths)
-      if (!isDeepStrictEqual(meta.usage, usage)) saveSessionMeta(paths.metaDatabasePath, { ...meta, usage })
+      if (!isDeepStrictEqual(meta.usage, usage)) saveSessionMeta(paths.metaDatabasePath, { ...meta, usage }, paths.kind)
     }),
     readSkillBaseline: () => runSerialized(queue, async () => {
       const state = await readRequiredJson(paths.contextStatePath, isSessionContextState, "Session Context State")
@@ -564,7 +567,7 @@ export function createFileSessionState(options: FileSessionStateOptions): FileSe
       const active = new Set(current.filter((entry) => entry.enabled).map(skillSourceKey))
       const meta = readRequiredMeta(paths)
       const entries = meta.skills.entries.map((entry) => ({ ...entry, enabled: active.has(skillSourceKey(entry)) }))
-      if (!isDeepStrictEqual(entries, meta.skills.entries)) saveSessionMeta(paths.metaDatabasePath, { ...meta, skills: { ...meta.skills, entries } })
+      if (!isDeepStrictEqual(entries, meta.skills.entries)) saveSessionMeta(paths.metaDatabasePath, { ...meta, skills: { ...meta.skills, entries } }, paths.kind)
     }),
     reloadSkills: () => runSerialized(queue, async () => {
       const baseline = await options.resolveCurrentBaseline()
@@ -586,7 +589,7 @@ export function createFileSessionState(options: FileSessionStateOptions): FileSe
       await runSerialized(queue, async () => {
         const meta = readRequiredMeta(paths)
         const next = { ...meta, loadedMcpTools: nextTools, loadedMcpToolsSeq: throughSeq ?? meta.loadedMcpToolsSeq }
-        if (!isDeepStrictEqual(meta, next)) saveSessionMeta(paths.metaDatabasePath, next)
+        if (!isDeepStrictEqual(meta, next)) saveSessionMeta(paths.metaDatabasePath, next, paths.kind)
       })
     },
     writeCurrentModel: writeBoundCurrentModel,
@@ -612,10 +615,10 @@ export function createFileSessionState(options: FileSessionStateOptions): FileSe
             ...meta,
             currentModel: update.model ?? meta.currentModel,
             sandboxMode: update.sandboxMode ?? meta.sandboxMode,
-          })
+          }, paths.kind)
         }
         if (update.name !== undefined) {
-          updateSessionMetaName(paths.metaDatabasePath, meta.projectId, meta.sessionId, update.name.trim())
+          updateSessionMetaName(paths.metaDatabasePath, meta.projectId, meta.sessionId, update.name.trim(), paths.kind === "member")
         }
       })
     },
@@ -680,6 +683,8 @@ export async function writeCurrentModel(
 }
 
 interface SessionStatePaths {
+  /** 决定 Meta 所在表与持久化类型。 */
+  kind?: "router" | "member"
   /** 当前 Session 根目录。 */
   sessionDirectory: string
   /** 当前 Session Event Log；仅用于错误定位。 */
@@ -722,11 +727,12 @@ function validateSessionId(sessionId: string): void {
  * @param metaDatabasePath 共享 Meta 数据库的绝对路径。
  * @param projectId 当前分组身份。
  * @param sessionId 当前对话身份。
+ * @param kind Team 角色，普通会话省略。
  * @returns 当前 Session 的全部派生状态路径。
  */
 function resolveStatePaths(
   sessionDirectory: string, databasePath: string, metaDatabasePath: string,
-  projectId: ProjectId, sessionId: string,
+  projectId: ProjectId, sessionId: string, kind?: SessionStatePaths["kind"],
 ): SessionStatePaths {
   return {
     sessionDirectory,
@@ -734,6 +740,7 @@ function resolveStatePaths(
     metaDatabasePath,
     projectId,
     sessionId,
+    kind,
     contextStatePath: join(sessionDirectory, "contextstate.json"),
     agentsSnapshotPath: join(sessionDirectory, "agents_md.snapshot"),
     toolOutputDirectory: join(sessionDirectory, "tool_output"),
@@ -1080,7 +1087,7 @@ async function writeCurrentModelAtPaths(
     saveSessionMeta(paths.metaDatabasePath, {
       ...meta,
       currentModel: nextModel,
-    })
+    }, paths.kind)
   })
 }
 
@@ -1141,7 +1148,7 @@ function isSessionMeta(value: unknown, projectId: ProjectId, sessionId: string):
  * @throws Error 当记录缺失或结构无效时抛出。
  */
 function readRequiredMeta(paths: SessionStatePaths): SessionMeta {
-  const value = readSessionMeta(paths.metaDatabasePath, paths.projectId, paths.sessionId)
+  const value = readSessionMeta(paths.metaDatabasePath, paths.projectId, paths.sessionId, paths.kind === "member")
   if (!isSessionMeta(value, paths.projectId, paths.sessionId)) {
     throw new Error(`Session Meta 缺失或结构无效：${paths.metaDatabasePath}（${paths.projectId}/${paths.sessionId}）`)
   }

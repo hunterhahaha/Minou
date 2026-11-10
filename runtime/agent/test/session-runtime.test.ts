@@ -25,6 +25,7 @@ import {
 } from "../src/session-runtime.ts"
 import type { SessionRepairPorts } from "../src/session-runtime.ts"
 import type { SessionRuntimeGlobal } from "../../../src/main/session-runtime-global.ts"
+import { fakeSessionQueue } from "../../../test/fixtures/session-queue.ts"
 
 const MODEL: ModelRef = { providerId: "provider-1", protocol: "anthropic_messages", modelId: "model-1", name: "claude-test", reasoningLevel: "medium" }
 const OTHER_MODEL: ModelRef = { providerId: "provider-2", protocol: "responses", modelId: "model-2", name: "gpt-test", reasoningLevel: "high" }
@@ -58,6 +59,7 @@ function fixture(
   const seenModels: ModelRef[] = []
   const writtenModels: ModelRef[] = []
   const pendingReadModels: ModelRef[] = []
+  const messageQueue = fakeSessionQueue()
   let diskModel = structuredClone(MODEL)
   const repairPorts: SessionRepairPorts = {
     readEvents: async () => {
@@ -80,6 +82,7 @@ function fixture(
     createSessionDirectory: async () => { calls.push("createDirectory") },
     appendTurnStartAndUserMessage: async (
       inputs: Parameters<SessionRuntime["appendTurnStartAndUserMessage"]>[0],
+      queuedMessageId?: string,
     ) => {
       calls.push("appendBatch")
       batches.push(inputs)
@@ -91,6 +94,7 @@ function fixture(
         throw new Error("unreachable")
       }
       events.push(start, message)
+      messageQueue.consume(queuedMessageId)
       return [start, message]
     },
     prepareExistingTurn: async () => { calls.push("prepare") },
@@ -149,6 +153,7 @@ function fixture(
     global,
   })
   Object.assign(ports, {
+    messageQueue,
     eventLog: {
       readEvents: () => repairPorts.readEvents(),
       appendEvent: (input: SessionEventInput) => repairPorts.appendEvent(input),

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict"
+import { fakeSessionQueue } from "../fixtures/session-queue.ts"
 
 import { createAbortError } from "../../runtime/error/src/abort.ts"
 import { SessionRuntime } from "../../runtime/agent/src/session-runtime.ts"
@@ -105,6 +106,7 @@ function runtimeHarness(options: { blockFirstLoop?: boolean; failInitialization?
 
   const createRuntime = (projectId: string, sessionId: string, onStateChanged?: () => void): SessionRuntime => {
     const events = sessionId === "existing-session" ? completedSessionEvents(sessionId) : []
+    const messageQueue = fakeSessionQueue()
     const batches: RuntimeRecord["batches"] = []
     let diskModel = structuredClone(MODEL)
     let sandboxMode = "sandbox-full-access"
@@ -129,6 +131,7 @@ function runtimeHarness(options: { blockFirstLoop?: boolean; failInitialization?
       createSessionDirectory: async () => {},
       appendTurnStartAndUserMessage: async (
         inputs: Parameters<SessionRuntime["appendTurnStartAndUserMessage"]>[0],
+        queuedMessageId?: string,
       ) => {
         batches.push(inputs)
         const start = persistedEvent(sessionId, events.length + 1, inputs[0])
@@ -139,6 +142,7 @@ function runtimeHarness(options: { blockFirstLoop?: boolean; failInitialization?
           throw new Error("unreachable")
         }
         events.push(start, message)
+        messageQueue.consume(queuedMessageId)
         return [start, message]
       },
       prepareExistingTurn: async () => {},
@@ -195,6 +199,7 @@ function runtimeHarness(options: { blockFirstLoop?: boolean; failInitialization?
       } as unknown as SessionRuntimeGlobal,
     })
     Object.assign(runtime, {
+      messageQueue,
       eventLog: {
         readEvents: () => repairPorts.readEvents(),
         appendEvent: (input: SessionEventInput) => repairPorts.appendEvent(input),
