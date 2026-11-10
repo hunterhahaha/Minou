@@ -12,6 +12,7 @@ const { SessionRuntime } = require("../../dist/runtime/agent/src/session-runtime
 const { SESSION_IPC_CHANNELS: channels, STARTUP_DATA_IPC_CHANNELS } = require("../../dist/src/preload/session-api.js")
 const model = { providerId: "approval-provider", protocol: "responses", modelId: "approval-model", name: "离线审批模型", reasoningLevel: "medium" }
 let window, profile, failed = false, toolCount = 2, failDecision = false, decisionCalls = 0
+let autoReviews = 0
 let holdUpdates = false
 const heldUpdates = []
 const failures = [], rendererErrors = []
@@ -78,6 +79,13 @@ async function main() {
       let requests = 0
       const count = toolCount
       return {  contextWindow: 256000, maxOutputTokens: 32000, stream: async function* (_request, _signal, options) {
+        if (options?.retry === false) {
+          const approved = ++autoReviews === 1
+          yield { type: "block_start", index: 0, blockType: "text" }
+          yield { type: "block_end", index: 0, block: { type: "text", text: JSON.stringify({ riskLevel: "medium", approved }) } }
+          yield { type: "stream_end", completion: "finished" }
+          return
+        }
         if (options?.timeoutMs !== undefined) return
         if (++requests === 1) {
           for (let index = 0; index < count; index++) {
@@ -196,9 +204,44 @@ async function main() {
   assert.equal(decisionCalls, callsBeforeStop, "停止由 Runtime 取消，前端不伪造拒绝")
   assert.equal(await evaluate("document.querySelector('.chat-footer > .chat-error')"), null, "停止流程不产生操作错误")
   await screenshot("electron-approval-result")
+  await evaluate("document.querySelector('.new-chat').click()")
+  await until(() => evaluate("Boolean(document.querySelector('[aria-label=\"权限\"]'))"))
+  await evaluate("document.querySelector('[aria-label=\"权限\"]').click()")
+  await evaluate("[...document.querySelectorAll('.permission-menu button')].find(button => button.textContent === '自动审核').click()")
+  await type("任务描述", "检查自动审核")
+  await until(() => evaluate("document.querySelector('[aria-label=\"发送消息\"]')?.disabled === false"))
+  await evaluate("document.querySelector('[aria-label=\"发送消息\"]').click()")
+  await until(() => autoReviews === 1 && evaluate("document.querySelector('.session-phase')?.textContent === '准备就绪'"))
+  assert.equal(await evaluate("document.querySelector('[aria-label=\"对话权限\"]').value"), "auto")
+  assert.equal(await evaluate("Boolean(document.querySelector('.approval-popover'))"), false)
+  const readSession = () => evaluate("window.nicode.getSessionData('default', document.querySelector('.chat-page').dataset.sessionId)")
+  const approvedData = await readSession()
+  assert.equal(approvedData.events.some(event => event.type.startsWith("approval/")), false)
+  assert.equal(approvedData.events.find(event => event.type === "tool/result").result.status, "success")
+
+  for (const mode of ["sandbox-full-access", "auto"]) {
+    await evaluate(`(() => {
+      const select = document.querySelector('[aria-label="对话权限"]')
+      select.value = ${JSON.stringify(mode)}
+      select.dispatchEvent(new Event("change", { bubbles: true }))
+    })()`)
+    await until(async () => (await readSession()).control?.sandboxMode === mode)
+  }
+  const reloaded = new Promise(done => window.webContents.once("did-finish-load", done))
+  window.webContents.reload()
+  await reloaded
+  await until(() => evaluate("document.querySelector('[aria-label=\"对话权限\"]')?.value === 'auto'"))
+  await type("消息内容", "复核已有会话的自动审核")
+  await until(() => evaluate("document.querySelector('[aria-label=\"发送消息\"]')?.disabled === false"))
+  await evaluate("document.querySelector('[aria-label=\"发送消息\"]').click()")
+  await until(() => autoReviews === 2 && evaluate("document.querySelector('.session-phase')?.textContent === '准备就绪'"))
+  const deniedData = await readSession()
+  assert.equal(deniedData.events.some(event => event.type.startsWith("approval/")), false)
+  assert.equal(deniedData.events.filter(event => event.type === "tool/result").at(-1).result.error.code, "denied")
+  assert.equal(decisionCalls, callsBeforeStop)
   assert.deepEqual(failures, [])
   assert.deepEqual(rendererErrors, [])
-  console.log("electron-approval: 输入框上方定位、单层浮窗、浅深色、窄窗口与长草稿、真实批准/拒绝/取消、顺序审批、防重复提交、失败重试、切换对话及持久化结果通过")
+  console.log("electron-approval: 人工审批浮窗、批准/拒绝/取消及新对话与已有对话的自动审核、权限持久化通过")
 }
 void main().catch(error => { console.error(error); failed = true }).finally(async () => {
   try {

@@ -5,7 +5,7 @@
  * 后启动 Loop，并在 Loop 结束后写入文件变化和 Turn 终态。FIFO 队列只保存消息内容，
  * 下一 Turn 启动时才读取模型选择并创建 Adapter。
  *
- * 每个 Step 前检查压缩阈值，成功提交 Summary 后替换内存上下文；工具审批逐次持久化请求与决定。
+ * 每个 Step 前检查压缩阈值，成功提交 Summary 后替换内存上下文；人工审批逐次持久化请求与决定。
  * 恢复流程先校验日志、生命周期、块流与 Summary，再补齐派生状态、未结束块、Assistant 消息、
  * 审批与工具结果，最后关闭残留的 Step 和 Turn；恢复不会重新执行工具。
  */
@@ -17,12 +17,14 @@ import { isDeepStrictEqual } from "node:util"
 import type { DatabaseSync } from "node:sqlite"
 import { compressContext, summaryThreshold } from "../../context/src/index.ts"
 import { generateSessionTitle } from "./session-title.ts"
+import { reviewToolCall } from "./tool-approval.ts"
 import { createAbortError } from "../../error/src/abort.ts"
 
 import { CANCELLED, normalizeError } from "../../error/src/normalizer.ts"
 import type { AppError } from "../../error/src/types.ts"
 import type {
   ModelHistory,
+  ModelAdapter,
   ModelMessage,
   ModelRef,
   ModelTextBlock,
@@ -711,6 +713,8 @@ export class SessionRuntime implements SessionRepairPorts {
     const definitions = this.global.listToolDefinitions()
       .filter(({ name }) => teamAllowsTool(name, team?.role))
       .map((definition) => definition.name === "communication" && team ? communicationDefinition(team.role) : definition)
+    const requestApproval = (name: string, reason: string, context: ToolExecutionContext<object>) =>
+      this.requestToolApproval(name, reason, context, adapter, model)
     return {
       adapter,
       tools: team ? () => Promise.resolve(finalOnly ? [] : definitions) : definitions,
@@ -753,19 +757,19 @@ export class SessionRuntime implements SessionRepairPorts {
               }
             },
             readSandboxMode: async () => (await this.sessionState.readSettings()).sandboxMode,
-            requestApproval: (toolName, reason, execution) => this.requestToolApproval(toolName, reason, execution),
+            requestApproval,
           },
           fileRuntime: {
             projectId: this.projectGroupId,
             sessionId: this.sessionId,
             tracker: this.trackerFor(context.turn),
-            requestApproval: (toolName, path, execution) => this.requestToolApproval(toolName, `文件路径需要授权：${path}`, execution),
+            requestApproval: (toolName, path, execution) => requestApproval(toolName, `文件路径需要授权：${path}`, execution),
           },
           processRuntime: {
             projectId: this.projectGroupId,
             sessionId: this.sessionId,
             outputDirectory: join(this.sessionDirectory, "tool_output"),
-            requestApproval: (toolName, reason, execution) => this.requestToolApproval(toolName, reason, execution),
+            requestApproval,
           },
         })
       },
@@ -838,17 +842,21 @@ export class SessionRuntime implements SessionRepairPorts {
   }
 
   /**
-   * 顺序写入审批请求、等待外部决定或 Stop，再写入审批结果。
+   * 按顺序等待审批。自动模式请求本轮模型，人工模式持久化请求和决定。
    * @param toolName 待审批工具。
    * @param reason 工具提供的审批说明；文件调用包含已规范化路径。
    * @param context 完整的调用身份与参数。
+   * @param adapter 当前 Turn 固定的模型 Adapter。
+   * @param model 当前 Turn 固定的模型引用。
    * @returns 明确决定或取消。
-   * @throws Error 缺少工具调用事件身份或审批事件保存失败时传播；始终释放审批串行锁。
+   * @throws Error 缺少调用身份、读取设置失败或人工审批事件保存失败时传播，始终释放审批串行锁。
    */
   private async requestToolApproval(
     toolName: string,
     reason: string,
     context: ToolExecutionContext<object>,
+    adapter: ModelAdapter,
+    model: ModelRef,
   ): Promise<ApprovalDecision> {
     const previous = this.approvalTail
     let release!: () => void
@@ -857,6 +865,12 @@ export class SessionRuntime implements SessionRepairPorts {
     try {
       if (context.signal.aborted) return "cancelled"
       if (context.toolCallEventId === undefined) throw new Error("审批缺少工具调用事件身份")
+      const { sandboxMode } = await this.sessionState.readSettings()
+      if (context.signal.aborted) return "cancelled"
+      if (sandboxMode === "auto") {
+        return await reviewToolCall(adapter, model, context, { toolName, arguments: context.validatedArguments, reason },
+          async () => validateEventLog(this.sessionId, await this.eventLog.readEvents(), this.team?.identity.role === "member"))
+      }
       const approvalId = randomUUID()
       let settle!: (value: ApprovalDecision) => void
       const response = new Promise<ApprovalDecision>((resolve) => { settle = resolve })

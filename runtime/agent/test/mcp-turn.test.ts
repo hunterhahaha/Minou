@@ -42,10 +42,18 @@ async function main(): Promise<void> {
   const requested = new Promise<void>((done) => { firstRequest = done })
   const gate = new Promise<void>((done) => { release = done })
   const visible: string[][] = []
+  const reviews: string[] = []
   global.createTurnModelAdapter = async (): Promise<ModelAdapter> => {
     const turn = ++adapterCount
     let step = 0
-    return { contextWindow: 128000, maxOutputTokens: 4096, stream: async function* (request) {
+    return { contextWindow: 128000, maxOutputTokens: 4096, stream: async function* (request, _signal, options) {
+      if (options?.retry === false) {
+        reviews.push(String(requestMessages(request)[1].content))
+        yield { type: "block_start", index: 0, blockType: "text" }
+        yield { type: "block_end", index: 0, block: { type: "text", text: '{"riskLevel":"medium","approved":true}' } }
+        yield { type: "stream_end", completion: "finished" }
+        return
+      }
       step++
       const names = splitSystemMessage(request).tools.map((tool) => tool.name)
       visible.push(names)
@@ -142,9 +150,19 @@ async function main(): Promise<void> {
     assert.equal(fixture.state.calls.every((call) => !Object.hasOwn(call.arguments!, "callDescription")), true)
     assert.deepEqual((JSON.parse(await readFile(statePath, "utf8")) as { mcp: UnifiedToolDefinition[] }).mcp, [])
     assert.equal(global.listToolDefinitions().some((tool) => tool.name === name), false, "全局基础工具列表不能泄露其他 Session 的载入工具")
-    resumed.close(); await approvalResume
     assert.equal(visible.length, 9)
-    console.log("mcp-turn.test.ts: 逐 Step 暴露、fallback、Queue、Continue、审批和状态恢复通过")
+    await resumed.updateSettings({ sandboxMode: "auto" })
+    const automatic = await resumed.continueSession({ content: MESSAGE })
+    await automatic.completion
+    assert.equal(automatic.turn, 4)
+    assert.equal(reviews.length, 1)
+    assert.equal(JSON.parse(reviews[0]).candidate.toolName, name)
+    const automaticEvents = (await resumed.readEvents() as SessionEvent[]).filter((event) => "turn" in event && event.turn === 4)
+    assert.equal(automaticEvents.some((event) => event.type.startsWith("approval/")), false)
+    assert.equal(fixture.state.calls.length, 4)
+    assert.ok(automaticEvents.some((event) => event.type === "tool/result" && event.result.status === "success"))
+    resumed.close(); await approvalResume
+    console.log("mcp-turn.test.ts: 逐 Step 暴露、fallback、Queue、Continue、人工及自动审批和状态恢复通过")
   } finally {
     initial.close(); resumed?.close(); await global.disposeProcessTools(); await fixture.close()
     assert.ok(resolve(root).startsWith(resolve(tmpdir()) + sep))

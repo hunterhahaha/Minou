@@ -408,10 +408,12 @@ export type ModelStreamEvent =
       finishReason?: string
     }
 
-/** 传给协议 SDK 的单次请求选项。 */
+/** 单次模型流的请求选项。 */
 export interface ModelStreamOptions {
   /** SDK 请求超时（毫秒）；缺省时沿用 SDK 默认值。 */
   timeoutMs?: number
+  /** 设为 false 时只尝试一次，不由网络层自动重试。 */
+  retry?: boolean
 }
 
 /** 模型适配器。三个 Adapter 均实现此接口。 */
@@ -427,7 +429,7 @@ export interface ModelAdapter {
    *
    * @param request 当前请求的上下文、工具和模型引用。
    * @param signal 调用方的取消信号；实现必须把它传递到协议请求。
-   * @param options 此次调用的 SDK 选项；调用方仍通过 signal 控制整个流的期限。
+   * @param options 此次调用的 SDK 超时与网络重试选项，整个流的期限仍由 signal 控制。
    * @returns 按块开始、增量、结束及最终流结束事件排列的异步迭代器。
    * @throws `AppError` 请求不符合统一契约、请求失败或被取消时抛出。
    */

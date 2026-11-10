@@ -16,7 +16,7 @@ const usagePercentFormat = new Intl.NumberFormat("zh-CN", { style: "percent", ma
 
 /** 已确定的 Session 权限展示。 */
 export const sandboxLabels: Record<SandboxMode, string> = {
-  "sandbox-full-access": "工作区读写", "sandbox-read-only": "工作区只读", "full-access": "完全访问",
+  "sandbox-full-access": "工作区读写", "sandbox-read-only": "工作区只读", auto: "自动审核", "full-access": "完全访问",
 }
 /** 聊天路由与 Workspace 的明确数据边界。 */
 export interface SessionPageProps {

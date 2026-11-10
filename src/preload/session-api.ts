@@ -1300,7 +1300,7 @@ function requireSessionControl(value: unknown): SessionControl {
   if (!isRecord(value) || !Number.isSafeInteger(value.revision) || (value.revision as number) < 0 ||
       !Number.isSafeInteger(value.throughSeq) || (value.throughSeq as number) < 0 ||
       !isModelReference(value.currentModel) ||
-      !["sandbox-read-only", "sandbox-full-access", "full-access"].includes(value.sandboxMode as string) ||
+      !["sandbox-read-only", "sandbox-full-access", "full-access", "auto"].includes(value.sandboxMode as string) ||
       !["idle", "running", "stopping"].includes(value.phase as string) ||
       (value.currentTurn !== undefined && (!Number.isSafeInteger(value.currentTurn) || (value.currentTurn as number) <= 0)) ||
       !messagesValid(value.pendingMessages) || !messagesValid(value.discardedMessages)) {

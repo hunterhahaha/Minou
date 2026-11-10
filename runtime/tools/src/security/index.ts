@@ -11,7 +11,7 @@ export type FileAccessDecision = "ALLOW" | "APPROVAL"
  * @param toolName 当前文件工具名称。
  * @param target 已规范化目标路径。
  * @param roots 已规范化允许根目录。
- * @returns 可立即执行或需要人工审批。
+ * @returns 可立即执行或需要审批。
  */
 export function fileAccessDecision(
   mode: SandboxMode,
@@ -21,7 +21,7 @@ export function fileAccessDecision(
 ): FileAccessDecision {
   if (mode === "full-access") return "ALLOW"
   const inside = roots.some((root) => isWithinRoot(target, root))
-  if (mode === "sandbox-full-access") return inside ? "ALLOW" : "APPROVAL"
+  if (mode === "sandbox-full-access" || mode === "auto") return inside ? "ALLOW" : "APPROVAL"
   return inside && (toolName === "glob" || toolName === "grep" || toolName === "read")
     ? "ALLOW" : "APPROVAL"
 }

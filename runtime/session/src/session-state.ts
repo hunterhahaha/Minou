@@ -30,6 +30,7 @@ export const SANDBOX_MODES = [
   "full-access",
   "sandbox-full-access",
   "sandbox-read-only",
+  "auto",
 ] as const
 
 /** 对话级持久化沙盒模式。 */

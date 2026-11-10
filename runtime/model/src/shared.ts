@@ -315,15 +315,17 @@ function isFirstContentDelta(event: ModelStreamEvent): boolean {
  *
  * @param attempt 单次协议请求尝试；接收本次尝试专用的取消信号并返回统一事件流。
  * @param signal 调用方的取消信号。
+ * @param retry 是否使用网络层默认的重试策略。
  * @returns 自动重试后的统一模型事件异步生成器。
  * @throws `AppError` 请求失败、重试耗尽或取消时抛出；已归一化的错误会原样透传。
  */
 export async function* runModelStream(
   attempt: (signal: AbortSignal) => AsyncIterable<ModelStreamEvent>,
   signal: AbortSignal,
+  retry = true,
 ): AsyncGenerator<ModelStreamEvent> {
   try {
-    yield* streamWithRetry(attempt, { signal, isValidOutput: isFirstContentDelta })
+    yield* streamWithRetry(attempt, { signal, isValidOutput: isFirstContentDelta, maxAttempts: retry ? undefined : 1 })
   } catch (error) {
     /** 已经是统一错误（例如请求校验失败）时原样抛出，避免被再次包装成 REQUEST_FAILED。 */
     if (isAppError(error)) throw error

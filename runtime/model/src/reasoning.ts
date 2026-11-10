@@ -8,6 +8,7 @@ import type { Protocol, ReasoningField } from "./types.ts"
 
 /** 新模型使用的默认推理等级，导出配置时复制数组。 */
 const DEFAULT_LEVELS = ["low", "medium", "high"] as const
+const LOW_REASONING_PREFERENCES = ["none", "disabled", "false", "off", "minimal", "mini", "low"]
 
 /** 各协议推理等级字段的默认路径，创建配置时复制路径。 */
 const DEFAULT_PATHS: Record<Protocol, readonly string[]> = {
@@ -90,6 +91,20 @@ export function preferredReasoningLevel(levels: readonly string[], previous?: st
   if (!isReasoningLevels(levels)) throw new TypeError("模型推理等级列表无效")
   if (previous !== undefined && levels.includes(previous)) return previous
   return levels.includes("medium") ? "medium" : levels[0]
+}
+
+/**
+ * 为独立的辅助请求优先选择已支持的关闭思考或低档位。
+ * @param levels 当前 Turn Adapter 声明的档位。
+ * @param current 本轮原档位，用于没有匹配项的模型。
+ * @returns 保留供应商原始大小写的选定档位。
+ */
+export function lowReasoningLevel(levels: readonly string[] | undefined, current: string): string {
+  for (const preference of LOW_REASONING_PREFERENCES) {
+    const level = levels?.find((item) => item.toLowerCase() === preference)
+    if (level !== undefined) return level
+  }
+  return current
 }
 
 /**

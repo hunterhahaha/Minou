@@ -117,6 +117,7 @@ async function run(scenario: Scenario): Promise<SessionEvent[]> {
       appendTurnStartAndUserMessage: fake.appendTurnStartAndUserMessage,
     },
     sessionState: {
+      readSettings: async () => ({ sandboxMode: "sandbox-full-access" }),
       readAgentInputTokens: async () => 0,
       synchronizeUsage: async () => {},
       readLoadedMCPTools: async () => [],

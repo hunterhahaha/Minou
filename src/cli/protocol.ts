@@ -201,7 +201,7 @@ export async function normalizeRequest(value: unknown, base: string, cwd: string
   }
   const permissions = object(raw.permissions === undefined ? {} : raw.permissions, "permissions", ["sandbox_mode", "auto_approve"])
   const mode = permissions.sandbox_mode === undefined ? "sandbox-full-access" : permissions.sandbox_mode
-  if (!SANDBOX_MODES.includes(mode as SandboxMode)) throw new CliInputError("permissions.sandbox_mode 无效。")
+  if (mode === "auto" || !SANDBOX_MODES.includes(mode as SandboxMode)) throw new CliInputError("permissions.sandbox_mode 无效。")
   const approval = object(permissions.auto_approve === undefined ? {} : permissions.auto_approve, "auto_approve", ["groups", "tools"])
   const groups = strings(approval.groups === undefined ? [] : approval.groups, "auto_approve.groups")
   if (groups.some((group) => !TOOL_GROUPS.includes(group as ToolGroup))) throw new CliInputError("auto_approve.groups 包含未知工具组。")

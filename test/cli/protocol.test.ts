@@ -38,7 +38,8 @@ async function main(): Promise<void> {
     for (const patch of [
       { version: 2 }, { prompt: " " }, { surprise: true }, { isolated: { unknown: true } },
       { isolated: { skill: "false" } }, { isolated: null }, { permissions: null }, { limits: null },
-      { permissions: { sandbox_mode: "invalid" } }, { permissions: { auto_approve: { groups: ["mcp_*"] } } },
+      { permissions: { sandbox_mode: "invalid" } }, { permissions: { sandbox_mode: "auto" } },
+      { permissions: { auto_approve: { groups: ["mcp_*"] } } },
       { permissions: { auto_approve: { tools: [2] } } }, { permissions: { auto_approve: { groups: null } } },
       { limits: { max_steps: 0 } }, { limits: { max_steps: null } }, { limits: { timeout_seconds: 2_147_484 } },
       { limits: { max_steps: 1.5 } }, { workspace: "missing" },

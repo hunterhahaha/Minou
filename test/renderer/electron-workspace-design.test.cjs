@@ -549,7 +549,7 @@ async function main() {
   await until(() => evaluate("Boolean(document.querySelector('.permission-menu'))"))
   const permissionMenuFits = `(() => {
     const rects = [...document.querySelectorAll('.permission-menu button')].map(button => button.getBoundingClientRect())
-    return rects.length === 3 && rects.every((rect, index) => rect.width > 0 && rect.left >= 0 && rect.right <= innerWidth && rect.top >= 0 && rect.bottom <= innerHeight && (index === 0 || rect.top - rects[index - 1].bottom >= 3.5))
+    return rects.length === 4 && rects.every((rect, index) => rect.width > 0 && rect.left >= 0 && rect.right <= innerWidth && rect.top >= 0 && rect.bottom <= innerHeight && (index === 0 || rect.top - rects[index - 1].bottom >= 3.5))
   })()`
   assert.equal(await evaluate(permissionMenuFits), true, "新对话权限选项之间有留白且菜单位于窗口内")
   await screenshot("workspace-permission-light")

@@ -66,12 +66,12 @@ function SidebarMore({ target, expanded, onOpen }: {
 }
 
 /** 本页可切换的权限展示状态；对话创建前仅保存在渲染进程。 */
-type Permission = "default" | "workspace-read-only" | "workspace-read-write" | "full-access"
+type Permission = "default" | "workspace-read-only" | "workspace-read-write" | "auto" | "full-access"
 const permissionLabels: Record<Permission, string> = {
   default: "默认", "workspace-read-only": "工作区只读",
-  "workspace-read-write": "工作区读写", "full-access": "完全访问",
+  "workspace-read-write": "工作区读写", auto: "自动审核", "full-access": "完全访问",
 }
-const permissionOptions: Permission[] = ["workspace-read-only", "workspace-read-write", "full-access"]
+const permissionOptions: Permission[] = ["workspace-read-only", "workspace-read-write", "auto", "full-access"]
 
 /** 每组侧栏对话首次展示及每次追加的条数。 */
 const SIDEBAR_SESSION_BATCH_SIZE = 5
@@ -722,7 +722,7 @@ function Workspace() {
       const { providerId, protocol, modelId, name } = selectedModel
       const response = await window.nicode.startNewSession(groupId, {
         ...message, model: { providerId, protocol, modelId, name, reasoningLevel: selectedReasoningLevel },
-        sandboxMode: permission === "workspace-read-only" ? "sandbox-read-only" : permission === "full-access" ? "full-access" : "sandbox-full-access",
+        sandboxMode: permission === "workspace-read-only" ? "sandbox-read-only" : permission === "auto" || permission === "full-access" ? permission : "sandbox-full-access",
       })
       if (sessionsState.draftsByKey[newDraftKey] === draft) sessionsState.setDraft(newDraftKey)
       void refreshSessionSummaries(groupId)

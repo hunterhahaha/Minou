@@ -91,6 +91,8 @@ Composer 的 `@` 查询调用 [文件查看器 IPC](../src/main/file-explorer-ip
 
 文件权限由 [security/index.ts](../runtime/tools/src/security/index.ts) 和规范路径判断实现：Full Access 直接允许；Sandbox Full Access 对允许根内访问直接允许；Sandbox Read Only 对根内读取直接允许，其他文件操作需要审批。审批事件与等待结果由 SessionRuntime 持有。Shell、PTY、MCP 使用各自工具实现中的检查；不能把文件规则推定为所有工具共有的系统级限制。
 
+桌面「自动审核」沿用工作区读写的权限边界。进入审批时，[SessionRuntime](../runtime/agent/src/session-runtime.ts) 按原顺序分流到[独立模型审核](../runtime/agent/src/tool-approval.ts)。审核复用本轮 Adapter、模型和标题请求的低思考档位选择，只发送本轮用户消息、助手正文、已有结果的工具调用及其文本结果，以及单列的待审调用，不提供可调用工具。高风险必须拒绝。无效输出最多重试两次，模型请求失败或从取得审批槽位起 30 秒内无有效决定时拒绝，用户停止则取消。自动审核不发布人工审批事件，仍由 Loop 写入工具结果。
+
 `read` 每行最多返回 2,000 个 UTF-16 单元，续读边界保留 Unicode 代理对。遇到超长行时结束当前页，并给出同一行的 `nextOffset` 和 `nextColumn`。模型可按提示传入 `offset` 和 `column` 继续读取。`column` 从 1 开始，仅作用于起始行，越过行尾或落在代理对内部会报错。因行数或 50 KiB 文本预算停止时，可从下一条未读取行继续。
 
 ## 固定上下文、外部能力与恢复

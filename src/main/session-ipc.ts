@@ -5,7 +5,7 @@ import { requireProjectId } from "../../runtime/session/src/project-id.ts"
 import type { ProjectId } from "../../runtime/session/src/project-id.ts"
 import type { AssistantContentBlock } from "../../runtime/model/src/types.ts"
 import type { SessionEvent, UserMessageContent } from "../../runtime/session/src/events.ts"
-import { DEFAULT_SESSION_SANDBOX_MODE, type SandboxMode, type SessionSettingsPatch } from "../../runtime/session/src/session-state.ts"
+import { DEFAULT_SESSION_SANDBOX_MODE, SANDBOX_MODES, type SandboxMode, type SessionSettingsPatch } from "../../runtime/session/src/session-state.ts"
 import { listRunnableQueues, SessionMessageQueue } from "../../runtime/session/src/message-queue.ts"
 import { insertTeamWorkspace, type TeamIdentity, type TeamWakeupConfig } from "../../runtime/session/src/team-store.ts"
 import type { TeamMode } from "./team-mode.ts"
@@ -534,7 +534,7 @@ function requireSessionId(value: unknown): string {
  * @param value 权限值。
  * @returns 是否为已确定的权限模式。
  */
-function isSandboxMode(value: unknown): value is SandboxMode { return value === "sandbox-full-access" || value === "sandbox-read-only" || value === "full-access" }
+function isSandboxMode(value: unknown): value is SandboxMode { return SANDBOX_MODES.includes(value as SandboxMode) }
 /**
  * @param value IPC 模型引用。
  * @returns 是否含恰好五个有效字段。
