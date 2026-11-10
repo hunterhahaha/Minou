@@ -178,6 +178,7 @@ async function testDerivedRepair(root: string): Promise<void> {
     { name: "beta", path: join(root, "skills", "beta"), scope: "project", enabled: true, estimatedTokens: 14 },
   ] })
   assert.equal(await readFile(join(item.sessionDirectory, "agents_md.snapshot"), "utf8"), "new rules")
+  assert.deepEqual((await item.state.readSystemBaseline()).agentsmd, { hash: "hash", content: "rules" }, "更新比较快照时保留系统提示的原始基线")
 }
 
 /**

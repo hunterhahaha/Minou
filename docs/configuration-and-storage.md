@@ -251,8 +251,8 @@ Meta 不等同于 Event Log：名称和运行设置有自己的写入入口，Us
 
 ### 会话派生文件
 
-- `contextstate.json` 保存 `agentsmd: { hash, content }`、`skills: { id, content }` 和 `mcp` 定义数组。MCP 数组初始为空，成功 Summary 提交后才替换为该次摘要的工具定义快照。
-- `agents_md.snapshot` 保存参与增量比较的规则快照。
+- `contextstate.json` 保存 `agentsmd: { hash, content }`、`skills: { id, content }` 和 `mcp` 定义数组。`agentsmd` 是系统提示中的固定基线，普通规则更新不替换它；成功 Summary 后切换到摘要基线。MCP 数组初始为空，成功 Summary 提交后才替换为该次摘要的工具定义快照。
+- `agents_md.snapshot` 保存参与增量比较的最新规则快照，普通规则更新通过 `context_update` 回放。
 - `tool_output/` 保存工具输出文件；具体输出路径由工具实现创建。`web_fetch` 的最终处理文本超过 32 KiB 时，完整 UTF-8 文本保存为 `web_fetch_<本机生成 UUID>.md`，独占创建、不覆盖已有文件；小结果不创建文件，全文不包含截断提示。桌面使用当前会话目录，CLI 使用 `.nicode/logs/cli/<内部 session-id>/tool_output/`。模型可见结果仅保存正文前缀及末尾截断说明、绝对路径；恢复历史时不重新获取或加载全文。
 
 SessionState 基于已校验日志修复派生状态。成功 Summary 的 `summary/end` 带覆盖范围与完整基线。恢复时使用该记录修复基线文件，并从 Meta 的 MCP 游标之后补应用已提交的增量。缺少 Meta 时从完整日志重建载入集合。

@@ -44,7 +44,7 @@ export function registerMCPTools(tools: ToolRegistry, renders: RenderRegistry, m
     render: (result) => isError(result) ? renderCommonError(result) : success(result.tools.length ? result.tools.map((tool) => `${tool.name}\nServer ID: ${tool.serverId}`).join("\n\n") : "No MCP tools found."),
   })
   registerTool<MCPLoadToolsInput, MCPLoadToolsResult>(tools, renders, {
-    kind: "builtin", definition: { name: "mcp_load_tools", description: `Load selected MCP tools by the exact names returned by mcp_list_tools. ${MCP_DISCOVERY_GUIDANCE}`, inputSchema: { type: "object", properties: { names: { type: "array", items: { type: "string" } } }, required: ["names"], additionalProperties: false } },
+    kind: "builtin", definition: { name: "mcp_load_tools", description: `Load or refresh selected MCP tools by the exact names returned by mcp_list_tools. Already-loaded tools receive current schemas; the returned count includes only newly loaded tools. ${MCP_DISCOVERY_GUIDANCE}`, inputSchema: { type: "object", properties: { names: { type: "array", items: { type: "string" } } }, required: ["names"], additionalProperties: false } },
     validateArguments: (input) => isPlainRecord(input) && Object.keys(input).every((key) => key === "names") && Array.isArray(input.names) && input.names.every((name) => typeof name === "string") ? { success: true, data: { names: input.names as string[] } } : invalid("names 必须是字符串数组。"),
     execute: (input, context) => load(manager, input.names, context),
     render: (result) => isError(result) ? renderCommonError(result) : success(`Loaded ${result.loadedCount} MCP tools.`),

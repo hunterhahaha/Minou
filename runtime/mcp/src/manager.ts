@@ -25,7 +25,7 @@ export function mcpError(code: string, message: string): AppError { return { sou
 export interface MCPLoadResult {
   /** 新加入的工具数，不含已经载入项。 */ loadedCount: number
   /** 预算治理后的完整载入记录。 */ loaded: SessionLoadedMCPTool[]
-  /** 此次新增的载入记录与模型定义快照。 */ added: { entry: SessionLoadedMCPTool; definition: UnifiedToolDefinition }[]
+  /** 此次载入或显式刷新的记录与当前定义快照；同名新增覆盖后续请求中的旧定义。 */ added: { entry: SessionLoadedMCPTool; definition: UnifiedToolDefinition }[]
   /** 此次载入移除的工具名。 */ removed: string[]
 }
 
@@ -139,11 +139,11 @@ export class MCPManager {
   }
 
   /**
-   * 对去重后的有效新工具整批应用文档规定的 5% 预算与 LRU。
+   * 对去重后的有效新工具应用 5% 预算与 LRU，并刷新指定的已载入工具定义。
    * @param names 搜索或名称载入选出的工具标识。
    * @param previous 当前 Session 持久化的载入状态。
    * @param contextWindow 本 Turn 模型配置快照中的上下文窗口。
-   * @returns 新载入数量、完整治理状态与有效定义，不在此方法写磁盘。
+   * @returns 新载入数量、完整治理状态与定义增量；刷新不增加 loadedCount，不在此方法写磁盘。
    * @throws Error 上下文窗口无效，调用边界应转换为统一错误。
    */
   loadTools(names: readonly string[], previous: readonly SessionLoadedMCPTool[], contextWindow: number): MCPLoadResult {
@@ -153,7 +153,8 @@ export class MCPManager {
       return tool?.serverId === entry.serverId && tool.originalToolName === entry.originalToolName
     }).map((entry) => ({ ...entry, estimatedTokens: this.estimateTokens(JSON.stringify(this.exposeDefinition(this.catalog.get(entry.name)!.definition))) }))
     const existing = new Set(loaded.map((entry) => entry.name))
-    const batch = [...new Set(names)].flatMap((name) => {
+    const requested = new Set(names)
+    const batch = [...requested].flatMap((name) => {
       const tool = this.catalog.get(name)
       return !tool || existing.has(name) ? [] : [{ name, serverId: tool.serverId, originalToolName: tool.originalToolName,
         estimatedTokens: this.estimateTokens(JSON.stringify(this.exposeDefinition(tool.definition))), lastCalledAt: 0 }]
@@ -174,7 +175,8 @@ export class MCPManager {
     return {
       loadedCount: batch.length,
       loaded,
-      added: batch.map((entry) => ({ entry, definition: this.exposeDefinition(this.catalog.get(entry.name)!.definition) })),
+      added: loaded.filter((entry) => requested.has(entry.name))
+        .map((entry) => ({ entry, definition: this.exposeDefinition(this.catalog.get(entry.name)!.definition) })),
       removed: previous.filter((entry) => !retained.has(entry.name)).map((entry) => entry.name),
     }
   }

@@ -97,7 +97,7 @@ Composer 的 `@` 查询调用 [文件查看器 IPC](../src/main/file-explorer-ip
 
 - [project-context.ts](../src/main/project-context.ts) 从数据库读取 Project，选择首个关联目录作为 cwd；没有关联目录时使用内置 workspace。当前 cwd 下的 AGENTS.md 和启用 Skill 组成基线，允许根包括内置 workspace 与关联目录。
 - Skill 启用项按名称合并，Project 同名来源覆盖 Global，禁用的 Project 项也可屏蔽 Global；描述进入上下文，正文通过 `skill_load` 按需读取。来源历史按 scope + path 区分，已有来源的状态变化静默同步。
-- MCPManager 共享连接和完整 Catalog，各 Session 单独记录载入身份。`tool_search` 搜索并载入，或经 `mcp_list_tools` / `mcp_load_tools` 载入。预算为模型窗口的 5%，按最近调用记录淘汰；单批自身超预算时仍整批载入。实际载入和淘汰产生有序增量。同一次载入先提交移除、再提交带定义快照的新增，事件提交后同步 Session Meta。模型请求使用历史定义，真正执行仍由当前 Catalog 校验工具和参数。
+- MCPManager 共享连接和完整 Catalog，各 Session 单独记录载入身份。`tool_search` 搜索并载入，或经 `mcp_list_tools` / `mcp_load_tools` 载入。预算为模型窗口的 5%，按最近调用记录淘汰；单批自身超预算时仍整批载入。实际载入和淘汰产生有序增量。同一次载入先提交移除、再提交带定义快照的新增，事件提交后同步 Session Meta。显式重新载入同名工具也提交当前定义快照，覆盖后续请求中的旧定义；新载入计数不包含刷新项。模型请求使用历史定义，真正执行仍由当前 Catalog 校验工具和参数。
 - Memory 不默认把正文注入系统消息；模型通过三件记忆工具按需访问当前 Project/default 的共享 Markdown。
 - Event Log 是已执行事实的恢复依据，SessionState 据此修复 Meta、`contextstate.json` 与 `agents_md.snapshot`，不能把页面缓存作为持久化事实。
 
@@ -117,7 +117,7 @@ min(contextWindow × 0.8, contextWindow - maxOutputTokens - (10000 + maxOutputTo
 
 每个正常 Step 从宿主取得已提交的有序历史。最近成功的 `summary/end` 是历史的首项，其 MCP 快照作为工具基线。Builder 结合基础工具、基线和后续事件构造消息与工具表。桌面和 CLI 共用这一请求形状，CLI 以空基线和 Run 内载入状态启动。标题和独立 Summary 继续传显式消息。
 
-Adapter 按协议和模型名前缀匹配原生回放能力。使用 `anthropic_messages` 且模型名以 `claude` 开头时启用，适用于官方和代理地址，回放来源为 `anthropic` / `anthropic_messages`。完整且匹配的 Assistant 消息逐块回放，其他消息走通用转换。首次回放带签名或加密数据的思考块时固定顶层工具表，后续增量按序作为内联变更放在整组工具结果后。启用回放能力的 Adapter 将独立 Summary 的通用消息作为文本材料。历史的系统提示和消息前缀仍需满足服务端的签名校验。
+Adapter 按协议和模型名前缀匹配原生回放能力。使用 `anthropic_messages` 且模型名以 `claude` 开头时启用，适用于官方和代理地址，回放来源为 `anthropic` / `anthropic_messages`。完整且匹配的 Assistant 消息逐块回放，其他消息走通用转换。首次回放带签名或加密数据的思考块时固定顶层工具表，后续增量按序作为内联变更放在整组工具结果后，同名工具新增用于替换定义。系统提示中的 AGENTS.md 与 Skill 使用持久化基线；普通 Turn 的 AGENTS.md 变化只追加 `context_update` 并更新比较快照，成功 Summary 才替换固定基线。启用回放能力的 Adapter 将独立 Summary 的通用消息作为文本材料。历史的系统提示和消息前缀仍需满足服务端的签名校验。
 
 ## 搜索服务配置管理
 

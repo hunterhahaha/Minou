@@ -12,7 +12,7 @@ import { join } from "node:path"
 import { createAbortError } from "../../error/src/abort.ts"
 
 import type { ModelAdapter, ModelRef, ModelStreamEvent } from "../../model/src/types.ts"
-import type { CurrentSessionBaseline } from "../../session/src/session-state.ts"
+import type { CurrentSessionBaseline, FileSessionState } from "../../session/src/session-state.ts"
 import { initializeSessionMetaDatabase } from "../../session/src/meta-store.ts"
 import type {
   SessionEvent,
@@ -921,7 +921,7 @@ async function testConcreteRuntimeBindings(): Promise<void> {
 
     const content = await runtime.buildContent(2)
     assert.equal(content[0]?.role, "system")
-    assert.equal(content[0]?.content, "system\n\nworkspace\n\nUse pnpm.\n\nskills-1")
+    assert.equal(content[0]?.content, "system\n\nworkspace\n\nUse npm.\n\nskills-1", "普通 Turn 的规则变化只追加更新消息")
     assert.deepEqual(content.slice(1).map((message) => message.role), ["user", "user", "user", "user"])
     const log = await runtime.readEvents() as SessionEvent[]
     const updates = log.filter((event) => event.type === "context_update")
@@ -952,7 +952,13 @@ async function testConcreteRuntimeBindings(): Promise<void> {
       baseline: { agentsmd: baseline.agentsmd, skills: baseline.skills, mcp: [] },
     })
     assert.deepEqual(await runtime.buildContent(2), [
-      { role: "system", content: "system\n\nworkspace\n\nUse pnpm.\n\nskills-1" },
+      { role: "system", content: "system\n\nworkspace\n\nUse npm.\n\nskills-1" },
+      { role: "user", content: "Earlier context summary." },
+    ])
+    const state = (runtime as unknown as { sessionState: FileSessionState }).sessionState
+    await state.repairDerivedState(await runtime.readEvents() as SessionEvent[])
+    assert.deepEqual(await runtime.buildContent(2), [
+      { role: "system", content: "system\n\nworkspace\n\nUse pnpm.\n\nskills-2" },
       { role: "user", content: "Earlier context summary." },
     ])
     await assert.rejects(
