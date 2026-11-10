@@ -33,7 +33,7 @@ function control(revision = 1, throughSeq = 3): SessionControl {
  * @returns 完整查询测试值。
  */
 function data(events = [first, second, third], revision = 1, sessionId = "s"): SessionData {
-  return { projectId: "default", sessionId, events, latestSeq: events.at(-1)?.seq ?? 0,
+  return { projectId: "default", sessionId, kind: "ordinary", events, latestSeq: events.at(-1)?.seq ?? 0,
     summary: { sessionId, name: "test", updatedAt: first.createdAt }, control: control(revision, events.at(-1)?.seq ?? 0) }
 }
 /**
@@ -71,7 +71,8 @@ async function testCache(): Promise<void> {
   assert.equal(state.view(key).loading, false)
   assert.ok(changed > 0)
   const newer = new WorkspaceSessionState({ getSessionData: async () => { throw new Error("unexpected query") } }, () => {})
-  newer.receive({ kind: "event", projectId: "default", sessionId: "s", event: first })
+  newer.receive({ kind: "event", projectId: "default", sessionId: "s", sessionKind: "router", event: first })
+  assert.equal(newer.view(key).kind, "router")
   await newer.load("default", "s")
   assert.equal(newer.has(key), true, "新对话从首条事件直接建缓存")
 

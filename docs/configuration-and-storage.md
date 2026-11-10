@@ -37,7 +37,7 @@
 
 这是各功能实际使用位置的汇总，不表示首次启动会生成所有文件。启动补齐根目录、默认 workspace、空配置和数据库；已登记 Project 的 Skill 来源也会初始化并扫描。会话派生文件、项目记忆和 CLI 运行目录由对应功能按需生成。CLI 隔离 Skill 时通过 `skipSkills` 跳过来源初始化、扫描和同步。
 
-既有 `config.json` 必须是普通文件并通过 V2 校验，失败时保留原文件并报告路径。当前启动不迁移旧全局 JSON、旧 Provider 库、`credentials.json` 或 `workspace.json`。各存储对已有数据的检查与修复范围并不相同，不能假定所有数据库都会在启动时完整校验。
+既有 `config.json` 必须是普通文件并通过 V2 校验，失败时保留原文件并报告路径。合法 V2 文件缺少整个 `teamWakeup` 字段时，启动会原子补齐该段，并保留其余配置值。当前启动不迁移旧全局 JSON、旧 Provider 库、`credentials.json` 或 `workspace.json`。各存储对已有数据的检查与修复范围并不相同，不能假定所有数据库都会在启动时完整校验。
 
 桌面设置由 [desktop-settings.ts](../src/main/desktop-settings.ts) 管理。`desktop-settings.json` 的 `closeBehavior` 接受 `"tray"` 或 `"quit"`。缺少文件或读取无效时使用 `"tray"`。在「设置 → 通用」保存时，主进程串行写入并原子替换文件，成功后立即应用，失败时继续使用上次生效值。
 
@@ -49,11 +49,23 @@
 {
   "version": 2,
   "mcpServers": [],
-  "runtime": { "userMessageMode": "queue" }
+  "runtime": { "userMessageMode": "queue" },
+  "teamWakeup": {
+    "unreadThreshold": 3,
+    "pollingInterval": 60,
+    "wakeupCooldown": 60,
+    "unconsumedWakeupAlertThreshold": 2
+  }
 }
 ```
 
-当前顶层只允许 `version`、`mcpServers`、`runtime`。`runtime` 只允许 `userMessageMode`，校验器接受 `insert` 或 `queue`；桌面对话目前实际使用运行中消息队列，不能从该枚举推断 Insert 流程已完成。模型、API Key、默认模型和对话 Sandbox Mode 不存放在这里。
+当前顶层允许 `version`、`mcpServers`、`runtime` 和 `teamWakeup`。`runtime` 只允许 `userMessageMode`，校验器接受 `insert` 或 `queue`。桌面对话使用运行中消息队列。模型、API Key、默认模型和对话 Sandbox Mode 有独立的存储。
+
+### Team 唤醒
+
+`teamWakeup` 包含四个安全整数。轮询间隔与冷却以秒计，下限为 30。未读阈值和连续未消费提醒阈值下限为 0。已有字段缺项或值无效时，启动报告 `config.json` 路径。
+
+「设置 → 团队协作」读取主进程当前生效的参数。Team 与 MCP 使用同一文件写入队列，每次读取最新配置后原子保存各自的字段。Team 保存成功后立即应用，空闲成员按新的间隔重新安排轮询。手工编辑文件后，在下次启动时读取并校验。
 
 ### MCP 条目
 

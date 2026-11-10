@@ -4,7 +4,8 @@ import { tmpdir } from "node:os"
 import { join, resolve, sep } from "node:path"
 import { createFileSessionEventLog, initializeSessionEventDatabase } from "../src/event-log.ts"
 import { listRunnableQueues, SessionMessageQueue, sessionTransaction, withSessionDatabase } from "../src/message-queue.ts"
-import { DEFAULT_TEAM_WAKEUP_CONFIG, insertTeamWorkspace, TeamStore, type TeamIdentity } from "../src/team-store.ts"
+import { insertTeamWorkspace, TeamStore, type TeamIdentity } from "../src/team-store.ts"
+import { DEFAULT_TEAM_WAKEUP_CONFIG as config } from "../src/team-wakeup-config.ts"
 import type { UserMessageContent } from "../src/events.ts"
 
 const MODEL = { providerId: "p", protocol: "responses", modelId: "m", name: "Offline", reasoningLevel: "medium" } as const
@@ -54,17 +55,17 @@ async function main(): Promise<void> {
     assert.throws(() => store.assignOrClose(otherRouter, target.sessionId, "cross workspace"), /Workspace/)
     assert.equal(store.publish(author, { ...post, mentions: [target.sessionId] }).id, "#1")
     assert.throws(() => store.read(target, 1), /unread/)
-    const wakes = await Promise.all([Promise.resolve().then(() => store.wake(target, "publish", true)),
-      Promise.resolve().then(() => store.wake(target, "poll"))])
+    const wakes = await Promise.all([Promise.resolve().then(() => store.wake(target, "publish", config, true)),
+      Promise.resolve().then(() => store.wake(target, "poll", config))])
     assert.deepEqual(wakes, [true, false])
     assert.equal(targetQueue.read().length, 1)
     await consume()
-    assert.equal(store.wake(target, "idle"), true, "第二次未消费 Mention 仍跳过冷却")
+    assert.equal(store.wake(target, "idle", config), true, "第二次未消费 Mention 仍跳过冷却")
     await consume()
     now = 59_999
-    assert.equal(store.wake(target, "poll"), false)
+    assert.equal(store.wake(target, "poll", config), false)
     now = 60_000
-    assert.equal(store.wake(target, "poll"), true)
+    assert.equal(store.wake(target, "poll", config), true)
     assert.match(targetQueue.read()[0].content[0].text, /unread/)
     await consume()
     assert.deepEqual(store.unread(target), { mentioned: [{ id: "#1", name: post.name, description: post.description }], unread: [] })
@@ -77,24 +78,20 @@ async function main(): Promise<void> {
     assert.deepEqual(store.unread(outsider), { mentioned: [], unread: [] })
     assert.equal(store.publish(outsider, { ...post, mentions: [] }).id, "#1")
     assert.equal(store.publish(author, { ...post, mentions: [target.sessionId] }).id, "#2")
-    assert.equal(store.wake(target, "publish", true), true, "unread 已清零连续未消费次数")
+    assert.equal(store.wake(target, "publish", config, true), true, "unread 已清零连续未消费次数")
     await consume()
     store.unread(target)
     now += 60_000
     for (let i = 0; i < 3; i++) store.publish(author, { ...post, mentions: [] })
-    assert.equal(store.wake(target, "publish"), false, "严格大于阈值才发布唤醒")
-    assert.equal(store.wake(target, "poll"), true, "轮询有一条未读即可检查冷却")
+    assert.equal(store.wake(target, "publish", config), false, "严格大于阈值才发布唤醒")
+    assert.equal(store.wake(target, "poll", config), true, "轮询有一条未读即可检查冷却")
     await consume()
     store.unread(target)
     now += 60_000
     for (let i = 0; i < 4; i++) store.publish(author, { ...post, mentions: [] })
-    assert.equal(store.wake(target, "idle"), true)
+    assert.equal(store.wake(target, "idle", config), true)
     await consume()
 
-    assert.deepEqual(store.config(), DEFAULT_TEAM_WAKEUP_CONFIG)
-    assert.throws(() => store.saveConfig({ ...DEFAULT_TEAM_WAKEUP_CONFIG, pollingInterval: 29 }), /配置/)
-    store.saveConfig({ ...DEFAULT_TEAM_WAKEUP_CONFIG, unreadThreshold: 0, pollingInterval: 30 })
-    assert.equal(new TeamStore(path).config().pollingInterval, 30)
     store.report(author, "waiting", "请确认")
     assert.equal(store.settle(author), "waiting")
     const routerQueue = new SessionMessageQueue(path, router.projectId, router.sessionId)

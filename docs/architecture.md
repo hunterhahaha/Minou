@@ -67,6 +67,14 @@ Composer 的 `@` 查询调用 [文件查看器 IPC](../src/main/file-explorer-ip
 
 模型工厂见 [model-adapters.ts](../src/main/model-adapters.ts)。启动阶段不预先为全部模型创建 SDK Client，也不把 Provider 凭据快照传入 Renderer。
 
+## 桌面 Team Mode
+
+聊天页头的「团队模式」通过 preload 的 `startTeamSession` 提交首条消息。主进程在首轮事件事务中保存 Router 与 Workspace 身份，返回会话、Turn 和 Workspace ID。历史查询的 `kind` 与首个实时事件携带的 `sessionKind` 都来自主进程识别的会话角色，Renderer 据此选中对应模式。普通聊天与 Router 共用 `SessionPage`、原会话路由、侧栏及搜索。列表索引从普通事件表生成，成员事件单独保存在 Team 事件表。
+
+[TeamMode](../src/main/team-mode.ts) 使用启动时读取的 `config.json.teamWakeup` 运行唤醒判断与计时。设置 IPC 确认文件保存后更新生效参数并重排空闲成员的计时。Router 派单、成员反馈和黑板唤醒仍由协作调度器入队。
+
+成员继承创建时 Router 的沙箱。权限检查触发审批时，成员使用本轮模型自动审核，派单与唤醒在审核材料中标为 `team_context`。只有有效且明确批准的低风险结果允许继续执行。Router 和普通会话按自身权限设置处理审批。
+
 ## Step、协议与 Usage
 
 [loop.ts](../runtime/agent/src/loop.ts) 处理 `step/start`、模型块事件、`assistant/message`、`tool/result`、`step/end`，不承担宿主的 Turn 首尾。模型块包括 thinking、text 和 tool_call。工具结果通过 `toolCallId` 和对应块事件的 `toolCallEventId` 关联，不能只依据日志排列顺序配对。

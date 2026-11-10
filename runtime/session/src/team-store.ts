@@ -4,6 +4,7 @@ import type { DatabaseSync } from "node:sqlite"
 import type { ModelRef } from "../../model/src/types.ts"
 import type { ProjectId } from "./project-id.ts"
 import type { SandboxMode } from "./session-state.ts"
+import type { TeamWakeupConfig } from "./team-wakeup-config.ts"
 import { insertQueuedMessage, sessionTransaction, withSessionDatabase, type QueuedMessage } from "./message-queue.ts"
 
 /** Team Session 的协作生命周期。 */
@@ -26,23 +27,6 @@ export interface TeamIdentity {
   /** 成员未开始首轮时的继承模型。 */
   initialModel?: ModelRef
 }
-
-/** Team Session 黑板阅读和唤醒使用的配置，时长以秒计。 */
-export interface TeamWakeupConfig {
-  /** 发布与回到 idle 时，未读数需严格超过此值。 */
-  unreadThreshold: number
-  /** 空闲轮询间隔，单位为秒。 */
-  pollingInterval: number
-  /** 普通唤醒及达到提醒阈值后的 Mention 最短间隔，单位为秒。 */
-  wakeupCooldown: number
-  /** 达到该次数后，唤醒需提示调用 unread。 */
-  unconsumedWakeupAlertThreshold: number
-}
-
-/** 应用默认的全局唤醒配置。 */
-export const DEFAULT_TEAM_WAKEUP_CONFIG: Readonly<TeamWakeupConfig> = Object.freeze({
-  unreadThreshold: 3, pollingInterval: 60, wakeupCooldown: 60, unconsumedWakeupAlertThreshold: 2,
-})
 
 /** 自动唤醒时由工具宿主提交的黑板摘要。 */
 export interface BlackboardWakeupContext {
@@ -118,10 +102,6 @@ CREATE TABLE IF NOT EXISTS team_posts (
   body TEXT NOT NULL,
   mentions TEXT NOT NULL,
   PRIMARY KEY(workspace_id, post_id)
-) STRICT;
-CREATE TABLE IF NOT EXISTS team_wakeup_config (
-  id INTEGER PRIMARY KEY CHECK(id = 1),
-  settings TEXT NOT NULL
 ) STRICT;
 CREATE TABLE IF NOT EXISTS team_coordination_events (
   seq INTEGER PRIMARY KEY,
@@ -381,16 +361,16 @@ export class TeamStore {
    * 原子判断并提交一次黑板唤醒。
    * @param identity 目标成员。
    * @param trigger 唤醒检查入口。
+   * @param config 本次判定使用的唤醒参数快照。
    * @param mentionedByPost 发布入口中本帖是否提及目标。
    * @returns 是否为目标加入了唤醒消息。
    * @throws Error 成员缺失或入队事务失败。
    */
-  wake(identity: TeamIdentity, trigger: "publish" | "idle" | "poll", mentionedByPost = false): boolean {
+  wake(identity: TeamIdentity, trigger: "publish" | "idle" | "poll", config: TeamWakeupConfig, mentionedByPost = false): boolean {
     return withSessionDatabase(this.path, (db) => sessionTransaction(db, () => {
       const member = this.member(db, identity.workspaceId, identity.sessionId)
       if (member.status !== "idle" || db.prepare("SELECT 1 FROM session_queue_pauses WHERE project_id = ? AND session_id = ?")
         .get(identity.projectId, identity.sessionId)) return false
-      const config = this.configFrom(db)
       const now = this.now()
       const mentioned = member.latest_mention !== null && member.latest_mention > member.last_read
       const mentionEligible = mentioned && (trigger !== "publish" || mentionedByPost)
@@ -406,34 +386,6 @@ export class TeamStore {
       this.audit(db, identity.workspaceId, identity.sessionId, "team/blackboard_wakeup", { messageId, trigger, ...context })
       return true
     }))
-  }
-
-  /** @returns 当前持久化配置，缺省时返回应用默认值。 */
-  config(): TeamWakeupConfig { return withSessionDatabase(this.path, (db) => this.configFrom(db)) }
-
-  /**
-   * 验证并保存完整的全局唤醒配置。
-   * @param input 完整设置。
-   * @throws TypeError 任一设置不是合法整数时抛出。
-   */
-  saveConfig(input: TeamWakeupConfig): void {
-    const minimums: Record<keyof TeamWakeupConfig, number> = {
-      unreadThreshold: 0, pollingInterval: 30, wakeupCooldown: 30, unconsumedWakeupAlertThreshold: 0,
-    }
-    const keys = Object.keys(minimums) as (keyof TeamWakeupConfig)[]
-    if (!input || Object.keys(input).length !== keys.length ||
-      keys.some((key) => !Number.isSafeInteger(input[key]) || input[key] < minimums[key])) {
-      throw new TypeError("Team 唤醒配置无效")
-    }
-    withSessionDatabase(this.path, (db) => db.prepare(
-      "INSERT INTO team_wakeup_config VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET settings = excluded.settings",
-    ).run(JSON.stringify(input)))
-  }
-
-  /** 从同一连接读取配置，保证唤醒判定和入队使用同一快照。 */
-  private configFrom(db: DatabaseSync): TeamWakeupConfig {
-    const row = db.prepare("SELECT settings FROM team_wakeup_config WHERE id = 1").get() as { settings: string } | undefined
-    return row ? JSON.parse(row.settings) as TeamWakeupConfig : { ...DEFAULT_TEAM_WAKEUP_CONFIG }
   }
 
   /** 按 Workspace 验证成员，拒绝跨 Workspace 的身份。 */

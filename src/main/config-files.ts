@@ -6,6 +6,7 @@ import { isAbsolute, join } from "node:path"
 
 import { initializeSessionEventDatabase } from "../../runtime/session/src/event-log.ts"
 import { initializeSessionMetaDatabase } from "../../runtime/session/src/meta-store.ts"
+import { DEFAULT_TEAM_WAKEUP_CONFIG, isTeamWakeupConfig, type TeamWakeupConfig } from "../../runtime/session/src/team-wakeup-config.ts"
 import { checkConfig } from "./config-schema.ts"
 import type { MCPConfig } from "../../runtime/mcp/src/types.ts"
 import { initializeProviderDatabase } from "./provider-store.ts"
@@ -17,7 +18,11 @@ const INITIAL_CONFIG = `${JSON.stringify({
   version: 2,
   mcpServers: [],
   runtime: { userMessageMode: "queue" },
+  teamWakeup: DEFAULT_TEAM_WAKEUP_CONFIG,
 }, null, 2)}\n`
+
+/** 按文件路径串行提交配置更新，避免 Team 和 MCP 同时保存时覆盖彼此。 */
+const pendingConfigWrites = new Map<string, Promise<ValidatedStartupConfig>>()
 /**
  * 启动时确定的 NiCode 配置根目录和各共享数据库路径。
  */
@@ -42,6 +47,8 @@ export interface ValidatedStartupConfig {
   mcpServers: MCPConfig[]
   /** 已校验的全局 Runtime 普通配置。 */
   runtime: { userMessageMode: "insert" | "queue" }
+  /** 已校验的 Team 全局唤醒参数。 */
+  teamWakeup: TeamWakeupConfig
 }
 
 /** 同一次初始化中得到的路径与已校验配置快照。 */
@@ -143,19 +150,62 @@ function checkFile<T>(filePath: string, check: () => T): T {
 export async function readConfigFile(configPath: string): Promise<ValidatedStartupConfig> {
   const config = await readJsonObjectFile(configPath)
   checkFile(configPath, () => checkConfig(config))
-  return config as unknown as ValidatedStartupConfig
+  return { teamWakeup: { ...DEFAULT_TEAM_WAKEUP_CONFIG }, ...config } as unknown as ValidatedStartupConfig
 }
 
 /**
  * 校验并原子替换 MCP 配置，保留本次读取到的其他 V2 字段。
- * @param configPath 已初始化的 config.json 路径；调用方负责串行化读改写流程。
+ * @param configPath 已初始化的 config.json 路径。
  * @param mcpServers 将完整替换的 MCP 配置列表。
  * @returns 已成功写入的配置快照，供同一次操作同步 Runtime。
  * @throws Error 读取、校验或临时文件替换失败；替换失败时保留原文件。
  */
 export async function writeMcpServers(configPath: string, mcpServers: readonly MCPConfig[]): Promise<ValidatedStartupConfig> {
-  const config = { ...await readConfigFile(configPath), mcpServers: structuredClone([...mcpServers]) }
-  checkFile(configPath, () => checkConfig(config))
+  return updateConfigFile(configPath, { mcpServers: structuredClone([...mcpServers]) })
+}
+
+/**
+ * 校验并保存完整唤醒配置，保留文件中最新的其他配置。
+ * @param configPath 已初始化的 config.json 路径。
+ * @param input 设置 IPC 提交的配置。
+ * @returns 磁盘确认保存的唤醒配置。
+ * @throws TypeError 输入结构不合法。读取或写入错误由文件操作抛出。
+ */
+export async function writeTeamWakeupConfig(configPath: string, input: unknown): Promise<TeamWakeupConfig> {
+  if (!isTeamWakeupConfig(input)) throw new TypeError("Team 唤醒配置无效")
+  return (await updateConfigFile(configPath, { teamWakeup: { ...input } })).teamWakeup
+}
+
+/**
+ * 串行读取并提交一次配置变更；单次失败不会阻塞后续写入。
+ * @param configPath 共享的全局配置路径。
+ * @param patch 本次替换的字段；启动补齐时省略。
+ * @returns 已保存的全量快照。
+ */
+function updateConfigFile(configPath: string, patch?: Partial<ValidatedStartupConfig>): Promise<ValidatedStartupConfig> {
+  const saved = Promise.resolve(pendingConfigWrites.get(configPath)).catch(() => undefined).then(async () => {
+    const config = await readJsonObjectFile(configPath)
+    checkFile(configPath, () => checkConfig(config))
+    const updated = { teamWakeup: { ...DEFAULT_TEAM_WAKEUP_CONFIG }, ...config, ...patch } as unknown as ValidatedStartupConfig
+    if (patch || !("teamWakeup" in config)) await replaceConfigFile(configPath, updated)
+    return updated
+  })
+  pendingConfigWrites.set(configPath, saved)
+  const release = () => {
+    if (pendingConfigWrites.get(configPath) === saved) pendingConfigWrites.delete(configPath)
+  }
+  void saved.then(release, release)
+  return saved
+}
+
+/**
+ * 校验并原子替换全局配置文件。
+ * @param configPath 配置文件路径。
+ * @param config 完整配置快照。
+ * @throws Error 校验或替换失败时报告路径。
+ */
+async function replaceConfigFile(configPath: string, config: ValidatedStartupConfig): Promise<void> {
+  checkFile(configPath, () => checkConfig({ ...config }))
   const temporaryPath = `${configPath}.${randomUUID()}.tmp`
   try {
     await writeFile(temporaryPath, `${JSON.stringify(config, null, 2)}\n`, { encoding: "utf8", flag: "wx" })
@@ -163,13 +213,12 @@ export async function writeMcpServers(configPath: string, mcpServers: readonly M
   } catch (error) {
     throw new Error(`无法保存配置文件：${configPath}`, { cause: error })
   } finally { await unlink(temporaryPath).catch(() => undefined) }
-  return config
 }
 
 /**
  * 按启动顺序补齐配置目录、配置文件和四份 SQLite 数据库，并检查全局配置的 V2 结构。
  *
- * 已有全局普通配置不会被覆盖；Skill registry 会按实际来源目录扫描并同步。
+ * 已有合法配置仅在缺少 Team 字段时补齐；Skill registry 会按实际来源目录扫描并同步。
  * 检查失败时由调用方决定如何呈现启动错误。
  *
  * @param userProfile 用户目录；省略时读取当前进程的 USERPROFILE。
@@ -210,8 +259,9 @@ export async function initializeConfigFilesSnapshot(
   const metaDatabasePath = join(rootDir, "meta.sqlite")
 
   await mkdir(rootDir, { recursive: true })
-  const config = await ensureJsonObjectFile(configPath, INITIAL_CONFIG)
-  checkFile(configPath, () => checkConfig(config))
+  const initial = await ensureJsonObjectFile(configPath, INITIAL_CONFIG)
+  checkFile(configPath, () => checkConfig(initial))
+  const config = "teamWakeup" in initial ? initial as unknown as ValidatedStartupConfig : await updateConfigFile(configPath)
 
   if (!options.skipSkills) await mkdir(join(rootDir, "skills"), { recursive: true })
   await mkdir(sessionsDir, { recursive: true })
@@ -233,6 +283,6 @@ export async function initializeConfigFilesSnapshot(
 
   return {
     paths: { rootDir, configPath, providerDatabasePath, workspaceDatabasePath, metaDatabasePath },
-    config: config as unknown as ValidatedStartupConfig,
+    config,
   }
 }

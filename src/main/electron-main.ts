@@ -89,6 +89,7 @@ async function main(): Promise<void> {
     windows,
     tray,
     configPaths: paths,
+    teamWakeup: config.teamWakeup,
     mcpServers: config.mcpServers,
     sessionRuntime: {
       systemPrompt: SYSTEM_PROMPT,

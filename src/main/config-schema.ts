@@ -1,5 +1,7 @@
 /** 全局普通配置的 V2 持久化字段检查。 */
 
+import { isTeamWakeupConfig } from "../../runtime/session/src/team-wakeup-config.ts"
+
 type JsonObject = Record<string, unknown>
 
 /**
@@ -106,7 +108,10 @@ function stringList(value: unknown, field: string): void {
  */
 export function checkConfig(value: JsonObject): void {
   if (value.version !== 2) throw new Error("config.version 必须是 2；旧版配置不会自动迁移。")
-  fields(value, "config", ["version", "mcpServers", "runtime"])
+  fields(value, "config", ["version", "mcpServers", "runtime", "teamWakeup"])
+  if ("teamWakeup" in value && !isTeamWakeupConfig(value.teamWakeup)) {
+    throw new Error("config.teamWakeup 必须包含四个合法的唤醒配置整数。")
+  }
 
   if (!Array.isArray(value.mcpServers)) throw new Error("config.mcpServers 必须是数组。")
   for (const [index, serverValue] of value.mcpServers.entries()) {

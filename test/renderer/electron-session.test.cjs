@@ -616,7 +616,7 @@ async function main() {
   await until(() => evaluate("document.querySelectorAll('.tool-detail').length === 6"))
   assert.deepEqual(await toolSnapshot(), mergedSnapshot, "缓存恢复后的工具结果展示一致")
   const historySession = "merged-tool-history"
-  historyFixtures.set(historySession, { projectId: "default", sessionId: historySession,
+  historyFixtures.set(historySession, { projectId: "default", sessionId: historySession, kind: "ordinary",
     summary: { name: "工具合并历史", updatedAt: "2026-11-02T00:00:00.000Z", sessionId: historySession },
     events: mergedToolHistory.map(event => ({ ...event, sessionId: historySession })), latestSeq: mergedToolHistory.length,
     control: { phase: "idle", throughSeq: mergedToolHistory.length, currentTurn: 3, revision: 1, currentModel: model,

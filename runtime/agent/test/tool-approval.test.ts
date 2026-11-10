@@ -63,6 +63,17 @@ async function testDecisions(): Promise<void> {
   outputs.push(DENY)
   assert.equal(await review(), "denied")
   assert.equal(requests.length, 1)
+  const reviewMember = () => reviewToolCall(adapter, MODEL, CONTEXT, CANDIDATE, async () => [], true)
+  for (const riskLevel of ["low", "medium", "high"]) {
+    requests.length = 0
+    outputs.push(JSON.stringify({ riskLevel, approved: true }))
+    assert.equal(await reviewMember(), riskLevel === "low" ? "approved" : "denied")
+    assert.equal(requests.length, 1)
+  }
+  requests.length = 0
+  outputs.push("invalid", "invalid", "invalid")
+  assert.equal(await reviewMember(), "denied")
+  assert.equal(requests.length, 3)
   for (const invalid of [
     "invalid json", `\`\`\`json\n${APPROVE}\n\`\`\``, APPROVE + "extra",
     '{"riskLevel":"high","approved":true}', '{"riskLevel":"low","approved":"true"}',

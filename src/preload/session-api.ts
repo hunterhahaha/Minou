@@ -22,6 +22,7 @@ import type { AppError } from "../../runtime/error/src/types.ts"
 import type { MCPConfig, MCPConnection } from "../../runtime/mcp/src/types.ts"
 import type { SandboxMode, SessionSettingsPatch } from "../../runtime/session/src/session-state.ts"
 import { isProjectId } from "../../runtime/session/src/project-id.ts"
+import { isTeamWakeupConfig, type TeamWakeupConfig } from "../../runtime/session/src/team-wakeup-config.ts"
 import type { SkillRegistryEntry, SkillSummary, SkillTarget } from "../../runtime/skill/src/index.ts"
 
 export type { SkillRegistryEntry, SkillSummary, SkillTarget }
@@ -103,6 +104,18 @@ export const SESSION_IPC_CHANNELS = {
   decideSessionApproval: "nicode:session:decide-approval",
 } as const
 
+/** 首批 Router 与 Workspace 事件提交后的启动确认通道。 */
+export const START_TEAM_SESSION_CHANNEL = "nicode:session:start-team"
+
+/** 受信任 Renderer 读取与保存全局唤醒参数的固定通道。 */
+export const TEAM_WAKEUP_CHANNELS = {
+  read: "nicode:team:get-wakeup-config",
+  update: "nicode:team:set-wakeup-config",
+} as const
+
+/** 由主进程按持久化身份识别的会话角色。 */
+export type SessionKind = "ordinary" | "router" | "member"
+
 /** 对话控制状态，revision 在同一个主进程内按对话递增。 */
 export interface SessionControl extends Omit<SessionRuntimeSnapshot, "events" | "settings"> {
   /** 控制状态的版本，与持久化事件 seq 分开。 */
@@ -119,6 +132,8 @@ export interface SessionData {
   projectId: string
   /** 对话身份。 */
   sessionId: string
+  /** 该会话实际运行的角色。 */
+  kind: SessionKind
   /** 名称及最近事件时间。 */
   summary: SessionSummary
   /** 已提交的原始事件。 */
@@ -131,7 +146,7 @@ export interface SessionData {
 
 /** 主进程统一推送；内存控制状态不写入 Event Log。 */
 export type SessionUpdate = { projectId: string; sessionId: string } & (
-  | { kind: "event"; event: SessionEvent }
+  | { kind: "event"; event: SessionEvent; sessionKind?: SessionKind }
   | { kind: "state"; control: SessionControl; summary?: SessionSummary }
   | { kind: "error"; stage: "runtime" | "index" | "transport"; error: AppError }
 )
@@ -350,6 +365,12 @@ export interface ModelAppend {
 export interface StartedSessionResponse {
   sessionId: string
   turn: number
+}
+
+/** Router 的首批事件与 Workspace 身份已原子提交。 */
+export interface StartedTeamSessionResponse extends StartedSessionResponse {
+  /** 本 Router 唯一的协作 Workspace ID。 */
+  workspaceId: string
 }
 
 /** 主进程已接受 Session Stop 命令的可序列化确认。 */
@@ -625,6 +646,23 @@ export interface NiCodePreloadApi {
     projectId: string,
     input: StartNewSessionInput,
   ): Promise<StartedSessionResponse>
+  /**
+   * 在指定 Project 中以首条用户消息创建 Router。
+   * @param projectId 所属 Project UUID 或 default。
+   * @param input 首条消息、模型与权限。
+   * @returns 已提交的 Router、Turn 与 Workspace 身份。
+   * @throws Error 首发或返回值校验失败时拒绝。
+   */
+  startTeamSession(projectId: string, input: StartNewSessionInput): Promise<StartedTeamSessionResponse>
+  /** @returns 主进程当前生效的全局 Team 唤醒配置。 */
+  getTeamWakeupConfig(): Promise<TeamWakeupConfig>
+  /**
+   * 保存并应用完整 Team 唤醒配置。
+   * @param config 四项完整设置。
+   * @returns 已保存并应用的配置。
+   * @throws Error 输入、保存或返回值校验失败时拒绝。
+   */
+  setTeamWakeupConfig(config: TeamWakeupConfig): Promise<TeamWakeupConfig>
   /**
    * 在指定 Project 分组中恢复已有 Session。
    *
@@ -1086,6 +1124,27 @@ export function createSessionApi(ipcRenderer: IpcRendererInvokePort): NiCodePrel
       return requireStartedSessionResponse(response)
     },
 
+    async startTeamSession(projectId: string, input: StartNewSessionInput): Promise<StartedTeamSessionResponse> {
+      const response = await ipcRenderer.invoke(START_TEAM_SESSION_CHANNEL, projectId, input)
+      const started = requireStartedSessionResponse(response)
+      if (!isProjectId(started.sessionId) || started.sessionId === "default") {
+        throw new TypeError("主进程返回了无效的 Router 会话身份")
+      }
+      if (!isRecord(response) || !isProjectId(response.workspaceId) || response.workspaceId === "default") {
+        throw new TypeError("主进程返回了无效的 Team Workspace 身份")
+      }
+      return { ...started, workspaceId: response.workspaceId }
+    },
+
+    async getTeamWakeupConfig(): Promise<TeamWakeupConfig> {
+      return requireTeamWakeupConfig(await ipcRenderer.invoke(TEAM_WAKEUP_CHANNELS.read))
+    },
+
+    async setTeamWakeupConfig(config: TeamWakeupConfig): Promise<TeamWakeupConfig> {
+      if (!isTeamWakeupConfig(config)) throw new TypeError("Team 唤醒配置无效")
+      return requireTeamWakeupConfig(await ipcRenderer.invoke(TEAM_WAKEUP_CHANNELS.update, config))
+    },
+
     /**
      * 在指定 Project 分组中恢复已有 Session。
      * @param projectId Session 所属 Project UUID 或 default。
@@ -1251,6 +1310,17 @@ function requireStartedSessionResponse(value: unknown): StartedSessionResponse {
 }
 
 /**
+ * 校验主进程返回的配置快照。
+ * @param value 未知 IPC 返回值。
+ * @returns 完整的 Team 唤醒参数。
+ * @throws TypeError 当任一字段无效时抛出。
+ */
+function requireTeamWakeupConfig(value: unknown): TeamWakeupConfig {
+  if (!isTeamWakeupConfig(value)) throw new TypeError("主进程返回了无效的 Team 唤醒配置")
+  return value
+}
+
+/**
  * 检查入队确认的身份、消息 ID 和文本块，只返回允许的确认字段。
  *
  * @param value 主进程返回的未知入队结果。
@@ -1334,13 +1404,19 @@ function isSessionEvent(value: unknown): value is SessionEvent {
  */
 function requireSessionData(value: unknown): SessionData {
   if (!isRecord(value) || !isProjectId(value.projectId) || typeof value.sessionId !== "string" ||
+      !isSessionKind(value.kind) ||
       !Array.isArray(value.events) || !value.events.every((event, index, events) => isSessionEvent(event) &&
         event.sessionId === value.sessionId && event.seq === index + 1) ||
       value.latestSeq !== (value.events.at(-1)?.seq ?? 0)) throw new TypeError("主进程返回了无效的对话历史")
   const [summary] = requireSessionSummaries([value.summary])
   if (summary.sessionId !== value.sessionId) throw new TypeError("对话摘要身份无效")
-  return { projectId: value.projectId, sessionId: value.sessionId, summary, events: value.events,
+  return { projectId: value.projectId, sessionId: value.sessionId, kind: value.kind, summary, events: value.events,
     latestSeq: value.latestSeq as number, control: requireSessionControl(value.control) }
+}
+
+/** @param value IPC 字段。 @returns 是否为已知的会话角色。 */
+function isSessionKind(value: unknown): value is SessionKind {
+  return value === "ordinary" || value === "router" || value === "member"
 }
 /**
  * 检查主进程推送的事件、状态或错误业务更新。
@@ -1354,6 +1430,9 @@ function requireSessionUpdate(value: unknown): SessionUpdate {
     throw new TypeError("对话更新身份无效")
   }
   if (value.kind === "event" && isSessionEvent(value.event) && value.event.sessionId === value.sessionId) {
+    if ("sessionKind" in value && (value.event.seq !== 1 || !isSessionKind(value.sessionKind))) {
+      throw new TypeError("对话更新角色无效")
+    }
     return value as unknown as SessionUpdate
   }
   if (value.kind === "state") {

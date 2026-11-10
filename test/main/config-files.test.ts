@@ -7,6 +7,8 @@ import { join, resolve, sep } from "node:path"
 import { DatabaseSync } from "node:sqlite"
 
 import { initializeConfigFiles } from "../../src/main/index.ts"
+import { readConfigFile, writeMcpServers, writeTeamWakeupConfig } from "../../src/main/config-files.ts"
+import { DEFAULT_TEAM_WAKEUP_CONFIG } from "../../runtime/session/src/team-wakeup-config.ts"
 import type { ConfigFilePaths } from "../../src/main/index.ts"
 import { listProviders, saveProvider } from "../../src/main/provider-store.ts"
 import { readDefaultWorkspace, saveDefaultWorkspace } from "../../src/main/workspace-store.ts"
@@ -73,6 +75,7 @@ async function main(): Promise<void> {
     assert.deepEqual(listWebSearchProviders(searchDatabasePath), [])
     assert.deepEqual(JSON.parse(await readFile(paths.configPath, "utf8")), {
       version: 2, mcpServers: [], runtime: { userMessageMode: "queue" },
+      teamWakeup: DEFAULT_TEAM_WAKEUP_CONFIG,
     })
     assert.equal((await stat(paths.providerDatabasePath)).isFile(), true)
     assert.deepEqual(listProviders(paths.providerDatabasePath), [])
@@ -95,7 +98,16 @@ async function main(): Promise<void> {
     saveDefaultWorkspace(paths.workspaceDatabasePath, defaultWorkspace)
 
     assert.deepEqual(await initializeConfigFiles(profile), paths)
-    assert.equal(await readFile(paths.configPath, "utf8"), configContent)
+    const initialized = await readFile(paths.configPath, "utf8")
+    assert.deepEqual(JSON.parse(initialized), { ...validConfig, teamWakeup: DEFAULT_TEAM_WAKEUP_CONFIG })
+    await initializeConfigFiles(profile)
+    assert.equal(await readFile(paths.configPath, "utf8"), initialized)
+    const nextMcp = [{ name: "another", enabled: false, transport: "stdio" as const, command: "server" }]
+    const nextTeam = { ...DEFAULT_TEAM_WAKEUP_CONFIG, pollingInterval: 30 }
+    await Promise.all([writeMcpServers(paths.configPath, nextMcp), writeTeamWakeupConfig(paths.configPath, nextTeam)])
+    assert.deepEqual(await readConfigFile(paths.configPath), { ...validConfig, mcpServers: nextMcp, teamWakeup: nextTeam })
+    await assert.rejects(writeTeamWakeupConfig(paths.configPath, { ...nextTeam, pollingInterval: 29 }), /Team 唤醒配置/)
+    assert.deepEqual((await readConfigFile(paths.configPath)).teamWakeup, nextTeam)
     assert.equal(await readFile(credentialsPath, "utf8"), "invalid legacy credentials")
     assert.equal(await readFile(oldWorkspacePath, "utf8"), "legacy workspace content")
     assert.equal(listProviders(paths.providerDatabasePath)[0].id, "example")
@@ -112,6 +124,10 @@ async function main(): Promise<void> {
   await assertInvalidConfig(JSON.stringify({ ...validConfig, providers: [] }), "config.providers 不是 V2 字段")
   await assertInvalidConfig(JSON.stringify({ ...validConfig, defaultModel: "old" }), "config.defaultModel 不是 V2 字段")
   await assertInvalidConfig(JSON.stringify({ ...validConfig, runtime: { userMessageMode: "other" } }), "userMessageMode")
+  for (const teamWakeup of [null, { ...DEFAULT_TEAM_WAKEUP_CONFIG, pollingInterval: 29 },
+    { ...DEFAULT_TEAM_WAKEUP_CONFIG, unreadThreshold: 0.5 }, { ...DEFAULT_TEAM_WAKEUP_CONFIG, extra: 1 }]) {
+    await assertInvalidConfig(JSON.stringify({ ...validConfig, teamWakeup }), "config.teamWakeup")
+  }
   await assertInvalidConfig(JSON.stringify({ ...validConfig, mcpServers: [{ name: "x", enabled: true, transport: "stdio" }] }), ".command")
   await assertInvalidConfig(JSON.stringify({ ...validConfig, apiKey: "secret" }), "config.apiKey 不是 V2 字段")
 

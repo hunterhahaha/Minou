@@ -86,6 +86,8 @@ export interface ElectronStartupOptions {
   tray?: Pick<ElectronTray, "available" | "start" | "showMainWindow" | "beginQuit">
   /** 启动入口已经初始化并校验的配置路径。 */
   configPaths: ConfigFilePaths
+  /** 启动阶段从 config.json 读取的 Team 唤醒参数。 */
+  teamWakeup: ValidatedStartupConfig["teamWakeup"]
   /** 真实桌面入口传入待连接的 MCP 配置；其它宿主可以自行初始化。 */
   mcpServers?: ValidatedStartupConfig["mcpServers"]
   /** 每个 Project Session 共用的 Runtime 宿主依赖。 */
@@ -112,7 +114,7 @@ export interface ElectronStartupOptions {
 export async function startElectronApp(options: ElectronStartupOptions): Promise<void> {
   const sessionsDirectory = join(options.configPaths.rootDir, "sessions")
   const eventsPath = join(options.configPaths.rootDir, "events.sqlite")
-  const team = new TeamMode(eventsPath, options.onSessionCompletionFailure,
+  const team = new TeamMode(eventsPath, options.configPaths.configPath, options.teamWakeup, options.onSessionCompletionFailure,
     (projectId, sessionId) => options.sessionRuntime.global.closeSessionTerminals(projectId, sessionId))
   let processesDisposed = false
   let disposingProcesses = false

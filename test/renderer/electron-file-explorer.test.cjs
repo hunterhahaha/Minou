@@ -88,7 +88,7 @@ async function main() {
     registerStartupDataIpcHandlers(trusted, paths)
     registerWindowIpcHandlers(trusted, BrowserWindow)
     trusted.handle(SESSION_IPC_CHANNELS.getSessionData, (_event, projectId, sessionId) => ({
-      projectId, sessionId, events: [], latestSeq: 0,
+      projectId, sessionId, kind: "ordinary", events: [], latestSeq: 0,
       summary: { sessionId, name: "另一个对话", updatedAt: new Date().toISOString() },
       control: { revision: 0, throughSeq: 0, sandboxMode: "sandbox-full-access", phase: "idle", currentTurn: 0, pendingMessages: [], discardedMessages: [] },
     }))

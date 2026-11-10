@@ -1,11 +1,14 @@
 import assert from "node:assert/strict"
 
 import type { ModelRef } from "../../runtime/model/src/types.ts"
+import { DEFAULT_TEAM_WAKEUP_CONFIG } from "../../runtime/session/src/team-wakeup-config.ts"
 import {
   createSessionApi,
   exposeSessionApi,
   NICODE_PRELOAD_GLOBAL,
   SESSION_IPC_CHANNELS,
+  START_TEAM_SESSION_CHANNEL,
+  TEAM_WAKEUP_CHANNELS,
   STARTUP_DATA_IPC_CHANNELS,
   PROJECT_IPC_CHANNELS,
   PROVIDER_IPC_CHANNELS,
@@ -217,8 +220,30 @@ async function testExposesOnlyNiCodeApi(): Promise<void> {
     ["getSessionData", "onSessionUpdate", "renameProject", "renameSession", "exportSessionMarkdown", "updateSessionSettings", "decideSessionApproval", "addProjectDirectory", "continueSession", "createModel", "createProject", "createCompatibleProvider", "createCustomProvider", "listCompatibleProviders", "deleteModel", "deleteProvider", "enqueueSessionMessage", "listDefaultSessions", "listProjects", "listProviders", "removeProjectDirectory", "selectDirectory", "setDefaultModel", "startNewSession", "stopSession", "updateApiKey", "updateModel", "updateProvider",
       "listMcpServers", "createMcpServer", "updateMcpServer", "deleteMcpServer", "reloadMcpServers", "listSkills", "setSkillEnabled",
       "listWebSearchProviderDefinitions", "listWebSearchProviders", "getWebSearchProvider", "createWebSearchProvider",
-      "updateWebSearchProvider", "deleteWebSearchProvider", "setActiveWebSearchProvider"].sort(),
+      "updateWebSearchProvider", "deleteWebSearchProvider", "setActiveWebSearchProvider",
+      "startTeamSession", "getTeamWakeupConfig", "setTeamWakeupConfig"].sort(),
   )
+}
+
+/** 校验 Team 首发和唤醒配置只走指定通道，拒绝无效输入和返回值。 */
+async function testTeamApi(): Promise<void> {
+  const calls: unknown[][] = []
+  const started = { sessionId: "00000000-0000-4000-8000-000000000020", turn: 1, workspaceId: "00000000-0000-4000-8000-000000000021" }
+  const config = { ...DEFAULT_TEAM_WAKEUP_CONFIG, pollingInterval: 31 }
+  const api = createSessionApi({ invoke: async (channel, ...args) => {
+    calls.push([channel, ...args])
+    if (channel === START_TEAM_SESSION_CHANNEL) return started
+    return channel === TEAM_WAKEUP_CHANNELS.read ? DEFAULT_TEAM_WAKEUP_CONFIG : args[0]
+  } })
+  const input = { content: CONTENT, model: MODEL }
+  assert.deepEqual(await api.startTeamSession(PROJECT_ID, input), started)
+  assert.deepEqual(await api.getTeamWakeupConfig(), DEFAULT_TEAM_WAKEUP_CONFIG)
+  assert.deepEqual(await api.setTeamWakeupConfig(config), config)
+  await assert.rejects(api.setTeamWakeupConfig({ ...config, pollingInterval: 29 }), /配置无效/)
+  assert.deepEqual(calls, [[START_TEAM_SESSION_CHANNEL, PROJECT_ID, input], [TEAM_WAKEUP_CHANNELS.read], [TEAM_WAKEUP_CHANNELS.update, config]])
+  const invalid = createSessionApi({ invoke: async () => ({ ...started, workspaceId: "default" }) })
+  await assert.rejects(invalid.startTeamSession(PROJECT_ID, input), /Workspace/)
+  await assert.rejects(invalid.getTeamWakeupConfig(), /唤醒配置/)
 }
 
 async function testRejectsInvalidMainResponse(): Promise<void> {
@@ -289,6 +314,7 @@ async function testRejectsInvalidMainResponse(): Promise<void> {
 async function main(): Promise<void> {
   await testCallsFixedChannels()
   await testExposesOnlyNiCodeApi()
+  await testTeamApi()
   await testRejectsInvalidMainResponse()
   console.log("session-api.test.ts: preload Session API 断言通过")
 }

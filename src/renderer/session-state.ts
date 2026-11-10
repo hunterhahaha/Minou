@@ -2,12 +2,14 @@
 import type { JSONContent } from "@tiptap/core"
 import type { AssistantContentBlock, ModelTextBlock } from "../../runtime/model/src/types.ts"
 import type { SessionEvent } from "../../runtime/session/src/events.ts"
-import type { NiCodePreloadApi, SessionControl, SessionData, SessionSummary, SessionUpdate } from "../preload/session-api.ts"
+import type { NiCodePreloadApi, SessionControl, SessionData, SessionKind, SessionSummary, SessionUpdate } from "../preload/session-api.ts"
 
 /** 联合身份使用 JSON 数组编码。 */
 export type SessionKey = string
 /** 摘要、控制快照与操作状态独立于原始历史保存。 */
 export interface SessionView {
+  /** 主进程确认的会话角色，用于同步顶部模式。 */
+  kind?: SessionKind
   /** 历史查询或实时状态更新返回的摘要。 */
   summary?: SessionSummary
   /** 摘要来源的版本；控制更新可以独立推进。 */
@@ -149,6 +151,7 @@ export class WorkspaceSessionState {
     this.sessionEventsByKey[key] = mergeSessionEvents(data.events, this.sessionEventsByKey[key] ?? [], this.pendingEventsRef.get(key) ?? [])
     this.pendingEventsRef.delete(key)
     const view = this.view(key)
+    view.kind = data.kind
     if (data.control.revision > (view.summaryRevision ?? -1)) {
       view.summary = data.summary
       view.summaryRevision = data.control.revision
@@ -163,6 +166,7 @@ export class WorkspaceSessionState {
   receive(update: SessionUpdate): void {
     const key = sessionKey(update.projectId, update.sessionId)
     if (update.kind === "event") {
+      if (update.sessionKind !== undefined) this.view(key).kind = update.sessionKind
       if (this.has(key) || update.event.seq === 1) {
         this.sessionEventsByKey[key] = mergeSessionEvents(this.sessionEventsByKey[key] ?? [], this.pendingEventsRef.get(key) ?? [], [update.event])
         this.pendingEventsRef.delete(key)

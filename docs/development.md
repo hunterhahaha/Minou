@@ -115,6 +115,7 @@ $testProcess.ExitCode
 根据改动选择入口，使用同一启动方式替换测试文件：
 
 - `test/renderer/electron-session.test.cjs`：真实对话页面与流式内容。
+- `test/renderer/electron-team-mode.test.cjs`：顶部切换、普通与 Router 首发、混合历史、成员摘要排除、草稿恢复及 Team 设置，使用临时配置和离线模型。
 - `test/renderer/electron-approval.test.cjs`：人工审批交互、两个桌面权限入口和自动审核结果。离线审核校验与请求边界见 `runtime/agent/test/tool-approval.test.ts`，真实 Session 与文件和进程权限见 `runtime/agent/test/auto-approval-turn.test.ts`，动态 MCP 的审核见 `runtime/agent/test/mcp-turn.test.ts`。
 - `test/renderer/electron-default-model.test.cjs`：默认模型保存与发送边界。
 - `test/renderer/electron-mcp-settings.test.cjs`：MCP 配置与页面。

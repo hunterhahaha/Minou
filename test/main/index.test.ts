@@ -2,6 +2,7 @@ import { requestMessages } from "../../runtime/model/test/helpers.ts"
 /** Electron 主进程启动装配的配置、IPC、Runtime 与窗口生命周期测试。 */
 
 import assert from "node:assert/strict"
+import { DEFAULT_TEAM_WAKEUP_CONFIG } from "../../runtime/session/src/team-wakeup-config.ts"
 import { mkdir, mkdtemp, readdir, rm, stat } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve, sep } from "node:path"
@@ -24,11 +25,12 @@ import type { SessionEvent } from "../../runtime/session/src/events.ts"
 import type { CurrentSessionBaseline } from "../../runtime/session/src/session-state.ts"
 import { INITIAL_SESSION_NAME, initializeSessionMetaDatabase, readSessionMeta } from "../../runtime/session/src/meta-store.ts"
 import { initializeSessionEventDatabase } from "../../runtime/session/src/event-log.ts"
-import { START_TEAM_SESSION_CHANNEL, TEAM_WAKEUP_CHANNELS } from "../../src/main/session-ipc.ts"
 import { initializeWorkspaceDatabase, readDefaultWorkspace, readProjectWorkspace, saveProjectWorkspace } from "../../src/main/workspace-store.ts"
 import type { SessionData, SessionUpdate } from "../../src/preload/session-api.ts"
 import {
   SESSION_IPC_CHANNELS,
+  START_TEAM_SESSION_CHANNEL,
+  TEAM_WAKEUP_CHANNELS,
   STARTUP_DATA_IPC_CHANNELS,
   PROJECT_IPC_CHANNELS,
   PROVIDER_IPC_CHANNELS,
@@ -210,6 +212,7 @@ function startupFixture(
     ipcMain,
     dialog: { showOpenDialog: async () => ({ canceled: true, filePaths: [] }) },
     windows,
+    teamWakeup: DEFAULT_TEAM_WAKEUP_CONFIG,
     configPaths: {
       rootDir: join(profile, ".nicode"),
       configPath: join(profile, ".nicode", "config.json"),

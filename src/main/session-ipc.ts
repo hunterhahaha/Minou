@@ -7,14 +7,14 @@ import type { AssistantContentBlock } from "../../runtime/model/src/types.ts"
 import type { SessionEvent, UserMessageContent } from "../../runtime/session/src/events.ts"
 import { DEFAULT_SESSION_SANDBOX_MODE, SANDBOX_MODES, type SandboxMode, type SessionSettingsPatch } from "../../runtime/session/src/session-state.ts"
 import { listRunnableQueues, SessionMessageQueue } from "../../runtime/session/src/message-queue.ts"
-import { insertTeamWorkspace, type TeamIdentity, type TeamWakeupConfig } from "../../runtime/session/src/team-store.ts"
+import { insertTeamWorkspace, type TeamIdentity } from "../../runtime/session/src/team-store.ts"
 import type { TeamMode } from "./team-mode.ts"
 import { join } from "node:path"
 import { SessionRuntime } from "../../runtime/agent/src/session-runtime.ts"
 import type { SessionRuntimeProcessing, SessionRuntimeSnapshot, StartNewSessionInput } from "../../runtime/agent/src/session-runtime.ts"
 import { INITIAL_SESSION_NAME, updateSessionMetaNameIfDefault } from "../../runtime/session/src/meta-store.ts"
-import { SESSION_IPC_CHANNELS } from "../preload/session-api.ts"
-import type { SessionControl, SessionData, SessionSummary, SessionUpdate } from "../preload/session-api.ts"
+import { SESSION_IPC_CHANNELS, START_TEAM_SESSION_CHANNEL, TEAM_WAKEUP_CHANNELS } from "../preload/session-api.ts"
+import type { SessionControl, SessionData, SessionKind, SessionSummary, SessionUpdate } from "../preload/session-api.ts"
 import type { ConfigFilePaths } from "./config-files.ts"
 import { reconcileWorkspaceSessions } from "./workspace-store.ts"
 import { validateMessageFileReferences } from "./file-explorer-ipc.ts"
@@ -63,14 +63,6 @@ export type HandleSessionCompletionFailure = (failure: SessionCompletionFailure)
 export type CreateSessionRuntime = (
   projectId: ProjectId, sessionId: string, onStateChanged?: () => void, teamIdentity?: TeamIdentity,
 ) => SessionRuntime
-
-/** Team 首发 IPC，由受信任的桌面 IPC 注册，不修改 preload。 */
-export const START_TEAM_SESSION_CHANNEL = "nicode:session:start-team"
-/** 主进程 Team 唤醒配置入口，供后续设置界面接入。 */
-export const TEAM_WAKEUP_CHANNELS = {
-  read: "nicode:team:get-wakeup-config",
-  update: "nicode:team:set-wakeup-config",
-} as const
 
 /** 主进程持有的桌面会话调度入口。 */
 export interface SessionDispatch {
@@ -244,12 +236,13 @@ export function registerSessionIpcHandlers(
    * @param projectId 分组。
    * @param runtime 活动实例。
    * @param run 首轮提交和活动期完成任务。
+   * @param sessionKind 当前持久化角色，供接收到首个事件的窗口直接识别。
    */
-  function observe(projectId: ProjectId, runtime: SessionRuntime, run: SessionRuntimeProcessing): void {
+  function observe(projectId: ProjectId, runtime: SessionRuntime, run: SessionRuntimeProcessing, sessionKind: SessionKind): void {
     const key = keyOf(projectId, runtime.sessionId)
     const consuming = (async () => {
       for await (const event of runtime.events) {
-        await send({ kind: "event", projectId, sessionId: runtime.sessionId, event })
+        await send({ kind: "event", projectId, sessionId: runtime.sessionId, event, ...(event.seq === 1 && { sessionKind }) })
         if (event.type === "user/message" || event.type === "turn/end") await index(projectId, runtime)
       }
     })().catch((error) => report(projectId, runtime, "runtime", error))
@@ -286,7 +279,7 @@ export function registerSessionIpcHandlers(
       const identity = team?.store.identity(projectId, sessionId)
       if (identity?.role === "member" && team?.store.status(identity) === "closed") return
       const runtime = createActive(projectId, sessionId)
-      try { observe(projectId, runtime, runtime.processMessageQueue()) }
+      try { observe(projectId, runtime, runtime.processMessageQueue(), identity?.role ?? "ordinary") }
       catch (error) { activeSessions.delete(key); runtime.close(); throw error }
     }).catch((error) => onCompletionFailure({ sessionId, turn: 0, error }))
   }
@@ -341,7 +334,7 @@ export function registerSessionIpcHandlers(
             onCompletionFailure({ sessionId, turn: 1, error })
           }
         }, identity && ((db) => insertTeamWorkspace(db, identity)))
-        observe(projectId, runtime, runtime.processMessageQueue(started))
+        observe(projectId, runtime, runtime.processMessageQueue(started), identity?.role ?? "ordinary")
         await index(projectId, runtime)
         return { sessionId, turn: started.turn, ...(identity && { workspaceId: identity.workspaceId }) }
       } catch (error) { activeSessions.delete(key); runtime.close(); throw error }
@@ -351,17 +344,15 @@ export function registerSessionIpcHandlers(
   if (team) {
     ipcMain.handle(START_TEAM_SESSION_CHANNEL, (_event, projectId, input) => start(projectId, input, team))
     ipcMain.handle(TEAM_WAKEUP_CHANNELS.read, () => team.readConfig())
-    ipcMain.handle(TEAM_WAKEUP_CHANNELS.update, (_event, input) => {
-      if (!isRecord(input)) throw new TypeError("Team 唤醒配置无效")
-      return team.updateConfig(input as unknown as TeamWakeupConfig)
-    })
+    ipcMain.handle(TEAM_WAKEUP_CHANNELS.update, (_event, input) => team.updateConfig(input))
   }
   ipcMain.handle(SESSION_IPC_CHANNELS.continueSession, async (_event, rawProjectId, rawSessionId, rawInput) => {
     const projectId = requireProjectId(rawProjectId), sessionId = requireSessionId(rawSessionId)
     const rawMessage = requireContinueSessionInput(rawInput)
     const key = keyOf(projectId, sessionId)
     return serial(key, async () => {
-      if (team?.store.identity(projectId, sessionId)?.role === "member") throw new Error("Team Session 任务由所属 Router 派发")
+      const kind = team?.store.identity(projectId, sessionId)?.role ?? "ordinary"
+      if (kind === "member") throw new Error("Team Session 任务由所属 Router 派发")
       if (activeSessions.has(key)) throw new Error(`Session 正在运行，请使用 enqueueSessionMessage：${sessionId}`)
       const input = await messageContent(projectId, rawMessage)
       const runtime = createActive(projectId, sessionId)
@@ -369,7 +360,7 @@ export function registerSessionIpcHandlers(
         await runtime.readEvents()
         runtime.enqueueSessionMessage(input, true)
         const run = runtime.processMessageQueue()
-        observe(projectId, runtime, run)
+        observe(projectId, runtime, run, kind)
         const started = await run.started
         return { sessionId, turn: started.turn }
       } catch (error) { activeSessions.delete(key); runtime.close(); throw error }
@@ -408,7 +399,8 @@ export function registerSessionIpcHandlers(
     return serial(key, () => withRuntime(projectId, sessionId, async (runtime) => {
       const snapshot = await runtime.readSnapshot()
       const last = snapshot.events.at(-1)
-      return { projectId, sessionId, events: snapshot.events.map(publicSessionEvent), latestSeq: last?.seq ?? 0,
+      const kind = team?.store.identity(projectId, sessionId)?.role ?? "ordinary"
+      return { projectId, sessionId, kind, events: snapshot.events.map(publicSessionEvent), latestSeq: last?.seq ?? 0,
         summary: { sessionId, name: snapshot.settings.name || INITIAL_SESSION_NAME, updatedAt: last?.createdAt ?? new Date().toISOString() },
         control: controlOf(key, snapshot) }
     }))

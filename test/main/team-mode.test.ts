@@ -5,18 +5,19 @@ import { join, resolve, sep } from "node:path"
 import { setTimeout as sleep } from "node:timers/promises"
 import { createAbortError } from "../../runtime/error/src/abort.ts"
 import type { ModelAdapter, ModelRef } from "../../runtime/model/src/types.ts"
-import { createFileSessionEventLog, initializeSessionEventDatabase } from "../../runtime/session/src/event-log.ts"
+import { createFileSessionEventLog } from "../../runtime/session/src/event-log.ts"
+import { requestMessages } from "../../runtime/model/test/helpers.ts"
 import { sessionTransaction, SessionMessageQueue, withSessionDatabase } from "../../runtime/session/src/message-queue.ts"
 import { insertTeamWorkspace, TeamStore } from "../../runtime/session/src/team-store.ts"
 import { RenderRegistry, ToolRegistry, registerTool } from "../../runtime/tools/src/tool-registry.ts"
-import { initializeConfigFiles } from "../../src/main/config-files.ts"
+import { initializeConfigFilesSnapshot, readConfigFile } from "../../src/main/config-files.ts"
 import { loadFileAccessState } from "../../src/main/file-access.ts"
 import { startElectronApp, type ElectronAppLifecycleEvent } from "../../src/main/index.ts"
-import { START_TEAM_SESSION_CHANNEL, TEAM_WAKEUP_CHANNELS, type SessionCompletionFailure } from "../../src/main/session-ipc.ts"
+import type { SessionCompletionFailure } from "../../src/main/session-ipc.ts"
 import { SessionRuntimeGlobal } from "../../src/main/session-runtime-global.ts"
 import { TeamMode } from "../../src/main/team-mode.ts"
 import { readDefaultWorkspace } from "../../src/main/workspace-store.ts"
-import { SESSION_IPC_CHANNELS, type SessionData, type SessionUpdate } from "../../src/preload/session-api.ts"
+import { SESSION_IPC_CHANNELS, START_TEAM_SESSION_CHANNEL, TEAM_WAKEUP_CHANNELS, type SessionData, type SessionUpdate } from "../../src/preload/session-api.ts"
 
 const MODEL: ModelRef = { providerId: "offline", protocol: "responses", modelId: "script", name: "Fake model", reasoningLevel: "medium" }
 const message = (text: string) => ({ content: [{ type: "text" as const, text }] })
@@ -38,12 +39,13 @@ async function until<T>(condition: () => T | undefined | false): Promise<T> {
 
 /**
  * 记录实际轮询定时任务，通过手动触发回调验证配置变化和恢复。
- * @param path 隔离的 SQLite 数据库。
+ * @param profile 隔离的用户目录。
  */
-async function testPolling(path: string): Promise<void> {
-  await initializeSessionEventDatabase(path, true)
-  const mode = new TeamMode(path, ({ error }) => { throw error })
-  const resumed = new TeamMode(path, ({ error }) => { throw error })
+async function testPolling(profile: string): Promise<void> {
+  const { paths, config } = await initializeConfigFilesSnapshot(profile)
+  const path = join(paths.rootDir, "events.sqlite")
+  const mode = new TeamMode(path, paths.configPath, config.teamWakeup, ({ error }) => { throw error })
+  let resumed: TeamMode | undefined
   const originalTimeout = globalThis.setTimeout
   const timers: { delay: number; run: () => void; handle: NodeJS.Timeout }[] = []
   const kicks: string[] = []
@@ -67,7 +69,7 @@ async function testPolling(path: string): Promise<void> {
     const targetId = mode.store.createMember(router, settings)
     mode.restore()
     assert.deepEqual(timers.map(({ delay }) => delay), [60_000])
-    mode.updateConfig({ ...mode.readConfig(), pollingInterval: 30 })
+    await mode.updateConfig({ ...mode.readConfig(), pollingInterval: 30 })
     assert.deepEqual(timers.map(({ delay }) => delay), [60_000, 30_000])
     const author = mode.store.identity("default", authorId)!
     mode.store.publish(author, { name: "progress", description: "summary", body: "body", mentions: [] })
@@ -76,6 +78,8 @@ async function testPolling(path: string): Promise<void> {
     timers[1].run()
     assert.deepEqual(kicks, [targetId], "重排后的轮询检查未读")
     mode.shutdown()
+    const reloaded = await initializeConfigFilesSnapshot(profile)
+    resumed = new TeamMode(path, paths.configPath, reloaded.config.teamWakeup, ({ error }) => { throw error })
     resumed.connect(dispatch)
     resumed.restore()
     assert.equal(new SessionMessageQueue(path, "default", targetId).read()[0].origin, "blackboard")
@@ -86,7 +90,7 @@ async function testPolling(path: string): Promise<void> {
     assert.equal(resumed.store.status(resumed.store.identity("default", idleId)!), "idle")
   } finally {
     mode.shutdown()
-    resumed.shutdown()
+    resumed?.shutdown()
     for (const { handle } of timers) clearTimeout(handle)
     globalThis.setTimeout = originalTimeout
   }
@@ -98,8 +102,8 @@ async function main(): Promise<void> {
   const listeners = new Map<ElectronAppLifecycleEvent, (event?: { preventDefault(): void }) => void>()
   let quit = false
   try {
-    const paths = await initializeConfigFiles(root)
-    await testPolling(join(root, "polling.sqlite"))
+    const { paths, config: startupConfig } = await initializeConfigFilesSnapshot(root)
+    await testPolling(join(root, "polling"))
     const databasePath = join(paths.rootDir, "events.sqlite")
     const store = new TeamStore(databasePath)
     const interruptedId = "interrupted"
@@ -117,7 +121,7 @@ async function main(): Promise<void> {
     const modelInputs: string[] = []
     let memberId = ""
     let callNumber = 0
-    let approval: Promise<unknown> | undefined
+    const approvalRisks: string[] = []
     let releaseFailure!: () => void
     const failureGate = new Promise<void>((release) => { releaseFailure = release })
     const tools = new ToolRegistry()
@@ -137,7 +141,19 @@ async function main(): Promise<void> {
       contextWindow: 128_000, maxOutputTokens: 4_096,
       async *stream(request, signal) {
         const history = request.context.history
-        if (history === undefined) { yield { type: "stream_end", completion: "finished" }; return }
+        if (history === undefined) {
+          if (request.toolChoice === "none" && String(requestMessages(request)[0]?.content).includes("team_context")) {
+            const material = JSON.parse(String(requestMessages(request)[1].content))
+            assert.equal(material.turnContext[0].role, "team_context")
+            assert.ok(material.turnContext.every(({ role }: { role: string }) => role !== "user"))
+            const riskLevel = JSON.stringify(material).includes("first assignment") ? "medium" : "low"
+            approvalRisks.push(riskLevel)
+            yield { type: "block_start", index: 0, blockType: "text" }
+            yield { type: "block_end", index: 0, block: { type: "text", text: JSON.stringify({ riskLevel, approved: true }) } }
+          }
+          yield { type: "stream_end", completion: "finished" }
+          return
+        }
         const user = history.events.filter((event) => event.type === "user/message").at(-1)
         assert.ok(user)
         const text = user.content.map((block) => block.text).join("\n")
@@ -190,8 +206,12 @@ async function main(): Promise<void> {
             assert.match(results[1].content[0].text, /#1/)
             call = { name: "communication", arguments: { event: "request_authorization", message: "continue?" } }
           }
-        } else if (text === "approved assignment" && results.length === 0) {
-          call = { name: "communication", arguments: { event: "report_completion", message: "done" } }
+        } else if (text === "approved assignment") {
+          if (results.length === 0) call = { name: "write", arguments: {} }
+          else if (results.length === 1) {
+            assert.match(results[0].content[0].text, /approved/)
+            call = { name: "communication", arguments: { event: "report_completion", message: "done" } }
+          }
         } else if (text === "role boundary") {
           if (!results.length) call = { name: "blackboard", arguments: { mode: "unread" } }
           else if (results.length === 1) call = { name: "communication", arguments: { event: "report_completion", message: "invalid" } }
@@ -217,14 +237,9 @@ async function main(): Promise<void> {
       ipcMain: { handle: (channel, handler) => { handlers.set(channel, handler) } },
       windows: { createMainWindow: () => {}, hasOpenWindows: () => true },
       dialog: { showOpenDialog: async () => ({ canceled: true, filePaths: [] }) },
-      configPaths: paths, sessionRuntime: { systemPrompt: "Offline", global },
+      configPaths: paths, teamWakeup: startupConfig.teamWakeup, sessionRuntime: { systemPrompt: "Offline", global },
       onSessionCompletionFailure: (failure) => { failures.push(failure) },
-      sessionEventForwarding: { sendSessionUpdateToRenderer: (update) => {
-        updates.push(update)
-        if (update.kind === "event" && update.event.type === "approval/request") {
-          approval = invoke(SESSION_IPC_CHANNELS.decideSessionApproval, update.projectId, update.sessionId, update.event.approvalId, "denied")
-        }
-      } },
+      sessionEventForwarding: { sendSessionUpdateToRenderer: (update) => { updates.push(update) } },
     })
 
     const ended = (id: string, turn: number) => updates.some((update) => update.sessionId === id &&
@@ -243,12 +258,20 @@ async function main(): Promise<void> {
     assert.equal(store.identity("default", team.sessionId)?.workspaceId, team.workspaceId)
     const identity = await until(() => memberId ? store.identity("default", memberId) : undefined)
     await until(() => store.status(identity) === "closed" && ended(team.sessionId, 3) && ended(memberId, 2))
-    assert.deepEqual(await approval, { accepted: true })
+    assert.deepEqual(approvalRisks, ["medium", "low"])
+    for (const [id, kind] of [[team.sessionId, "router"], [memberId, "member"]]) {
+      assert.ok(updates.some((update) => update.sessionId === id && update.kind === "event" &&
+        update.event.seq === 1 && update.sessionKind === kind))
+    }
+    assert.ok(!updates.some((update) => update.sessionId === memberId &&
+      update.kind === "event" && update.event.type.startsWith("approval/")))
     assert.ok(readDefaultWorkspace(paths.workspaceDatabasePath).sessions.some(({ id }) => id === team.sessionId))
     assert.ok(!readDefaultWorkspace(paths.workspaceDatabasePath).sessions.some(({ id }) => id === memberId))
     assert.deepEqual(withSessionDatabase(paths.metaDatabasePath, (db) =>
       db.prepare("SELECT kind FROM session_meta WHERE session_id = ?").get(team.sessionId)?.kind), "router")
     const memberData = await invoke<SessionData>(SESSION_IPC_CHANNELS.getSessionData, "default", memberId)
+    assert.equal(memberData.kind, "member")
+    assert.equal((await invoke<SessionData>(SESSION_IPC_CHANNELS.getSessionData, "default", team.sessionId)).kind, "router")
     assert.equal(memberData.events.filter(({ type }) => type === "user/message").length, 2)
     await assert.rejects(invoke(SESSION_IPC_CHANNELS.continueSession, "default", memberId, message("invalid")), /Router/)
     await until(() => idle(team.sessionId))
@@ -290,7 +313,7 @@ async function main(): Promise<void> {
     assert.equal(config.pollingInterval, 60)
     await assert.rejects(invoke(TEAM_WAKEUP_CHANNELS.update, { ...config, pollingInterval: 29 }), /配置/)
     await invoke(TEAM_WAKEUP_CHANNELS.update, { ...config, pollingInterval: 30 })
-    assert.equal(store.config().pollingInterval, 30)
+    assert.equal((await readConfigFile(paths.configPath)).teamWakeup.pollingInterval, 30)
   } finally {
     const shutdown = listeners.get("before-quit")
     if (shutdown && !quit) {

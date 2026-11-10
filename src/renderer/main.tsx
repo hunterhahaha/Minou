@@ -3,7 +3,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react"
 import { BrowserWorkspace, TagManager } from "./chat-browser.tsx"
 import { createPortal } from "react-dom"
 import { createRoot } from "react-dom/client"
-import { HashRouter, Navigate, Outlet, Route, Routes, useMatch, useNavigate, useParams, useOutletContext } from "react-router"
+import { HashRouter, Navigate, Outlet, Route, Routes, useMatch, useNavigate, useParams, useOutletContext, useSearchParams } from "react-router"
 import {
   IconChevronDown,
   IconDots,
@@ -39,6 +39,8 @@ import "./workspace.css"
 
 /** 一项启动数据的加载、成功或失败状态。 */
 type LoadState<T> = { status: "loading" } | { status: "ready"; value: T } | { status: "error" }
+/** 决定新会话首发的工作台模式。 */
+type WorkspaceMode = "chat" | "work"
 /** 当前页面及其工作区范围；Session 页面同时携带 Project 和 Session 身份。 */
 type WorkspaceRoute =
   | { page: "new-chat"; group: "default" }
@@ -148,6 +150,9 @@ function SessionRoute() {
     void state.load(projectId, sessionId).catch(() => {})
   }, [state, projectId, sessionId])
   if (projectId === undefined || sessionId === undefined) return null
+  if (state.view(sessionKey(projectId, sessionId)).kind === "member") {
+    return <p className="data-status">该成员会话由所属 Router 管理。</p>
+  }
   return <SessionPage projectId={projectId} sessionId={sessionId} state={state} providers={providers}
       onOpenFile={(file) => browserTags.openFileReference(sessionId, file)}
       onOpenWeb={(url) => browserTags.openWeb(sessionId, url)}
@@ -171,6 +176,7 @@ function DataStatus({ state, retry }: { state: LoadState<unknown>; retry: () => 
  */
 function Workspace() {
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
   const projectNewChatMatch = useMatch("/projects/:projectId/new-chat")
   const sessionMatch = useMatch("/sessions/:projectId/:sessionId")
   const workspaceRoute: WorkspaceRoute = sessionMatch === null
@@ -191,7 +197,15 @@ function Workspace() {
   const [, setSessionVersion] = useState(0)
   const [sessionsState] = useState(() => new WorkspaceSessionState(window.nicode, () => setSessionVersion((version) => version + 1)))
   const groupId = workspaceRoute.group === "project" ? workspaceRoute.projectId : "default"
-  const newDraftKey = sessionKey(groupId, "$new-chat")
+  const draftMode: WorkspaceMode = searchParams.get("mode") === "work" ? "work" : "chat"
+  const currentKind = workspaceRoute.page === "session"
+    ? sessionsState.view(sessionKey(groupId, workspaceRoute.sessionId)).kind
+    : undefined
+  const activeMode = workspaceRoute.page === "new-chat" ? draftMode
+    : currentKind === "router" ? "work" : currentKind === "ordinary" ? "chat" : undefined
+  const newConversationLabel = activeMode === "work" ? "新团队会话" : "新聊天"
+  const createConversationLabel = activeMode === "work" ? "新建团队会话" : "新建聊天"
+  const newDraftKey = sessionKey(groupId, draftMode === "work" ? "$new-work" : "$new-chat")
   const [, setBrowserVersion] = useState(0)
   const [browserTags] = useState(() => new TagManager(() => setBrowserVersion((version) => version + 1)))
   useEffect(() => window.nicodeBrowser?.onWebTagState((update) => browserTags.receive(update)), [browserTags])
@@ -444,13 +458,24 @@ function Workspace() {
   /**
    * 切换到 default 或指定 Project 的新聊天路由。
    * @param projectId 指定时表示项目分组；省略时表示 default 分组。
+   * @param mode 首发模式，默认延续当前模式。
    * @returns 导航完成时无返回值。
    */
-  function navigateToNewChat(projectId?: string): void {
+  function navigateToNewChat(projectId?: string, mode: WorkspaceMode = activeMode ?? "chat"): void {
     setOpenMenu(null)
-    navigate(projectId === undefined
+    const path = projectId === undefined
       ? "/default/new-chat"
-      : `/projects/${encodeURIComponent(projectId)}/new-chat`)
+      : `/projects/${encodeURIComponent(projectId)}/new-chat`
+    navigate(mode === "work" ? path + "?mode=work" : path)
+  }
+
+  /**
+   * 在当前分组打开目标模式的新会话页，保留各自草稿。
+   * @param mode 目标模式。
+   */
+  function switchMode(mode: WorkspaceMode): void {
+    if (activeMode === mode || (workspaceRoute.page === "new-chat" && sessionsState.view(newDraftKey).busy)) return
+    navigateToNewChat(groupId === "default" ? undefined : groupId, mode)
   }
 
   /**
@@ -608,13 +633,13 @@ function Workspace() {
     }
     window.addEventListener("keydown", workspaceShortcut)
     return () => window.removeEventListener("keydown", workspaceShortcut)
-  }, [groupId])
+  }, [groupId, activeMode])
 
   useEffect(() => {
     if (!focusComposerAfterNavigation || workspaceRoute.page !== "new-chat") return
     if (!document.querySelector('[aria-modal="true"]')) composerRef.current?.focus()
     setFocusComposerAfterNavigation(false)
-  }, [focusComposerAfterNavigation, workspaceRoute.page])
+  }, [focusComposerAfterNavigation, workspaceRoute.page, draftMode])
 
   useEffect(() => {
     if (openMenu === null) return
@@ -669,8 +694,8 @@ function Workspace() {
   const currentSessions = groupId === "default"
     ? defaultSessions.status === "ready" ? defaultSessions.value : []
     : activeProject?.sessions ?? []
-  // Draft routes share a browser owner distinct from persisted session UUIDs.
-  const browserOwner = workspaceRoute.page === "session" ? workspaceRoute.sessionId : "new-chat"
+  // 新会话预览按模式区分，使用独立于会话 UUID 的标识。
+  const browserOwner = workspaceRoute.page === "session" ? workspaceRoute.sessionId : draftMode === "work" ? "new-work" : "new-chat"
   const browserState = browserTags.get(browserOwner)
   const browserExpanded = browserState.narrowPanel === "browser"
   const currentSession = workspaceRoute.page === "session" ? currentSessions.find((session) => session.sessionId === workspaceRoute.sessionId) : undefined
@@ -720,10 +745,14 @@ function Workspace() {
     sessionsState.setView(newDraftKey, { busy: true, operationError: undefined })
     try {
       const { providerId, protocol, modelId, name } = selectedModel
-      const response = await window.nicode.startNewSession(groupId, {
+      const input: Parameters<typeof window.nicode.startNewSession>[1] = {
         ...message, model: { providerId, protocol, modelId, name, reasoningLevel: selectedReasoningLevel },
         sandboxMode: permission === "workspace-read-only" ? "sandbox-read-only" : permission === "auto" || permission === "full-access" ? permission : "sandbox-full-access",
-      })
+      }
+      const response = draftMode === "work"
+        ? await window.nicode.startTeamSession(groupId, input)
+        : await window.nicode.startNewSession(groupId, input)
+      sessionsState.setView(sessionKey(groupId, response.sessionId), { kind: draftMode === "work" ? "router" : "ordinary" })
       if (sessionsState.draftsByKey[newDraftKey] === draft) sessionsState.setDraft(newDraftKey)
       void refreshSessionSummaries(groupId)
       navigateToSession(groupId, response.sessionId)
@@ -740,7 +769,7 @@ function Workspace() {
     <div className="workspace-shell">
       {sidebarOpen && <aside className="sidebar" aria-label="工作区侧栏">
         <div className="sidebar-toolbar">
-          <button className="new-chat" type="button" title="新聊天 · Ctrl Shift O" aria-current={workspaceRoute.page === "new-chat" && workspaceRoute.group === "default" ? "page" : undefined} onClick={() => focusNewChatComposer()}><IconPlus size={17} stroke={1.6} aria-hidden="true" /><span>新聊天</span><kbd>Ctrl ⇧ O</kbd></button>
+          <button className="new-chat" type="button" title={`${newConversationLabel} · Ctrl Shift O`} aria-current={workspaceRoute.page === "new-chat" && workspaceRoute.group === "default" ? "page" : undefined} onClick={() => focusNewChatComposer()}><IconPlus size={17} stroke={1.6} aria-hidden="true" /><span>{newConversationLabel}</span><kbd>Ctrl ⇧ O</kbd></button>
           <button type="button" className="sidebar-toggle" aria-label="收起侧栏" title="收起侧栏 · Ctrl B" onClick={() => setSidebarOpen(false)}><IconLayoutSidebar size={17} stroke={1.6} aria-hidden="true" /></button>
         </div>
         <nav className="sidebar-scroll" aria-label="项目和对话">
@@ -758,11 +787,11 @@ function Workspace() {
                         {expandedProjects.has(project.projectId) ? <IconFolderOpen stroke={1.6} aria-hidden="true" /> : <IconFolder stroke={1.6} aria-hidden="true" />}
                         <span>{project.name}</span>
                       </button>
-                      <button className="project-action-button" type="button" aria-label={`在 ${project.name} 中新建聊天`} title={`在 ${project.name} 中新建聊天`} onClick={() => focusNewChatComposer(project.projectId)}><IconPlus size={16} stroke={1.6} aria-hidden="true" /></button>
+                      <button className="project-action-button" type="button" aria-label={`在 ${project.name} 中${createConversationLabel}`} title={`在 ${project.name} 中${createConversationLabel}`} onClick={() => focusNewChatComposer(project.projectId)}><IconPlus size={16} stroke={1.6} aria-hidden="true" /></button>
                       <SidebarMore target={project} expanded={sidebarMenu?.target.projectId === project.projectId && sidebarMenu.target.sessionId === undefined} onOpen={openSidebarMenu} />
                     </div>
                     {expandedProjects.has(project.projectId) && <div className="project-sessions"><SessionList projectId={project.projectId} sessions={project.sessions} activeSessionId={workspaceRoute.page === "session" && workspaceRoute.group === "project" && workspaceRoute.projectId === project.projectId ? workspaceRoute.sessionId : undefined} onOpenSession={navigateToSession} menuAnchor={sidebarMenu?.target} onMore={openSidebarMenu} />
-                      {project.sessions.length === 0 && <button className="project-first-chat" type="button" onClick={() => focusNewChatComposer(project.projectId)}>开始第一段对话 <IconArrowUpRight size={12} /></button>}
+                      {project.sessions.length === 0 && <button className="project-first-chat" type="button" onClick={() => focusNewChatComposer(project.projectId)}>{activeMode === "work" ? "开始第一个团队会话" : "开始第一段对话"} <IconArrowUpRight size={12} /></button>}
                     </div>}
                   </li>)}</ul>)}
             </>}
@@ -770,7 +799,7 @@ function Workspace() {
           <section className="sidebar-section chats-section" aria-label="聊天">
             <div className="section-heading-row">
               <button className="section-heading" type="button" aria-expanded={chatsOpen} onClick={() => setChatsOpen((current) => !current)}><span>独立对话</span>{defaultSessions.status === "ready" && <span className="section-count">{defaultSessions.value.length}</span>}<span className={chatsOpen ? "chevron" : "chevron collapsed"}><IconChevronDown size={12} /></span></button>
-              <button className="section-action section-action-button" type="button" aria-label="新建聊天" title="新建聊天" onClick={() => focusNewChatComposer()}><IconPlus size={16} stroke={1.6} aria-hidden="true" /></button>
+              <button className="section-action section-action-button" type="button" aria-label={createConversationLabel} title={createConversationLabel} onClick={() => focusNewChatComposer()}><IconPlus size={16} stroke={1.6} aria-hidden="true" /></button>
             </div>
             {chatsOpen && <><DataStatus state={defaultSessions} retry={() => { void loadDefaultSessions() }} />
               {defaultSessions.status === "ready" && (defaultSessions.value.length === 0 ? <p className="empty-list">你的下一段对话，从这里开始。</p> : <SessionList projectId="default" sessions={defaultSessions.value} activeSessionId={workspaceRoute.page === "session" && workspaceRoute.group === "default" ? workspaceRoute.sessionId : undefined} onOpenSession={navigateToSession} menuAnchor={sidebarMenu?.target} onMore={openSidebarMenu} />)}
@@ -798,20 +827,28 @@ function Workspace() {
               <IconLayoutSidebarRight size={17} stroke={1.6} aria-hidden="true" />
             </button>}>
         <header className="panel-header">
-          {!sidebarOpen && <button className="settings-icon-button" type="button" aria-label="展开侧栏" title="展开侧栏 · Ctrl B" onClick={() => setSidebarOpen(true)}><IconLayoutSidebar size={17} stroke={1.6} aria-hidden="true" /></button>}
-          <div className="breadcrumb">{activeProject && <><span title={activeProject.directories.join(" · ") || activeProject.name}>{activeProject.name}</span><span className="breadcrumb-divider">/</span></>}<strong title={currentSession?.name}>{workspaceRoute.page === "new-chat" ? "新聊天" : currentSession?.name ?? "对话"}</strong></div>
-          <div className="panel-header-actions">{!sidebarOpen && <>
-            <button className="settings-icon-button" type="button" aria-label="设置" title="设置 · Ctrl ," onClick={() => openSettingsDialog()}><IconAdjustmentsHorizontal size={17} stroke={1.6} aria-hidden="true" /></button>
-            <button className="settings-icon-button" type="button" aria-label={theme === "light" ? "切换深色外观" : "切换浅色外观"} title={theme === "light" ? "深色外观" : "浅色外观"} onClick={() => setTheme((current) => current === "light" ? "dark" : "light")}>{theme === "light" ? <IconMoon size={17} stroke={1.6} aria-hidden="true" /> : <IconSun size={17} stroke={1.6} aria-hidden="true" />}</button>
-          </>}{(workspaceRoute.page === "session" || !sidebarOpen) && <button className="settings-icon-button" type="button" aria-label="在当前空间新建聊天" title="新聊天" onClick={() => focusNewChatComposer(groupId === "default" ? undefined : groupId)}><IconPlus size={17} stroke={1.6} aria-hidden="true" /></button>}
+          <div className="panel-header-row">
+            <div className="panel-header-context">
+              {!sidebarOpen && <button className="settings-icon-button" type="button" aria-label="展开侧栏" title="展开侧栏 · Ctrl B" onClick={() => setSidebarOpen(true)}><IconLayoutSidebar size={17} stroke={1.6} aria-hidden="true" /></button>}
+              <div className="breadcrumb">{activeProject && <><span title={activeProject.directories.join(" · ") || activeProject.name}>{activeProject.name}</span><span className="breadcrumb-divider">/</span></>}<strong title={currentSession?.name}>{workspaceRoute.page === "new-chat" ? newConversationLabel : currentSession?.name ?? "对话"}</strong></div>
+            </div>
+            <div className="workspace-mode" role="group" aria-label="会话模式">
+              <button type="button" aria-pressed={activeMode === "chat"} disabled={workspaceRoute.page === "new-chat" && newChatView.busy} onClick={() => switchMode("chat")}>普通模式</button>
+              <button type="button" aria-pressed={activeMode === "work"} disabled={workspaceRoute.page === "new-chat" && newChatView.busy} onClick={() => switchMode("work")}>团队模式</button>
+            </div>
+            <div className="panel-header-actions">{!sidebarOpen && <>
+              <button className="settings-icon-button" type="button" aria-label="设置" title="设置 · Ctrl ," onClick={() => openSettingsDialog()}><IconAdjustmentsHorizontal size={17} stroke={1.6} aria-hidden="true" /></button>
+              <button className="settings-icon-button" type="button" aria-label={theme === "light" ? "切换深色外观" : "切换浅色外观"} title={theme === "light" ? "深色外观" : "浅色外观"} onClick={() => setTheme((current) => current === "light" ? "dark" : "light")}>{theme === "light" ? <IconMoon size={17} stroke={1.6} aria-hidden="true" /> : <IconSun size={17} stroke={1.6} aria-hidden="true" />}</button>
+            </>}{(workspaceRoute.page === "session" || !sidebarOpen) && <button className="settings-icon-button" type="button" aria-label={`在当前空间${createConversationLabel}`} title={newConversationLabel} onClick={() => focusNewChatComposer(groupId === "default" ? undefined : groupId)}><IconPlus size={17} stroke={1.6} aria-hidden="true" /></button>}
+            </div>
           </div>
         </header>
         {workspaceRoute.page === "session" ? <Outlet context={{ state: sessionsState, browserTags, providers: providers.status === "ready" ? providers.value : [] }} /> : <div className="welcome-scroll"><div className="welcome">
-          <div className="welcome-intro"><h1>有什么想一起完成？</h1></div>
+          <div className="welcome-intro"><h1>{draftMode === "work" ? "我们要做什么？" : "有什么想一起完成？"}</h1></div>
           {newChatView.operationError && <p className="chat-error" role="alert">{newChatView.operationError}</p>}
           {defaultModelError && <p className="chat-error" role="alert">{defaultModelError}</p>}
           <div className="composer new-chat-composer">
-            <ComposerInput key={newDraftKey} inputRef={composerRef} projectId={groupId} label="任务描述" placeholder="描述你想做的事，剩下的一起完成…"
+            <ComposerInput key={newDraftKey} inputRef={composerRef} projectId={groupId} label="任务描述" placeholder={draftMode === "work" ? "描述要交给团队协作的任务…" : "描述你想做的事，剩下的一起完成…"}
               value={sessionsState.draftsByKey[newDraftKey]} onChange={(document) => sessionsState.setDraft(newDraftKey, document)}
               onSend={() => void sendNewChat()} onOpenFile={(file) => browserTags.openFileReference(browserOwner, file)} />
             <div className="composer-toolbar">

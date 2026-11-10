@@ -842,7 +842,7 @@ export class SessionRuntime implements SessionRepairPorts {
   }
 
   /**
-   * 按顺序等待审批。自动模式请求本轮模型，人工模式持久化请求和决定。
+   * 按顺序等待审批。Team 成员与自动模式请求本轮模型，人工模式持久化请求和决定。
    * @param toolName 待审批工具。
    * @param reason 工具提供的审批说明；文件调用包含已规范化路径。
    * @param context 完整的调用身份与参数。
@@ -867,9 +867,10 @@ export class SessionRuntime implements SessionRepairPorts {
       if (context.toolCallEventId === undefined) throw new Error("审批缺少工具调用事件身份")
       const { sandboxMode } = await this.sessionState.readSettings()
       if (context.signal.aborted) return "cancelled"
-      if (sandboxMode === "auto") {
+      const teamMember = this.team?.identity.role === "member"
+      if (teamMember || sandboxMode === "auto") {
         return await reviewToolCall(adapter, model, context, { toolName, arguments: context.validatedArguments, reason },
-          async () => validateEventLog(this.sessionId, await this.eventLog.readEvents(), this.team?.identity.role === "member"))
+          async () => validateEventLog(this.sessionId, await this.eventLog.readEvents(), teamMember), teamMember)
       }
       const approvalId = randomUUID()
       let settle!: (value: ApprovalDecision) => void

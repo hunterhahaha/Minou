@@ -5,7 +5,7 @@ import type { SessionControl, SessionData, SessionUpdate } from "../../src/prelo
 import type { SummaryEndEvent } from "../../runtime/session/src/events.ts"
 const control: SessionControl = { revision: 1, throughSeq: 0, currentModel: { providerId: "p", protocol: "responses", modelId: "m", name: "test", reasoningLevel: "medium" },
   phase: "idle", sandboxMode: "sandbox-full-access", pendingMessages: [], discardedMessages: [] }
-const history: SessionData = { projectId: "default", sessionId: "s", events: [], latestSeq: 0, control,
+const history: SessionData = { projectId: "default", sessionId: "s", kind: "router", events: [], latestSeq: 0, control,
   summary: { sessionId: "s", name: "新对话", updatedAt: "2026-09-30T00:00:00.000Z" } }
 /**
  * @returns 查询、设置、审批、推送与取消监听断言完成。
@@ -64,12 +64,21 @@ async function main(): Promise<void> {
   ], latestSeq: 4, control: { ...control, throughSeq: 4 } }
   const querySummary = createSessionApi({ invoke: async () => withSummary })
   assert.deepEqual(await querySummary.getSessionData("default", "s"), withSummary)
+  const firstUpdate: SessionUpdate = { kind: "event", projectId: "default", sessionId: "s", sessionKind: "router", event: withSummary.events[0] }
+  for (const handler of handlers) {
+    handler({}, firstUpdate)
+    assert.throws(() => handler({}, { ...firstUpdate, sessionKind: "invalid" }), /角色无效/)
+    assert.throws(() => handler({}, { ...started, sessionKind: "router" }), /角色无效/)
+  }
+  assert.deepEqual(updates.at(-1), firstUpdate)
   cancel(); cancel()
   assert.equal(handlers.size, 0)
   const foreign = createSessionApi({ invoke: async () => ({ ...history, sessionId: "other", summary: { ...history.summary, sessionId: "other" } }) })
   await assert.rejects(foreign.getSessionData("default", "s"), /其他对话/)
   const malformed = createSessionApi({ invoke: async () => ({ ...history, latestSeq: 7 }) })
   await assert.rejects(malformed.getSessionData("default", "s"), /无效/)
+  const unknownKind = createSessionApi({ invoke: async () => ({ ...history, kind: "unknown" }) })
+  await assert.rejects(unknownKind.getSessionData("default", "s"), /无效/)
   const invalidState = createSessionApi({ invoke: async () => ({ ...control, revision: -1 }) })
   await assert.rejects(invalidState.updateSessionSettings("default", "s", { model: control.currentModel }), /无效/)
   console.log("session-updates.test.ts: Session 传输与订阅断言通过")
