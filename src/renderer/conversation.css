@@ -204,3 +204,7 @@
   font-size: var(--font-size-note);
 }
 .turn-file-changes p { margin: 0 var(--space-1); font-size: var(--font-size-note); }
+
+.transcript-footer { padding-block: 0; }
+.transcript-footer:has(.scroll-to-bottom) { padding-block-end: var(--size-control); }
+.transcript-footer .scroll-to-bottom { bottom: 0; }

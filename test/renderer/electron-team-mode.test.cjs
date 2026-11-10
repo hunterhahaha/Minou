@@ -10,7 +10,7 @@ const { startElectronApp } = require("../../dist/src/main/index.js")
 const { saveModel, saveProvider } = require("../../dist/src/main/provider-store.js")
 const { SessionRuntimeGlobal } = require("../../dist/src/main/session-runtime-global.js")
 const { registerWindowIpcHandlers } = require("../../dist/src/main/window-ipc.js")
-const { START_TEAM_SESSION_CHANNEL } = require("../../dist/src/preload/session-api.js")
+const { SESSION_IPC_CHANNELS, STARTUP_DATA_IPC_CHANNELS, START_TEAM_SESSION_CHANNEL, TEAM_SESSION_CHANNELS } = require("../../dist/src/preload/session-api.js")
 const { TeamStore } = require("../../dist/runtime/session/src/team-store.js")
 const { ToolRegistry, RenderRegistry } = require("../../dist/runtime/tools/src/tool-registry.js")
 
@@ -94,6 +94,11 @@ async function main() {
   saveModel(paths.providerDatabasePath, { providerId: "offline", modelId: "team-test", name: "离线模型",
     supportsReasoning: true, reasoningLevels: ["medium"], contextWindow: 128000, maxOutputTokens: 4096 })
   const failures = []
+  const delivered = []
+  const gatedMembers = new Map()
+  let indexQueries = 0
+  let delayedHistory
+  let memberListOverride
   const runtime = new SessionRuntimeGlobal(paths, new ToolRegistry(), new RenderRegistry())
   runtime.createTurnModelAdapter = async () => ({
     contextWindow: 128000,
@@ -110,6 +115,24 @@ async function main() {
         yield { type: "stream_end", completion: "tool_calls" }
         return
       }
+      const assignment = /^成员续跑 (\S+) (.+)$/.exec(latestUser?.content[0]?.text ?? "")
+      if (history?.system.includes("You are the Team Router") && assignment &&
+          !history.events.some((event) => event.seq > latestUser.seq && event.type === "tool/result")) {
+        yield { type: "block_start", index: 0, blockType: "tool_call" }
+        yield { type: "block_end", index: 0, block: { type: "tool_call", name: "communication",
+          toolCallId: "member-assign-" + latestUser.seq, arguments: { event: "send_message", session_id: assignment[1], message: assignment[2] } } }
+        yield { type: "stream_end", completion: "tool_calls" }
+        return
+      }
+      if (history?.system.includes("You are a Team Session")) {
+        const task = latestUser.content[0].text
+        if (task !== "离线成员任务") await new Promise((done) => gatedMembers.set(task, done))
+        yield { type: "block_start", index: 0, blockType: "text" }
+        for (let i = 0; i < 200; i++) yield { type: "block_delta", index: 0, delta: { type: "text", text: i === 0 ? "**" + task + "**流" : "流" } }
+        yield { type: "block_end", index: 0, block: { type: "text", text: "**" + task + "**" + "流".repeat(200) } }
+        yield { type: "stream_end", completion: "finished" }
+        return
+      }
       yield { type: "block_start", index: 0, blockType: "text" }
       yield { type: "block_end", index: 0, block: { type: "text", text: history ? "离线回复" : '{"title":"离线会话"}' } }
       yield { type: "stream_end", completion: "finished" }
@@ -122,10 +145,24 @@ async function main() {
   await startElectronApp({
     app,
     ipcMain: { handle(channel, handler) {
-      trusted.handle(channel, (event, ...args) => {
+      trusted.handle(channel, async (event, ...args) => {
         if (channel === START_TEAM_SESSION_CHANNEL && rejectFirstTeamStart) {
           rejectFirstTeamStart = false
           throw new Error("预期的首发失败")
+        }
+        if (channel === TEAM_SESSION_CHANNELS.list && memberListOverride) {
+          const override = memberListOverride
+          memberListOverride = undefined
+          if (override === "error") throw new Error("成员列表夹具错误")
+          return []
+        }
+        if ([STARTUP_DATA_IPC_CHANNELS.listProjects, STARTUP_DATA_IPC_CHANNELS.listDefaultSessions].includes(channel)) indexQueries++
+        if (channel === SESSION_IPC_CHANNELS.getSessionData && delayedHistory?.id === args[1]) {
+          const hold = delayedHistory
+          delayedHistory = undefined
+          const snapshot = await handler(event, ...args)
+          await new Promise((done) => { hold.release = done })
+          return snapshot
         }
         return handler(event, ...args)
       })
@@ -140,7 +177,11 @@ async function main() {
         loaded = window.loadFile(join(process.cwd(), "dist/src/renderer/index.html"))
       },
       hasOpenWindows: () => window && !window.isDestroyed(),
-      sendSessionUpdate: (update) => window.webContents.send("nicode:session:update", update),
+      sendSessionUpdate(update, recipients) {
+        if (recipients && !recipients.has(window.webContents.id)) return
+        delivered.push(update)
+        window.webContents.send(recipients ? TEAM_SESSION_CHANNELS.update : SESSION_IPC_CHANNELS.update, update)
+      },
     },
     configPaths: paths, teamWakeup: config.teamWakeup, sessionRuntime: { global: runtime, systemPrompt: "离线夹具" },
     onSessionCompletionFailure: (failure) => failures.push(failure),
@@ -170,6 +211,117 @@ async function main() {
   await until("成员执行完成", () => store.members().some((member) => member.routerId === router && store.status(member) === "idle"))
   assert.deepEqual(new Set((await evaluate("window.nicode.listDefaultSessions()")).map((session) => session.sessionId)), new Set([chat, router]))
 
+  const member = store.members().find((item) => item.routerId === router)
+  const memberUpdates = () => delivered.filter((update) => update.sessionId === member.sessionId)
+  const memberPage = '.chat-browser-pane .chat-page[data-session-id="' + member.sessionId + '"]'
+  const tab = '.chat-browser-tab-item button[title="' + member.sessionId + '"]'
+  const hasMemberPage = () => evaluate("!!document.querySelector(" + JSON.stringify(memberPage) + ")")
+  const memberHas = (label) => evaluate("document.querySelector(" + JSON.stringify(memberPage) + ")?.textContent.includes(" + JSON.stringify(label) + ")")
+  const listMembers = async () => {
+    await evaluate("(() => { const entry = document.querySelector('[aria-label=团队成员]'); entry.focus(); entry.click() })()")
+    await until("成员选择按钮", () => evaluate("!!document.querySelector('.team-members-list button')"))
+  }
+  const openMember = async () => {
+    await listMembers()
+    await click(".team-members-list button")
+    await until("只读成员对话已挂载", hasMemberPage)
+    assert.equal(await evaluate("!!document.querySelector(" + JSON.stringify(memberPage + " .composer") + ")"), false)
+  }
+  const runMember = async (task) => {
+    await evaluate("window.nicode.continueSession('default'," + JSON.stringify(router) + ", { content: [{ type: 'text', text: " +
+      JSON.stringify("成员续跑 " + member.sessionId + " " + task) + " }] })")
+    await until("Router 已完成且成员等候流式闸门", async () => gatedMembers.has(task) &&
+      await evaluate("document.querySelector('.chat-browser-chat .session-phase')?.classList.contains('phase-idle')"))
+  }
+  const finishMember = async (task) => {
+    gatedMembers.get(task)()
+    await until("成员已完成", () => store.status(member) === "idle")
+  }
+  assert.equal(memberUpdates().length, 0, "200 个片段的首次后台执行无窗口推送")
+  const initialData = await evaluate("window.nicode.getSessionData('default'," + JSON.stringify(member.sessionId) + ")")
+  assert.equal(initialData.events.filter(({ type }) => type === "assistant/block_delta").length, 200)
+  await listMembers()
+  assert.equal(memberUpdates().length, 0)
+  await evaluate("document.querySelector('[aria-labelledby=team-members-title]').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))")
+  await until("Escape 关闭成员列表并恢复焦点", () => evaluate("document.activeElement?.getAttribute('aria-label') === '团队成员'"))
+
+  await runMember("首屏交错")
+  const firstHistory = { id: member.sessionId }
+  delayedHistory = firstHistory
+  await openMember()
+  await until("已截取成员历史快照", () => firstHistory.release)
+  const beforeActive = memberUpdates().length
+  await finishMember("首屏交错")
+  await until("历史未返回时已收到最后一个流片段", () => memberUpdates().slice(beforeActive).filter(
+    (update) => update.kind === "event" && update.event.type === "assistant/block_delta").length === 200)
+  firstHistory.release()
+  await until("历史和增量合并", () => memberHas("首屏交错流"))
+  await evaluate("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))")
+  await writeFile(join(process.cwd(), "dist", "team-member-light-wide.png"), (await window.webContents.capturePage()).toPNG())
+  await click('[aria-label="新建网页"]')
+  await until("切换到其他标签时卸载成员页", async () => !(await hasMemberPage()))
+  await click(tab)
+  await until("切回标签复用缓存", () => memberHas("首屏交错流"))
+  await click('[aria-label="关闭 新标签页"]')
+  await openMember()
+  assert.equal(await evaluate("document.querySelectorAll(" + JSON.stringify(tab) + ").length"), 1)
+
+  await runMember("后台缓存")
+  // Count React DOM prop commits on the existing Router record and Markdown nodes.
+  // First verify the counters advance on a deliberate workspace render.
+  await evaluate(`(() => {
+    window.routerRenders = { transcript: 0, markdown: 0 }
+    const track = (node, counter) => {
+      const key = Object.keys(node).find((name) => name.startsWith("__reactProps$"))
+      if (!key) throw new Error("React DOM props unavailable")
+      let props = node[key]
+      Object.defineProperty(node, key, { configurable: true,
+        get: () => props,
+        set: (value) => { props = value; window.routerRenders[counter]++ },
+      })
+    }
+    track(document.querySelector(".chat-browser-chat .chat-page"), "transcript")
+    for (const node of document.querySelectorAll(".chat-browser-chat .markdown-content")) track(node, "markdown")
+  })()`)
+  await click(".browser-toggle")
+  await until("收起时卸载成员页", async () => !(await hasMemberPage()))
+  await evaluate("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))")
+  const commitsBefore = await evaluate("window.routerRenders")
+  assert.ok(commitsBefore.transcript > 0 && commitsBefore.markdown > 0)
+  const queriesBefore = indexQueries
+  const backgroundBefore = memberUpdates().length
+  await evaluate("window.sampleGaps = []; window.lastSample = performance.now(); window.sampleTimer = setInterval(() => { const now = performance.now(); window.sampleGaps.push(now - window.lastSample); window.lastSample = now }, 10)")
+  await finishMember("后台缓存")
+  await until("后台成员收到 idle 状态", () => memberUpdates().slice(backgroundBefore).some(
+    (update) => update.kind === "state" && update.control.phase === "idle"))
+  await evaluate("new Promise(resolve => setTimeout(resolve, 50))")
+  const gap = await evaluate("clearInterval(window.sampleTimer); Math.max(0, ...window.sampleGaps)")
+  const commits = await evaluate("window.routerRenders")
+  assert.deepEqual(commits, commitsBefore, "成员后台流未触发 Router 记录或 Markdown 重绘")
+  assert.equal(indexQueries - queriesBefore, 0, "成员后台流未请求工作区摘要")
+  assert.equal(await hasMemberPage(), false)
+  await click(".browser-toggle")
+  await until("重新挂载立即显示后台缓存", () => memberHas("后台缓存流"))
+  console.log("member stream: unopened=0, background=" + (memberUpdates().length - backgroundBefore) +
+    ", background Router/Markdown commits=0/0, max 10ms timer gap=" + gap.toFixed(1) + "ms")
+
+  await runMember("标签已关闭")
+  await click(tab + " + button")
+  await until("关闭时卸载成员页", async () => !(await hasMemberPage()))
+  await evaluate("window.nicode.listTeamMembers('default'," + JSON.stringify(router) + ")")
+  const closedBefore = memberUpdates().length
+  await finishMember("标签已关闭")
+  assert.equal(memberUpdates().length, closedBefore)
+  await openMember()
+  await until("重新订阅时补齐关闭期间历史", () => memberHas("标签已关闭流"))
+  await runMember("重载已退订")
+  await new Promise((done) => { window.webContents.once("did-finish-load", done); window.webContents.reload() })
+  await until("Router 重新加载", () => mode(TEAM_MODE))
+  assert.equal(await hasMemberPage(), false)
+  const beforeReloadedStream = memberUpdates().length
+  await finishMember("重载已退订")
+  assert.equal(memberUpdates().length, beforeReloadedStream)
+
   const project = await evaluate("window.nicode.createProject('协作项目')")
   const projectId = project.projectId
   await evaluate(`location.hash = ${JSON.stringify("#/projects/" + projectId + "/new-chat")}`)
@@ -182,6 +334,8 @@ async function main() {
   await type("项目工作，创建成员")
   const projectRouter = await send(projectId, "router")
   await until("项目成员执行完成", () => store.members().some((member) => member.routerId === projectRouter && store.status(member) === "idle"))
+  await assert.rejects(evaluate("window.nicode.subscribeTeamSession(" + JSON.stringify(projectId) + "," +
+    JSON.stringify(projectRouter) + "," + JSON.stringify(member.sessionId) + ")"), /不属于/)
   const projects = await evaluate("window.nicode.listProjects()")
   assert.deepEqual(new Set(projects.find((item) => item.projectId === projectId).sessions.map((item) => item.sessionId)),
     new Set([projectChat, projectRouter]))
@@ -224,10 +378,31 @@ async function main() {
   window.setContentSize(420, 680)
   await until("深色窄窗", () => evaluate("innerWidth === 420 && document.documentElement.dataset.theme === 'dark'"))
   await capture("team-mode-router-dark-narrow")
+  memberListOverride = "empty"
+  await click('[aria-label="团队成员"]')
+  await until("成员列表为空", () => evaluate("document.querySelector('[aria-labelledby=team-members-title]')?.textContent.includes('当前团队暂无成员')"))
+  await click('[aria-label="关闭团队成员"]')
+  memberListOverride = "error"
+  await click('[aria-label="团队成员"]')
+  await until("成员查询失败提供重试", () => evaluate("[...document.querySelectorAll('[aria-labelledby=team-members-title] button')].some((node) => node.textContent === '重试')"))
+  await clickText('[aria-labelledby=team-members-title] button', "重试")
+  await until("窄窗成员列表", () => evaluate("!!document.querySelector('.team-members-list button')"))
+  await click(".team-members-list button")
+  await until("窄窗成员记录可见", () => evaluate("!!document.querySelector('.chat-browser-pane .chat-page .final-answer')"))
+  await evaluate("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))")
+  await writeFile(join(process.cwd(), "dist", "team-member-dark-narrow.png"), (await window.webContents.capturePage()).toPNG())
+  await click(".chat-browser-chat-tab")
+  await until("窄窗切回聊天卸载成员页", () => evaluate("!document.querySelector('.chat-browser-pane .chat-page')"))
+  await click('[aria-label="团队成员"]')
+  await until("窄窗再次显示成员列表", () => evaluate("!!document.querySelector('.team-members-list button')"))
+  await click(".team-members-list button")
+  await until("窄窗从聊天重开原成员标签", () => evaluate("!!document.querySelector('.chat-browser-pane .chat-page .final-answer')"))
+  assert.equal(await evaluate("document.querySelectorAll('.chat-browser-tab-item button[title]:not(.chat-browser-chat-tab)').length"), 1)
   assert.deepEqual(failures, [])
   console.log("electron-team-mode: 模式、真实首发、混合历史、成员摘要排除、重载、草稿、设置失败重试和聊天页头通过")
 }
 
+const watchdog = setTimeout(() => { console.error("Team Mode Electron 夹具超过 60 秒"); app.exit(1) }, 60_000)
 void main().catch((error) => { console.error(error); failed = true }).finally(async () => {
   try {
     if (window && !window.isDestroyed()) window.destroy()
@@ -238,5 +413,5 @@ void main().catch((error) => { console.error(error); failed = true }).finally(as
   } catch (error) {
     if (process.platform === "win32" && ["EPERM", "EBUSY"].includes(error.code)) console.warn("Electron 临时目录仍被占用")
     else { console.error(error); failed = true }
-  } finally { app.exit(failed ? 1 : 0) }
+  } finally { clearTimeout(watchdog); app.exit(failed ? 1 : 0) }
 })

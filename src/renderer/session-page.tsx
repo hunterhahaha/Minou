@@ -1,5 +1,5 @@
 /** 从工作区事件字典派生聊天页面；输入操作仅走 preload 的固定 Session API。 */
-import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type Ref } from "react"
 import { IconArrowDown, IconArrowUp, IconBrain, IconCheck, IconCode, IconCopy, IconDashboard, IconDatabase, IconGitCompare, IconPlayerStop, IconShieldCheck, IconSparkles, IconTool } from "@tabler/icons-react"
 import type { AssistantContentBlock } from "../../runtime/model/src/types.ts"
 import { preferredReasoningLevel } from "../../runtime/model/src/reasoning.ts"
@@ -103,6 +103,175 @@ function MessageCopyButton({ text, label }: { text: string; label: "复制AI回�
   </span>
 }
 /**
+ * 将消息中记录的路径范围替换为可点击的文件标签。
+ * @param message 已发送或排队的文本及引用。
+ * @param projectId 当前项目，用于校验引用。
+ * @param onOpenFile 打开已校验的引用。
+ * @returns 保持原文顺序的文本与 React 按钮。
+ */
+function messageBody(message: UserMessageContent, projectId: string, onOpenFile: SessionPageProps["onOpenFile"]) {
+  const text = message.content.map((block) => block.text).join("\n")
+  let end = 0
+  const parts = (message.fileReferences ?? []).flatMap((file) => {
+    if (file.projectId !== projectId || file.offset < end || !text.startsWith(file.absolutePath, file.offset)) return []
+    const before = text.slice(end, file.offset)
+    end = file.offset + file.absolutePath.length
+    return <Fragment key={file.offset}>{before}<button className="file-reference-chip" type="button"
+      title={file.absolutePath} aria-label={"预览 " + file.name} onClick={() => onOpenFile(file)}>{file.name}</button></Fragment>
+  })
+  return <>{parts}{text.slice(end)}</>
+}
+
+/** 聊天记录与只读成员页面共用的展示输入。 */
+interface SessionTranscriptProps extends Omit<SessionPageProps, "providers"> {
+  /** 可交互会话的页边界，用于审批浮层测量。 */
+  pageRef?: Ref<HTMLElement>
+  /** 历史加载失败后的重试入口。 */
+  onRetry(): void
+  /** 普通会话和 Router 提供输入操作区。 */
+  footer?: ReactNode
+}
+
+/**
+ * 展示持久化记录和流式增量，在挂载期间管理滚动跟随。
+ * @param props 对话缓存、文件和网页回调、可选操作区。
+ * @returns 共用的聊天记录页面。
+ */
+export function SessionTranscript({ projectId, sessionId, state, onOpenDiff, onOpenWeb, onOpenFile, pageRef, onRetry, footer }: SessionTranscriptProps) {
+  const key = sessionKey(projectId, sessionId)
+  const events = state.sessionEventsByKey[key] ?? []
+  const hasHistory = state.has(key)
+  const view = state.view(key)
+  const control = view.control
+  const endRef = useRef<HTMLDivElement>(null)
+  const scrollingRef = useRef<HTMLDivElement>(null)
+  const followsRef = useRef(true)
+  const [showScrollToBottom, setShowScrollToBottom] = useState(false)
+  const blocks = projectSessionEvents(events)
+  /** 每次从当前投影计数，避免流式块和权威消息被当作两次调用。 */
+  const toolCallCounts = new Map<string, number>()
+  for (const display of blocks) {
+    const items = display.kind === "completed-turn" ? display.process : [display]
+    for (const item of items) if (item.kind === "assistant") for (const content of item.blocks) {
+      if (content.type !== "tool_call" || !content.toolCallId) continue
+      const identity = toolDisplayKey(item.turn, item.step, content.toolCallId)
+      toolCallCounts.set(identity, (toolCallCounts.get(identity) ?? 0) + 1)
+    }
+  }
+  /** null 表示结果身份存在歧义；保留这些事件的独立展示。 */
+  const toolResults = new Map<string, ToolResultEvent | null>()
+  for (const event of events) if (event.type === "tool/result") {
+    const identity = toolDisplayKey(event.turn, event.step, event.toolCallId)
+    toolResults.set(identity, toolResults.has(identity) ? null : event)
+  }
+  const pairedResultIds = new Set<string>()
+  for (const [identity, result] of toolResults) {
+    if (result && toolCallCounts.get(identity) === 1) pairedResultIds.add(result.eventId)
+    else toolResults.set(identity, null)
+  }
+  /** 未结束 Turn 的首个 Assistant Step 承担整轮标题；完成态由 Turn 容器承担。 */
+  const firstAssistantByTurn = new Map<number, string>()
+  for (const block of blocks) {
+    if (block.kind === "assistant" && !firstAssistantByTurn.has(block.turn)) firstAssistantByTurn.set(block.turn, block.id)
+  }
+  const approvalRequests = new Map(events.filter((event) => event.type === "approval/request").map((event) => [event.approvalId, event]))
+  useEffect(() => { followsRef.current = true; setShowScrollToBottom(false); endRef.current?.scrollIntoView() }, [key])
+  useEffect(() => { if (followsRef.current) endRef.current?.scrollIntoView({ block: "end" }) }, [events.length, key])
+  /**
+   * @param event 展示所需的持久化事件。
+   * @returns 对应消息、审批结果或可展开的纯文本事件详情；请求由输入区浮窗处理。
+   */
+  function eventView(event: SessionEvent) {
+    if (event.type === "user/message") {
+      const text = event.message.content.map((block) => block.text).join("\n")
+      return <div className="user-message"><div className="user-bubble">{messageBody(event.message, projectId, onOpenFile)}</div><div className="message-actions user-message-actions"><MessageCopyButton text={text} label="复制用户消息" /></div></div>
+    }
+    if (event.type === "app/error") return <p className="chat-error" role="alert">{event.error.message}</p>
+    if (event.type === "approval/result") {
+      const request = approvalRequests.get(event.approvalId)
+      return <details className="chat-detail approval-result" data-approval-id={event.approvalId}><summary><IconShieldCheck size={15} />审批{event.decision === "approved" ? "已批准" : event.decision === "denied" ? "已拒绝" : "已取消"}{request ? " · " + request.toolName : ""}</summary>
+        {request?.reason && <p>{request.reason}</p>}
+        <pre className="process-content"><code className="language-text">{request ? printable(request.arguments) : event.decision}</code></pre>
+      </details>
+    }
+    if (event.type === "tool/result") return <details className="chat-detail"><summary>工具结果 · {event.result.status === "success" ? "完成" : "失败"}</summary>
+      <pre className="process-content"><code className="language-text">{event.result.content.filter((block) => block.type === "text").map((block) => block.text).join("\n\n")}</code></pre>
+      {event.result.status === "error" && <p className="chat-error">{event.result.error.message}</p>}
+    </details>
+    if (event.type === "turn/file_changes" && event.files.length > 0) return <div className="turn-file-changes" aria-label="本轮变更文件">
+      <div className="turn-file-changes-heading">
+        <IconGitCompare size={16} aria-hidden="true" />
+        <strong>本轮变更</strong>
+        <span>{event.files.length} 个文件</span>
+      </div>
+      <ul>{event.files.map((file) => <li key={file.path}>
+        <button type="button" title={file.path} onClick={() => onOpenDiff(event.eventId, file)}>
+          <IconCode size={16} aria-hidden="true" />
+          <span className="turn-file-name">{/^(?:[A-Za-z]:|[/\\])/.test(file.path) ? file.path.split(/[/\\]/).at(-1) || file.path : file.path}</span>
+          <span className="turn-file-stats">
+            {file.stats.additions > 0 && <span className="turn-file-added">+{file.stats.additions}</span>}
+            {file.stats.deletions > 0 && <span className="turn-file-removed">−{file.stats.deletions}</span>}
+          </span>
+          <span className="turn-file-status">{{ created: "新增", modified: "修改", deleted: "删除" }[file.changeType]}</span>
+        </button>
+      </li>)}</ul>
+      <p>点击文件查看差异</p>
+    </div>
+    if (event.type === "context_update") return <details className="chat-detail"><summary>上下文更新</summary><pre className="process-content"><code className="language-text">{event.content}</code></pre></details>
+    return null
+  }
+  /**
+   * 展示过程内容；仅未结束 Turn 的首个 Assistant Step 显示整轮标题，过程项不提供 AI 复制入口。
+   * @param item 一个 Assistant Step 或原始事件展示项。
+   * @param showAssistantLabel 是否在该 Step 上显示整轮标题；完成态过程项保持 false。
+   * @returns 对应内容的展示容器；组件 key 在当前对话内稳定。
+   */
+  function itemView(item: ChatItem, showAssistantLabel = false) {
+    if (item.kind === "event" && item.event.type === "approval/request") return null
+    if (item.kind === "event" && pairedResultIds.has(item.id)) return null
+    return <div className={"chat-entry " + (item.kind === "assistant" ? "assistant-entry" : "")} key={JSON.stringify([key, item.id])}>
+      {item.kind === "assistant" && showAssistantLabel && <div className="message-label"><span className="assistant-avatar"><IconSparkles size={13} /></span><strong>NiCode</strong><span>协作伙伴</span></div>}
+      {item.kind === "assistant" ? item.blocks.map((content, index) => <AssistantBlock block={content} key={index} onOpenWeb={onOpenWeb}
+        toolResult={content.type === "tool_call" ? toolResults.get(toolDisplayKey(item.turn, item.step, content.toolCallId)) ?? undefined : undefined} />) : eventView(item.event)}
+    </div>
+  }
+  return <section className="chat-page" ref={pageRef} data-project-id={projectId} data-session-id={sessionId}>
+    <div className="session-topline"><span>对话记录 <small>{events.filter((event) => event.type === "user/message").length} 条消息</small></span><span className={`session-phase phase-${control?.phase ?? "loading"}`} role="status"><i className="status-dot" />{!control ? "正在同步" : control.phase === "running" ? "正在运行" : control.phase === "stopping" ? "正在停止" : "准备就绪"}</span></div>
+    <div className="chat-scroll" ref={scrollingRef} onScroll={() => {
+      const node = scrollingRef.current
+      if (node) { followsRef.current = node.scrollHeight - node.scrollTop - node.clientHeight < 100; setShowScrollToBottom(!followsRef.current) }
+    }}>
+      <div className="chat-messages">
+        {!hasHistory && <p role="status">{view.loading ? "正在加载对话…" : "等待加载对话"}</p>}
+        {!footer && hasHistory && events.length === 0 && <p role="status">暂无对话记录。</p>}
+        {view.loadError && <p className="chat-error" role="alert">{view.loadError} <button onClick={onRetry}>重试</button></p>}
+        {blocks.map((block) => {
+          if (block.kind !== "completed-turn") return itemView(block, block.kind === "assistant" && firstAssistantByTurn.get(block.turn) === block.id)
+          const fileChanges = block.process.filter((item) => item.kind === "event" && item.event.type === "turn/file_changes")
+          const process = block.process.filter((item) => item.kind !== "event" || (item.event.type !== "turn/end" && item.event.type !== "turn/file_changes" && item.event.type !== "approval/request" && !pairedResultIds.has(item.id)))
+          return <div className="chat-entry assistant-entry" key={JSON.stringify([key, block.id])} data-turn={block.turn}>
+            <div className="message-label"><span className="assistant-avatar"><IconSparkles size={13} /></span><strong>NiCode</strong><span>协作伙伴</span></div>
+            {process.length > 0 && <details className="chat-detail turn-process"><summary><IconTool size={15} /><span className="process-title">执行过程</span><span className="process-count">{process.length} 项</span></summary>{process.map((item) => itemView(item))}</details>}
+            {block.finalAnswer.length > 0 && <div className="final-answer">
+              {block.finalAnswer.map((content, index) => <AssistantBlock block={content} key={index} onOpenWeb={onOpenWeb} />)}
+            </div>}
+            {fileChanges.map((item) => itemView(item))}
+            {block.finalAnswer.some((content) => content.text.trim()) && <div className="message-actions"><MessageCopyButton text={block.finalAnswer.map((content) => content.text).join("\n\n")} label="复制AI回复" /></div>}
+          </div>
+        })}
+        {control?.phase === "running" && <div className="agent-working" role="status"><span className="working-dots"><i /><i /><i /></span>NiCode 正在处理任务</div>}
+        <div ref={endRef} />
+      </div>
+    </div>
+    <div className={footer ? "chat-footer" : "chat-footer transcript-footer"}>
+      {showScrollToBottom && <button type="button" className="scroll-to-bottom" aria-label="回到最新消息" onClick={() => { followsRef.current = true; setShowScrollToBottom(false); endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" }) }}><IconArrowDown size={15} />最新消息</button>}
+      {footer}
+      {!footer && view.operationError && <p className="chat-error" role="alert">{view.operationError}</p>}
+    </div>
+  </section>
+}
+
+/**
  * 渲染一个对话。加载由 SessionRoute 决定；此组件只读取字典并发送明确的用户操作。
  * @param props 联合身份、工作区状态、模型选项与浏览器打开回调。
  * @returns 消息、审批、Queue、权限与固定在底部的输入区。
@@ -139,41 +308,10 @@ export function SessionPage({ projectId, sessionId, state, providers, onOpenDiff
   }, [events])
   const hasDraft = Boolean(serializeComposerMessage(state.draftsByKey[key]).content[0].text.trim())
   const showStop = control?.phase === "stopping" || (control?.phase === "running" && !hasDraft)
-  const endRef = useRef<HTMLDivElement>(null)
-  const scrollingRef = useRef<HTMLDivElement>(null)
   const pageRef = useRef<HTMLElement>(null)
   const composerRef = useRef<HTMLDivElement>(null)
   const approvalRef = useRef<HTMLElement>(null)
-  const followsRef = useRef(true)
-  const [showScrollToBottom, setShowScrollToBottom] = useState(false)
   const [submittedApprovalId, setSubmittedApprovalId] = useState<string | null>(null)
-  const blocks = projectSessionEvents(events)
-  /** 每次从当前投影计数，避免流式块和权威消息被当作两次调用。 */
-  const toolCallCounts = new Map<string, number>()
-  for (const display of blocks) {
-    const items = display.kind === "completed-turn" ? display.process : [display]
-    for (const item of items) if (item.kind === "assistant") for (const content of item.blocks) {
-      if (content.type !== "tool_call" || !content.toolCallId) continue
-      const identity = toolDisplayKey(item.turn, item.step, content.toolCallId)
-      toolCallCounts.set(identity, (toolCallCounts.get(identity) ?? 0) + 1)
-    }
-  }
-  /** null 表示结果身份存在歧义；保留这些事件的独立展示。 */
-  const toolResults = new Map<string, ToolResultEvent | null>()
-  for (const event of events) if (event.type === "tool/result") {
-    const identity = toolDisplayKey(event.turn, event.step, event.toolCallId)
-    toolResults.set(identity, toolResults.has(identity) ? null : event)
-  }
-  const pairedResultIds = new Set<string>()
-  for (const [identity, result] of toolResults) {
-    if (result && toolCallCounts.get(identity) === 1) pairedResultIds.add(result.eventId)
-    else toolResults.set(identity, null)
-  }
-  /** 未结束 Turn 的首个 Assistant Step 承担整轮标题；完成态由 Turn 容器承担。 */
-  const firstAssistantByTurn = new Map<number, string>()
-  for (const block of blocks) {
-    if (block.kind === "assistant" && !firstAssistantByTurn.has(block.turn)) firstAssistantByTurn.set(block.turn, block.id)
-  }
   const committedMessageIds = new Set(events.filter((event) => event.type === "user/message").map((event) => event.message.id))
   const pendingMessages = control?.pendingMessages.filter((message) => !committedMessageIds.has(message.messageId)) ?? []
   const approvalRequests = new Map(events.filter((event) => event.type === "approval/request").map((event) => [event.approvalId, event]))
@@ -195,8 +333,6 @@ export function SessionPage({ projectId, sessionId, state, providers, onOpenDiff
   const inputFromOtherModel = control && usage.model &&
     (usage.model.providerId !== control.currentModel.providerId || usage.model.modelId !== control.currentModel.modelId)
   const reasoningOptions = currentModelOption?.reasoningLevels ?? []
-  useEffect(() => { followsRef.current = true; setShowScrollToBottom(false); endRef.current?.scrollIntoView() }, [key])
-  useEffect(() => { if (followsRef.current) endRef.current?.scrollIntoView({ block: "end" }) }, [events.length, key])
   useLayoutEffect(() => {
     const composer = composerRef.current, page = pageRef.current, dialog = approvalRef.current
     if (!pendingApproval || !composer || !page || !dialog) return
@@ -264,114 +400,14 @@ export function SessionPage({ projectId, sessionId, state, providers, onOpenDiff
     })
   }
 
-  /**
-   * 将消息中记录的路径范围替换为可点击的文件标签。
-   * @param message 已发送或排队的文本及引用。
-   * @returns 保持原文顺序的文本与 React 按钮。
-   */
-  function messageBody(message: UserMessageContent) {
-    const text = message.content.map((block) => block.text).join("\n")
-    let end = 0
-    const parts = (message.fileReferences ?? []).flatMap((file) => {
-      if (file.projectId !== projectId || file.offset < end || !text.startsWith(file.absolutePath, file.offset)) return []
-      const before = text.slice(end, file.offset)
-      end = file.offset + file.absolutePath.length
-      return <Fragment key={file.offset}>{before}<button className="file-reference-chip" type="button"
-        title={file.absolutePath} aria-label={"预览 " + file.name} onClick={() => onOpenFile(file)}>{file.name}</button></Fragment>
-    })
-    return <>{parts}{text.slice(end)}</>
-  }
-  /**
-   * @param event 展示所需的持久化事件。
-   * @returns 对应消息、审批结果或可展开的纯文本事件详情；请求由输入区浮窗处理。
-   */
-  function eventView(event: SessionEvent) {
-    if (event.type === "user/message") {
-      const text = event.message.content.map((block) => block.text).join("\n")
-      return <div className="user-message"><div className="user-bubble">{messageBody(event.message)}</div><div className="message-actions user-message-actions"><MessageCopyButton text={text} label="复制用户消息" /></div></div>
-    }
-    if (event.type === "app/error") return <p className="chat-error" role="alert">{event.error.message}</p>
-    if (event.type === "approval/result") {
-      const request = approvalRequests.get(event.approvalId)
-      return <details className="chat-detail approval-result" data-approval-id={event.approvalId}><summary><IconShieldCheck size={15} />审批{event.decision === "approved" ? "已批准" : event.decision === "denied" ? "已拒绝" : "已取消"}{request ? " · " + request.toolName : ""}</summary>
-        {request?.reason && <p>{request.reason}</p>}
-        <pre className="process-content"><code className="language-text">{request ? printable(request.arguments) : event.decision}</code></pre>
-      </details>
-    }
-    if (event.type === "tool/result") return <details className="chat-detail"><summary>工具结果 · {event.result.status === "success" ? "完成" : "失败"}</summary>
-      <pre className="process-content"><code className="language-text">{event.result.content.filter((block) => block.type === "text").map((block) => block.text).join("\n\n")}</code></pre>
-      {event.result.status === "error" && <p className="chat-error">{event.result.error.message}</p>}
-    </details>
-    if (event.type === "turn/file_changes" && event.files.length > 0) return <div className="turn-file-changes" aria-label="本轮变更文件">
-      <div className="turn-file-changes-heading">
-        <IconGitCompare size={16} aria-hidden="true" />
-        <strong>本轮变更</strong>
-        <span>{event.files.length} 个文件</span>
-      </div>
-      <ul>{event.files.map((file) => <li key={file.path}>
-        <button type="button" title={file.path} onClick={() => onOpenDiff(event.eventId, file)}>
-          <IconCode size={16} aria-hidden="true" />
-          <span className="turn-file-name">{/^(?:[A-Za-z]:|[/\\])/.test(file.path) ? file.path.split(/[/\\]/).at(-1) || file.path : file.path}</span>
-          <span className="turn-file-stats">
-            {file.stats.additions > 0 && <span className="turn-file-added">+{file.stats.additions}</span>}
-            {file.stats.deletions > 0 && <span className="turn-file-removed">−{file.stats.deletions}</span>}
-          </span>
-          <span className="turn-file-status">{{ created: "新增", modified: "修改", deleted: "删除" }[file.changeType]}</span>
-        </button>
-      </li>)}</ul>
-      <p>点击文件查看差异</p>
-    </div>
-    if (event.type === "context_update") return <details className="chat-detail"><summary>上下文更新</summary><pre className="process-content"><code className="language-text">{event.content}</code></pre></details>
-    return null
-  }
-  /**
-   * 展示过程内容；仅未结束 Turn 的首个 Assistant Step 显示整轮标题，过程项不提供 AI 复制入口。
-   * @param item 一个 Assistant Step 或原始事件展示项。
-   * @param showAssistantLabel 是否在该 Step 上显示整轮标题；完成态过程项保持 false。
-   * @returns 对应内容的展示容器；组件 key 在当前对话内稳定。
-   */
-  function itemView(item: ChatItem, showAssistantLabel = false) {
-    if (item.kind === "event" && item.event.type === "approval/request") return null
-    if (item.kind === "event" && pairedResultIds.has(item.id)) return null
-    return <div className={"chat-entry " + (item.kind === "assistant" ? "assistant-entry" : "")} key={JSON.stringify([key, item.id])}>
-      {item.kind === "assistant" && showAssistantLabel && <div className="message-label"><span className="assistant-avatar"><IconSparkles size={13} /></span><strong>NiCode</strong><span>协作伙伴</span></div>}
-      {item.kind === "assistant" ? item.blocks.map((content, index) => <AssistantBlock block={content} key={index} onOpenWeb={onOpenWeb}
-        toolResult={content.type === "tool_call" ? toolResults.get(toolDisplayKey(item.turn, item.step, content.toolCallId)) ?? undefined : undefined} />) : eventView(item.event)}
-    </div>
-  }
-  return <section className="chat-page" ref={pageRef} data-project-id={projectId} data-session-id={sessionId}>
-    <div className="session-topline"><span>对话记录 <small>{events.filter((event) => event.type === "user/message").length} 条消息</small></span><span className={`session-phase phase-${control?.phase ?? "loading"}`} role="status"><i className="status-dot" />{!control ? "正在同步" : control.phase === "running" ? "正在运行" : control.phase === "stopping" ? "正在停止" : "准备就绪"}</span></div>
-    <div className="chat-scroll" ref={scrollingRef} onScroll={() => {
-      const node = scrollingRef.current
-      if (node) { followsRef.current = node.scrollHeight - node.scrollTop - node.clientHeight < 100; setShowScrollToBottom(!followsRef.current) }
-    }}>
-      <div className="chat-messages">
-        {!hasHistory && <p role="status">{view.loading ? "正在加载对话…" : "等待加载对话"}</p>}
-        {view.loadError && <p className="chat-error" role="alert">{view.loadError} <button onClick={() => void state.load(projectId, sessionId, true).catch(() => {})}>重试</button></p>}
-        {blocks.map((block) => {
-          if (block.kind !== "completed-turn") return itemView(block, block.kind === "assistant" && firstAssistantByTurn.get(block.turn) === block.id)
-          const fileChanges = block.process.filter((item) => item.kind === "event" && item.event.type === "turn/file_changes")
-          const process = block.process.filter((item) => item.kind !== "event" || (item.event.type !== "turn/end" && item.event.type !== "turn/file_changes" && item.event.type !== "approval/request" && !pairedResultIds.has(item.id)))
-          return <div className="chat-entry assistant-entry" key={JSON.stringify([key, block.id])} data-turn={block.turn}>
-            <div className="message-label"><span className="assistant-avatar"><IconSparkles size={13} /></span><strong>NiCode</strong><span>协作伙伴</span></div>
-            {process.length > 0 && <details className="chat-detail turn-process"><summary><IconTool size={15} /><span className="process-title">执行过程</span><span className="process-count">{process.length} 项</span></summary>{process.map((item) => itemView(item))}</details>}
-            {block.finalAnswer.length > 0 && <div className="final-answer">
-              {block.finalAnswer.map((content, index) => <AssistantBlock block={content} key={index} onOpenWeb={onOpenWeb} />)}
-            </div>}
-            {fileChanges.map((item) => itemView(item))}
-            {block.finalAnswer.some((content) => content.text.trim()) && <div className="message-actions"><MessageCopyButton text={block.finalAnswer.map((content) => content.text).join("\n\n")} label="复制AI回复" /></div>}
-          </div>
-        })}
-        {control?.phase === "running" && <div className="agent-working" role="status"><span className="working-dots"><i /><i /><i /></span>NiCode 正在处理任务</div>}
-        <div ref={endRef} />
-      </div>
-    </div>
-    <div className="chat-footer">
-      {showScrollToBottom && <button type="button" className="scroll-to-bottom" aria-label="回到最新消息" onClick={() => { followsRef.current = true; setShowScrollToBottom(false); endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" }) }}><IconArrowDown size={15} />最新消息</button>}
+  return <SessionTranscript projectId={projectId} sessionId={sessionId} state={state}
+    onOpenDiff={onOpenDiff} onOpenWeb={onOpenWeb} onOpenFile={onOpenFile}
+    pageRef={pageRef} onRetry={() => void state.load(projectId, sessionId, true).catch(() => {})}
+    footer={<>
       {pendingMessages.length > 0 && <section className="queue-list" aria-label="待处理消息">{pendingMessages.map((message) =>
-        <div key={message.messageId}><span>{message.status === "starting" ? "正在准备" : "排队中"}</span><p>{messageBody(message)}</p></div>)}</section>}
+        <div key={message.messageId}><span>{message.status === "starting" ? "正在准备" : "排队中"}</span><p>{messageBody(message, projectId, onOpenFile)}</p></div>)}</section>}
       {control && control.discardedMessages.length > 0 && <section className="queue-list" aria-label="未发送消息">{control.discardedMessages.map((message) =>
-        <div key={message.messageId}><span>未发送</span><p>{messageBody(message)}</p><button disabled={view.busy || control.phase === "stopping"} onClick={() => void send(message)}>重试发送</button></div>)}</section>}
+        <div key={message.messageId}><span>未发送</span><p>{messageBody(message, projectId, onOpenFile)}</p><button disabled={view.busy || control.phase === "stopping"} onClick={() => void send(message)}>重试发送</button></div>)}</section>}
       {!pendingApproval && view.operationError && <p className="chat-error" role="alert">{view.operationError}</p>}
       <div className="composer-anchor" ref={composerRef}>
       {pendingApproval && <section className="approval-popover" role="dialog" aria-modal="false" aria-labelledby="approval-title" tabIndex={-1} ref={approvalRef} key={pendingApproval.approvalId} data-approval-id={pendingApproval.approvalId}>
@@ -433,6 +469,5 @@ export function SessionPage({ projectId, sessionId, state, providers, onOpenDiff
         </li>
       </ul>
       {control?.phase === "running" && <div className="composer-caption"><span>发送的消息将加入队列</span></div>}
-    </div>
-  </section>
+    </>} />
 }

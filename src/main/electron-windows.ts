@@ -11,7 +11,7 @@ import type {
 } from "electron"
 
 import type { MainWindowLifecyclePort } from "./index.ts"
-import { SESSION_IPC_CHANNELS } from "../preload/session-api.ts"
+import { SESSION_IPC_CHANNELS, TEAM_SESSION_CHANNELS } from "../preload/session-api.ts"
 import type { SessionUpdate } from "../preload/session-api.ts"
 import { WINDOW_IPC_CHANNELS } from "../preload/window-api.ts"
 
@@ -169,14 +169,16 @@ export function createElectronWindowManager(
      * 向存活主窗口发送当前对话更新，窗口发送失败交给宿主处理。
      *
      * @param update 对话更新；单窗失败不会阻止其余窗口接收。
+     * @param recipients 成员订阅窗口，省略时使用普通会话广播。
      * @throws AggregateError 有窗口发送失败。
      */
-    sendSessionUpdate(update: SessionUpdate): void {
+    sendSessionUpdate(update: SessionUpdate, recipients?: ReadonlySet<number>): void {
       const failures: unknown[] = []
       for (const window of retainedWindows) {
         if (window.isDestroyed() || window.webContents.isDestroyed()) continue
         if (!isRendererAddress(window.webContents.getURL())) continue
-        try { window.webContents.send(SESSION_IPC_CHANNELS.update, update) }
+        if (recipients && !recipients.has(window.webContents.id)) continue
+        try { window.webContents.send(recipients ? TEAM_SESSION_CHANNELS.update : SESSION_IPC_CHANNELS.update, update) }
         catch (error) { failures.push(error) }
       }
       if (failures.length) throw new AggregateError(failures, "Session 窗口更新发送失败")

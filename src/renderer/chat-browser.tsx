@@ -1,8 +1,11 @@
-import { Component, lazy, Suspense, useLayoutEffect, useRef, useState, type ReactNode } from "react"
-import { IconArrowLeft, IconArrowRight, IconFile, IconFileDiff, IconFolderOpen, IconMaximize, IconMessage, IconMinimize, IconPlus, IconRefresh, IconWorld, IconX } from "@tabler/icons-react"
+import { Component, lazy, Suspense, useLayoutEffect, useRef, useState, useCallback, useSyncExternalStore, type ReactNode } from "react"
+import { IconArrowLeft, IconArrowRight, IconFile, IconFileDiff, IconFolderOpen, IconMaximize, IconMessage, IconMinimize, IconPlus, IconRefresh, IconUsers, IconWorld, IconX } from "@tabler/icons-react"
 import type { FileChange, FileReference } from "../../runtime/session/src/events.ts"
 import type { BrowserPresentation, WebTagRef, WebTagState } from "../preload/browser-api.ts"
 import type { ProjectSummary } from "../preload/session-api.ts"
+import { SessionTranscript } from "./session-page.tsx"
+import { sessionKey } from "./session-state.ts"
+import type { TeamSessionState, TeamSessionTarget } from "./team-session-state.ts"
 import "./chat-browser.css"
 
 const PatchDiff = lazy(async () => ({ default: (await import("@pierre/diffs/react")).PatchDiff }))
@@ -14,6 +17,7 @@ const maximumSplitPercent = 100 - minimumSplitPercent
 /** 标签只持有重新渲染所需的数据。 */
 export type BrowserTag =
   | { kind: "blank"; id: string }
+  | { kind: "team-session"; id: string; target: TeamSessionTarget }
   | { kind: "diff"; id: string; eventId: string; file: FileChange }
   | { kind: "file-explorer"; id: string; projectId: string }
   | { kind: "file-reference"; id: string; file: FileReference }
@@ -51,7 +55,10 @@ export class TagManager {
   /** 打开或选中已有标签。 @param sessionId 对话身份 @param tag 待打开标签。 */
   open(sessionId: string, tag: BrowserTag): void {
     const state = this.get(sessionId)
-    const tags = state.tags.some((item) => item.id === tag.id) ? state.tags : [...state.tags, tag]
+    const existing = state.tags.find((item) => item.id === tag.id)
+    const tags = !existing ? [...state.tags, tag] : tag.kind === "team-session"
+      ? state.tags.map((item) => item === existing ? tag : item)
+      : state.tags
     this.set(sessionId, { tags, activeTagId: tag.id, narrowPanel: "browser" })
   }
 
@@ -179,9 +186,27 @@ class BrowserPageBoundary extends Component<{ children: ReactNode; message: stri
   }
 }
 
+/**
+ * 挂载时只观察当前成员的缓存，标签切走后释放渲染监听。
+ * @param props 成员身份、缓存与打开其他标签的管理器。
+ * @returns 无输入区的共用对话记录。
+ */
+function TeamSessionPage({ target, state, manager }: { target: TeamSessionTarget; state: TeamSessionState; manager: TagManager }) {
+  const { projectId, routerId, sessionId } = target
+  const key = sessionKey(projectId, sessionId)
+  const subscribe = useCallback((notify: () => void) => state.observe(key, notify), [state, key])
+  useSyncExternalStore(subscribe, () => state.version(key))
+  return <SessionTranscript projectId={projectId} sessionId={sessionId} state={state.history}
+    onRetry={() => state.retry(target)}
+    onOpenWeb={(url) => manager.openWeb(routerId, url)}
+    onOpenFile={(file) => manager.openFileReference(routerId, file)}
+    onOpenDiff={(eventId, file) => manager.open(routerId, { kind: "diff", id: JSON.stringify([sessionId, eventId, file.path]), eventId, file })} />
+}
+
 /** 聊天路由提供身份、弹层可见性和已有聊天节点。 */
 interface BrowserWorkspaceProps {
   manager: TagManager
+  teamSessions: TeamSessionState
   sessionId: string
   projectId: string
   projects: readonly ProjectSummary[]
@@ -196,7 +221,7 @@ interface BrowserWorkspaceProps {
  * @param props 对话、标签状态和聊天节点
  * @returns 聊天与内置浏览器工作区。
  */
-export function BrowserWorkspace({ manager, sessionId, projectId, projects, obscured, theme, toggle, children }: BrowserWorkspaceProps) {
+export function BrowserWorkspace({ manager, teamSessions, sessionId, projectId, projects, obscured, theme, toggle, children }: BrowserWorkspaceProps) {
   const browser = manager.get(sessionId)
   const workspace = useRef<HTMLDivElement>(null)
   const split = useRef<HTMLDivElement>(null)
@@ -212,12 +237,14 @@ export function BrowserWorkspace({ manager, sessionId, projectId, projects, obsc
   const project = projects.find((item) => item.projectId === projectId)
   // Draft routes share browser tabs, so project file tabs also require a project match.
   const visibleTags = browser.tags.filter((tag) => {
+    if (tag.kind === "team-session") return tag.target.projectId === projectId && tag.target.routerId === sessionId
     if (tag.kind === "file-explorer") return tag.projectId === projectId
     if (tag.kind === "file-reference") return tag.file.projectId === projectId
     return true
   })
   const active = visibleTags.find((tag) => tag.id === browser.activeTagId) ?? visibleTags.at(-1)
   const activeFile = active?.kind === "file-reference" ? active : undefined
+  const activeTeam = active?.kind === "team-session" ? active : undefined
   const web = active?.kind === "web" ? active : undefined
   const webId = web?.id
   const webUrl = web?.url
@@ -242,7 +269,7 @@ export function BrowserWorkspace({ manager, sessionId, projectId, projects, obsc
 
   useLayoutEffect(() => {
     setChatTabSelected(false)
-  }, [sessionId, showBrowser, showDivider, active?.id, activeFile])
+  }, [sessionId, showBrowser, showDivider, active?.id, activeFile, activeTeam])
 
   useLayoutEffect(() => {
     const element = workspace.current
@@ -304,6 +331,7 @@ export function BrowserWorkspace({ manager, sessionId, projectId, projects, obsc
   function close(tag: BrowserTag): void {
     manager.remove(sessionId, tag.id)
     if (tag.kind === "web") run(api.closeWebTag({ sessionId, tagId: tag.id }))
+    if (tag.kind === "team-session") teamSessions.close(tag.target)
   }
 
   /** 校验地址并创建或导航网页。 */
@@ -390,13 +418,15 @@ export function BrowserWorkspace({ manager, sessionId, projectId, projects, obsc
           </button></div>}
             {visibleTags.map((tag) => {
               const label = tag.kind === "diff" ? tag.file.path : tag.kind === "web" ? tag.title || tag.url
+                : tag.kind === "team-session" ? "成员 " + tag.target.sessionId.slice(0, 8)
                 : tag.kind === "file-explorer" ? "项目文件" : tag.kind === "file-reference" ? tag.file.name : "新标签页"
               return <div className="chat-browser-tab chat-browser-tab-item" data-active={!showChatTabContent && active?.id === tag.id} key={tag.id}>
-                <button type="button" title={tag.kind === "file-reference" ? tag.file.absolutePath : label} aria-pressed={!showChatTabContent && active?.id === tag.id} onClick={() => {
+                <button type="button" title={tag.kind === "file-reference" ? tag.file.absolutePath : tag.kind === "team-session" ? tag.target.sessionId : label} aria-pressed={!showChatTabContent && active?.id === tag.id} onClick={() => {
                   setChatTabSelected(false)
                   manager.open(sessionId, tag)
                 }}>
                   {tag.kind === "diff" ? <IconFileDiff size={15} aria-hidden="true" />
+                    : tag.kind === "team-session" ? <IconUsers size={15} aria-hidden="true" />
                     : tag.kind === "file-explorer" ? <IconFolderOpen size={15} aria-hidden="true" />
                       : tag.kind === "file-reference" ? <IconFile size={15} aria-hidden="true" /> : <IconWorld size={15} aria-hidden="true" />}
                   <span>{label}</span>
@@ -430,7 +460,11 @@ export function BrowserWorkspace({ manager, sessionId, projectId, projects, obsc
           <button className="chat-browser-submit" type="submit" aria-label="打开" title="打开网址" disabled={!address.trim() || !api}><IconArrowRight size={16} aria-hidden="true" /></button>
         </form>}
         {error && <p className="chat-browser-message" role="alert">{error}</p>}
-        {active?.kind === "diff" ? <div className="chat-browser-diff">
+        {active?.kind === "team-session" ? browserVisible && !showChatTabContent &&
+          <BrowserPageBoundary key={active.id} message="无法显示团队成员对话。">
+            <TeamSessionPage target={active.target} state={teamSessions} manager={manager} />
+          </BrowserPageBoundary>
+        : active?.kind === "diff" ? <div className="chat-browser-diff">
           {active.file.hunks.length === 0
             ? <p className="chat-browser-message">{active.file.path} · {active.file.changeType === "created" ? "新增" : active.file.changeType === "deleted" ? "删除" : "修改"}，无文本差异</p>
             : <BrowserPageBoundary key={active.id} message="无法显示此文件的差异。">

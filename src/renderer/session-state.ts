@@ -68,7 +68,7 @@ export function errorMessage(error: unknown): string { return error instanceof E
 
 /**
  * Workspace 持有一个实例；路由卸载保留字典、草稿和未完成请求，工作区卸载取消订阅。
- * 所有变更直接通知 React 重绘，首次加载和缺口修复共用同一个请求表。
+ * 变更通知携带对话键，首次加载和缺口修复共用同一个请求表。
  */
 export class WorkspaceSessionState {
   /** 只有完整初始化后才建立键，空数组同样属于有效缓存。 */
@@ -85,13 +85,13 @@ export class WorkspaceSessionState {
   /** 唯一的历史查询出口；缓存命中不会调用。 */
   private readonly api: Pick<NiCodePreloadApi, "getSessionData">
   /** Workspace 的 React 更新通知。 */
-  private readonly changed: () => void
+  private readonly changed: (key: SessionKey) => void
   /**
    * 构造一个由 Workspace 持有的缓存实例。
    * @param api preload 查询能力。
-   * @param changed 状态改变时通知工作区重绘。
+   * @param changed 通知状态改变的对话键。
    */
-  constructor(api: Pick<NiCodePreloadApi, "getSessionData">, changed: () => void) { this.api = api; this.changed = changed }
+  constructor(api: Pick<NiCodePreloadApi, "getSessionData">, changed: (key: SessionKey) => void) { this.api = api; this.changed = changed }
   /**
    * @param key 联合身份。
    * @returns 键是否已经完整初始化。
@@ -109,13 +109,13 @@ export class WorkspaceSessionState {
   setDraft(key: SessionKey, document?: JSONContent): void {
     if (document === undefined) delete this.draftsByKey[key]
     else this.draftsByKey[key] = document
-    this.changed()
+    this.changed(key)
   }
   /**
    * @param key 对话身份。
    * @param patch 操作或加载状态。
    */
-  setView(key: SessionKey, patch: Partial<SessionView>): void { Object.assign(this.view(key), patch); this.changed() }
+  setView(key: SessionKey, patch: Partial<SessionView>): void { Object.assign(this.view(key), patch); this.changed(key) }
   /**
    * @param projectId 分组。
    * @param sessionId 对话。
@@ -158,7 +158,7 @@ export class WorkspaceSessionState {
     }
     this.acceptControl(key, data.control)
     this.releaseControl(key)
-    this.changed()
+    this.changed(key)
   }
   /**
    * @param update 工作区订阅到的事件、控制或后台错误。
@@ -182,7 +182,7 @@ export class WorkspaceSessionState {
       }
       this.acceptControl(key, update.control)
     } else this.view(key).operationError = update.error.message
-    this.changed()
+    this.changed(key)
     if (this.needsRepair(key)) void this.load(update.projectId, update.sessionId, true).catch(() => {})
   }
   /**

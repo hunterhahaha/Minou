@@ -1,6 +1,6 @@
 /** 新增 Session IPC 的传输校验、监听清理及 Electron 对象隔离。 */
 import assert from "node:assert/strict"
-import { createSessionApi, SESSION_IPC_CHANNELS } from "../../src/preload/session-api.ts"
+import { createSessionApi, SESSION_IPC_CHANNELS, TEAM_SESSION_CHANNELS } from "../../src/preload/session-api.ts"
 import type { SessionControl, SessionData, SessionUpdate } from "../../src/preload/session-api.ts"
 import type { SummaryEndEvent } from "../../runtime/session/src/events.ts"
 const control: SessionControl = { revision: 1, throughSeq: 0, currentModel: { providerId: "p", protocol: "responses", modelId: "m", name: "test", reasoningLevel: "medium" },
@@ -81,6 +81,28 @@ async function main(): Promise<void> {
   await assert.rejects(unknownKind.getSessionData("default", "s"), /无效/)
   const invalidState = createSessionApi({ invoke: async () => ({ ...control, revision: -1 }) })
   await assert.rejects(invalidState.updateSessionSettings("default", "s", { model: control.currentModel }), /无效/)
+  const teamHandlers = new Map<string, (event: unknown, payload: unknown) => void>()
+  const teamCalls: string[] = []
+  const teamApi = createSessionApi({
+    invoke: async (channel) => {
+      teamCalls.push(channel)
+      if (channel === TEAM_SESSION_CHANNELS.list) return ["member"]
+    },
+    on: (channel, handler) => { teamHandlers.set(channel, handler) },
+    removeListener: (channel) => { teamHandlers.delete(channel) },
+  })
+  assert.deepEqual(await teamApi.listTeamMembers("default", "router"), ["member"])
+  await teamApi.subscribeTeamSession("default", "router", "member")
+  await teamApi.unsubscribeTeamSession("default", "router", "member")
+  assert.deepEqual(teamCalls, [TEAM_SESSION_CHANNELS.list, TEAM_SESSION_CHANNELS.subscribe, TEAM_SESSION_CHANNELS.unsubscribe])
+  const teamUpdates: SessionUpdate[] = []
+  const cancelTeam = teamApi.onTeamSessionUpdate((value) => teamUpdates.push(value))
+  teamHandlers.get(TEAM_SESSION_CHANNELS.update)?.({ private: true }, update)
+  assert.deepEqual(teamUpdates, [update])
+  assert.equal(teamHandlers.has(SESSION_IPC_CHANNELS.update), false)
+  cancelTeam()
+  assert.equal(teamHandlers.size, 0)
+  await assert.rejects(createSessionApi({ invoke: async () => [null] }).listTeamMembers("default", "router"), /无效/)
   console.log("session-updates.test.ts: Session 传输与订阅断言通过")
 }
 void main().catch((error: unknown) => { console.error(error); process.exitCode = 1 })

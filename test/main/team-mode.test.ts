@@ -1,4 +1,5 @@
 import assert from "node:assert/strict"
+import { EventEmitter } from "node:events"
 import { mkdir, mkdtemp, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve, sep } from "node:path"
@@ -17,7 +18,7 @@ import type { SessionCompletionFailure } from "../../src/main/session-ipc.ts"
 import { SessionRuntimeGlobal } from "../../src/main/session-runtime-global.ts"
 import { TeamMode } from "../../src/main/team-mode.ts"
 import { readDefaultWorkspace } from "../../src/main/workspace-store.ts"
-import { SESSION_IPC_CHANNELS, START_TEAM_SESSION_CHANNEL, TEAM_WAKEUP_CHANNELS, type SessionData, type SessionUpdate } from "../../src/preload/session-api.ts"
+import { SESSION_IPC_CHANNELS, START_TEAM_SESSION_CHANNEL, TEAM_SESSION_CHANNELS, TEAM_WAKEUP_CHANNELS, type SessionData, type SessionUpdate } from "../../src/preload/session-api.ts"
 
 const MODEL: ModelRef = { providerId: "offline", protocol: "responses", modelId: "script", name: "Fake model", reasoningLevel: "medium" }
 const message = (text: string) => ({ content: [{ type: "text" as const, text }] })
@@ -117,6 +118,7 @@ async function main(): Promise<void> {
     const recoveredId = new SessionMessageQueue(databasePath, "default", interruptedId).enqueue(message("after restart"))
     const handlers = new Map<string, (_event: unknown, ...args: unknown[]) => unknown>()
     const updates: SessionUpdate[] = []
+    const deliveries: number[][] = []
     const failures: SessionCompletionFailure[] = []
     const modelInputs: string[] = []
     let memberId = ""
@@ -239,7 +241,10 @@ async function main(): Promise<void> {
       dialog: { showOpenDialog: async () => ({ canceled: true, filePaths: [] }) },
       configPaths: paths, teamWakeup: startupConfig.teamWakeup, sessionRuntime: { systemPrompt: "Offline", global },
       onSessionCompletionFailure: (failure) => { failures.push(failure) },
-      sessionEventForwarding: { sendSessionUpdateToRenderer: (update) => { updates.push(update) } },
+      sessionEventForwarding: { sendSessionUpdateToRenderer: (update, recipients) => {
+        updates.push(update)
+        if (update.sessionId === memberId && recipients) deliveries.push([...recipients])
+      } },
     })
 
     const ended = (id: string, turn: number) => updates.some((update) => update.sessionId === id &&
@@ -257,23 +262,42 @@ async function main(): Promise<void> {
     assert.equal(team.turn, 1)
     assert.equal(store.identity("default", team.sessionId)?.workspaceId, team.workspaceId)
     const identity = await until(() => memberId ? store.identity("default", memberId) : undefined)
-    await until(() => store.status(identity) === "closed" && ended(team.sessionId, 3) && ended(memberId, 2))
+    await until(() => store.status(identity) === "closed" && ended(team.sessionId, 3))
     assert.deepEqual(approvalRisks, ["medium", "low"])
-    for (const [id, kind] of [[team.sessionId, "router"], [memberId, "member"]]) {
-      assert.ok(updates.some((update) => update.sessionId === id && update.kind === "event" &&
-        update.event.seq === 1 && update.sessionKind === kind))
-    }
-    assert.ok(!updates.some((update) => update.sessionId === memberId &&
-      update.kind === "event" && update.event.type.startsWith("approval/")))
+    assert.ok(updates.some((update) => update.sessionId === team.sessionId && update.kind === "event" &&
+      update.event.seq === 1 && update.sessionKind === "router"))
+    assert.ok(!updates.some((update) => update.sessionId === memberId), "未订阅成员不发送更新")
     assert.ok(readDefaultWorkspace(paths.workspaceDatabasePath).sessions.some(({ id }) => id === team.sessionId))
     assert.ok(!readDefaultWorkspace(paths.workspaceDatabasePath).sessions.some(({ id }) => id === memberId))
     assert.deepEqual(withSessionDatabase(paths.metaDatabasePath, (db) =>
       db.prepare("SELECT kind FROM session_meta WHERE session_id = ?").get(team.sessionId)?.kind), "router")
     const memberData = await invoke<SessionData>(SESSION_IPC_CHANNELS.getSessionData, "default", memberId)
     assert.equal(memberData.kind, "member")
+    assert.equal(memberData.events.filter(({ type }) => type === "turn/end").length, 2)
+    assert.ok(!memberData.events.some(({ type }) => type.startsWith("approval/")))
     assert.equal((await invoke<SessionData>(SESSION_IPC_CHANNELS.getSessionData, "default", team.sessionId)).kind, "router")
     assert.equal(memberData.events.filter(({ type }) => type === "user/message").length, 2)
     await assert.rejects(invoke(SESSION_IPC_CHANNELS.continueSession, "default", memberId, message("invalid")), /Router/)
+    assert.deepEqual(await invoke(TEAM_SESSION_CHANNELS.list, "default", team.sessionId), [memberId])
+    await assert.rejects(invoke(TEAM_SESSION_CHANNELS.list, "default", memberId), /Router/)
+    const sender = Object.assign(new EventEmitter(), { id: 1, isDestroyed: () => false })
+    const otherSender = Object.assign(new EventEmitter(), { id: 2, isDestroyed: () => false })
+    const subscribe = handlers.get(TEAM_SESSION_CHANNELS.subscribe)!
+    const unsubscribe = handlers.get(TEAM_SESSION_CHANNELS.unsubscribe)!
+    assert.throws(() => subscribe({ sender }, "default", team.sessionId, interruptedId), /不属于/)
+    subscribe({ sender }, "default", team.sessionId, memberId)
+    subscribe({ sender: otherSender }, "default", team.sessionId, memberId)
+    sender.emit("did-start-navigation", { isMainFrame: true, isSameDocument: true })
+    const publishMemberState = () => invoke(SESSION_IPC_CHANNELS.updateSessionSettings, "default", memberId, { sandboxMode: "sandbox-read-only" })
+    await publishMemberState()
+    assert.deepEqual(deliveries.at(-1), [1, 2])
+    unsubscribe({ sender }, "default", team.sessionId, memberId)
+    await publishMemberState()
+    assert.deepEqual(deliveries.at(-1), [2])
+    otherSender.emit("did-start-navigation", { isMainFrame: true, isSameDocument: false })
+    const deliveredBeforeReload = deliveries.length
+    await publishMemberState()
+    assert.equal(deliveries.length, deliveredBeforeReload, "主文档导航清空订阅")
     await until(() => idle(team.sessionId))
     await invoke(SESSION_IPC_CHANNELS.continueSession, "default", team.sessionId, message("role boundary"))
     await until(() => ended(team.sessionId, 4) && idle(team.sessionId))

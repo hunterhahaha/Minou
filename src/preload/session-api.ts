@@ -91,6 +91,14 @@ function requireWebSearchConfirmation(value: unknown): void {
 
 export const NICODE_PRELOAD_GLOBAL = "nicode"
 
+/** 团队成员查询与独立更新通道。 */
+export const TEAM_SESSION_CHANNELS = {
+  list: "nicode:team:list-members",
+  subscribe: "nicode:team:subscribe-member",
+  unsubscribe: "nicode:team:unsubscribe-member",
+  update: "nicode:team:member-update",
+} as const
+
 export const SESSION_IPC_CHANNELS = {
   startNewSession: "nicode:session:start-new",
   continueSession: "nicode:session:continue",
@@ -404,7 +412,39 @@ export interface NiCodePreloadApi {
    */
   getSessionData(projectId: string, sessionId: string): Promise<SessionData>
   /**
-   * 工作区统一监听更新，只把业务数据交给页面。
+   * 按需查询指定 Router 的成员，包含已关闭成员。
+   * @param projectId Router 所属项目或 default。
+   * @param routerId 团队 Router 的会话 ID。
+   * @returns 按创建顺序排列的成员 ID。
+   * @throws Error 当团队不存在、查询失败或结果无效时拒绝。
+   */
+  listTeamMembers(projectId: string, routerId: string): Promise<string[]>
+  /**
+   * 为当前窗口登记成员更新订阅，可重复调用。
+   * @param projectId Router 所属项目或 default。
+   * @param routerId 团队 Router 的会话 ID。
+   * @param sessionId 该团队成员的会话 ID。
+   * @returns 主进程确认订阅后解析。
+   * @throws Error 当成员不属于该 Router 或窗口不可用时拒绝。
+   */
+  subscribeTeamSession(projectId: string, routerId: string, sessionId: string): Promise<void>
+  /**
+   * 解除当前窗口对该成员的订阅。
+   * @param projectId Router 所属项目或 default。
+   * @param routerId 团队 Router 的会话 ID。
+   * @param sessionId 该团队成员的会话 ID。
+   * @returns 主进程确认移除后解析。
+   * @throws Error 当身份不匹配或窗口不可用时拒绝。
+   */
+  unsubscribeTeamSession(projectId: string, routerId: string, sessionId: string): Promise<void>
+  /**
+   * 独立接收已订阅成员的更新。
+   * @param listener 接收通过校验的事件、控制状态或后台错误。
+   * @returns 移除此监听器的函数。
+   */
+  onTeamSessionUpdate(listener: (update: SessionUpdate) => void): () => void
+  /**
+   * 监听普通会话和 Router 更新，只把业务数据交给页面。
    * @param listener 接收已检查的对话更新。
    * @returns 删除该监听器的函数。
    */
@@ -797,8 +837,29 @@ export function createSessionApi(ipcRenderer: IpcRendererInvokePort): NiCodePrel
       if (data.projectId !== projectId || data.sessionId !== sessionId) throw new TypeError("历史结果属于其他对话")
       return data
     },
+    /** @see NiCodePreloadApi.listTeamMembers */
+    async listTeamMembers(projectId: string, routerId: string) {
+      const ids = await ipcRenderer.invoke(TEAM_SESSION_CHANNELS.list, projectId, routerId)
+      if (!Array.isArray(ids) || !ids.every((id) => typeof id === "string" && id.length > 0)) throw new TypeError("团队成员列表无效")
+      return ids
+    },
+    /** @see NiCodePreloadApi.subscribeTeamSession */
+    async subscribeTeamSession(projectId: string, routerId: string, sessionId: string) {
+      await ipcRenderer.invoke(TEAM_SESSION_CHANNELS.subscribe, projectId, routerId, sessionId)
+    },
+    /** @see NiCodePreloadApi.unsubscribeTeamSession */
+    async unsubscribeTeamSession(projectId: string, routerId: string, sessionId: string) {
+      await ipcRenderer.invoke(TEAM_SESSION_CHANNELS.unsubscribe, projectId, routerId, sessionId)
+    },
+    /** @see NiCodePreloadApi.onTeamSessionUpdate */
+    onTeamSessionUpdate(listener: (update: SessionUpdate) => void) {
+      if (!ipcRenderer.on || !ipcRenderer.removeListener) return () => {}
+      const receive = (_event: unknown, value: unknown): void => { listener(requireSessionUpdate(value)) }
+      ipcRenderer.on(TEAM_SESSION_CHANNELS.update, receive)
+      return () => { ipcRenderer.removeListener!(TEAM_SESSION_CHANNELS.update, receive) }
+    },
     /**
-     * 工作区统一监听更新，只把业务数据交给页面。
+     * 监听普通会话和 Router 更新，只把业务数据交给页面。
      * @param listener 接收已检查的对话更新。
      * @returns 删除该监听器的函数。
      */

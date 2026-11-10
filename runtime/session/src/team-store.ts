@@ -265,6 +265,17 @@ export class TeamStore {
   }
 
   /**
+   * 查询所属 Workspace 的成员，包含仍可查看历史的已关闭成员。
+   * @param workspaceId 已通过 Router 身份确认的 Workspace。
+   * @returns 按创建顺序排列的成员会话 ID。
+   */
+  memberIds(workspaceId: string): string[] {
+    return withSessionDatabase(this.path, (db) => (db.prepare(
+      "SELECT session_id FROM team_members WHERE workspace_id = ? ORDER BY rowid",
+    ).all(workspaceId) as { session_id: string }[]).map(({ session_id }) => session_id))
+  }
+
+  /**
    * 读取需要恢复或重新定时的成员。
    * @returns 未关闭的成员身份。
    * @throws Error 成员记录无法读取或解析。

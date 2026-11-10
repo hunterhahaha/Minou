@@ -2,6 +2,7 @@
 import assert from "node:assert/strict"
 import { serializeComposerMessage } from "../../src/renderer/composer-message.ts"
 import { WorkspaceSessionState, mergeSessionEvents, projectSessionEvents, sessionKey, throughSeq } from "../../src/renderer/session-state.ts"
+import { TeamSessionState } from "../../src/renderer/team-session-state.ts"
 import type { SessionControl, SessionData } from "../../src/preload/session-api.ts"
 import type { SessionEvent, SessionEventInput } from "../../runtime/session/src/events.ts"
 import type { ModelRef } from "../../runtime/model/src/types.ts"
@@ -103,6 +104,64 @@ async function testCache(): Promise<void> {
   cross.receive({ kind: "error", projectId: "default", sessionId: "a", stage: "index", error: { source: "runtime", code: "INDEX", message: "索引失败" } })
   assert.equal(cross.view(sessionKey("default", "a")).operationError, "索引失败")
 }
+/** 订阅与快照交错、后台更新、快速关闭重开及失败重试。 */
+async function testMemberCache(): Promise<void> {
+  const flush = () => new Promise<void>((done) => setImmediate(done))
+  const target = { projectId: "default", routerId: "router", sessionId: "s" }
+  const key = sessionKey(target.projectId, target.sessionId)
+  const calls: string[] = []
+  let rejectSubscription = true
+  let resolveHistory!: (snapshot: SessionData) => void
+  const state = new TeamSessionState({
+    subscribeTeamSession: async () => {
+      calls.push("subscribe")
+      if (rejectSubscription) throw new Error("offline")
+    },
+    unsubscribeTeamSession: async () => { calls.push("unsubscribe") },
+    getSessionData: async () => {
+      calls.push("history")
+      return new Promise((resolve) => { resolveHistory = resolve })
+    },
+  })
+  let renders = 0
+  let otherRenders = 0
+  const detach = state.observe(key, () => renders++)
+  state.observe(sessionKey("default", "other"), () => otherRenders++)
+  state.open(target)
+  await flush()
+  assert.deepEqual(calls, ["subscribe"])
+  assert.match(state.history.view(key).loadError ?? "", /offline/)
+  rejectSubscription = false
+  state.retry(target)
+  await flush()
+  assert.deepEqual(calls, ["subscribe", "subscribe", "history"])
+
+  state.receive({ kind: "event", projectId: target.projectId, sessionId: target.sessionId, event: second })
+  resolveHistory(data([first], 1))
+  await flush()
+  assert.deepEqual(state.history.sessionEventsByKey[key], [first, second])
+  assert.ok(renders > 0)
+  assert.equal(otherRenders, 0)
+  detach()
+
+  const before = renders
+  state.receive({ kind: "event", projectId: target.projectId, sessionId: target.sessionId, event: third })
+  assert.equal(renders, before)
+  assert.equal(state.history.sessionEventsByKey[key].at(-1), third)
+  const later = event(4, { type: "turn/start", turn: 2, model })
+  state.close(target)
+  state.open(target)
+  state.receive({ kind: "event", projectId: target.projectId, sessionId: target.sessionId, event: later })
+  assert.equal(state.history.sessionEventsByKey[key].at(-1), third, "忽略上一订阅周期迟到的更新")
+  await flush()
+  assert.deepEqual(calls.slice(-3), ["unsubscribe", "subscribe", "history"])
+  resolveHistory(data([first, second, third, later], 2))
+  await flush()
+  assert.equal(state.history.sessionEventsByKey[key].at(-1), later)
+  assert.equal(renders, before)
+  assert.equal(otherRenders, 0)
+}
+
 /** 流式索引排序、权威替换与身份冲突。 */
 function testProjection(): void {
   const stream = [
@@ -201,6 +260,7 @@ function testCompletedTurns(): void {
  */
 async function main(): Promise<void> {
   await testCache()
+  await testMemberCache()
   testProjection()
   testCompletedTurns()
   const summary = event(4, { type: "summary/end", summaryId: "summary-1", turn: 1, fromEventSeq: 2, throughEventSeq: 2, summary: "compressed",

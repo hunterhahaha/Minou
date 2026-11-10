@@ -22,12 +22,14 @@ import {
   IconShieldCheck,
   IconSun,
   IconTerminal2,
+  IconUsers,
 } from "@tabler/icons-react"
 import type { DirectorySelection, ProjectSummary, ProviderSummary, SessionSummary } from "../preload/session-api.ts"
 import { preferredReasoningLevel } from "../../runtime/model/src/reasoning.ts"
 import { SettingsDialog } from "./settings-dialog.tsx"
 import type { SkillCache } from "./skill-settings.tsx"
 import { WorkspaceSessionState, sessionKey, errorMessage } from "./session-state.ts"
+import { TeamSessionState } from "./team-session-state.ts"
 import { SessionPage } from "./session-page.tsx"
 import { WorkspaceSearch } from "./workspace-search.tsx"
 import { useDialogFocus } from "./dialog-focus.tsx"
@@ -36,6 +38,48 @@ import { serializeComposerMessage } from "./composer-message.ts"
 import { ComposerModelPicker } from "./composer-model-picker.tsx"
 import { WindowControls } from "./window-controls.tsx"
 import "./workspace.css"
+
+/**
+ * 按需查询 Router 的成员。弹窗关闭时释放查询视图和焦点边界。
+ * @param props Router 身份和选择、关闭回调。
+ * @returns 使用现有弹窗样式的成员列表。
+ */
+function TeamMembersDialog({ projectId, routerId, onOpen, onClose }: {
+  projectId: string; routerId: string; onOpen(sessionId: string): void; onClose(): void
+}) {
+  const dialog = useRef<HTMLElement>(null)
+  useDialogFocus(dialog)
+  const [attempt, setAttempt] = useState(0)
+  const [members, setMembers] = useState<LoadState<string[]>>({ status: "loading" })
+  useEffect(() => {
+    let active = true
+    void window.nicode.listTeamMembers(projectId, routerId).then(
+      (value) => { if (active) setMembers({ status: "ready", value }) },
+      () => { if (active) setMembers({ status: "error" }) },
+    )
+    return () => { active = false }
+  }, [projectId, routerId, attempt])
+
+  return <div className="project-dialog-backdrop" role="presentation" onMouseDown={(event) => {
+    if (event.target === event.currentTarget) onClose()
+  }}>
+    <section className="project-dialog" ref={dialog} role="dialog" aria-modal="true" aria-labelledby="team-members-title" tabIndex={-1}
+      onKeyDown={(event) => { if (event.key === "Escape") { event.stopPropagation(); onClose() } }}>
+      <div className="project-dialog-header">
+        <h2 id="team-members-title">团队成员</h2>
+        <button type="button" className="settings-icon-button" aria-label="关闭团队成员" onClick={onClose}><IconX size={17} /></button>
+      </div>
+      <DataStatus state={members} retry={() => {
+        setMembers({ status: "loading" })
+        setAttempt((value) => value + 1)
+      }} />
+      {members.status === "ready" && (members.value.length === 0 ? <p role="status">当前团队暂无成员。</p> :
+        <ul className="team-members-list">{members.value.map((id) => <li key={id}>
+          <button type="button" className="settings-secondary-button" title={id} onClick={() => onOpen(id)}>成员 {id}</button>
+        </li>)}</ul>)}
+    </section>
+  </div>
+}
 
 /** 一项启动数据的加载、成功或失败状态。 */
 type LoadState<T> = { status: "loading" } | { status: "ready"; value: T } | { status: "error" }
@@ -207,6 +251,9 @@ function Workspace() {
   const createConversationLabel = activeMode === "work" ? "新建团队会话" : "新建聊天"
   const newDraftKey = sessionKey(groupId, draftMode === "work" ? "$new-work" : "$new-chat")
   const [, setBrowserVersion] = useState(0)
+  const [teamSessions] = useState(() => new TeamSessionState(window.nicode))
+  const [teamMembersRouter, setTeamMembersRouter] = useState<string | null>(null)
+  useEffect(() => window.nicode.onTeamSessionUpdate((update) => teamSessions.receive(update)), [teamSessions])
   const [browserTags] = useState(() => new TagManager(() => setBrowserVersion((version) => version + 1)))
   useEffect(() => window.nicodeBrowser?.onWebTagState((update) => browserTags.receive(update)), [browserTags])
   const newChatView = sessionsState.view(newDraftKey)
@@ -696,6 +743,7 @@ function Workspace() {
     : activeProject?.sessions ?? []
   // 新会话预览按模式区分，使用独立于会话 UUID 的标识。
   const browserOwner = workspaceRoute.page === "session" ? workspaceRoute.sessionId : draftMode === "work" ? "new-work" : "new-chat"
+  const teamMembersOpen = currentKind === "router" && teamMembersRouter === browserOwner
   const browserState = browserTags.get(browserOwner)
   const browserExpanded = browserState.narrowPanel === "browser"
   const currentSession = workspaceRoute.page === "session" ? currentSessions.find((session) => session.sessionId === workspaceRoute.sessionId) : undefined
@@ -812,9 +860,9 @@ function Workspace() {
         </div>
       </aside>}
       <main className="main-panel">
-        <BrowserWorkspace manager={browserTags} sessionId={browserOwner} projectId={groupId}
+        <BrowserWorkspace manager={browserTags} teamSessions={teamSessions} sessionId={browserOwner} projectId={groupId}
           projects={projects.status === "ready" ? projects.value : []} theme={theme}
-          obscured={settingsDialogOpen || projectDialogOpen || searchOpen || openMenu !== null || sidebarMenu !== null || sidebarDialog !== null}
+          obscured={teamMembersOpen || settingsDialogOpen || projectDialogOpen || searchOpen || openMenu !== null || sidebarMenu !== null || sidebarDialog !== null}
           toggle={<button className="settings-icon-button browser-toggle" type="button" aria-expanded={browserExpanded} aria-controls="chat-browser-pane"
               aria-label={browserExpanded ? "收起内置浏览器" : "展开内置浏览器"} title={browserExpanded ? "收起内置浏览器" : "展开内置浏览器"}
               onClick={() => {
@@ -836,7 +884,10 @@ function Workspace() {
               <button type="button" aria-pressed={activeMode === "chat"} disabled={workspaceRoute.page === "new-chat" && newChatView.busy} onClick={() => switchMode("chat")}>普通模式</button>
               <button type="button" aria-pressed={activeMode === "work"} disabled={workspaceRoute.page === "new-chat" && newChatView.busy} onClick={() => switchMode("work")}>团队模式</button>
             </div>
-            <div className="panel-header-actions">{!sidebarOpen && <>
+            <div className="panel-header-actions">
+              {currentKind === "router" && <button className="settings-icon-button" type="button" aria-label="团队成员" title="团队成员"
+                aria-haspopup="dialog" onClick={() => setTeamMembersRouter(browserOwner)}><IconUsers size={17} aria-hidden="true" /></button>}
+              {!sidebarOpen && <>
               <button className="settings-icon-button" type="button" aria-label="设置" title="设置 · Ctrl ," onClick={() => openSettingsDialog()}><IconAdjustmentsHorizontal size={17} stroke={1.6} aria-hidden="true" /></button>
               <button className="settings-icon-button" type="button" aria-label={theme === "light" ? "切换深色外观" : "切换浅色外观"} title={theme === "light" ? "深色外观" : "浅色外观"} onClick={() => setTheme((current) => current === "light" ? "dark" : "light")}>{theme === "light" ? <IconMoon size={17} stroke={1.6} aria-hidden="true" /> : <IconSun size={17} stroke={1.6} aria-hidden="true" />}</button>
             </>}{(workspaceRoute.page === "session" || !sidebarOpen) && <button className="settings-icon-button" type="button" aria-label={`在当前空间${createConversationLabel}`} title={newConversationLabel} onClick={() => focusNewChatComposer(groupId === "default" ? undefined : groupId)}><IconPlus size={17} stroke={1.6} aria-hidden="true" /></button>}
@@ -877,6 +928,16 @@ function Workspace() {
     <footer className="app-statusbar"><span><i className="status-dot" />{runningCount > 0 ? `${runningCount} 个对话运行中` : "本地工作台"}</span></footer>
     {openMenu !== null && <div className="menu-backdrop" role="presentation" onClick={() => setOpenMenu(null)} />}
     {searchOpen && <WorkspaceSearch projects={projects.status === "ready" ? projects.value : []} sessions={defaultSessions.status === "ready" ? defaultSessions.value : []} status={projects.status === "error" || defaultSessions.status === "error" ? "部分摘要加载失败，可在侧栏重试；下方显示已加载结果。" : projects.status === "loading" || defaultSessions.status === "loading" ? "正在加载更多摘要…" : undefined} onClose={() => setSearchOpen(false)} onProject={navigateToNewChat} onSession={navigateToSession} />}
+    {teamMembersOpen && <TeamMembersDialog key={browserOwner} projectId={groupId} routerId={browserOwner}
+      onClose={() => setTeamMembersRouter(null)} onOpen={(sessionId) => {
+        const target = { projectId: groupId, routerId: browserOwner, sessionId }
+        browserTags.open(browserOwner, { kind: "team-session", id: JSON.stringify(["team-session", groupId, sessionId]), target })
+        teamSessions.open(target)
+        setTeamMembersRouter(null)
+        requestAnimationFrame(() => {
+          document.querySelector<HTMLElement>('.chat-browser-pane .chat-browser-tab-item[data-active="true"] > button')?.focus()
+        })
+      }} />}
     {sidebarMenu && createPortal(<>
       <div className="menu-backdrop sidebar-menu-backdrop" onPointerDown={() => setSidebarMenu(null)} />
       <div ref={sidebarMenuRef} className="selector-menu sidebar-action-menu" role="menu" aria-label="更多操作"

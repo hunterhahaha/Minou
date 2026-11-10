@@ -1,4 +1,5 @@
 /** Electron Session 命令、历史读取和已提交事件推送；短操作按对话身份串行。 */
+import type { IpcMainInvokeEvent, WebContents, WebContentsDidStartNavigationEventParams } from "electron"
 import type { ModelRef } from "../../runtime/model/src/types.ts"
 import { normalizeError } from "../../runtime/error/src/index.ts"
 import { requireProjectId } from "../../runtime/session/src/project-id.ts"
@@ -13,7 +14,7 @@ import { join } from "node:path"
 import { SessionRuntime } from "../../runtime/agent/src/session-runtime.ts"
 import type { SessionRuntimeProcessing, SessionRuntimeSnapshot, StartNewSessionInput } from "../../runtime/agent/src/session-runtime.ts"
 import { INITIAL_SESSION_NAME, updateSessionMetaNameIfDefault } from "../../runtime/session/src/meta-store.ts"
-import { SESSION_IPC_CHANNELS, START_TEAM_SESSION_CHANNEL, TEAM_WAKEUP_CHANNELS } from "../preload/session-api.ts"
+import { SESSION_IPC_CHANNELS, START_TEAM_SESSION_CHANNEL, TEAM_SESSION_CHANNELS, TEAM_WAKEUP_CHANNELS } from "../preload/session-api.ts"
 import type { SessionControl, SessionData, SessionKind, SessionSummary, SessionUpdate } from "../preload/session-api.ts"
 import type { ConfigFilePaths } from "./config-files.ts"
 import { reconcileWorkspaceSessions } from "./workspace-store.ts"
@@ -79,9 +80,10 @@ export interface SessionDispatch {
 export interface SessionEventForwardingPort {
   /**
    * @param update 可序列化更新。
+   * @param recipients 成员更新只发给这些 WebContents；省略时广播。
    * @throws Error 发送失败，调用方只报告，不中断 Runtime。
    */
-  sendSessionUpdateToRenderer(update: SessionUpdate): void | Promise<void>
+  sendSessionUpdateToRenderer(update: SessionUpdate, recipients?: ReadonlySet<number>): void | Promise<void>
 }
 /** 每个对话的短操作尾链与控制版本；不保存模型配置或凭据。 */
 interface SessionIpcState {
@@ -140,6 +142,41 @@ export function registerSessionIpcHandlers(
    * @returns 不含拼接歧义的身份。
    */
   function keyOf(projectId: string, sessionId: string): string { return JSON.stringify([projectId, sessionId]) }
+  /** 按成员联合身份索引订阅窗口。 */
+  const memberSubscribers = new Map<string, Set<number>>()
+  /** 每个文档只注册一次生命周期清理。 */
+  const watchedSenders = new Set<number>()
+
+  /**
+   * 在主文档离开或进程退出时清空该窗口的订阅。
+   * @param sender 已由可信 IPC 检查的主窗口。
+   */
+  function watchSender(sender: WebContents): void {
+    if (watchedSenders.has(sender.id)) return
+    const senderId = sender.id
+    watchedSenders.add(senderId)
+    /** 清理窗口的订阅和当前文档的监听。 */
+    function clear(): void {
+      watchedSenders.delete(senderId)
+      for (const [key, recipients] of memberSubscribers) {
+        recipients.delete(senderId)
+        if (recipients.size === 0) memberSubscribers.delete(key)
+      }
+      sender.removeListener("destroyed", clear)
+      sender.removeListener("render-process-gone", clear)
+      sender.removeListener("did-start-navigation", onNavigation)
+    }
+    /**
+     * @param navigation 主进程提供的导航信息，hash 路由继续使用原文档。
+     */
+    function onNavigation(navigation: WebContentsDidStartNavigationEventParams): void {
+      if (navigation.isMainFrame && !navigation.isSameDocument) clear()
+    }
+    sender.on("destroyed", clear)
+    sender.on("render-process-gone", clear)
+    sender.on("did-start-navigation", onNavigation)
+  }
+
   /**
    * @param key 联合身份。
    * @returns 懒创建的版本与短操作状态。
@@ -162,10 +199,18 @@ export function registerSessionIpcHandlers(
   }
   /**
    * @param update 原始更新。
+   * @param role 热路径已知的持久化角色；其他调用按联合身份查询。
    * @returns 发送尝试完成；传输失败交给宿主。
    */
-  async function send(update: SessionUpdate): Promise<void> {
-    try { await eventForwarding.sendSessionUpdateToRenderer(update.kind === "event" ? { ...update, event: publicSessionEvent(update.event) } : update) }
+  async function send(update: SessionUpdate, role?: SessionKind): Promise<void> {
+    try {
+      const member = (role ?? team?.store.identity(update.projectId, update.sessionId)?.role) === "member"
+      const recipients = member ? memberSubscribers.get(keyOf(update.projectId, update.sessionId)) : undefined
+      if (member && !recipients?.size) return
+      await eventForwarding.sendSessionUpdateToRenderer(
+        update.kind === "event" ? { ...update, event: publicSessionEvent(update.event) } : update, recipients,
+      )
+    }
     catch (error) { onCompletionFailure({ sessionId: update.sessionId, turn: update.kind === "event" ? update.event.turn ?? 0 : 0, error }) }
   }
   /**
@@ -242,7 +287,7 @@ export function registerSessionIpcHandlers(
     const key = keyOf(projectId, runtime.sessionId)
     const consuming = (async () => {
       for await (const event of runtime.events) {
-        await send({ kind: "event", projectId, sessionId: runtime.sessionId, event, ...(event.seq === 1 && { sessionKind }) })
+        await send({ kind: "event", projectId, sessionId: runtime.sessionId, event, ...(event.seq === 1 && { sessionKind }) }, sessionKind)
         if (event.type === "user/message" || event.type === "turn/end") await index(projectId, runtime)
       }
     })().catch((error) => report(projectId, runtime, "runtime", error))
@@ -343,6 +388,43 @@ export function registerSessionIpcHandlers(
   ipcMain.handle(SESSION_IPC_CHANNELS.startNewSession, (_event, projectId, input) => start(projectId, input))
   if (team) {
     ipcMain.handle(START_TEAM_SESSION_CHANNEL, (_event, projectId, input) => start(projectId, input, team))
+    /**
+     * @param projectId 目标项目。
+     * @param routerId 必须是同项目的 Router。
+     * @returns 已验证的团队身份。
+     * @throws Error 当会话不是 Router 时。
+     */
+    const requireRouter = (projectId: ProjectId, routerId: unknown): TeamIdentity => {
+      const identity = team.store.identity(projectId, requireSessionId(routerId))
+      if (identity?.role !== "router") throw new Error("团队 Router 不存在")
+      return identity
+    }
+    ipcMain.handle(TEAM_SESSION_CHANNELS.list, (_event, rawProjectId, routerId) => {
+      const router = requireRouter(requireProjectId(rawProjectId), routerId)
+      return team.store.memberIds(router.workspaceId)
+    })
+    for (const channel of [TEAM_SESSION_CHANNELS.subscribe, TEAM_SESSION_CHANNELS.unsubscribe]) {
+      ipcMain.handle(channel, (event, rawProjectId, routerId, rawSessionId) => {
+        const projectId = requireProjectId(rawProjectId)
+        const router = requireRouter(projectId, routerId)
+        const sessionId = requireSessionId(rawSessionId)
+        const member = team.store.identity(projectId, sessionId)
+        if (member?.role !== "member" || member.workspaceId !== router.workspaceId) throw new Error("成员不属于当前团队")
+        const sender = (event as IpcMainInvokeEvent | undefined)?.sender
+        if (!sender || sender.isDestroyed()) throw new Error("订阅窗口不可用")
+        const key = keyOf(projectId, sessionId)
+        if (channel === TEAM_SESSION_CHANNELS.subscribe) {
+          watchSender(sender)
+          const recipients = memberSubscribers.get(key) ?? new Set<number>()
+          recipients.add(sender.id)
+          memberSubscribers.set(key, recipients)
+        } else {
+          const recipients = memberSubscribers.get(key)
+          recipients?.delete(sender.id)
+          if (recipients?.size === 0) memberSubscribers.delete(key)
+        }
+      })
+    }
     ipcMain.handle(TEAM_WAKEUP_CHANNELS.read, () => team.readConfig())
     ipcMain.handle(TEAM_WAKEUP_CHANNELS.update, (_event, input) => team.updateConfig(input))
   }

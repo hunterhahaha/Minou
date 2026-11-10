@@ -55,7 +55,7 @@ export interface MainWindowLifecyclePort {
    *
    * @param update 向全部存活的 NiCode 窗口发送的更新。
    */
-  sendSessionUpdate?(update: SessionUpdate): void
+  sendSessionUpdate?(update: SessionUpdate, recipients?: ReadonlySet<number>): void
   /** 创建并开始装载一个主窗口。 */
   createMainWindow(): void
   /**
@@ -148,7 +148,7 @@ export async function startElectronApp(options: ElectronStartupOptions): Promise
     createRuntime,
     options.onSessionCompletionFailure,
     options.sessionEventForwarding ?? {
-      sendSessionUpdateToRenderer: (update) => options.windows.sendSessionUpdate?.(update),
+      sendSessionUpdateToRenderer: (update, recipients) => options.windows.sendSessionUpdate?.(update, recipients),
     },
     options.configPaths,
     team,
