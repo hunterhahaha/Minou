@@ -44,6 +44,36 @@ async function until(condition) {
 const evaluate = (script) => window.webContents.executeJavaScript(script)
 /** @param selector 可操作元素选择器。 @returns 点击完成。 */
 const click = (selector) => evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`)
+/** 读取菜单几何位置，并以实际内容尺寸计算窗口边界内的按钮锚点。 */
+const modelMenuGeometry = `(() => {
+    const button = document.querySelector('.model-trigger')
+    const panel = document.getElementById(button.getAttribute('aria-controls'))
+    const anchor = button.getBoundingClientRect()
+    const rect = panel.getBoundingClientRect()
+    return {
+      open: panel.matches(':popover-open'), width: rect.width, height: rect.height,
+      left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom,
+      expectedLeft: Math.max(12, Math.min(anchor.right - rect.width, innerWidth - rect.width - 12)),
+      expectedTop: Math.max(12, Math.min(anchor.top - rect.height - 10, innerHeight - rect.height - 12)),
+      viewportWidth: innerWidth, viewportHeight: innerHeight,
+    }
+  })()`
+/** @param geometry 菜单与入口的实测位置。 */
+function assertModelMenuGeometry(geometry) {
+  assert.ok(geometry.open && geometry.width > 0 && geometry.height > 0, JSON.stringify(geometry))
+  assert.ok(Math.abs(geometry.left - geometry.expectedLeft) < 1 && Math.abs(geometry.top - geometry.expectedTop) < 1,
+    "菜单一进入顶层就锚定模型按钮：" + JSON.stringify(geometry))
+  assert.ok(geometry.right <= geometry.viewportWidth - 11 && geometry.bottom <= geometry.viewportHeight - 11,
+    "菜单首次打开即位于窗口内：" + JSON.stringify(geometry))
+}
+/** 在原生激活按钮的同一个任务中检查浮层坐标，早于异步 toggle 事件。 */
+async function openPositionedModelMenu() {
+  const geometry = await evaluate(`(() => {
+    document.querySelector('.model-trigger').click()
+    return ${modelMenuGeometry}
+  })()`)
+  assertModelMenuGeometry(geometry)
+}
 /** @param selector 文本输入选择器。 @param value 目标内容。 @returns React 输入事件完成。 */
 const input = (selector, value) => evaluate(`(() => { const node = document.querySelector(${JSON.stringify(selector)}); if (node.isContentEditable) {
     node.focus()
@@ -566,7 +596,7 @@ async function main() {
   assert.equal(await evaluate("getComputedStyle(document.querySelector('.send-button')).backgroundColor"), await tokenColor('--accent'), "可发送时使用主操作强调色")
   await screenshot("workspace-composer-draft")
   await assertPaletteContrast("composer draft enabled")
-  await click(".model-trigger")
+  await openPositionedModelMenu()
   await until(() => evaluate("Boolean(document.querySelector('.composer-model-panel:popover-open'))"))
   assert.equal(await evaluate("document.querySelectorAll('.reasoning-anchor').length"), 0, "模型和推理共用一个入口")
   assert.deepEqual(await evaluate("[...document.querySelectorAll('.model-setting-label')].map(node => node.textContent)"), ["模型", "推理等级"], "主菜单只显示模型和推理等级两行")
@@ -579,6 +609,7 @@ async function main() {
   await evaluate("document.querySelector('[aria-label=\"设置推理等级\"]').focus()")
   nativeKey("Right")
   await until(() => evaluate("Boolean(document.querySelector('.reasoning-menu'))"))
+  assertModelMenuGeometry(await evaluate(modelMenuGeometry))
   await until(() => evaluate("document.activeElement === document.querySelector('.reasoning-menu [aria-checked=\"true\"]')"))
   await assertModelStates("light")
   nativeKey("End")
@@ -604,8 +635,13 @@ async function main() {
   await assertLongInvalidLevel("narrow")
   const compactModelMenu = await evaluate("(() => { const node = document.querySelector('.composer-model-panel'); const rect = node.getBoundingClientRect(); return { open: node.matches(':popover-open'), left: rect.left, right: rect.right, top: rect.top, viewport: innerWidth } })()")
   assert.ok(compactModelMenu.open && compactModelMenu.left >= 12 && compactModelMenu.right <= compactModelMenu.viewport - 12 && compactModelMenu.top >= 12, "窄窗口菜单边界：" + JSON.stringify(compactModelMenu))
+  await key("Escape")
+  await until(() => evaluate("!document.querySelector('.composer-model-panel:popover-open')"))
+  await openPositionedModelMenu()
+  await until(() => evaluate("Boolean(document.querySelector('.model-settings-menu'))"))
   await click('[aria-label="切换模型"]')
   await until(() => evaluate("Boolean(document.querySelector('.model-menu'))"))
+  assertModelMenuGeometry(await evaluate(modelMenuGeometry))
   await assertLongModelOption("narrow")
   await click('.model-panel-back')
   await until(() => evaluate("Boolean(document.querySelector('.model-settings-menu'))"))
@@ -641,6 +677,11 @@ async function main() {
   await screenshot("workspace-conversation-dark")
   await nativeClick('[aria-label="对话模型"]')
   await until(() => evaluate("Boolean(document.querySelector('.composer-model-panel:popover-open'))"))
+  await until(() => evaluate("document.activeElement === document.querySelector('[data-model-setting=\"models\"]')"))
+  await key("Escape")
+  await until(() => evaluate("!document.querySelector('.composer-model-panel:popover-open')"))
+  await openPositionedModelMenu()
+  await until(() => evaluate("Boolean(document.querySelector('.model-settings-menu'))"))
   await screenshot("workspace-model-reasoning-dark")
   await assertLongInvalidLevel("dark")
   /** 截取已渲染的菜单和入口，供直接对照本次参考图。 */

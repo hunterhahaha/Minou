@@ -224,7 +224,34 @@ kbd { font: var(--font-size-caption)/var(--line-height-caption) var(--font-ui); 
 .composer-model-picker .composer-model-reasoning { flex: none; max-width: 80px; color: var(--muted); font-size: var(--font-size-note); line-height: var(--line-height-note); }
 .composer-model-chevron { flex: none; color: var(--muted); transition: transform .18s; }
 .model-trigger[aria-expanded="true"] > .composer-model-chevron { transform: rotate(180deg); }
-.composer-model-panel { position: fixed; inset: auto; width: min(310px, calc(100vw - 24px)); max-height: calc(100dvh - 24px); margin: 0; padding: 6px; overflow: auto; border: 0; border-radius: var(--radius-panel); color: var(--text); background: var(--popover); box-shadow: var(--shadow-popover); }
+.composer-model-panel {
+  --model-panel-width: min(310px, calc(100vw - 24px));
+  position: fixed;
+  inset: 12px 12px auto auto;
+  width: var(--model-panel-width);
+  max-height: calc(100dvh - 24px);
+  margin: 0;
+  padding: 6px;
+  overflow: auto;
+  border: 0;
+  border-radius: var(--radius-panel);
+  color: var(--text);
+  background: var(--popover);
+  box-shadow: var(--shadow-popover);
+}
+@supports (left: anchor(right)) {
+  .composer-model-picker { anchor-scope: --composer-model-trigger; }
+  .composer-model-picker > .model-trigger { anchor-name: --composer-model-trigger; }
+  .composer-model-panel {
+    /* 上方空间不足时从窗口上边距开始布局。 */
+    position-anchor: --composer-model-trigger;
+    right: auto;
+    left: clamp(12px, calc(anchor(right, 100%) - var(--model-panel-width)), calc(100% - var(--model-panel-width) - 12px));
+    bottom: max(12px, calc(anchor(top, 2px) + 10px));
+    height: max-content;
+    align-self: safe end;
+  }
+}
 .model-settings-menu { display: flex; flex-direction: column; }
 .model-setting-row { display: flex; align-items: center; gap: 7px; width: 100%; min-height: 42px; padding: 8px 10px; border: 0; border-radius: 8px; color: var(--text); background: transparent; text-align: left; font-size: var(--font-size-ui); line-height: var(--line-height-ui); }
 .model-setting-label { flex: none; }

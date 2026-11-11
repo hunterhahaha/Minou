@@ -187,18 +187,32 @@ class BrowserPageBoundary extends Component<{ children: ReactNode; message: stri
 }
 
 /**
- * 挂载时只观察当前成员的缓存，标签切走后释放渲染监听。
+ * 挂载时只观察当前成员的缓存，将同一帧内的变更合并为一次渲染通知。
  * @param props 成员身份、缓存与打开其他标签的管理器。
  * @returns 无输入区的共用对话记录。
  */
 function TeamSessionPage({ target, state, manager }: { target: TeamSessionTarget; state: TeamSessionState; manager: TagManager }) {
   const { projectId, routerId, sessionId } = target
   const key = sessionKey(projectId, sessionId)
-  const subscribe = useCallback((notify: () => void) => state.observe(key, notify), [state, key])
+  const subscribe = useCallback((notify: () => void) => {
+    let frame: number | null = null
+    const unobserve = state.observe(key, () => {
+      if (frame !== null) return
+      frame = requestAnimationFrame(() => {
+        frame = null
+        notify()
+      })
+    })
+    return () => {
+      unobserve()
+      if (frame !== null) cancelAnimationFrame(frame)
+    }
+  }, [state, key])
   useSyncExternalStore(subscribe, () => state.version(key))
+  const openWeb = useCallback((url: string) => manager.openWeb(routerId, url), [manager, routerId])
   return <SessionTranscript projectId={projectId} sessionId={sessionId} state={state.history}
     onRetry={() => state.retry(target)}
-    onOpenWeb={(url) => manager.openWeb(routerId, url)}
+    onOpenWeb={openWeb}
     onOpenFile={(file) => manager.openFileReference(routerId, file)}
     onOpenDiff={(eventId, file) => manager.open(routerId, { kind: "diff", id: JSON.stringify([sessionId, eventId, file.path]), eventId, file })} />
 }

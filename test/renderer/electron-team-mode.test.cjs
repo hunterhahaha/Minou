@@ -127,9 +127,13 @@ async function main() {
       if (history?.system.includes("You are a Team Session")) {
         const task = latestUser.content[0].text
         if (task !== "离线成员任务") await new Promise((done) => gatedMembers.set(task, done))
+        const fragments = task === "可见成员压力" ? 600 : 200
         yield { type: "block_start", index: 0, blockType: "text" }
-        for (let i = 0; i < 200; i++) yield { type: "block_delta", index: 0, delta: { type: "text", text: i === 0 ? "**" + task + "**流" : "流" } }
-        yield { type: "block_end", index: 0, block: { type: "text", text: "**" + task + "**" + "流".repeat(200) } }
+        for (let i = 0; i < fragments; i++) {
+          if (i === 300) await new Promise((done) => gatedMembers.set(task + "后半段", done))
+          yield { type: "block_delta", index: 0, delta: { type: "text", text: i === 0 ? "**" + task + "**流" : "流" } }
+        }
+        yield { type: "block_end", index: 0, block: { type: "text", text: "**" + task + "**" + "流".repeat(fragments) } }
         yield { type: "stream_end", completion: "finished" }
         return
       }
@@ -304,6 +308,56 @@ async function main() {
   await until("重新挂载立即显示后台缓存", () => memberHas("后台缓存流"))
   console.log("member stream: unopened=0, background=" + (memberUpdates().length - backgroundBefore) +
     ", background Router/Markdown commits=0/0, max 10ms timer gap=" + gap.toFixed(1) + "ms")
+
+  await runMember("可见成员压力")
+  await evaluate(`(() => {
+    const page = document.querySelector(${JSON.stringify(memberPage)})
+    window.visibleMemberCommits = { transcript: 0, markdown: 0 }
+    for (const [node, counter] of [[page, "transcript"], [page.querySelector(".final-answer .markdown-content"), "markdown"]]) {
+      const key = Object.keys(node).find((name) => name.startsWith("__reactProps$"))
+      if (!key) throw new Error("React DOM props unavailable")
+      let props = node[key]
+      Object.defineProperty(node, key, { configurable: true, get: () => props,
+        set: (value) => { props = value; window.visibleMemberCommits[counter]++ } })
+    }
+    window.sampleGaps = []
+    window.lastSample = performance.now()
+    window.sampleTimer = setInterval(() => {
+      const now = performance.now()
+      window.sampleGaps.push(now - window.lastSample)
+      window.lastSample = now
+    }, 10)
+  })()`)
+  const beforeVisible = memberUpdates().length
+  const visibleDeltas = () => memberUpdates().slice(beforeVisible).filter(
+    (update) => update.kind === "event" && update.event.type === "assistant/block_delta").length
+  const midpoint = "可见成员压力" + "流".repeat(300)
+  gatedMembers.get("可见成员压力")()
+  await until("可见成员呈现全部前半段片段", async () => gatedMembers.has("可见成员压力后半段") &&
+    await evaluate(`[...document.querySelectorAll(${JSON.stringify(memberPage + " .assistant-entry .markdown-content")})]
+      .some(node => node.textContent.trim() === ${JSON.stringify(midpoint)})`))
+  const visibleCommits = await evaluate("window.visibleMemberCommits")
+  const visibleGap = await evaluate("clearInterval(window.sampleTimer); Math.max(0, ...window.sampleGaps)")
+  console.log("visible member stream: first " + visibleDeltas() + " fragments, transcript/old Markdown commits=" +
+    visibleCommits.transcript + "/" + visibleCommits.markdown + ", max 10ms timer gap=" + visibleGap.toFixed(1) + "ms")
+  assert.equal(visibleDeltas(), 300)
+  assert.equal(visibleCommits.markdown, 0, "可见成员流未重绘已完成的 Markdown")
+  assert.ok(visibleCommits.transcript > 0 && visibleCommits.transcript < visibleDeltas(), "同帧片段合并为一次记录更新")
+  assert.equal(store.status(member), "running")
+  const otherSession = ".chats-section .session-name:not([aria-current])"
+  await click(otherSession)
+  await until("流式过程中切到普通会话并卸载成员页", () => evaluate(`document.querySelector(".chat-browser-chat .chat-page")
+    ?.dataset.sessionId === ${JSON.stringify(chat)} && !document.querySelector(${JSON.stringify(memberPage)})`))
+  await click(otherSession)
+  await until("流式过程中切回团队会话并恢复成员正文", () => memberHas(midpoint))
+  await finishMember("可见成员压力后半段")
+  const finalText = "可见成员压力" + "流".repeat(600)
+  await until("权威成员回复完整且回到就绪", () => evaluate(`(() => {
+    const page = document.querySelector(${JSON.stringify(memberPage)})
+    return page?.querySelector(".session-phase")?.classList.contains("phase-idle") &&
+      [...page.querySelectorAll(".final-answer .markdown-content")].at(-1)?.textContent.trim() === ${JSON.stringify(finalText)}
+  })()`))
+  assert.equal(visibleDeltas(), 600)
 
   await runMember("标签已关闭")
   await click(tab + " + button")

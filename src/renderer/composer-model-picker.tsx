@@ -1,5 +1,5 @@
 /** 新聊天与已有对话共用的模型入口；只展示选项并回传选择，持久化由页面负责。 */
-import { useEffect, useId, useLayoutEffect, useRef, useState } from "react"
+import { useEffect, useId, useRef, useState } from "react"
 import { IconArrowLeft, IconCheck, IconChevronDown, IconChevronRight } from "@tabler/icons-react"
 
 /** 模型面板消费的显示选项；身份与数据库模型引用由调用页面映射。 */
@@ -39,7 +39,7 @@ interface ComposerModelPickerProps {
 /**
  * 用单行入口打开模型和推理等级两行菜单，再进入对应选项列表。
  * @param props 页面确认的模型、等级、忙碌状态和两个选择回调。
- * @returns 顶层原生 popover；窗口缩放、滚动及内容变化时重新定位，Escape 恢复入口焦点。
+ * @returns 由浏览器锚定入口的顶层原生 popover；Escape 恢复入口焦点。
  */
 export function ComposerModelPicker({ options, selectedKey, modelName, supportsReasoning, reasoningLevel, reasoningLevels, disabled, label, onModelChange, onReasoningChange }: ComposerModelPickerProps) {
   const id = useId()
@@ -55,29 +55,6 @@ export function ComposerModelPicker({ options, selectedKey, modelName, supportsR
   }, [supportsReasoning, page])
   const levelValid = reasoningLevels.includes(reasoningLevel)
   useEffect(() => { if (disabled) panel.current?.hidePopover() }, [disabled])
-  useLayoutEffect(() => {
-    if (!open || !panel.current || !trigger.current) return
-    /** 将面板限制在窗口内，优先放在输入框上方；不依赖可滚动祖先的裁切区域。 */
-    function position(): void {
-      const popup = panel.current, button = trigger.current
-      if (!popup || !button) return
-      const rect = button.getBoundingClientRect()
-      const width = popup.getBoundingClientRect().width
-      const height = popup.getBoundingClientRect().height
-      popup.style.left = Math.max(12, Math.min(rect.right - width, window.innerWidth - width - 12)) + "px"
-      popup.style.top = Math.max(12, Math.min(rect.top - height - 10, window.innerHeight - height - 12)) + "px"
-    }
-    position()
-    const observer = new ResizeObserver(position)
-    observer.observe(panel.current)
-    window.addEventListener("resize", position)
-    window.addEventListener("scroll", position, true)
-    return () => {
-      observer.disconnect()
-      window.removeEventListener("resize", position)
-      window.removeEventListener("scroll", position, true)
-    }
-  }, [open])
   /** 关闭当前面板；页面负责处理保存失败并保留之前确认的选择。 */
   function close(): void { panel.current?.hidePopover() }
   /**

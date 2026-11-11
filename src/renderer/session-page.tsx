@@ -1,5 +1,5 @@
 /** 从工作区事件字典派生聊天页面；输入操作仅走 preload 的固定 Session API。 */
-import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type Ref } from "react"
+import { Fragment, memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type Ref } from "react"
 import { IconArrowDown, IconArrowUp, IconBrain, IconCheck, IconCode, IconCopy, IconDashboard, IconDatabase, IconGitCompare, IconPlayerStop, IconShieldCheck, IconSparkles, IconTool } from "@tabler/icons-react"
 import type { AssistantContentBlock } from "../../runtime/model/src/types.ts"
 import { preferredReasoningLevel } from "../../runtime/model/src/reasoning.ts"
@@ -13,6 +13,8 @@ import { ComposerModelPicker } from "./composer-model-picker.tsx"
 
 const usageCountFormat = new Intl.NumberFormat("zh-CN")
 const usagePercentFormat = new Intl.NumberFormat("zh-CN", { style: "percent", maximumFractionDigits: 1 })
+/** 文字与链接回调相同的正文复用已渲染的 Markdown。 */
+const TranscriptMarkdown = memo(MarkdownContent)
 
 /** 已确定的 Session 权限展示。 */
 export const sandboxLabels: Record<SandboxMode, string> = {
@@ -56,7 +58,7 @@ function toolDisplayKey(turn: number, step: number, toolCallId: string): string 
  * @returns Markdown 正文或思考/工具展开区域；结果不创建独立展开入口。
  */
 function AssistantBlock({ block, toolResult, onOpenWeb }: { block: AssistantContentBlock; toolResult?: ToolResultEvent; onOpenWeb: SessionPageProps["onOpenWeb"] }) {
-  if (block.type === "text") return <div className="assistant-text"><MarkdownContent text={block.text} onOpenWeb={onOpenWeb} /></div>
+  if (block.type === "text") return <div className="assistant-text"><TranscriptMarkdown text={block.text} onOpenWeb={onOpenWeb} /></div>
   if (block.type === "thinking") return <details className="chat-detail thinking-detail"><summary><IconBrain size={15} />思考过程</summary><pre className="process-content"><code className="language-text">{block.text}</code></pre></details>
   return <details className="chat-detail tool-detail"><summary><IconTool size={15} />工具：{block.name || "准备调用…"}{toolResult && (toolResult.result.status === "success" ? " · 完成" : " · 失败")}</summary>
     <div className="tool-section-label">调用参数</div>
@@ -139,7 +141,8 @@ interface SessionTranscriptProps extends Omit<SessionPageProps, "providers"> {
  */
 export function SessionTranscript({ projectId, sessionId, state, onOpenDiff, onOpenWeb, onOpenFile, pageRef, onRetry, footer }: SessionTranscriptProps) {
   const key = sessionKey(projectId, sessionId)
-  const events = state.sessionEventsByKey[key] ?? []
+  const history = state.sessionEventsByKey[key]
+  const events = history ?? []
   const hasHistory = state.has(key)
   const view = state.view(key)
   const control = view.control
@@ -147,7 +150,7 @@ export function SessionTranscript({ projectId, sessionId, state, onOpenDiff, onO
   const scrollingRef = useRef<HTMLDivElement>(null)
   const followsRef = useRef(true)
   const [showScrollToBottom, setShowScrollToBottom] = useState(false)
-  const blocks = projectSessionEvents(events)
+  const blocks = useMemo(() => projectSessionEvents(history ?? []), [history])
   /** 每次从当前投影计数，避免流式块和权威消息被当作两次调用。 */
   const toolCallCounts = new Map<string, number>()
   for (const display of blocks) {

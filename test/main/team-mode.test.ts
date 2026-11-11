@@ -17,7 +17,7 @@ import { startElectronApp, type ElectronAppLifecycleEvent } from "../../src/main
 import type { SessionCompletionFailure } from "../../src/main/session-ipc.ts"
 import { SessionRuntimeGlobal } from "../../src/main/session-runtime-global.ts"
 import { TeamMode } from "../../src/main/team-mode.ts"
-import { readDefaultWorkspace } from "../../src/main/workspace-store.ts"
+import { insertProjectWorkspace, readDefaultWorkspace, readProjectWorkspace } from "../../src/main/workspace-store.ts"
 import { SESSION_IPC_CHANNELS, START_TEAM_SESSION_CHANNEL, TEAM_SESSION_CHANNELS, TEAM_WAKEUP_CHANNELS, type SessionData, type SessionUpdate } from "../../src/preload/session-api.ts"
 
 const MODEL: ModelRef = { providerId: "offline", protocol: "responses", modelId: "script", name: "Fake model", reasoningLevel: "medium" }
@@ -116,6 +116,30 @@ async function main(): Promise<void> {
       { type: "user/message", turn: 1, message: { role: "user", id: "already-started", ...message("must not rerun") } },
     ])
     const recoveredId = new SessionMessageQueue(databasePath, "default", interruptedId).enqueue(message("after restart"))
+
+    // 单独分组只恢复成员队列。任何全分组核对都会补入这条已提交但尚未索引的普通会话。
+    const memberProject = "00000000-0000-4000-8000-000000000018"
+    insertProjectWorkspace(paths.workspaceDatabasePath, {
+      version: 1, id: memberProject, name: "成员索引夹具", updatedAt: new Date().toISOString(), directories: [], sessions: [],
+    })
+    const unindexedId = "unindexed"
+    const unindexedDirectory = join(paths.rootDir, "sessions", memberProject, unindexedId)
+    await mkdir(unindexedDirectory, { recursive: true })
+    await mkdir(join(paths.rootDir, "sessions", memberProject, "workspace"))
+    const unindexed = createFileSessionEventLog({
+      databasePath, projectGroupId: memberProject, sessionId: unindexedId, sessionDirectory: unindexedDirectory,
+    })
+    await unindexed.appendTurnStartAndUserMessage([
+      { type: "turn/start", turn: 1, model: MODEL },
+      { type: "user/message", turn: 1, message: { role: "user", id: "unindexed-message", ...message("already committed") } },
+    ])
+    await unindexed.appendEvent({ type: "turn/end", turn: 1, reason: "completed" })
+    const memberRouter = new TeamMode(databasePath, paths.configPath, startupConfig.teamWakeup, ({ error }) => { throw error })
+      .router(memberProject, "index-test-router", "sandbox-full-access")
+    withSessionDatabase(databasePath, (db) => sessionTransaction(db, () => insertTeamWorkspace(db, memberRouter)))
+    const restoredMember = store.identity(memberProject, store.createMember(
+      memberRouter, { currentModel: MODEL, sandboxMode: memberRouter.sandboxMode }, "index test assignment",
+    ))!
     const handlers = new Map<string, (_event: unknown, ...args: unknown[]) => unknown>()
     const updates: SessionUpdate[] = []
     const deliveries: number[][] = []
@@ -252,6 +276,14 @@ async function main(): Promise<void> {
     const idle = (id: string) => updates.filter((update) => update.kind === "state")
       .filter((update) => update.sessionId === id).at(-1)?.control.phase === "idle"
     await until(() => ended(interruptedId, 2) && idle(interruptedId))
+    await until(() => store.status(restoredMember) !== "running" || failures.length > 0)
+    assert.equal(failures.length, 0, failures.map(({ error }) => String(error)).join("\n"))
+    assert.ok(modelInputs.includes("index test assignment"))
+    assert.equal(store.status(restoredMember), "idle")
+    assert.deepEqual(readProjectWorkspace(paths.workspaceDatabasePath, memberProject).sessions, [],
+      "成员开始和结束都不触发分组会话索引核对")
+    assert.ok(readDefaultWorkspace(paths.workspaceDatabasePath).sessions.some(({ id }) => id === interruptedId),
+      "普通会话恢复执行仍更新索引")
     assert.ok(!modelInputs.includes("must not rerun"))
     assert.equal(modelInputs.filter((text) => text === "after restart").length, 1)
     assert.ok((await interrupted.readEvents()).some((event) => JSON.stringify(event).includes(recoveredId)))
@@ -347,6 +379,7 @@ async function main(): Promise<void> {
     assert.ok(resolve(root).startsWith(resolve(tmpdir()) + sep))
     await rm(root, { recursive: true, force: true })
   }
+  console.log("team-mode.test.ts: 成员恢复执行、索引隔离、订阅和普通会话回归通过")
 }
 
 void main().catch((error: unknown) => { console.error(error); process.exitCode = 1 })

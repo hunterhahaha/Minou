@@ -281,14 +281,16 @@ export function registerSessionIpcHandlers(
    * @param projectId 分组。
    * @param runtime 活动实例。
    * @param run 首轮提交和活动期完成任务。
-   * @param sessionKind 当前持久化角色，供接收到首个事件的窗口直接识别。
+   * @param sessionKind 当前持久化角色，用于窗口分流、首个事件标记与工作区索引筛选。
    */
   function observe(projectId: ProjectId, runtime: SessionRuntime, run: SessionRuntimeProcessing, sessionKind: SessionKind): void {
     const key = keyOf(projectId, runtime.sessionId)
     const consuming = (async () => {
       for await (const event of runtime.events) {
         await send({ kind: "event", projectId, sessionId: runtime.sessionId, event, ...(event.seq === 1 && { sessionKind }) }, sessionKind)
-        if (event.type === "user/message" || event.type === "turn/end") await index(projectId, runtime)
+        if (sessionKind !== "member" && (event.type === "user/message" || event.type === "turn/end")) {
+          await index(projectId, runtime)
+        }
       }
     })().catch((error) => report(projectId, runtime, "runtime", error))
     void run.started.catch(() => {})
