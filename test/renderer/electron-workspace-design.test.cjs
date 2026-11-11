@@ -557,7 +557,11 @@ async function main() {
   await app.whenReady()
   /** 测试保持窗口隐藏；放宽最小尺寸以额外覆盖窄窗口布局。 */
   class HiddenTestWindow extends BrowserWindow {
-    constructor(options) { super({ ...options, width: 1440, height: 1000, minWidth: 480, minHeight: 400, webPreferences: { ...options.webPreferences, backgroundThrottling: false } }); window = this }
+    constructor(options) {
+      assert.deepEqual([options.minWidth, options.minHeight], [480, 480], "主窗口采用新的最小尺寸")
+      super({ ...options, width: 1440, height: 1000, minWidth: 480, minHeight: 400, webPreferences: { ...options.webPreferences, backgroundThrottling: false } })
+      window = this
+    }
     show() {}
   }
   const manager = createElectronWindowManager(HiddenTestWindow, {
@@ -577,7 +581,48 @@ async function main() {
   await fits()
   await evaluate("document.activeElement.blur()")
   window.webContents.sendInputEvent({ type: "mouseMove", x: 800, y: 300 })
+  const welcomeLayout = await evaluate(`(() => {
+    const canvas = document.querySelector('.welcome-scroll').getBoundingClientRect()
+    const heading = document.querySelector('.welcome h1').getBoundingClientRect()
+    const dock = document.querySelector('.composer-dock').getBoundingClientRect()
+    return {
+      headingOffset: (heading.top + heading.bottom - canvas.top - canvas.bottom) / 2,
+      dockInset: canvas.bottom - dock.bottom,
+    }
+  })()`)
+  assert.ok(Math.abs(welcomeLayout.headingOffset) <= 16, `首页标题靠近画布中线，实际偏移 ${welcomeLayout.headingOffset}px`)
+  assert.ok(welcomeLayout.dockInset >= 16 && welcomeLayout.dockInset <= 28, `首页输入框贴近画布底边，实际留白 ${welcomeLayout.dockInset}px`)
   await screenshot("workspace-light")
+  const sidebarWidth = () => evaluate("document.querySelector('.sidebar-slot').getBoundingClientRect().width")
+  assert.equal(await sidebarWidth(), 300, "侧栏默认以最小宽度展开")
+  const dividerPoint = await evaluate(`(() => {
+    const rect = document.querySelector('.workspace-divider').getBoundingClientRect()
+    return { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2) }
+  })()`)
+  window.webContents.sendInputEvent({ type: "mouseDown", ...dividerPoint, button: "left", clickCount: 1 })
+  window.webContents.sendInputEvent({ type: "mouseMove", x: dividerPoint.x + 48, y: dividerPoint.y, modifiers: ["leftButtonDown"] })
+  window.webContents.sendInputEvent({ type: "mouseUp", x: dividerPoint.x + 48, y: dividerPoint.y, button: "left", clickCount: 1 })
+  await until(() => evaluate("document.querySelector('.workspace-divider').getAttribute('aria-valuenow') === '348'"))
+  await until(async () => (await sidebarWidth()) === 348)
+  await key("Home")
+  await until(async () => (await sidebarWidth()) === 300)
+  window.webContents.sendInputEvent({ type: "mouseDown", ...dividerPoint, button: "left", clickCount: 1 })
+  window.webContents.sendInputEvent({ type: "mouseMove", x: dividerPoint.x - 64, y: dividerPoint.y, modifiers: ["leftButtonDown"] })
+  await until(async () => {
+    const width = await sidebarWidth()
+    return width < 300 && width >= 284
+  })
+  window.webContents.sendInputEvent({ type: "mouseUp", x: dividerPoint.x - 64, y: dividerPoint.y, button: "left", clickCount: 1 })
+  await until(async () => (await sidebarWidth()) === 300)
+  window.setContentSize(899, 800)
+  await until(() => evaluate("innerWidth === 899 && !document.querySelector('.sidebar')"))
+  await click('[aria-label="展开侧栏"]')
+  await until(async () => Math.abs((await sidebarWidth()) - 299.88) < 0.05)
+  window.setContentSize(900, 800)
+  await until(() => evaluate("innerWidth === 900 && Boolean(document.querySelector('.workspace-divider'))"))
+  await until(async () => (await sidebarWidth()) === 300)
+  window.setContentSize(1440, 1000)
+  await until(() => evaluate("innerWidth === 1440"))
   assert.equal(await evaluate("document.querySelector('.send-button').disabled"), true, "空草稿时发送按钮禁用")
   assert.notEqual(await evaluate("getComputedStyle(document.querySelector('.send-button')).backgroundColor"), await tokenColor('--accent'), "禁用的发送按钮不占用主操作强调色")
   await assertWorkspacePalette("rgb(255, 255, 255)", [".welcome-scroll", ".welcome"])
@@ -1017,7 +1062,9 @@ async function main() {
   assert.equal(await evaluate("!document.querySelector('.panel-header') && Boolean(document.querySelector('.titlebar [aria-label=\"展开侧栏\"]'))"), true, "新聊天页收起侧栏时仍隐藏工作区页头栏并保留展开侧栏入口")
   await click('[aria-label="展开侧栏"]')
   await until(() => evaluate("Boolean(document.querySelector('.sidebar'))"))
-  window.setSize(640, 760)
+  window.setSize(640, 480)
+  await until(() => evaluate("innerWidth === 640 && innerHeight === 480 && !document.querySelector('.sidebar')"))
+  assert.equal(await sidebarWidth(), 0, "窄窗自动收起侧栏并释放宽度")
   await screenshot("workspace-narrow")
   assert.equal(await evaluate("getComputedStyle(document.querySelector('.new-chat-composer [aria-label=\"权限\"] svg')).display !== 'none'"), true, "窄窗口仍保留绑定的权限图标")
   await nativeClick('[aria-label="权限"]')
@@ -1027,6 +1074,22 @@ async function main() {
   nativeKey("Escape")
   await until(() => evaluate("!document.querySelector('.permission-menu')"))
   await fits()
+  await click('[aria-label="展开侧栏"]')
+  await until(async () => Math.abs((await sidebarWidth()) - 269.05) < 0.05)
+  window.setSize(480, 480)
+  await until(async () => (await evaluate("innerWidth")) === 480 && (await sidebarWidth()) === 250)
+  assert.equal(await evaluate(`(() => {
+    const sidebar = document.querySelector('.sidebar-slot').getBoundingClientRect()
+    const workspace = document.querySelector('.workspace-main').getBoundingClientRect()
+    const controls = [...document.querySelectorAll('.composer-dock button')].filter(button => button.getClientRects().length)
+    return sidebar.right === workspace.left && controls.every(button => {
+      const bounds = button.getBoundingClientRect()
+      return bounds.width > 0 && bounds.left >= workspace.left && bounds.right <= workspace.right && bounds.bottom <= workspace.bottom
+    })
+  })()`), true, "最小窗口的导航栏与工作区并排，输入区控件保持在工作区内")
+  await screenshot("workspace-minimum-sidebar")
+  window.setSize(640, 760)
+  await until(async () => (await evaluate("innerHeight")) === 760 && Math.abs((await sidebarWidth()) - 269.05) < 0.05)
   await evaluate("document.querySelector('.sidebar-settings').focus()")
   await click(".sidebar-settings")
   await until(() => evaluate("Boolean(document.querySelector('.settings-dialog'))"))
@@ -1112,6 +1175,8 @@ async function main() {
   const originalSize = window.getContentSize()
   window.setContentSize(480, 520)
   await until(() => evaluate("innerWidth <= 480"))
+  if (await evaluate("Boolean(document.querySelector('[aria-label=\"展开侧栏\"]'))")) await click('[aria-label="展开侧栏"]')
+  await until(async () => (await sidebarWidth()) === 250)
   await click(projectSessionMore)
   await until(() => evaluate("Boolean(document.querySelector('.sidebar-action-menu'))"))
   assert.equal(await evaluate("(() => { const r = document.querySelector('.sidebar-action-menu').getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight })()"), true)
@@ -1194,7 +1259,9 @@ async function main() {
   await until(() => evaluate("innerWidth === 1200 && !document.querySelector('.sidebar-copy-status')"))
   await screenshot("workspace-sidebar-summary")
   window.setContentSize(640, 800)
-  await until(() => evaluate("innerWidth <= 640"))
+  await until(() => evaluate("innerWidth <= 640 && !document.querySelector('.sidebar')"))
+  await click('[aria-label="展开侧栏"]')
+  await until(async () => Math.abs((await sidebarWidth()) - 269.05) < 0.05)
   await click('[aria-label="切换深色外观"]')
   await until(() => evaluate("document.documentElement.dataset.theme === 'dark'"))
   assert.equal(await evaluate(`(() => {

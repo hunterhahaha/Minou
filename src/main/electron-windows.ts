@@ -192,8 +192,8 @@ export function createElectronWindowManager(
       const window = new BrowserWindowClass({
         width: 1200,
         height: 800,
-        minWidth: 800,
-        minHeight: 600,
+        minWidth: 500,
+        minHeight: 400,
         show: false,
         backgroundColor: "#f0f1ed",
         frame: false,

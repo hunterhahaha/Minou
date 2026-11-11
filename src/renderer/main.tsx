@@ -1,5 +1,6 @@
 /** Electron 工作区：读取启动摘要，并由 hash 路由管理工作区与 Session 身份。 */
 import { useEffect, useLayoutEffect, useRef, useState } from "react"
+import { useSidebarLayout } from "./sidebar-layout.tsx"
 import { BrowserWorkspace, TagManager } from "./chat-browser.tsx"
 import { createPortal } from "react-dom"
 import { createRoot } from "react-dom/client"
@@ -317,7 +318,8 @@ function Workspace() {
   const [switchingGitBranch, setSwitchingGitBranch] = useState(false)
   const [gitSwitchError, setGitSwitchError] = useState<string | undefined>()
   const gitBranchRequestIdRef = useRef(0)
-  const [sidebarOpen, setSidebarOpen] = useState(true)
+  const sidebar = useSidebarLayout()
+  const sidebarOpen = sidebar.open
   const [projectsOpen, setProjectsOpen] = useState(true)
   const [chatsOpen, setChatsOpen] = useState(true)
   const [expandedProjects, setExpandedProjects] = useState<Set<string>>(new Set())
@@ -695,13 +697,13 @@ function Workspace() {
     function workspaceShortcut(event: KeyboardEvent): void {
       if (!(event.ctrlKey || event.metaKey) || event.isComposing || document.querySelector('[aria-modal="true"]')) return
       if (event.key.toLowerCase() === "k") { event.preventDefault(); setOpenMenu(null); setSearchOpen(true) }
-      if (event.key.toLowerCase() === "b") { event.preventDefault(); setSidebarOpen((current) => !current) }
+      if (event.key.toLowerCase() === "b") { event.preventDefault(); sidebar.toggle() }
       if (event.key.toLowerCase() === "o" && event.shiftKey) { event.preventDefault(); focusNewChatComposer(groupId === "default" ? undefined : groupId, "chat") }
       if (event.key === ",") { event.preventDefault(); openSettingsDialog() }
     }
     window.addEventListener("keydown", workspaceShortcut)
     return () => window.removeEventListener("keydown", workspaceShortcut)
-  }, [groupId])
+  }, [groupId, sidebar.compact])
 
   useEffect(() => {
     if (focusDraftKey === null || workspaceRoute.page !== "new-chat" || newDraftKey !== focusDraftKey) return
@@ -1027,7 +1029,7 @@ function Workspace() {
     <header className="titlebar">
       <div className="titlebar-left">
         <div className="titlebar-brand"><span className="brand-mark" aria-hidden="true"><IconTerminal2 size={13} stroke={1.9} /></span><span className="brand-name">NiCode</span></div>
-        <button type="button" className="sidebar-toggle" aria-label={sidebarOpen ? "收起侧栏" : "展开侧栏"} title={sidebarOpen ? "收起侧栏 · Ctrl B" : "展开侧栏 · Ctrl B"} onClick={() => setSidebarOpen((current) => !current)}><IconLayoutSidebar size={16} stroke={1.6} aria-hidden="true" /></button>
+        <button ref={sidebar.toggleButton} type="button" className="sidebar-toggle" aria-expanded={sidebarOpen} aria-label={sidebarOpen ? "收起侧栏" : "展开侧栏"} title={sidebarOpen ? "收起侧栏 · Ctrl B" : "展开侧栏 · Ctrl B"} onClick={sidebar.toggle}><IconLayoutSidebar size={16} stroke={1.6} aria-hidden="true" /></button>
         <button className="titlebar-search" type="button" disabled={settingsDialogOpen || projectDialogOpen || searchOpen} onClick={() => setSearchOpen(true)} aria-label="搜索工作区" title="搜索项目和对话 · Ctrl K"><IconSearch size={16} stroke={1.6} aria-hidden="true" /></button>
       </div>
       <div className="titlebar-actions">
@@ -1035,8 +1037,9 @@ function Workspace() {
       </div>
       <WindowControls />
     </header>
-    <div className="workspace-shell">
-      {sidebarOpen && <aside className="sidebar" aria-label="工作区侧栏">
+    <div className="workspace-shell" data-sidebar-open={sidebarOpen}>
+      <div ref={sidebar.slot} className="sidebar-slot" inert={!sidebarOpen}>
+      {sidebar.visible && <aside className="sidebar" aria-label="工作区侧栏" style={{ minWidth: sidebar.compact ? sidebar.width : sidebar.minimumWidth }}>
         <div className="sidebar-create" aria-label="创建对话">
           <button className="new-chat sidebar-create-item" type="button" title="新聊天 · Ctrl Shift O" aria-current={workspaceRoute.page === "new-chat" && workspaceRoute.group === "default" && draftMode === "chat" ? "page" : undefined} onClick={() => focusNewChatComposer(undefined, "chat")}><IconPlus size={16} stroke={1.6} aria-hidden="true" /><span>新聊天</span></button>
           <button className="new-team-chat sidebar-create-item" type="button" title="新团队会话" aria-current={workspaceRoute.page === "new-chat" && workspaceRoute.group === "default" && draftMode === "work" ? "page" : undefined} onClick={() => focusNewChatComposer(undefined, "work")}><IconUsers size={16} stroke={1.6} aria-hidden="true" /><span>新团队会话</span></button>
@@ -1080,6 +1083,12 @@ function Workspace() {
           <button className="sidebar-theme" type="button" aria-label={theme === "light" ? "切换深色外观" : "切换浅色外观"} title={theme === "light" ? "深色外观" : "浅色外观"} onClick={() => setTheme((current) => current === "light" ? "dark" : "light")}>{theme === "light" ? <IconMoon size={17} stroke={1.6} aria-hidden="true" /> : <IconSun size={17} stroke={1.6} aria-hidden="true" />}</button>
         </div>
       </aside>}
+      {sidebarOpen && !sidebar.compact && <div className="workspace-divider" role="separator" tabIndex={0}
+        aria-label="调整导航栏宽度" aria-orientation="vertical" aria-valuemin={sidebar.minimumWidth}
+        aria-valuemax={sidebar.maximum} aria-valuenow={Math.round(sidebar.width)}
+        onPointerDown={sidebar.startDrag} onPointerMove={sidebar.moveDrag} onPointerUp={sidebar.finishDrag}
+        onPointerCancel={sidebar.finishDrag} onLostPointerCapture={sidebar.finishDrag} onKeyDown={sidebar.resizeWithKeyboard} />}
+      </div>
       <div className="workspace-main">
         {workspaceRoute.page === "session" && <header className="panel-header">
           <div className="panel-header-row">
