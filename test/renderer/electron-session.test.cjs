@@ -4,6 +4,7 @@ const { mkdir, mkdtemp, realpath, rm, writeFile } = require("node:fs/promises")
 const { tmpdir } = require("node:os")
 const { join, resolve, sep } = require("node:path")
 const { createServer } = require("node:http")
+const { DatabaseSync } = require("node:sqlite")
 const { TagManager } = require("../../dist/src/main/tag-manager.js")
 const { app, BrowserWindow, ipcMain } = require("electron")
 const { registerWindowIpcHandlers } = require("../../dist/src/main/window-ipc.js")
@@ -215,6 +216,13 @@ async function main() {
   assert.equal(historyQueries, beforeReturn, "缓存命中不能查询历史 IPC")
   releaseLoop()
   await until(() => evaluate(`Array.from(document.querySelectorAll('.assistant-text')).some(node => node.textContent === '本机流式正文')`))
+  const db = new DatabaseSync(join(paths.rootDir, "events.sqlite"), { readOnly: true })
+  try {
+    const rows = db.prepare("SELECT seq, type, event_json FROM session_events ORDER BY seq").all()
+    assert.deepEqual(rows.map(({ seq }) => seq), [1, 2, 3, 4])
+    assert.deepEqual(rows.map(({ type }) => type), ["turn/start", "user/message", "step/start", "assistant/block_end"])
+    assert.equal(JSON.parse(rows[3].event_json).block.text, "本机思考过程")
+  } finally { db.close() }
   assert.equal(await evaluate("document.querySelectorAll('[aria-label=\"复制AI回复\"]').length"), 0, "运行中的正文不显示 AI 复制入口")
   assert.equal(await evaluate("document.querySelectorAll('.message-label').length"), 1, "运行中的整轮回复只显示一个助手标题")
   assert.equal(await evaluate(`document.querySelectorAll('.turn-process, .final-answer').length`), 0, "没有 turn/end 时保持流式展示")
@@ -618,7 +626,7 @@ async function main() {
   const historySession = "merged-tool-history"
   historyFixtures.set(historySession, { projectId: "default", sessionId: historySession, kind: "ordinary",
     summary: { name: "工具合并历史", updatedAt: "2026-11-02T00:00:00.000Z", sessionId: historySession },
-    events: mergedToolHistory.map(event => ({ ...event, sessionId: historySession })), latestSeq: mergedToolHistory.length,
+    events: mergedToolHistory.map(event => ({ ...event, sessionId: historySession })), streamEvents: [], latestSeq: mergedToolHistory.length,
     control: { phase: "idle", throughSeq: mergedToolHistory.length, currentTurn: 3, revision: 1, currentModel: model,
       sandboxMode: "sandbox-full-access", pendingMessages: [], discardedMessages: [] } })
   await evaluate("location.hash = " + JSON.stringify(route.replace(originalSession, historySession)))

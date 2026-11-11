@@ -55,9 +55,9 @@ Renderer 负责页面、路由与展示缓存，不直接打开数据库、读�
 3. [SessionRuntime](../runtime/agent/src/session-runtime.ts) 绑定会话目录、事件日志和 SessionState。新建或继续 Turn 时，先提交 `turn/start` 与 `user/message`；提交失败不启动模型循环。
 4. Turn 真正开始时读取所选模型和推理等级，通过 `SessionRuntimeGlobal.createTurnModelAdapter()` 打开 Provider 数据库，取得同一快照的模型规格、协议配置和凭据。模型支持思考时校验所选等级后，创建仅供本 Turn 使用的 Adapter；后续 Step 复用它。
 5. Runtime 组织工作区说明、AGENTS.md / Skill 基线和基础工具，再调用 `runAgentLoop()`。
-6. Loop 写入 Step、Assistant 流事件和完整消息；若产生工具调用，就运行工具小轮并把 ToolResult 回填上下文，然后进入下一 Step。
+6. Loop 将 Step、完整内容块和完整消息提交到 Event Log，并通过 SessionRuntime 在内存中发布块开始与增量；若产生工具调用，就运行工具小轮并把 ToolResult 回填上下文，然后进入下一 Step。
 7. Runtime 负责 Turn 完成、失败、停止、文件变化与派生状态同步，再消费 FIFO 队列。Queue 仅保存消息内容，不提前冻结后续 Turn 的模型。
-8. 主进程通过会话更新事件推送已提交内容和控制状态，Renderer 的 [session-state.ts](../src/renderer/session-state.ts) 合并历史与增量，供页面展示。
+8. 主进程通过会话更新事件推送已提交内容、流片段和控制状态。Renderer 的 [session-state.ts](../src/renderer/session-state.ts) 按持久化序号合并历史，并用 Step 内的 `streamSeq` 和最近一次已提交的 `afterSeq` 插入流片段。活动会话查询返回当前 Step 的内存片段，Step 结束后释放。
 
 Composer 的 `@` 查询调用 [文件查看器 IPC](../src/main/file-explorer-ipc.ts)，用现有 ripgrep 枚举能力搜索当前项目的关联目录。会话 IPC 在接收结构化引用时校验目录关联、真实文件与正文位置。队列与 `user/message` 事件携带引用，模型历史只读取 `content`。历史和 Composer 的文件标签共用内置浏览器标签管理器及只读预览，打开时再次检查目录授权和目标文件。
 
@@ -117,7 +117,7 @@ Router 页头的「团队成员」通过可信会话 IPC 查询同一 Workspace 
 - Memory 不默认把正文注入系统消息；模型通过三件记忆工具按需访问当前 Project/default 的共享 Markdown。
 - Event Log 是已执行事实的恢复依据，SessionState 据此修复 Meta、`contextstate.json` 与 `agents_md.snapshot`，不能把页面缓存作为持久化事实。
 
-事件日志的 `appendEvent` 在原写入事务中只读取并校验当前会话的尾部事件，再分配下一个序号。MCP 增量批量写入、Turn 首批写入和完整读取仍检查全量历史。尾部之前的记录损坏由下一次全量校验报告。
+事件日志的 `appendEvent` 在原写入事务中只读取并校验当前会话的尾部事件，再分配下一个序号。MCP 增量批量写入、Turn 首批写入和完整读取仍检查全量历史。尾部之前的记录损坏由下一次全量校验报告。桌面重启后，恢复流程用已提交的 `assistant/block_end` 重建缺失的 Assistant 消息，再收尾中断的 Step 和 Turn。崩溃时尚未提交的块随内存片段丢弃。
 
 ## 桌面 Summary
 

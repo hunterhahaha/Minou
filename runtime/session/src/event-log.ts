@@ -167,7 +167,12 @@ export function createFileSessionEventLog(options: FileSessionEventLogOptions): 
       return withDatabase(databasePath, (db) =>
         readSessionEvents(db, options.projectGroupId, options.sessionId, databasePath, options.team, "all", table))
     },
-    appendEvent: async (input) => (await append([input], "tail"))[0],
+    appendEvent: async (input) => {
+      if ((options.desktop || options.team) && (input.type === "assistant/block_start" || input.type === "assistant/block_delta")) {
+        throw new Error("桌面 Assistant 流片段只能在内存中发布")
+      }
+      return (await append([input], "tail"))[0]
+    },
     appendMcpToolChanges: (inputs) => inputs.length === 0 ? Promise.resolve([]) : append(inputs),
     appendTurnStartAndUserMessage: (inputs, queuedMessageId, onCommit) => runSerializedWrite(queueKey, async () => {
       await requireDirectory(sessionDirectory)

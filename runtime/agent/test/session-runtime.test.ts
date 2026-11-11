@@ -9,6 +9,7 @@ import assert from "node:assert/strict"
 import { mkdtemp, readFile, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { DatabaseSync } from "node:sqlite"
 import { createAbortError } from "../../error/src/abort.ts"
 
 import type { ModelAdapter, ModelRef, ModelStreamEvent } from "../../model/src/types.ts"
@@ -17,6 +18,7 @@ import { initializeSessionMetaDatabase } from "../../session/src/meta-store.ts"
 import type {
   SessionEvent,
   SessionEventInput,
+  SessionLiveEvent,
 } from "../../session/src/events.ts"
 import {
   repairSession,
@@ -285,7 +287,7 @@ async function testNewSession(): Promise<void> {
 
   const started = await ports.startNewSession({ content: MESSAGE, model: MODEL })
   const processing = ports.processMessageQueue(started)
-  const streamed: SessionEvent[] = []
+  const streamed: SessionLiveEvent[] = []
   const streamDone = (async () => {
     for await (const event of started.events) streamed.push(event)
   })()
@@ -506,7 +508,7 @@ async function testFailureBoundaries(): Promise<void> {
 }
 
 /**
- * 验证中断文本块的补写顺序、消息内容及重复恢复不追加事件。
+ * 验证已提交块独立恢复消息、关闭中断 Step 和 Turn，并保证恢复幂等。
  * @returns 当前场景的断言及异步操作完成后解析。
  * @throws Error 断言或场景执行失败时向上传播，测试入口记录错误并设置失败退出码。
  */
@@ -516,50 +518,27 @@ async function testRepairInterruptedTextStep(): Promise<void> {
   initial.push(
     persistedEvent(sessionId, 3, { type: "step/start", turn: 1, step: 1 }),
     persistedEvent(sessionId, 4, {
-      type: "assistant/block_start",
-      turn: 1,
-      step: 1,
-      blockId: "1:1:0",
-      index: 0,
-      blockType: "text",
-    }),
-    persistedEvent(sessionId, 5, {
-      type: "assistant/block_delta",
-      turn: 1,
-      step: 1,
-      blockId: "1:1:0",
-      delta: { type: "text", text: "未完成" },
-    }),
-    persistedEvent(sessionId, 6, {
-      type: "assistant/block_delta",
-      turn: 1,
-      step: 1,
-      blockId: "1:1:0",
-      delta: { type: "text", text: "文本" },
+      type: "assistant/block_end", turn: 1, step: 1, blockId: "1:1:0", index: 0,
+      block: { type: "text", text: "完整文本" },
     }),
   )
   const state = repairFixture(initial)
 
   assert.deepEqual(await state.repair(), { lastTurn: 1 })
   assert.deepEqual(
-    state.events.slice(6).map((event) => event.type),
-    ["assistant/block_end", "assistant/message", "step/end", "turn/end"],
+    state.events.slice(4).map((event) => event.type),
+    ["assistant/message", "step/end", "turn/end"],
   )
-  const blockEnd = state.events[6]
-  assert.equal(blockEnd.type, "assistant/block_end")
-  if (blockEnd.type === "assistant/block_end") {
-    assert.deepEqual(blockEnd.block, { type: "text", text: "未完成文本" })
-  }
-  const message = state.events[7]
+  const message = state.events[4]
   assert.equal(message.type, "assistant/message")
   if (message.type === "assistant/message") {
-    assert.deepEqual(message.message.content, [{ type: "text", text: "未完成文本" }])
+    assert.deepEqual(message.message.content, [{ type: "text", text: "完整文本" }])
     assert.deepEqual(message.model, MODEL)
     assert.equal(message.usage, undefined)
     assert.equal(message.finishReason, undefined)
   }
-  const stepEnd = state.events[8]
-  const turnEnd = state.events[9]
+  const stepEnd = state.events[5]
+  const turnEnd = state.events[6]
   assert.ok(stepEnd.type === "step/end" && stepEnd.reason === "error")
   assert.ok(turnEnd.type === "turn/end" && turnEnd.reason === "error")
 
@@ -597,14 +576,6 @@ async function testRepairApprovalAndToolResults(): Promise<void> {
     ["call-without-approval", "grep"],
   ].map(([toolCallId, name], index) => {
     const blockId = `1:1:${index}`
-    add({
-      type: "assistant/block_start",
-      turn: 1,
-      step: 1,
-      blockId,
-      index,
-      blockType: "tool_call",
-    })
     return add({
       type: "assistant/block_end",
       turn: 1,
@@ -719,25 +690,10 @@ async function testInterruptedToolCallDoesNotCreateOrphanResult(): Promise<void>
   const initial = initialRepairEvents(sessionId)
   initial.push(
     persistedEvent(sessionId, 3, { type: "step/start", turn: 1, step: 1 }),
-    persistedEvent(sessionId, 4, {
-      type: "assistant/block_start",
-      turn: 1,
-      step: 1,
-      blockId: "1:1:0",
-      index: 0,
-      blockType: "tool_call",
-    }),
-    persistedEvent(sessionId, 5, {
-      type: "assistant/block_delta",
-      turn: 1,
-      step: 1,
-      blockId: "1:1:0",
-      delta: { type: "tool_call", toolCallId: "call-incomplete", argumentsDelta: "{" },
-    }),
   )
   const state = repairFixture(initial)
   await state.repair()
-  assert.deepEqual(state.events.slice(5).map((event) => event.type), ["step/end", "turn/end"])
+  assert.deepEqual(state.events.slice(3).map((event) => event.type), ["step/end", "turn/end"])
 }
 
 /**
@@ -787,7 +743,7 @@ async function testRepairPreservesContextAndUncommittedSummary(): Promise<void> 
 }
 
 /**
- * 验证孤立块增量和缺失首条用户消息的日志在初始化或补写前被拒绝。
+ * 验证重复块索引和缺失首条用户消息的日志在初始化或补写前被拒绝。
  * @returns 当前场景的断言及异步操作完成后解析。
  * @throws Error 断言或场景执行失败时向上传播，测试入口记录错误并设置失败退出码。
  */
@@ -797,11 +753,12 @@ async function testCorruptedLogIsRejectedBeforeWrites(): Promise<void> {
   initial.push(
     persistedEvent(sessionId, 3, { type: "step/start", turn: 1, step: 1 }),
     persistedEvent(sessionId, 4, {
-      type: "assistant/block_delta",
-      turn: 1,
-      step: 1,
-      blockId: "missing-start",
-      delta: { type: "text", text: "orphan" },
+      type: "assistant/block_end", turn: 1, step: 1, blockId: "1:1:0", index: 0,
+      block: { type: "text", text: "first" },
+    }),
+    persistedEvent(sessionId, 5, {
+      type: "assistant/block_end", turn: 1, step: 1, blockId: "duplicate-index", index: 0,
+      block: { type: "text", text: "second" },
     }),
   )
   const state = repairFixture(initial)
@@ -1002,16 +959,21 @@ async function testRuntimeScopedCancellation(): Promise<void> {
 }
 
 /**
- * 使用真实临时 SQLite 日志验证思考流停止后的收尾、幂等恢复及新实例继续发送。
- * @returns 新 Turn 正常完成、原思考内容进入回放且恢复未追加迟到事件后解析。
+ * 使用真实临时 SQLite 日志验证停止和进程中断边界，并由新实例继续发送。
+ * @param interruption 主动停止，或在输出第二个块时关闭实例以阻断一切收尾写入。
+ * @returns 新 Turn 正常完成且只回放已提交的块后解析。
  * @throws Error 当临时存储或运行失败时抛出；AssertionError 表示收尾顺序或继续行为不符合契约。
  */
-async function testStoppedThinkingCanContinue(): Promise<void> {
-  const root = await mkdtemp(join(tmpdir(), "nicode-stop-continue-"))
+async function testInterruptedThinkingCanContinue(interruption: "stop" | "crash"): Promise<void> {
+  const root = await mkdtemp(join(tmpdir(), "nicode-interrupt-continue-"))
   const metaDatabasePath = join(root, "meta.sqlite")
   initializeSessionMetaDatabase(metaDatabasePath)
   let active: SessionRuntime | undefined
   let requests = 0
+  let reachedPartial!: () => void
+  let releasePartial!: () => void
+  const partialReady = new Promise<void>((resolve) => { reachedPartial = resolve })
+  const partialGate = new Promise<void>((resolve) => { releasePartial = resolve })
   const global = {
     resolveProjectContext: () => ({
       workspaceInfo: "workspace",
@@ -1027,8 +989,18 @@ async function testStoppedThinkingCanContinue(): Promise<void> {
         if (requests === 1) {
           yield { type: "block_start", index: 0, blockType: "thinking" }
           yield { type: "block_delta", index: 0, delta: { type: "thinking", text: "停止前的思考" } }
-          active!.stop()
-          throw createAbortError()
+          if (interruption === "stop") {
+            active!.stop()
+            throw createAbortError()
+          }
+          yield { type: "block_end", index: 0, block: { type: "thinking", text: "停止前的思考" } }
+          yield { type: "block_start", index: 1, blockType: "text" }
+          yield { type: "block_delta", index: 1, delta: { type: "text", text: "崩溃前未完成的正文" } }
+          reachedPartial()
+          await partialGate
+          yield { type: "block_end", index: 1, block: { type: "text", text: "不应落库" } }
+          yield { type: "stream_end", completion: "finished" }
+          return
         }
         assert.ok(requestMessages(request).some((message) => message.role === "assistant" &&
           Array.isArray(message.content) && message.content.some((block) => block.type === "thinking" && block.text === "停止前的思考")))
@@ -1048,17 +1020,43 @@ async function testStoppedThinkingCanContinue(): Promise<void> {
   try {
     active = new SessionRuntime(options)
     const first = await active.startNewSession({ model: MODEL, content: MESSAGE })
-    assert.equal((await first.completion).stopped, true)
-    const stoppedEvents = await active.readEvents() as SessionEvent[]
-    assert.deepEqual(stoppedEvents.map((event) => event.type), [
-      "turn/start", "user/message", "step/start", "assistant/block_start", "assistant/block_delta",
+    if (interruption === "stop") {
+      assert.equal((await first.completion).stopped, true)
+    } else {
+      const completion = assert.rejects(first.completion, /SessionRuntime 已关闭/)
+      await Promise.race([partialReady, first.completion])
+      const snapshot = await active.readSnapshot()
+      assert.deepEqual(snapshot.streamEvents.map(({ streamSeq, afterSeq }) => [streamSeq, afterSeq]), [[1, 3], [2, 3], [3, 4], [4, 4]])
+      assert.equal(snapshot.throughSeq, 4)
+      assert.equal(snapshot.events.at(-1)?.type, "assistant/block_end")
+      const db = new DatabaseSync(options.databasePath, { readOnly: true })
+      try {
+        const rows = db.prepare("SELECT seq, type, event_json FROM session_events ORDER BY seq").all()
+        assert.deepEqual(rows.map(({ seq, type }) => [seq, type]), [
+          [1, "turn/start"], [2, "user/message"], [3, "step/start"], [4, "assistant/block_end"],
+        ])
+        assert.equal(JSON.parse(String(rows[3].event_json)).block.text, "停止前的思考")
+      } finally { db.close() }
+      active.close()
+      releasePartial()
+      await completion
+    }
+    const stoppedEvents = interruption === "stop" ? await active.readEvents() as SessionEvent[] : undefined
+    if (stoppedEvents) assert.deepEqual(stoppedEvents.map((event) => event.type), [
+      "turn/start", "user/message", "step/start",
       "assistant/block_end", "assistant/message", "step/end", "turn/end",
     ])
     active.close()
     active = new SessionRuntime(options)
     assert.deepEqual(await active.repairSession(), { lastTurn: 1 })
+    const repaired = await active.readSnapshot()
+    assert.deepEqual(repaired.streamEvents, [])
+    assert.doesNotMatch(JSON.stringify(repaired.events), /崩溃前未完成的正文|不应落库/)
+    assert.deepEqual(repaired.events.filter((event) => event.type === "assistant/message").map((event) => event.message.content),
+      [[{ type: "thinking", text: "停止前的思考" }]])
     assert.deepEqual(await active.repairSession(), { lastTurn: 1 })
-    assert.deepEqual(await active.readEvents(), stoppedEvents, "停止后的恢复不得再补写块或消息")
+    assert.deepEqual(await active.readEvents(), repaired.events, "第二次恢复不再补写")
+    if (stoppedEvents) assert.deepEqual(repaired.events, stoppedEvents, "主动停止已完成收尾")
     const second = await active.continueSession({ content: [{ type: "text", text: "继续" }] })
     assert.equal(second.turn, 2)
     assert.equal((await second.completion).stopped, false)
@@ -1068,6 +1066,7 @@ async function testStoppedThinkingCanContinue(): Promise<void> {
     assert.deepEqual(await active.readEvents(), completedEvents)
   } finally {
     active?.close()
+    releasePartial()
     await rm(root, { recursive: true, force: true })
   }
 }
@@ -1090,7 +1089,8 @@ async function main(): Promise<void> {
   await testCorruptedLogIsRejectedBeforeWrites()
   await testConcreteRuntimeBindings()
   await testRuntimeScopedCancellation()
-  await testStoppedThinkingCanContinue()
+  await testInterruptedThinkingCanContinue("stop")
+  await testInterruptedThinkingCanContinue("crash")
   console.log("session-runtime.test.ts: SessionRuntime 入口与恢复断言通过")
 }
 

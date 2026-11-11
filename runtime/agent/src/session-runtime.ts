@@ -32,12 +32,13 @@ import type {
 import type {
   ApprovalRequestEvent,
   ApprovalResultEvent,
-  AssistantBlockDeltaEvent,
   AssistantBlockEndEvent,
-  AssistantBlockStartEvent,
+  AssistantBlockStreamEvent,
+  AssistantBlockStreamInput,
   AssistantMessageEvent,
   SessionEvent,
   SessionEventInput,
+  SessionLiveEvent,
   StepStartEvent,
   ToolResultEvent,
   TurnStartEvent,
@@ -307,8 +308,8 @@ export interface StartedSessionTurn {
   sessionId: string
   /** 已提交并正在运行的 Turn 编号。 */
   turn: number
-  /** 当前活动 Session 中所有已成功持久化事件的单消费者异步流。 */
-  events: AsyncIterable<SessionEvent>
+  /** 当前活动 Session 中持久事件与内存片段的单消费者异步流。 */
+  events: AsyncIterable<SessionLiveEvent>
   /** 成批提交新 Turn 后启动；调用方需等待并处理运行结果或错误。 */
   completion: Promise<AgentLoopResult>
 }
@@ -339,6 +340,8 @@ export interface PendingSessionMessage extends EnqueueSessionMessageInput {
 export interface SessionRuntimeSnapshot {
   /** 查询时已经提交的事件。 */
   events: SessionEvent[]
+  /** 查询时仍开放的 Step 的内存流片段。 */
+  streamEvents: AssistantBlockStreamEvent[]
   /** 当前 Meta 中的名称和设置。 */
   settings: { name: string; currentModel: ModelRef; sandboxMode: SandboxMode }
   /** 活动实例的状态；临时历史实例为 idle。 */
@@ -398,8 +401,8 @@ export class SessionRuntime implements SessionRepairPorts {
   private readonly team?: TeamRuntimeOptions
   /** 当前实例唯一绑定的 Session ID。 */
   readonly sessionId: string
-  /** 当前活动期已经持久化的 Session 事件流。 */
-  readonly events: AsyncIterable<SessionEvent>
+  /** 当前活动期的持久化事件与内存片段，按发布顺序交付。 */
+  readonly events: AsyncIterable<SessionLiveEvent>
   private readonly sessionDirectory: string
   private readonly projectGroupId: string
   private readonly eventLog: FileSessionEventLog
@@ -421,8 +424,10 @@ export class SessionRuntime implements SessionRepairPorts {
   private exiting = false
   /** 首轮初始化或队首恢复任务，快照和设置更新在任务完成后读取。 */
   private initialization: Promise<void> | undefined
-  /** 已发布事件的最后序号，供宿主合并事件流和快照。 */
+  /** 最后发布的持久化序号，也是下一个流片段的排序锚点。 */
   private lastCommittedSeq = 0
+  /** 当前 Step 的流片段，包含可供晚加入订阅者补查的前缀。 */
+  private readonly streamEvents: AssistantBlockStreamEvent[] = []
   private readonly onStateChanged: (() => void) | undefined
   /** 按 Turn 保存的临时文件净变化追踪器，变化事件提交成功后移除。 */
   private readonly fileTrackers = new Map<number, TurnFileChangeTracker>()
@@ -618,7 +623,7 @@ export class SessionRuntime implements SessionRepairPorts {
     const baseline = await this.resolveTurnBaseline()
     const events = validateEventLog(this.sessionId, await this.eventLog.readEvents(), this.team?.identity.role === "member")
     const lifecycle = validateLifecycle(this.sessionId, events)
-    validateBlockStreams(this.sessionId, events)
+    validateBlockEnds(this.sessionId, events)
     validateSummaries(this.sessionId, events)
     if (lifecycle.lastTurn !== turn || lifecycle.openTurn !== turn) {
       throw new Error("无法为非当前开放 Turn 构建 Context：期望 " +
@@ -658,8 +663,8 @@ export class SessionRuntime implements SessionRepairPorts {
   }
 
   /**
-   * 查询已提交事件与当前设置；活动查询不执行异常恢复，关闭后的实例仍可读取最终快照。
-   * @returns 事件数组、当前设置与 Queue 状态的脱离引用快照。
+   * 查询已提交事件、活动流片段与当前设置；活动查询不执行异常恢复。
+   * @returns 已提交事件、内存片段、当前设置与 Queue 状态的脱离引用快照。
    * @throws Error 日志校验或 Meta 读取失败时抛出；已发生的初始化错误在此忽略。
    */
   async readSnapshot(): Promise<SessionRuntimeSnapshot> {
@@ -669,9 +674,16 @@ export class SessionRuntime implements SessionRepairPorts {
       await this.sessionState.initializeSession()
     }
     const settings = await this.sessionState.readSettings()
+    /** 先截取片段前缀，保证其中的排序锚点已出现在后续读取的数据库历史中。 */
+    const streamEvents = this.streamEvents.slice()
     const events = validateEventLog(this.sessionId, await this.eventLog.readEvents(), this.team?.identity.role === "member")
+    const lastStream = streamEvents.at(-1)
+    if (lastStream && (this.closed || events.some((event) => event.type === "step/end" &&
+        event.turn === lastStream.turn && event.step === lastStream.step))) {
+      streamEvents.length = 0
+    }
     return {
-      events: structuredClone(events), settings,
+      events: structuredClone(events), streamEvents: structuredClone(streamEvents), settings,
       phase: this.closed || (!this.processing && this.activeTurn === undefined)
         ? "idle" : this.abortController.signal.aborted ? "stopping" : "running",
       currentTurn: this.closed ? undefined : this.activeTurn,
@@ -778,6 +790,7 @@ export class SessionRuntime implements SessionRepairPorts {
       },
       signal: this.abortController.signal,
       appendEvent: (event) => this.appendEvent(event),
+      publishBlockStream: (event) => this.publishBlockStream(event),
     }
   }
 
@@ -996,6 +1009,7 @@ export class SessionRuntime implements SessionRepairPorts {
     if (this.closed) return
     this.closed = true
     this.startingMessageId = undefined
+    this.streamEvents.length = 0
     this.eventStream.close()
     this.onStateChanged?.()
   }
@@ -1065,7 +1079,7 @@ export class SessionRuntime implements SessionRepairPorts {
     if (lifecycle.openTurn !== undefined || lifecycle.openStep !== undefined) {
       throw new Error(`Session 尚未恢复到一致状态，不能准备下一 Turn：${this.sessionId}`)
     }
-    validateBlockStreams(this.sessionId, events)
+    validateBlockEnds(this.sessionId, events)
     validateSummaries(this.sessionId, events)
 
     this.turnBaseline = this.projectContext.resolveCurrentBaseline().then((baseline) => structuredClone(baseline))
@@ -1273,7 +1287,7 @@ export class SessionRuntime implements SessionRepairPorts {
         validateCurrentBaseline(baseline)
         const events = validateEventLog(this.sessionId, await this.eventLog.readEvents())
         validateLifecycle(this.sessionId, events)
-        validateBlockStreams(this.sessionId, events)
+        validateBlockEnds(this.sessionId, events)
         validateSummaries(this.sessionId, events)
         const previous = events.filter((event) => event.type === "summary/end").at(-1)
         const comparison = await this.sessionState.readContextComparisonState()
@@ -1327,8 +1341,28 @@ export class SessionRuntime implements SessionRepairPorts {
     if (event.type !== expectedType) {
       throw new Error(`持久化事件类型不匹配：期望 ${expectedType}，实际 ${event.type}`)
     }
-    this.eventStream.publish(event)
     this.lastCommittedSeq = event.seq
+    if (event.type === "step/end") this.streamEvents.length = 0
+    this.eventStream.publish(event)
+  }
+
+  /**
+   * 给当前 Step 的片段分配内存序号，并保留前缀供活动快照补查。
+   * @param input 模型流产生的块开始或增量。
+   * @throws Error 实例已关闭时停止发布。
+   */
+  private publishBlockStream(input: AssistantBlockStreamInput): void {
+    this.assertOpen()
+    const event: AssistantBlockStreamEvent = {
+      ...input,
+      eventId: randomUUID(),
+      sessionId: this.sessionId,
+      createdAt: new Date().toISOString(),
+      streamSeq: this.streamEvents.length + 1,
+      afterSeq: this.lastCommittedSeq,
+    }
+    this.streamEvents.push(event)
+    this.eventStream.publish(event)
   }
 
   /**
@@ -1342,21 +1376,21 @@ export class SessionRuntime implements SessionRepairPorts {
   }
 }
 
-/** 单消费者、实例内存级的 SessionEvent 异步流。 */
-class SessionEventStream implements AsyncIterable<SessionEvent> {
+/** 单消费者、实例内存级的 Session 活动事件异步流。 */
+class SessionEventStream implements AsyncIterable<SessionLiveEvent> {
   /** 已发布但尚未交给唯一消费者的事件，按发布顺序缓存。 */
-  private readonly buffered: SessionEvent[] = []
+  private readonly buffered: SessionLiveEvent[] = []
   /** 无缓冲事件时等待中的 next 解析函数，仅支持顺序消费。 */
-  private nextResolver: ((result: IteratorResult<SessionEvent>) => void) | undefined
+  private nextResolver: ((result: IteratorResult<SessionLiveEvent>) => void) | undefined
   /** 是否已经创建唯一消费者，防止同一事件流被重复遍历。 */
   private iteratorCreated = false
   private closed = false
 
   /**
-   * 发布已提交事件；优先交给等待中的消费者，否则暂存到缓冲区。关闭后忽略新事件。
-   * @param event 已经成功持久化的 Session 事件。
+   * 发布持久化事件或流片段；优先交给等待中的消费者，否则暂存到缓冲区。
+   * @param event 已提交的 Session 事件或只驻留内存的流片段。
    */
-  publish(event: SessionEvent): void {
+  publish(event: SessionLiveEvent): void {
     if (this.closed) return
     const resolveNext = this.nextResolver
     if (resolveNext !== undefined) {
@@ -1383,7 +1417,7 @@ class SessionEventStream implements AsyncIterable<SessionEvent> {
    * @returns 按发布顺序消费缓冲事件的迭代器。
    * @throws Error 重复创建迭代器时抛出，调用方必须复用唯一消费者。
    */
-  [Symbol.asyncIterator](): AsyncIterator<SessionEvent> {
+  [Symbol.asyncIterator](): AsyncIterator<SessionLiveEvent> {
     if (this.iteratorCreated) {
       throw new Error("Session 事件流只能消费一次")
     }
@@ -1397,7 +1431,7 @@ class SessionEventStream implements AsyncIterable<SessionEvent> {
    * 取出最早的缓冲事件；无缓冲且未关闭时保存等待中的消费者。
    * @returns 下一个事件；关闭且缓冲耗尽时返回 done = true。调用方应顺序等待 next。
    */
-  private next(): Promise<IteratorResult<SessionEvent>> {
+  private next(): Promise<IteratorResult<SessionLiveEvent>> {
     const event = this.buffered.shift()
     if (event !== undefined) {
       return Promise.resolve({ value: event, done: false })
@@ -1464,7 +1498,7 @@ export async function repairSession(
     return { lastTurn: 0 }
   }
   const lifecycle = validateLifecycle(sessionId, events)
-  validateBlockStreams(sessionId, events)
+  validateBlockEnds(sessionId, events)
   validateSummaries(sessionId, events)
   validateMcpChanges(sessionId, events)
 
@@ -1499,7 +1533,6 @@ export async function repairSession(
     return written
   }
 
-  await repairBlockEnds(sessionId, events, append)
   await repairAssistantMessages(sessionId, events, append)
   await repairApprovalsAndToolResults(sessionId, events, append)
 
@@ -1571,18 +1604,6 @@ interface LifecycleState {
   openTurn?: number
   /** 当前尚未写入 `step/end` 的 Step 身份。 */
   openStep?: { turn: number; step: number }
-}
-
-/**
- * 同一响应块的起始、增量和可选结束事件，供完整性校验与中断恢复使用。
- */
-interface BlockStream {
-  /** Block 的 `assistant/block_start` 事件。 */
-  start: AssistantBlockStartEvent
-  /** Block 收到的全部 Delta 事件，按日志顺序排列。 */
-  deltas: AssistantBlockDeltaEvent[]
-  /** Block 的 `assistant/block_end` 事件；缺失时表示需要恢复。 */
-  end?: AssistantBlockEndEvent
 }
 
 /**
@@ -1939,75 +1960,23 @@ function validateLifecycle(sessionId: string, events: readonly SessionEvent[]): 
 }
 
 /**
- * 校验每个 Assistant Block 的 start、delta、end 流，并建立可供恢复使用的索引。
- *
+ * 校验每个 Step 的已提交块身份和索引唯一性。
  * @param sessionId 被校验的 Session ID。
- * @param events 已通过基础结构和生命周期校验的事件序列。
- * @returns 以 Turn、Step、Block ID 为键的 Block 流索引。
- * @throws SessionLogCorruptedError 当 Block 缺少前置事件、重复结束、类型不一致或内容不一致时抛出。
+ * @param events 已通过基础结构和生命周期校验的持久化事件。
+ * @throws SessionLogCorruptedError 当同一 Step 的块 ID 或索引重复时抛出。
  */
-function validateBlockStreams(sessionId: string, events: readonly SessionEvent[]): Map<string, BlockStream> {
-  const streams = new Map<string, BlockStream>()
-  const nextIndexByStep = new Map<string, number>()
-
+function validateBlockEnds(sessionId: string, events: readonly SessionEvent[]): void {
+  const blockIds = new Set<string>()
+  const indexes = new Set<string>()
   for (const event of events) {
-    if (event.type === "assistant/block_start") {
-      const key = blockKey(event.turn, event.step, event.blockId)
-      if (streams.has(key)) corrupted(sessionId, `BlockStart 重复：${key}`)
-      const step = stepKey(event.turn, event.step)
-      const expectedIndex = nextIndexByStep.get(step) ?? 0
-      if (event.index !== expectedIndex) {
-        corrupted(sessionId, `Block index 不连续：${step}:${event.index}`)
-      }
-      nextIndexByStep.set(step, expectedIndex + 1)
-      streams.set(key, { start: event, deltas: [] })
-      continue
-    }
-
-    if (event.type === "assistant/block_delta") {
-      const key = blockKey(event.turn, event.step, event.blockId)
-      const stream = streams.get(key)
-      if (stream === undefined) corrupted(sessionId, `BlockDelta 缺少 BlockStart：${key}`)
-      if (stream.end !== undefined) corrupted(sessionId, `BlockEnd 后仍有 BlockDelta：${key}`)
-      if (stream.start.blockType !== event.delta.type) {
-        corrupted(sessionId, `BlockDelta 类型与 BlockStart 不一致：${key}`)
-      }
-      stream.deltas.push(event)
-      continue
-    }
-
-    if (event.type === "assistant/block_end") {
-      const key = blockKey(event.turn, event.step, event.blockId)
-      const stream = streams.get(key)
-      if (stream === undefined) corrupted(sessionId, `BlockEnd 缺少 BlockStart：${key}`)
-      if (stream.end !== undefined) corrupted(sessionId, `BlockEnd 重复：${key}`)
-      if (stream.start.index !== event.index || stream.start.blockType !== event.block.type) {
-        corrupted(sessionId, `BlockEnd 与 BlockStart 不匹配：${key}`)
-      }
-      if (event.block.type === "thinking" || event.block.type === "text") {
-        const deltaText = stream.deltas.map((delta) => {
-          if (delta.delta.type !== event.block.type || delta.delta.type === "tool_call") {
-            corrupted(sessionId, `BlockEnd 与 Delta 类型不一致：${key}`)
-          }
-          return delta.delta.text
-        }).join("")
-        if (stream.deltas.length > 0 && deltaText !== event.block.text) {
-          corrupted(sessionId, `BlockEnd 文本与 Delta 不一致：${key}`)
-        }
-      } else {
-        const toolCallIds = new Set(stream.deltas.map((delta) => {
-          if (delta.delta.type !== "tool_call") corrupted(sessionId, `tool_call Delta 类型不一致：${key}`)
-          return delta.delta.toolCallId
-        }))
-        if (toolCallIds.size > 1 || (toolCallIds.size === 1 && !toolCallIds.has(event.block.toolCallId))) {
-          corrupted(sessionId, `tool_call BlockEnd 与 Delta 身份不一致：${key}`)
-        }
-      }
-      stream.end = event
-    }
+    if (event.type !== "assistant/block_end") continue
+    const id = blockKey(event.turn, event.step, event.blockId)
+    const index = JSON.stringify([event.turn, event.step, event.index])
+    if (blockIds.has(id)) corrupted(sessionId, "BlockEnd 重复：" + id)
+    if (indexes.has(index)) corrupted(sessionId, "同一 Step 的 Block index 重复：" + index)
+    blockIds.add(id)
+    indexes.add(index)
   }
-
-  return streams
 }
 
 /**
@@ -2054,44 +2023,6 @@ function validateSummaries(sessionId: string, events: readonly SessionEvent[]): 
 }
 
 /**
- * 为已开始但尚未结束的文本 Block 补写 `assistant/block_end`。
- *
- * Tool Call 不会在这里自动补写，因为其参数完整性和执行结果需要由后续恢复逻辑处理。
- *
- * @param sessionId 被修复的 Session ID。
- * @param events 当前已校验且可能随恢复事件增长的事件数组。
- * @param append 追加并校验恢复事件的函数。
- * @returns 所有可确定恢复的文本 Block 均补写完成后结束。
- * @throws SessionLogCorruptedError 当 Block Delta 无法还原为一致文本时抛出。
- */
-async function repairBlockEnds(
-  sessionId: string,
-  events: SessionEvent[],
-  append: AppendRecoveryEvent,
-): Promise<void> {
-  const streams = validateBlockStreams(sessionId, events)
-  for (const stream of streams.values()) {
-    if (stream.end !== undefined || stream.start.blockType === "tool_call") continue
-
-    const text = stream.deltas.map((event) => {
-      if (event.delta.type !== stream.start.blockType || event.delta.type === "tool_call") {
-        corrupted(sessionId, `文本 Block 的 Delta 类型不一致：${stream.start.blockId}`)
-      }
-      return event.delta.text
-    }).join("")
-
-    await append({
-      type: "assistant/block_end",
-      turn: stream.start.turn,
-      step: stream.start.step,
-      blockId: stream.start.blockId,
-      index: stream.start.index,
-      block: { type: stream.start.blockType, text },
-    })
-  }
-}
-
-/**
  * 校验现有 `assistant/message`，并为缺失的消息补写由 BlockEnd 重建的内容。
  *
  * @param sessionId 被修复的 Session ID。
@@ -2125,11 +2056,6 @@ async function repairAssistantMessages(
   }
 
   for (const [key, ends] of blockEnds) {
-    const indexes = new Set<number>()
-    for (const end of ends) {
-      if (indexes.has(end.index)) corrupted(sessionId, `同一 Step 的 Block index 重复：${key}:${end.index}`)
-      indexes.add(end.index)
-    }
     const existing = messages.get(key)
     const expectedContent = [...ends].sort((left, right) => left.index - right.index).map((end) => end.block)
     if (existing !== undefined) {
@@ -2601,12 +2527,12 @@ function isStepScopedEvent(
 }
 
 /**
- * 构造 Block 流索引键。
+ * 构造已提交 Block 的身份键。
  *
  * @param turn Block 所属的 Turn 编号。
  * @param step Block 所属的 Step 编号。
  * @param blockId Block 的稳定 ID。
- * @returns 用于索引 Block 流的复合键。
+ * @returns 用于校验块身份唯一性的复合键。
  */
 function blockKey(turn: number, step: number, blockId: string): string {
   return `${turn}:${step}:${blockId}`

@@ -437,7 +437,7 @@ async function main() {
       ] } },
       { type: "turn/end", turn: 1, reason: "completed" },
     ].map((event, index) => ({ ...event, eventId: "fixture-" + index, sessionId, createdAt: updatedAt, seq: index + 1 }))
-    return { projectId, sessionId, kind: "ordinary", summary: { sessionId, name: sessions[0].name, updatedAt }, events: fixtures, latestSeq: fixtures.length,
+    return { projectId, sessionId, kind: "ordinary", summary: { sessionId, name: sessions[0].name, updatedAt }, events: fixtures, streamEvents: [], latestSeq: fixtures.length,
       control: { revision: 1, throughSeq: fixtures.length, currentModel: model, sandboxMode: "sandbox-full-access", phase: "idle", currentTurn: 1, pendingMessages: [], discardedMessages: [] } }
   })
   ipcMain.handle(session.decideSessionApproval, (_event, projectId, sessionId, approvalId, decision) => {

@@ -1,7 +1,7 @@
 /** 工作区生命周期内的原始事件缓存与纯展示投影，不保存凭据或模型 Adapter。 */
 import type { JSONContent } from "@tiptap/core"
 import type { AssistantContentBlock, ModelTextBlock } from "../../runtime/model/src/types.ts"
-import type { SessionEvent } from "../../runtime/session/src/events.ts"
+import type { SessionEvent, SessionLiveEvent } from "../../runtime/session/src/events.ts"
 import type { NiCodePreloadApi, SessionControl, SessionData, SessionKind, SessionSummary, SessionUpdate } from "../preload/session-api.ts"
 
 /** 联合身份使用 JSON 数组编码。 */
@@ -34,30 +34,55 @@ export interface SessionView {
  */
 export function sessionKey(projectId: string, sessionId: string): SessionKey { return JSON.stringify([projectId, sessionId]) }
 /**
- * @param groups 历史和实时事件。
- * @returns 按身份去重、按提交序号排序的原始事件。
- * @throws Error 同序号或同身份冲突。
+ * @param event 持久化事件或活动 Step 的流片段。
+ * @returns 事件的持久化序号，或该片段紧随的持久化序号。
  */
-export function mergeSessionEvents(...groups: readonly (readonly SessionEvent[])[]): SessionEvent[] {
-  const events = new Map<string, SessionEvent>()
-  const seqs = new Map<number, string>()
+function eventAnchor(event: SessionLiveEvent): number {
+  return "streamSeq" in event ? event.afterSeq : event.seq
+}
+/**
+ * @param groups 历史和实时事件。
+ * @returns 按两套序号合并的展示事件，已结束 Step 的流片段会被释放。
+ * @throws Error 同一位置或同一身份冲突。
+ */
+export function mergeSessionEvents(...groups: readonly (readonly SessionLiveEvent[])[]): SessionLiveEvent[] {
+  const events = new Map<string, SessionLiveEvent>()
+  const positions = new Map<string, string>()
+  const endedSteps = new Set<string>()
   for (const group of groups) for (const event of group) {
     const previous = events.get(event.eventId)
-    if ((previous && previous.seq !== event.seq) || (seqs.has(event.seq) && seqs.get(event.seq) !== event.eventId)) {
+    const position = eventPosition(event)
+    if ((previous && (eventPosition(previous) !== position || eventAnchor(previous) !== eventAnchor(event))) ||
+        (positions.has(position) && positions.get(position) !== event.eventId)) {
       throw new Error("对话事件身份冲突")
     }
     events.set(event.eventId, event)
-    seqs.set(event.seq, event.eventId)
+    positions.set(position, event.eventId)
+    if (event.type === "step/end") endedSteps.add(JSON.stringify([event.turn, event.step]))
   }
-  return [...events.values()].sort((a, b) => a.seq - b.seq)
+  return [...events.values()]
+    .filter((event) => !("streamSeq" in event) || !endedSteps.has(JSON.stringify([event.turn, event.step])))
+    .sort((a, b) => eventAnchor(a) - eventAnchor(b) ||
+      ("streamSeq" in a ? a.streamSeq : 0) - ("streamSeq" in b ? b.streamSeq : 0))
+}
+/**
+ * @param event 持久化事件或活动 Step 的流片段。
+ * @returns 在各自序号空间内的唯一位置。
+ */
+function eventPosition(event: SessionLiveEvent): string {
+  return "streamSeq" in event ? JSON.stringify([event.turn, event.step, event.streamSeq]) : String(event.seq)
 }
 /**
  * @param events 已排序事件。
- * @returns 从 1 起连续取得的最后序号。
+ * @returns 从 1 起连续取得的最后持久化序号。
  */
-export function throughSeq(events: readonly SessionEvent[]): number {
+export function throughSeq(events: readonly SessionLiveEvent[]): number {
   let seq = 0
-  for (const event of events) { if (event.seq !== seq + 1) break; seq = event.seq }
+  for (const event of events) {
+    if ("streamSeq" in event) continue
+    if (event.seq !== seq + 1) break
+    seq = event.seq
+  }
   return seq
 }
 /**
@@ -72,7 +97,7 @@ export function errorMessage(error: unknown): string { return error instanceof E
  */
 export class WorkspaceSessionState {
   /** 只有完整初始化后才建立键，空数组同样属于有效缓存。 */
-  readonly sessionEventsByKey: Record<SessionKey, SessionEvent[]> = {}
+  readonly sessionEventsByKey: Record<SessionKey, SessionLiveEvent[]> = {}
   /** 各对话控制、加载和操作状态。 */
   readonly sessionViewsByKey: Record<SessionKey, SessionView> = {}
   /** 对话及分组新聊天草稿。 */
@@ -80,7 +105,7 @@ export class WorkspaceSessionState {
   /** 同一身份只允许一个历史请求。 */
   readonly sessionLoadsRef = new Map<SessionKey, Promise<void>>()
   /** 未初始化历史对话先收到的事件。 */
-  readonly pendingEventsRef = new Map<SessionKey, SessionEvent[]>()
+  readonly pendingEventsRef = new Map<SessionKey, SessionLiveEvent[]>()
 
   /** 唯一的历史查询出口；缓存命中不会调用。 */
   private readonly api: Pick<NiCodePreloadApi, "getSessionData">
@@ -148,7 +173,9 @@ export class WorkspaceSessionState {
    */
   applyData(data: SessionData): void {
     const key = sessionKey(data.projectId, data.sessionId)
-    this.sessionEventsByKey[key] = mergeSessionEvents(data.events, this.sessionEventsByKey[key] ?? [], this.pendingEventsRef.get(key) ?? [])
+    this.sessionEventsByKey[key] = mergeSessionEvents(
+      data.events, data.streamEvents, this.sessionEventsByKey[key] ?? [], this.pendingEventsRef.get(key) ?? [],
+    )
     this.pendingEventsRef.delete(key)
     const view = this.view(key)
     view.kind = data.kind
@@ -165,9 +192,9 @@ export class WorkspaceSessionState {
    */
   receive(update: SessionUpdate): void {
     const key = sessionKey(update.projectId, update.sessionId)
-    if (update.kind === "event") {
-      if (update.sessionKind !== undefined) this.view(key).kind = update.sessionKind
-      if (this.has(key) || update.event.seq === 1) {
+    if (update.kind === "event" || update.kind === "stream") {
+      if (update.kind === "event" && update.sessionKind !== undefined) this.view(key).kind = update.sessionKind
+      if (this.has(key) || (update.kind === "event" && update.event.seq === 1)) {
         this.sessionEventsByKey[key] = mergeSessionEvents(this.sessionEventsByKey[key] ?? [], this.pendingEventsRef.get(key) ?? [], [update.event])
         this.pendingEventsRef.delete(key)
       } else {
@@ -204,7 +231,16 @@ export class WorkspaceSessionState {
     if (!this.has(key)) return false
     const events = this.sessionEventsByKey[key]
     const through = throughSeq(events)
-    return through < (events.at(-1)?.seq ?? 0) || through < (this.view(key).pendingControl?.throughSeq ?? 0)
+    const last = events.at(-1)
+    if (through < (last ? eventAnchor(last) : 0) || through < (this.view(key).pendingControl?.throughSeq ?? 0)) return true
+    const streamSeqs = new Map<string, number>()
+    for (const event of events) {
+      if (!("streamSeq" in event)) continue
+      const step = JSON.stringify([event.turn, event.step])
+      if (event.streamSeq !== (streamSeqs.get(step) ?? 0) + 1) return true
+      streamSeqs.set(step, event.streamSeq)
+    }
+    return false
   }
   /**
    * @param key 身份；状态只在其 throughSeq 已取得时生效。
@@ -263,10 +299,10 @@ export type ChatDisplay = ChatItem | CompletedTurnDisplay
  * 汇聚 Assistant 流式块并以权威消息覆盖同一 Step；收到 turn/end 后重组该 Turn。
  * 仅 completed 提取最后一条权威消息的全部正文，用户消息与无 Turn 事件独立展示。
  * 不修改输入事件或工作区缓存；历史与实时更新使用相同投影规则。
- * @param events 单个对话按 seq 排序的原始事件。
+ * @param events 单个对话按持久化与流式序号合并的原始事件。
  * @returns 未结束的平铺内容以及已结束 Turn 的过程和可选最终正文。
  */
-export function projectSessionEvents(events: readonly SessionEvent[]): ChatDisplay[] {
+export function projectSessionEvents(events: readonly SessionLiveEvent[]): ChatDisplay[] {
   const result: ChatItem[] = []
   const steps = new Map<string, { display: AssistantDisplay; blocks: Map<string, { index: number; block: AssistantContentBlock }>; authoritative: boolean }>()
   const endings = new Map<number, Extract<SessionEvent, { type: "turn/end" }>>()

@@ -1,4 +1,4 @@
-/** Electron Session 命令、历史读取和已提交事件推送；短操作按对话身份串行。 */
+/** Electron Session 命令、历史读取和活动事件推送；短操作按对话身份串行。 */
 import type { IpcMainInvokeEvent, WebContents, WebContentsDidStartNavigationEventParams } from "electron"
 import type { ModelRef } from "../../runtime/model/src/types.ts"
 import { normalizeError } from "../../runtime/error/src/index.ts"
@@ -211,7 +211,7 @@ export function registerSessionIpcHandlers(
         update.kind === "event" ? { ...update, event: publicSessionEvent(update.event) } : update, recipients,
       )
     }
-    catch (error) { onCompletionFailure({ sessionId: update.sessionId, turn: update.kind === "event" ? update.event.turn ?? 0 : 0, error }) }
+    catch (error) { onCompletionFailure({ sessionId: update.sessionId, turn: "event" in update ? update.event.turn ?? 0 : 0, error }) }
   }
   /**
    * @param projectId 分组。
@@ -242,7 +242,7 @@ export function registerSessionIpcHandlers(
    */
   function controlOf(key: string, snapshot: SessionRuntimeSnapshot): SessionControl {
     const state = stateOf(key)
-    const { events: _events, settings, ...control } = snapshot
+    const { events: _events, streamEvents: _streamEvents, settings, ...control } = snapshot
     return { ...control, revision: ++state.revision,
       currentModel: settings.currentModel, sandboxMode: settings.sandboxMode }
   }
@@ -287,6 +287,10 @@ export function registerSessionIpcHandlers(
     const key = keyOf(projectId, runtime.sessionId)
     const consuming = (async () => {
       for await (const event of runtime.events) {
+        if ("streamSeq" in event) {
+          await send({ kind: "stream", projectId, sessionId: runtime.sessionId, event }, sessionKind)
+          continue
+        }
         await send({ kind: "event", projectId, sessionId: runtime.sessionId, event, ...(event.seq === 1 && { sessionKind }) }, sessionKind)
         if (sessionKind !== "member" && (event.type === "user/message" || event.type === "turn/end")) {
           await index(projectId, runtime)
@@ -484,7 +488,8 @@ export function registerSessionIpcHandlers(
       const snapshot = await runtime.readSnapshot()
       const last = snapshot.events.at(-1)
       const kind = team?.store.identity(projectId, sessionId)?.role ?? "ordinary"
-      return { projectId, sessionId, kind, events: snapshot.events.map(publicSessionEvent), latestSeq: last?.seq ?? 0,
+      return { projectId, sessionId, kind, events: snapshot.events.map(publicSessionEvent),
+        streamEvents: snapshot.streamEvents, latestSeq: last?.seq ?? 0,
         summary: { sessionId, name: snapshot.settings.name || INITIAL_SESSION_NAME, updatedAt: last?.createdAt ?? new Date().toISOString() },
         control: controlOf(key, snapshot) }
     }))

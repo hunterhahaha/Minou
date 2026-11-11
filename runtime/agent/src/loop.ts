@@ -28,7 +28,7 @@ import type {
   UnifiedToolDefinition,
   Usage,
 } from "../../model/src/types.ts"
-import type { AppendSessionEvent } from "../../session/src/events.ts"
+import type { AppendSessionEvent, AssistantBlockStreamInput } from "../../session/src/events.ts"
 import { runToolCalls } from "../../tools/src/tool-scheduler.ts"
 import type {
   ExecuteToolCall as ToolRuntimeExecuteToolCall,
@@ -108,8 +108,13 @@ export interface AgentLoopOptions {
   executeTool: ExecuteToolCall
   /** 当前 Agent Loop 的取消信号；用户 Stop 后 Adapter 会以取消错误结束流。 */
   signal: AbortSignal
-  /** 事件出口，由 SessionEventLog 提供。 */
+  /** 持久化事件出口；CLI 也通过该入口记录块开始和增量。 */
   appendEvent: AppendSessionEvent
+  /**
+   * 发布桌面块开始与增量；未提供时沿用 appendEvent。
+   * @param event 由模型流产生的块开始或增量。
+   */
+  publishBlockStream?(event: AssistantBlockStreamInput): void
   /** 宿主正常请求读取已提交历史，覆盖直接调用者提供的平面消息。 */
   prepareHistory?(): Promise<NonNullable<UnifiedModelRequest["context"]["history"]>>
   /** 在工具结果落库后报告宿主检测到的 Turn 级故障。 */
@@ -164,7 +169,10 @@ export async function runAgentLoop(options: AgentLoopOptions): Promise<AgentLoop
     let outcome: ModelStepOutcome
     try {
       currentTools ??= typeof tools === "function" ? await tools() : tools
-      outcome = await runModelStep({ turn, step, model, adapter, content, history, tools: currentTools, executeTool, signal, appendEvent })
+      outcome = await runModelStep({
+        turn, step, model, adapter, content, history, tools: currentTools, executeTool, signal, appendEvent,
+        publishBlockStream: options.publishBlockStream,
+      })
 
       /**
        * 工具小轮完成后才写 step/end，
@@ -235,6 +243,8 @@ interface ModelStepParams {
   signal: AbortSignal
   /** 将模型流事件写入 Session Event Log 的事件出口。 */
   appendEvent: AppendSessionEvent
+  /** 桌面内存流事件入口。 */
+  publishBlockStream?: AgentLoopOptions["publishBlockStream"]
 }
 
 /** 一次正常模型请求的结果。 */
@@ -261,6 +271,7 @@ interface ModelStepOutcome {
  */
 async function runModelStep(params: ModelStepParams): Promise<ModelStepOutcome> {
   const { turn, step, model, adapter, content, history, tools, executeTool, signal, appendEvent } = params
+  const publishBlockStream = params.publishBlockStream ?? appendEvent
 
   const request: UnifiedModelRequest = { context: history === undefined ? { messages: content } : { history }, tools, model }
   /**
@@ -268,9 +279,9 @@ async function runModelStep(params: ModelStepParams): Promise<ModelStepOutcome> 
    * 连同 `block_end` 事件的 eventId 一起记录：工具小轮要用它关联 `tool/result`。
    */
   const endedBlocks = new Map<number, { block: AssistantContentBlock; eventId: string }>()
-  /** 只累计已成功提交的文本 Delta；收到 BlockEnd 后移出，避免停止时重复收尾。 */
+  /** 只累计已成功发布的文本 Delta；收到 BlockEnd 后移出，避免停止时重复收尾。 */
   const openTextBlocks = new Map<number, Extract<AssistantContentBlock, { type: "text" | "thinking" }>>()
-  /** 记录持久化阶段，避免把事件保存失败当作模型流中断处理。 */
+  /** 区分事件发布或写入失败与模型流中断。 */
   let handlingEvent = false
 
   /**
@@ -285,7 +296,7 @@ async function runModelStep(params: ModelStepParams): Promise<ModelStepOutcome> 
       handlingEvent = true
       switch (event.type) {
         case "block_start":
-          await appendEvent({
+          await publishBlockStream({
             type: "assistant/block_start",
             turn,
             step,
@@ -299,7 +310,7 @@ async function runModelStep(params: ModelStepParams): Promise<ModelStepOutcome> 
           break
 
         case "block_delta":
-          await appendEvent({
+          await publishBlockStream({
             type: "assistant/block_delta",
             turn,
             step,

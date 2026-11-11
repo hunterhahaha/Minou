@@ -17,7 +17,7 @@ import type {
 import { PROTOCOLS } from "../../runtime/model/src/types.ts"
 import type { Protocol, ModelRef, ReasoningField } from "../../runtime/model/src/types.ts"
 import { isReasoningField, isReasoningLevels } from "../../runtime/model/src/reasoning.ts"
-import type { SessionEvent } from "../../runtime/session/src/events.ts"
+import type { AssistantBlockStreamEvent, SessionEvent } from "../../runtime/session/src/events.ts"
 import type { AppError } from "../../runtime/error/src/types.ts"
 import type { MCPConfig, MCPConnection } from "../../runtime/mcp/src/types.ts"
 import type { SandboxMode, SessionSettingsPatch } from "../../runtime/session/src/session-state.ts"
@@ -125,7 +125,7 @@ export const TEAM_WAKEUP_CHANNELS = {
 export type SessionKind = "ordinary" | "router" | "member"
 
 /** 对话控制状态，revision 在同一个主进程内按对话递增。 */
-export interface SessionControl extends Omit<SessionRuntimeSnapshot, "events" | "settings"> {
+export interface SessionControl extends Omit<SessionRuntimeSnapshot, "events" | "streamEvents" | "settings"> {
   /** 控制状态的版本，与持久化事件 seq 分开。 */
   revision: number
   /** 后续 Turn 启动时读取的模型选择。 */
@@ -146,6 +146,8 @@ export interface SessionData {
   summary: SessionSummary
   /** 已提交的原始事件。 */
   events: SessionEvent[]
+  /** 活动 Step 尚在内存中的块开始与增量。 */
+  streamEvents: AssistantBlockStreamEvent[]
   /** events 中最后的序号。 */
   latestSeq: number
   /** 当前设置、活动状态与 Queue。 */
@@ -155,6 +157,7 @@ export interface SessionData {
 /** 主进程统一推送；内存控制状态不写入 Event Log。 */
 export type SessionUpdate = { projectId: string; sessionId: string } & (
   | { kind: "event"; event: SessionEvent; sessionKind?: SessionKind }
+  | { kind: "stream"; event: AssistantBlockStreamEvent }
   | { kind: "state"; control: SessionControl; summary?: SessionSummary }
   | { kind: "error"; stage: "runtime" | "index" | "transport"; error: AppError }
 )
@@ -1457,6 +1460,31 @@ function isSessionEvent(value: unknown): value is SessionEvent {
 }
 
 /**
+ * 检查内存流片段的身份、排序字段与载荷。
+ * @param value IPC 返回的未知事件。
+ * @returns 是否为可展示的块开始或增量。
+ */
+function isAssistantBlockStreamEvent(value: unknown): value is AssistantBlockStreamEvent {
+  if (!isRecord(value) || "seq" in value || typeof value.eventId !== "string" || value.eventId.length === 0 ||
+      typeof value.sessionId !== "string" || typeof value.createdAt !== "string" ||
+      typeof value.blockId !== "string" || value.blockId.length === 0 ||
+      ![value.turn, value.step, value.streamSeq, value.afterSeq].every((seq) =>
+        typeof seq === "number" && Number.isSafeInteger(seq) && seq > 0)) return false
+  if (value.type === "assistant/block_start") {
+    return Number.isSafeInteger(value.index) && (value.index as number) >= 0 &&
+      (value.blockType === "text" || value.blockType === "thinking" || value.blockType === "tool_call")
+  }
+  if (value.type !== "assistant/block_delta" || !isRecord(value.delta)) return false
+  const delta = value.delta
+  if (delta.type === "tool_call") {
+    return typeof delta.toolCallId === "string" &&
+      (delta.nameDelta === undefined || typeof delta.nameDelta === "string") &&
+      (delta.argumentsDelta === undefined || typeof delta.argumentsDelta === "string")
+  }
+  return (delta.type === "text" || delta.type === "thinking") && typeof delta.text === "string"
+}
+
+/**
  * 检查历史结果的身份、连续事件序号、摘要和控制快照。
  *
  * @param value IPC 查询结果。
@@ -1469,10 +1497,19 @@ function requireSessionData(value: unknown): SessionData {
       !Array.isArray(value.events) || !value.events.every((event, index, events) => isSessionEvent(event) &&
         event.sessionId === value.sessionId && event.seq === index + 1) ||
       value.latestSeq !== (value.events.at(-1)?.seq ?? 0)) throw new TypeError("主进程返回了无效的对话历史")
+  const latestSeq = value.latestSeq as number
+  const streamEvents = value.streamEvents
+  if (!Array.isArray(streamEvents) || !streamEvents.every((event, index) =>
+    isAssistantBlockStreamEvent(event) && event.sessionId === value.sessionId && event.streamSeq === index + 1 &&
+    event.afterSeq <= latestSeq && (index === 0 ||
+      (event.turn === streamEvents[0].turn && event.step === streamEvents[0].step &&
+        event.afterSeq >= streamEvents[index - 1].afterSeq)))) {
+    throw new TypeError("主进程返回了无效的活动流片段")
+  }
   const [summary] = requireSessionSummaries([value.summary])
   if (summary.sessionId !== value.sessionId) throw new TypeError("对话摘要身份无效")
   return { projectId: value.projectId, sessionId: value.sessionId, kind: value.kind, summary, events: value.events,
-    latestSeq: value.latestSeq as number, control: requireSessionControl(value.control) }
+    streamEvents, latestSeq, control: requireSessionControl(value.control) }
 }
 
 /** @param value IPC 字段。 @returns 是否为已知的会话角色。 */
@@ -1495,6 +1532,9 @@ function requireSessionUpdate(value: unknown): SessionUpdate {
       throw new TypeError("对话更新角色无效")
     }
     return value as unknown as SessionUpdate
+  }
+  if (value.kind === "stream" && isAssistantBlockStreamEvent(value.event) && value.event.sessionId === value.sessionId) {
+    return { projectId: value.projectId, sessionId: value.sessionId, kind: "stream", event: value.event }
   }
   if (value.kind === "state") {
     const control = requireSessionControl(value.control)

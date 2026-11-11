@@ -5,7 +5,7 @@ import type { SessionControl, SessionData, SessionUpdate } from "../../src/prelo
 import type { SummaryEndEvent } from "../../runtime/session/src/events.ts"
 const control: SessionControl = { revision: 1, throughSeq: 0, currentModel: { providerId: "p", protocol: "responses", modelId: "m", name: "test", reasoningLevel: "medium" },
   phase: "idle", sandboxMode: "sandbox-full-access", pendingMessages: [], discardedMessages: [] }
-const history: SessionData = { projectId: "default", sessionId: "s", kind: "router", events: [], latestSeq: 0, control,
+const history: SessionData = { projectId: "default", sessionId: "s", kind: "router", events: [], streamEvents: [], latestSeq: 0, control,
   summary: { sessionId: "s", name: "新对话", updatedAt: "2026-09-30T00:00:00.000Z" } }
 /**
  * @returns 查询、设置、审批、推送与取消监听断言完成。
@@ -71,6 +71,28 @@ async function main(): Promise<void> {
     assert.throws(() => handler({}, { ...started, sessionKind: "router" }), /角色无效/)
   }
   assert.deepEqual(updates.at(-1), firstUpdate)
+  const streamUpdate = {
+    kind: "stream", projectId: "default", sessionId: "s",
+    event: { type: "assistant/block_start", eventId: "stream-1", sessionId: "s", createdAt: summary.createdAt,
+      turn: 1, step: 1, blockId: "b", index: 0, blockType: "text", streamSeq: 1, afterSeq: 3 },
+  } satisfies SessionUpdate
+  for (const handler of handlers) {
+    handler({}, streamUpdate)
+    assert.throws(() => handler({}, { ...streamUpdate, event: { ...streamUpdate.event, streamSeq: 0 } }), /无效/)
+    assert.throws(() => handler({}, { ...streamUpdate, event: { ...streamUpdate.event, sessionId: "other" } }), /无效/)
+  }
+  assert.deepEqual(updates.at(-1), streamUpdate)
+  const activeHistory: SessionData = {
+    ...withSummary,
+    events: [...withSummary.events.slice(0, 2), { type: "step/start", eventId: "step-1", sessionId: "s",
+      createdAt: summary.createdAt, turn: 1, step: 1, seq: 3 }],
+    streamEvents: [streamUpdate.event], latestSeq: 3, control: { ...control, throughSeq: 3 },
+  }
+  assert.deepEqual(await createSessionApi({ invoke: async () => activeHistory }).getSessionData("default", "s"), activeHistory)
+  const invalidAnchor = createSessionApi({ invoke: async () => ({
+    ...activeHistory, streamEvents: [{ ...streamUpdate.event, afterSeq: 4 }],
+  }) })
+  await assert.rejects(invalidAnchor.getSessionData("default", "s"), /活动流片段/)
   cancel(); cancel()
   assert.equal(handlers.size, 0)
   const foreign = createSessionApi({ invoke: async () => ({ ...history, sessionId: "other", summary: { ...history.summary, sessionId: "other" } }) })
@@ -98,7 +120,8 @@ async function main(): Promise<void> {
   const teamUpdates: SessionUpdate[] = []
   const cancelTeam = teamApi.onTeamSessionUpdate((value) => teamUpdates.push(value))
   teamHandlers.get(TEAM_SESSION_CHANNELS.update)?.({ private: true }, update)
-  assert.deepEqual(teamUpdates, [update])
+  teamHandlers.get(TEAM_SESSION_CHANNELS.update)?.({ private: true }, streamUpdate)
+  assert.deepEqual(teamUpdates, [update, streamUpdate])
   assert.equal(teamHandlers.has(SESSION_IPC_CHANNELS.update), false)
   cancelTeam()
   assert.equal(teamHandlers.size, 0)

@@ -4,6 +4,7 @@ import { serializeComposerMessage } from "../../src/renderer/composer-message.ts
 import { WorkspaceSessionState, mergeSessionEvents, projectSessionEvents, sessionKey, throughSeq } from "../../src/renderer/session-state.ts"
 import { TeamSessionState } from "../../src/renderer/team-session-state.ts"
 import type { SessionControl, SessionData } from "../../src/preload/session-api.ts"
+import type { AssistantBlockStreamEvent } from "../../runtime/session/src/events.ts"
 import type { SessionEvent, SessionEventInput } from "../../runtime/session/src/events.ts"
 import type { ModelRef } from "../../runtime/model/src/types.ts"
 const model: ModelRef = { providerId: "p", protocol: "responses", modelId: "m", name: "test", reasoningLevel: "medium" }
@@ -34,7 +35,7 @@ function control(revision = 1, throughSeq = 3): SessionControl {
  * @returns 完整查询测试值。
  */
 function data(events = [first, second, third], revision = 1, sessionId = "s"): SessionData {
-  return { projectId: "default", sessionId, kind: "ordinary", events, latestSeq: events.at(-1)?.seq ?? 0,
+  return { projectId: "default", sessionId, kind: "ordinary", events, streamEvents: [], latestSeq: events.at(-1)?.seq ?? 0,
     summary: { sessionId, name: "test", updatedAt: first.createdAt }, control: control(revision, events.at(-1)?.seq ?? 0) }
 }
 /**
@@ -256,11 +257,47 @@ function testCompletedTurns(): void {
   assert.deepEqual(projectSessionEvents(incremental.sessionEventsByKey[key]), projectSessionEvents(loaded.sessionEventsByKey[key]), "历史、逐条推送及重复结束事件得到相同投影")
 }
 /**
+ * 验证活动片段缺口补查、并发更新去重、持久化水位和终态清理。
+ * @returns 前缀补查和 Step 结束断言完成。
+ */
+async function testTransientStream(): Promise<void> {
+  const step = event(3, { type: "step/start", turn: 1, step: 1 })
+  const end = event(4, { type: "assistant/block_end", turn: 1, step: 1, blockId: "b", index: 0,
+    block: { type: "text", text: "完整正文" } })
+  const stepEnd = event(5, { type: "step/end", turn: 1, step: 1, reason: "completed" })
+  const base = { sessionId: "s", createdAt: step.createdAt, turn: 1, step: 1, blockId: "b", afterSeq: 3 }
+  const start: AssistantBlockStreamEvent = { ...base, type: "assistant/block_start",
+    blockType: "text", index: 0, eventId: "stream-1", streamSeq: 1 }
+  const delta: AssistantBlockStreamEvent = { ...base, type: "assistant/block_delta",
+    delta: { type: "text", text: "流式正文" }, eventId: "stream-2", streamSeq: 2 }
+  const activeData = { ...data([first, second, step]), streamEvents: [start, delta] }
+  let calls = 0
+  const state = new WorkspaceSessionState({ getSessionData: async () => { calls++; return activeData } }, () => {})
+  const key = sessionKey("default", "s")
+  state.applyData(data([first, second, step]))
+  state.receive({ kind: "stream", projectId: "default", sessionId: "s", event: delta })
+  await state.sessionLoadsRef.get(key)
+  assert.equal(calls, 1, "缺少流式前缀时补查一次")
+  assert.deepEqual(state.sessionEventsByKey[key], [first, second, step, start, delta])
+  assert.equal(throughSeq(state.sessionEventsByKey[key]), 3)
+  const live = projectSessionEvents(state.sessionEventsByKey[key]).find((item) => item.kind === "assistant")
+  assert.deepEqual(live?.blocks, [{ type: "text", text: "流式正文" }])
+
+  for (const entry of [end, stepEnd]) state.receive({ kind: "event", projectId: "default", sessionId: "s", event: entry })
+  state.applyData(activeData)
+  state.receive({ kind: "stream", projectId: "default", sessionId: "s", event: delta })
+  assert.deepEqual(state.sessionEventsByKey[key], [first, second, step, end, stepEnd], "迟到快照和片段不能恢复已结束 Step 的内存")
+  assert.equal(throughSeq(state.sessionEventsByKey[key]), 5)
+  assert.equal(calls, 1)
+}
+
+/**
  * @returns 当前缓存模块验证结束。
  */
 async function main(): Promise<void> {
   await testCache()
   await testMemberCache()
+  await testTransientStream()
   testProjection()
   testCompletedTurns()
   const summary = event(4, { type: "summary/end", summaryId: "summary-1", turn: 1, fromEventSeq: 2, throughEventSeq: 2, summary: "compressed",

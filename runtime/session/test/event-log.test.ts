@@ -71,6 +71,30 @@ async function testCreateReadAppend(root: string): Promise<void> {
 }
 
 /**
+ * 验证桌面普通表与 Team 成员表的写入入口拒绝内存片段，完整块仍取得下一个序号。
+ * @param root 当前测试使用的隔离临时目录。
+ * @returns 两种日志的写入边界断言完成。
+ */
+async function testDesktopStreamWriteGuard(root: string): Promise<void> {
+  for (const team of [false, true]) {
+    const options = await fixture(root, team ? "stream-member" : "stream-desktop", FIRST_PROJECT_ID, { desktop: true, team })
+    const log = createFileSessionEventLog(options)
+    await log.appendTurnStartAndUserMessage(turnBatch(1))
+    await log.appendEvent({ type: "step/start", turn: 1, step: 1 })
+    await assert.rejects(log.appendEvent({ type: "assistant/block_start", turn: 1, step: 1,
+      blockId: "b", index: 0, blockType: "text" }), /只能在内存中发布/)
+    await assert.rejects(log.appendEvent({ type: "assistant/block_delta", turn: 1, step: 1,
+      blockId: "b", delta: { type: "text", text: "片段" } }), /只能在内存中发布/)
+    const end = await log.appendEvent({ type: "assistant/block_end", turn: 1, step: 1,
+      blockId: "b", index: 0, block: { type: "text", text: "完整块" } })
+    assert.equal(end.seq, 4)
+    const events = await log.readEvents() as SessionEvent[]
+    assert.deepEqual(events.map((event) => event.type), ["turn/start", "user/message", "step/start", "assistant/block_end"])
+    assert.deepEqual(events.at(-1), end)
+  }
+}
+
+/**
  * 验证同一 Session 跨访问器并发写入仍按调用顺序分配 seq。
  * @param root 当前测试使用的隔离临时目录。
  * @returns 当前场景的断言及异步操作完成后解析。
@@ -291,6 +315,7 @@ async function main(): Promise<void> {
   const root = await mkdtemp(join(tmpdir(), "nicode-session-event-log-"))
   try {
     await testCreateReadAppend(root)
+    await testDesktopStreamWriteGuard(root)
     await testConcurrentAppend(root)
     await testIsolation(root)
     await testTurnBatch(root)

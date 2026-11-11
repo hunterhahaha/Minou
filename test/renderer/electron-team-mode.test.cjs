@@ -3,6 +3,7 @@ const assert = require("node:assert/strict")
 const { mkdtemp, readFile, rm, writeFile } = require("node:fs/promises")
 const { tmpdir } = require("node:os")
 const { join, resolve, sep } = require("node:path")
+const { DatabaseSync } = require("node:sqlite")
 const { app, BrowserWindow, ipcMain } = require("electron")
 const { initializeConfigFilesSnapshot } = require("../../dist/src/main/config-files.js")
 const { createTrustedIpcMain } = require("../../dist/src/main/electron-windows.js")
@@ -52,7 +53,7 @@ async function type(text) {
 }
 
 /** 发送新会话并验证真实角色和复用的消息渲染。 */
-async function send(projectId, kind) {
+async function send(projectId, kind, checkStreaming) {
   await until("发送可用", () => evaluate("document.querySelector('.new-chat-composer .send-button')?.disabled === false"))
   await click(".new-chat-composer .send-button")
   await until("显示离线回复", () => evaluate("document.querySelector('.chat-page')?.textContent.includes('离线回复')"))
@@ -60,6 +61,7 @@ async function send(projectId, kind) {
   const data = await evaluate(`window.nicode.getSessionData(${JSON.stringify(projectId)}, ${JSON.stringify(sessionId)})`)
   assert.equal(data.kind, kind)
   assert.ok(await mode(kind === "router" ? TEAM_MODE : ORDINARY_MODE))
+  await checkStreaming?.(data)
   return sessionId
 }
 
@@ -96,6 +98,7 @@ async function main() {
   const failures = []
   const delivered = []
   const gatedMembers = new Map()
+  let releaseRouterReply
   let indexQueries = 0
   let delayedHistory
   let memberListOverride
@@ -131,6 +134,9 @@ async function main() {
         yield { type: "block_start", index: 0, blockType: "text" }
         for (let i = 0; i < fragments; i++) {
           if (i === 300) await new Promise((done) => gatedMembers.set(task + "后半段", done))
+          if (task === "首屏交错" && (i === 50 || i === 100)) {
+            await new Promise((done) => gatedMembers.set(task + i, done))
+          }
           yield { type: "block_delta", index: 0, delta: { type: "text", text: i === 0 ? "**" + task + "**流" : "流" } }
         }
         yield { type: "block_end", index: 0, block: { type: "text", text: "**" + task + "**" + "流".repeat(fragments) } }
@@ -138,6 +144,10 @@ async function main() {
         return
       }
       yield { type: "block_start", index: 0, blockType: "text" }
+      if (latestUser?.content[0]?.text === "独立工作，创建成员") {
+        yield { type: "block_delta", index: 0, delta: { type: "text", text: "离线回复" } }
+        await new Promise((done) => { releaseRouterReply = done })
+      }
       yield { type: "block_end", index: 0, block: { type: "text", text: history ? "离线回复" : '{"title":"离线会话"}' } }
       yield { type: "stream_end", completion: "finished" }
     },
@@ -210,8 +220,24 @@ async function main() {
   await click(".new-chat-composer .send-button")
   await until("首发失败提示", () => evaluate("document.querySelector('.chat-error')?.textContent.includes('预期的首发失败')"))
   assert.equal(await editorText(), "独立工作，创建成员")
-  const router = await send("default", "router")
-  const store = new TeamStore(join(paths.rootDir, "events.sqlite"))
+  const databasePath = join(paths.rootDir, "events.sqlite")
+  const durableEvents = (table, sessionId) => {
+    const db = new DatabaseSync(databasePath, { readOnly: true })
+    try {
+      const rows = db.prepare("SELECT seq, type, event_json FROM " + table + " WHERE session_id = ? ORDER BY seq").all(sessionId)
+      assert.deepEqual(rows.map(({ seq }) => seq), rows.map((_, index) => index + 1))
+      assert.ok(rows.every(({ type }) => type !== "assistant/block_start" && type !== "assistant/block_delta"))
+      return rows.map(({ event_json }) => JSON.parse(event_json))
+    } finally { db.close() }
+  }
+  const router = await send("default", "router", (data) => {
+    assert.equal(data.streamEvents.at(-1)?.delta?.text, "离线回复")
+    assert.equal(durableEvents("session_events", data.sessionId).at(-1)?.type, "step/start")
+    releaseRouterReply()
+  })
+  await until("Router 完整回复已提交", () => durableEvents("session_events", router).some(
+    ({ type, block }) => type === "assistant/block_end" && block.type === "text" && block.text === "离线回复"))
+  const store = new TeamStore(databasePath)
   await until("成员执行完成", () => store.members().some((member) => member.routerId === router && store.status(member) === "idle"))
   assert.deepEqual(new Set((await evaluate("window.nicode.listDefaultSessions()")).map((session) => session.sessionId)), new Set([chat, router]))
 
@@ -243,23 +269,30 @@ async function main() {
   }
   assert.equal(memberUpdates().length, 0, "200 个片段的首次后台执行无窗口推送")
   const initialData = await evaluate("window.nicode.getSessionData('default'," + JSON.stringify(member.sessionId) + ")")
-  assert.equal(initialData.events.filter(({ type }) => type === "assistant/block_delta").length, 200)
+  assert.deepEqual(initialData.streamEvents, [])
+  assert.ok(durableEvents("team_session_events", member.sessionId).some(
+    ({ type, block }) => type === "assistant/block_end" && block.type === "text" && block.text === "**离线成员任务**" + "流".repeat(200)))
   await listMembers()
   assert.equal(memberUpdates().length, 0)
   await evaluate("document.querySelector('[aria-labelledby=team-members-title]').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))")
   await until("Escape 关闭成员列表并恢复焦点", () => evaluate("document.activeElement?.getAttribute('aria-label') === '团队成员'"))
 
   await runMember("首屏交错")
+  gatedMembers.get("首屏交错")()
+  await until("成员输出部分正文后等候", () => gatedMembers.has("首屏交错50"))
   const firstHistory = { id: member.sessionId }
   delayedHistory = firstHistory
   await openMember()
   await until("已截取成员历史快照", () => firstHistory.release)
   const beforeActive = memberUpdates().length
-  await finishMember("首屏交错")
-  await until("历史未返回时已收到最后一个流片段", () => memberUpdates().slice(beforeActive).filter(
-    (update) => update.kind === "event" && update.event.type === "assistant/block_delta").length === 200)
+  gatedMembers.get("首屏交错50")()
+  await until("历史未返回时已收到后续 50 个片段", () => gatedMembers.has("首屏交错100") && memberUpdates().slice(beforeActive).filter(
+    (update) => update.kind === "stream" && update.event.type === "assistant/block_delta").length === 50)
   firstHistory.release()
-  await until("历史和增量合并", () => memberHas("首屏交错流"))
+  await until("完整块提交前已合并历史前缀和实时片段", () => memberHas("首屏交错" + "流".repeat(100)))
+  assert.equal(durableEvents("team_session_events", member.sessionId).at(-1)?.type, "step/start")
+  await finishMember("首屏交错100")
+  await until("成员完整块已显示", () => memberHas("首屏交错" + "流".repeat(200)))
   await evaluate("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))")
   await writeFile(join(process.cwd(), "dist", "team-member-light-wide.png"), (await window.webContents.capturePage()).toPNG())
   await click('[aria-label="新建网页"]')
@@ -330,7 +363,7 @@ async function main() {
   })()`)
   const beforeVisible = memberUpdates().length
   const visibleDeltas = () => memberUpdates().slice(beforeVisible).filter(
-    (update) => update.kind === "event" && update.event.type === "assistant/block_delta").length
+    (update) => update.kind === "stream" && update.event.type === "assistant/block_delta").length
   const midpoint = "可见成员压力" + "流".repeat(300)
   gatedMembers.get("可见成员压力")()
   await until("可见成员呈现全部前半段片段", async () => gatedMembers.has("可见成员压力后半段") &&
@@ -341,6 +374,7 @@ async function main() {
   console.log("visible member stream: first " + visibleDeltas() + " fragments, transcript/old Markdown commits=" +
     visibleCommits.transcript + "/" + visibleCommits.markdown + ", max 10ms timer gap=" + visibleGap.toFixed(1) + "ms")
   assert.equal(visibleDeltas(), 300)
+  assert.equal(durableEvents("team_session_events", member.sessionId).at(-1)?.type, "step/start")
   assert.equal(visibleCommits.markdown, 0, "可见成员流未重绘已完成的 Markdown")
   assert.ok(visibleCommits.transcript > 0 && visibleCommits.transcript < visibleDeltas(), "同帧片段合并为一次记录更新")
   assert.equal(store.status(member), "running")

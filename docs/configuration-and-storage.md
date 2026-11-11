@@ -246,6 +246,8 @@ project_group_id, session_id, seq, event_id, type, created_at, event_json
 
 桌面会话共用根目录 `events.sqlite`，会话目录不另存一份正文日志。CLI 则在本次 Run 目录创建相同事件结构的独立数据库。事件类型和载荷见 [events.ts](../runtime/session/src/events.ts)。
 
+桌面普通会话和 Team Router 使用 `session_events`，Team 成员使用 `team_session_events`。Assistant 内容块以完整的 `assistant/block_end` 事件保存，块开始与增量在活动 Step 的内存中发布，不占用持久化序号。已结束的块可独立用于重启恢复。CLI 的独立日志继续记录块开始和增量。
+
 含 Composer 文件引用的 `user/message` 在 `message.content` 中保存含绝对路径的模型文本，并在同一事件的 `message.fileReferences` 中保存项目、关联目录、相对路径、绝对路径、文件名和正文中的 UTF-16 偏移。历史页面根据偏移渲染可点击的标签。引用保存于现有事件载荷中，草稿仍是 Renderer 内存状态。
 
 ### 桌面会话 Meta

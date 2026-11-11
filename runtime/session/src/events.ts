@@ -364,6 +364,26 @@ export type StepStartEventInput = Omit<StepStartEvent, EventIdentity>
 export type StepEndEventInput = Omit<StepEndEvent, EventIdentity>
 export type AssistantBlockStartEventInput = Omit<AssistantBlockStartEvent, EventIdentity>
 export type AssistantBlockDeltaEventInput = Omit<AssistantBlockDeltaEvent, EventIdentity>
+
+/** Assistant 块开始与增量的共同输入。 */
+export type AssistantBlockStreamInput = AssistantBlockStartEventInput | AssistantBlockDeltaEventInput
+
+/** 仅在桌面活动 Step 的内存中存在的流事件。 */
+export type AssistantBlockStreamEvent = AssistantBlockStreamInput & {
+  /** 实时事件的去重身份。 */
+  eventId: string
+  /** 事件所属会话。 */
+  sessionId: string
+  /** 流事件生成时的时间。 */
+  createdAt: string
+  /** 同一 Step 内从 1 开始的流事件序号。 */
+  streamSeq: number
+  /** 生成此事件时最近一次已提交的持久化序号。 */
+  afterSeq: number
+}
+
+/** 桌面 Runtime 按发布顺序交给主进程的两类事件。 */
+export type SessionLiveEvent = SessionEvent | AssistantBlockStreamEvent
 export type AssistantBlockEndEventInput = Omit<AssistantBlockEndEvent, EventIdentity>
 export type AssistantMessageEventInput = Omit<AssistantMessageEvent, EventIdentity>
 export type ToolResultEventInput = Omit<ToolResultEvent, EventIdentity>
