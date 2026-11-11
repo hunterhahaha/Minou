@@ -65,7 +65,7 @@ export function TeamSettings({ onBusyChange }: { onBusyChange: (busy: boolean) =
     }
   }
 
-  return <section className="settings-dialog-content" aria-label="团队协作设置" aria-busy={saving || (!config && !loadError)}>
+  return <section className="settings-dialog-content settings-form-page" aria-label="团队协作设置" aria-busy={saving || (!config && !loadError)}>
     <div className="settings-page-heading">
       <div><h3>团队协作</h3><p>设置空闲成员何时检查黑板并恢复工作。配置适用于所有工作会话。</p></div>
     </div>

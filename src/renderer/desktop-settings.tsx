@@ -53,7 +53,7 @@ export function DesktopSettings({ onBusyChange }: { onBusyChange: (busy: boolean
     }
   }
 
-  return <section className="settings-dialog-content" aria-label="通用设置" aria-busy={saving || (!settings && !loadError)}>
+  return <section className="settings-dialog-content settings-form-page" aria-label="通用设置" aria-busy={saving || (!settings && !loadError)}>
     <div className="settings-page-heading"><h3>通用</h3></div>
     {loadError && <div className="settings-state settings-state-error" role="alert">
       <span>无法读取窗口关闭设置。</span>

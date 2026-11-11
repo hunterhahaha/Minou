@@ -107,7 +107,7 @@ export function SkillSettings({ projects, onReloadProjects, skillsByScope, onSki
 
   return <div className="skill-settings" aria-busy={busy}>
     <div className="skill-toolbar">
-      <div><p className="settings-eyebrow">让经验成为能力</p><h3>技能</h3><p className="settings-page-description">为不同项目配备恰到好处的知识与工作方法。</p></div>
+      <h3>技能</h3>
       <button type="button" className="settings-secondary-button" aria-label="刷新技能" disabled={busy} onClick={() => { void load(true) }}>
         <IconRefresh size={15} aria-hidden="true" />刷新
       </button>
@@ -120,11 +120,10 @@ export function SkillSettings({ projects, onReloadProjects, skillsByScope, onSki
     </label>
     {projects.status === "loading" && <p className="settings-field-hint" role="status">正在加载项目列表，全局技能仍可管理。</p>}
     {projects.status === "error" && <div className="skill-message" role="alert"><span>项目列表加载失败，全局技能仍可管理。</span><button type="button" className="settings-secondary-button" disabled={busy} onClick={onReloadProjects}>重试项目列表</button></div>}
-    <p className="settings-field-hint">{target.scope === "global" ? "全局技能可供 default 工作区与各个项目使用。" : "此处只管理本项目的技能。项目同名项会覆盖全局技能，禁用时也会屏蔽同名全局技能。"}</p>
     {operationError && <p className="settings-inline-error" role="alert">{operationError}</p>}
     {cache?.error && <div className="skill-message settings-inline-error" role="alert"><span>{cache.error}</span><button type="button" className="settings-secondary-button" aria-label="重试加载技能" disabled={busy} onClick={() => { void load(true) }}>重试</button></div>}
     {(!cache || cache.status === "loading") && <p className="settings-field-hint" role="status">正在加载技能…</p>}
-    {cache?.skills?.length === 0 && <div className="settings-illustrated-empty"><IconSparkles size={30} stroke={1.3} /><strong>这里还有更多可能</strong><p className="settings-empty-note">此作用域暂无技能。</p><span>将技能放入对应的 skills 文件夹，再点击刷新。</span></div>}
+    {cache?.skills?.length === 0 && <div className="settings-illustrated-empty"><IconSparkles size={30} stroke={1.3} aria-hidden="true" /><strong>此作用域暂无技能。</strong></div>}
     <ul className="skill-list" aria-label="技能列表">{cache?.skills?.map((entry) => <li className="skill-entry" key={entry.name}>
       <span className="skill-entry-icon" aria-hidden="true"><IconSparkles size={19} stroke={1.5} /></span><div className="skill-entry-content">
         <h4>{entry.name}</h4>

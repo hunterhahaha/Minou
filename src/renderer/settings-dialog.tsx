@@ -423,7 +423,7 @@ export function SettingsDialog({ initialSection = "models", onClose, onProviders
   >
     <section ref={dialogRef} tabIndex={-1} className="settings-dialog" role="dialog" aria-modal="true" aria-labelledby="settings-dialog-title" aria-busy={(section === "models" && loadState === "loading") || creating}>
       <header className="settings-dialog-header">
-        <div className="settings-title"><span className="settings-title-icon"><IconSettings size={19} /></span><h2 id="settings-dialog-title">设置</h2><span className="settings-title-caption">让 NiCode 更适合你</span></div>
+        <div className="settings-title"><span className="settings-title-icon"><IconSettings size={19} /></span><h2 id="settings-dialog-title">设置</h2></div>
         <button className="settings-dialog-close" type="button" aria-label="关闭设置" disabled={creating} onClick={requestClose}>
           <IconX size={20} stroke={1.5} aria-hidden="true" />
         </button>
@@ -439,7 +439,7 @@ export function SettingsDialog({ initialSection = "models", onClose, onProviders
           <button className={`settings-nav-option${section === "mcp" ? " settings-nav-option-active" : ""}`} type="button" aria-current={section === "mcp" ? "page" : undefined} disabled={creating} onClick={() => { if (!creatingRef.current) setSection("mcp") }}><IconPlugConnected size={18} stroke={1.6} /><span>MCP</span></button>
           <button className={`settings-nav-option${section === "skills" ? " settings-nav-option-active" : ""}`} type="button" aria-current={section === "skills" ? "page" : undefined} disabled={creating} onClick={() => { if (!creatingRef.current) setSection("skills") }}><IconSparkles size={18} stroke={1.6} /><span>技能</span></button>
           <button className={`settings-nav-option${section === "search" ? " settings-nav-option-active" : ""}`} type="button" aria-current={section === "search" ? "page" : undefined} disabled={creating} onClick={() => { if (!creatingRef.current) setSection("search") }}><IconSettings size={18} stroke={1.6} /><span>搜索服务</span></button>
-          <div className="settings-nav-footer"><span className="brand-name">NiCode</span><p>为你的工作方式而设</p></div>
+          <div className="settings-nav-footer"><span className="brand-name">NiCode</span></div>
         </nav>
         {section === "models" && <section className="settings-dialog-content" aria-label="模型设置">
           {loadState === "loading" && <p className="settings-state" role="status">正在加载供应商…</p>}
