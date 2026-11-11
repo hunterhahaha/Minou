@@ -46,7 +46,7 @@ async function main() {
   const second = join(profile, "第二个目录")
   const projectId = "34a683aa-5222-4923-afaa-55e31d8182e9"
   const emptyProjectId = "601c30e6-fb47-4349-9b7d-b45b1bbc3aaf"
-  const projectRoute = `#/projects/${projectId}/new-chat`
+  const projectRoute = `#/sessions/${projectId}/shared-session`
   const directory = join(workspace, "子目录")
   const html = join(process.cwd(), "dist/src/renderer/index.html")
   let window
@@ -148,10 +148,11 @@ async function main() {
       assert.fail(`${label}\n${await evaluate("document.querySelector('#chat-browser-pane')?.innerText")}\n${rendererErrors.join("\n")}`)
     }
 
+    await evaluate("location.hash = '#/sessions/default/shared-session'")
     await until("浏览器入口", () => evaluate(`Boolean(${button("展开内置浏览器")})`))
     await click(button("展开内置浏览器"))
     assert.equal(await evaluate(`${button("打开项目文件")}.disabled`), true)
-    await evaluate(`location.hash = '#/projects/${emptyProjectId}/new-chat'`)
+    await evaluate(`location.hash = '#/sessions/${emptyProjectId}/shared-session'`)
     await until("项目没有关联目录时禁用", () => evaluate(`${button("打开项目文件")}.title === "项目需要先关联文件夹"`))
     await evaluate(`location.hash = ${JSON.stringify(projectRoute)}`)
     await until("项目关联目录可打开", () => evaluate(`!${button("打开项目文件")}.disabled`))
@@ -270,8 +271,8 @@ async function main() {
     await click(row("另一份.txt"))
     await until("预览第二个项目目录的文件", () => evaluate(`${preview}.querySelector("pre")?.textContent === "另一个项目目录的文件"`))
     const secondHandle = requests.filter(([channel]) => channel === channels.list).at(-1)[1]
-    await evaluate("location.hash = '#/default/new-chat'")
-    await until("共享草稿标签也隔离项目文件", () => evaluate(`!document.querySelector('${visiblePage}') && !document.querySelector('button[title="项目文件"]')`))
+    await evaluate("location.hash = '#/sessions/default/shared-session'")
+    await until("共享会话 ID 也按项目隔离项目文件", () => evaluate(`!document.querySelector('${visiblePage}') && !document.querySelector('button[title="项目文件"]')`))
     await evaluate(`location.hash = ${JSON.stringify(projectRoute)}`)
     await until("切回项目保留选中目录", () => evaluate(`${preview}?.querySelector("pre")?.textContent === "另一个项目目录的文件"`))
     await click(button("关闭 项目文件"))

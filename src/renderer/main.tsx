@@ -14,6 +14,7 @@ import {
   IconGitBranch,
   IconLayoutSidebar,
   IconLayoutSidebarRight,
+  IconMessage,
   IconPlus,
   IconAdjustmentsHorizontal,
   IconX,
@@ -253,7 +254,6 @@ function Workspace() {
   const currentKind = workspaceRoute.page === "session"
     ? sessionsState.view(sessionKey(groupId, workspaceRoute.sessionId)).kind
     : undefined
-  const newConversationLabel = draftMode === "work" ? "新团队会话" : "新聊天"
   const newDraftKey = sessionKey(groupId, draftMode === "work" ? "$new-work" : "$new-chat")
   const [, setBrowserVersion] = useState(0)
   const [teamSessions] = useState(() => new TeamSessionState(window.nicode))
@@ -312,7 +312,7 @@ function Workspace() {
     return () => window.clearTimeout(timer)
   }, [copyStatus])
 
-  const [openMenu, setOpenMenu] = useState<"permission" | "project" | "branch" | null>(null)
+  const [openMenu, setOpenMenu] = useState<"permission" | "project" | "branch" | "mode" | null>(null)
   const [gitBranchState, setGitBranchState] = useState<ProjectGitBranchState | null>(null)
   const [switchingGitBranch, setSwitchingGitBranch] = useState(false)
   const [gitSwitchError, setGitSwitchError] = useState<string | undefined>()
@@ -829,6 +829,28 @@ function Workspace() {
   }, [workspaceRoute.page, activeProject?.projectId, activePrimaryDirectory])
 
   /**
+   * 当目标草稿为空且当前草稿包含可迁移内容时，将当前草稿移至目标草稿并清空来源草稿。
+   * @param sourceKey 来源草稿键。
+   * @param targetKey 目标草稿键。
+   * @param allowFileReferences 是否允许迁移包含 `@` 文件引用的草稿（仅同工作区或同项目安全）。
+   * @returns 迁移检查完成；不符合条件时保持两份草稿原样。
+   */
+  function transferDraftIfEmpty(sourceKey: string, targetKey: string, allowFileReferences: boolean): void {
+    const currentDraft = sessionsState.draftsByKey[sourceKey]
+    if (!currentDraft) return
+    const targetDraft = sessionsState.draftsByKey[targetKey]
+    const currentMessage = serializeComposerMessage(currentDraft)
+    const targetMessage = serializeComposerMessage(targetDraft)
+    const targetEmpty = !targetMessage.content[0].text.trim() && !(targetMessage.fileReferences?.length)
+    const hasFileReferences = Boolean(currentMessage.fileReferences?.length)
+    const hasTransferableContent = currentMessage.content[0].text.trim().length > 0 || (allowFileReferences && hasFileReferences)
+    if (targetEmpty && hasTransferableContent && (allowFileReferences || !hasFileReferences)) {
+      sessionsState.setDraft(targetKey, currentDraft)
+      sessionsState.setDraft(sourceKey)
+    }
+  }
+
+  /**
    * 在新聊天上下文栏切换归属工作区或项目，并在目标草稿为空且不含跨项目文件引用时迁移当前输入内容。
    * @param targetProjectId 目标 Project UUID；省略时切换为独立对话（default）。
    * @returns 路由已切换，保留当前普通/团队模式并将焦点还给新聊天输入框。
@@ -840,18 +862,23 @@ function Workspace() {
       return
     }
     const modeSuffix = draftMode === "work" ? "$new-work" : "$new-chat"
-    const currentDraft = sessionsState.draftsByKey[newDraftKey]
-    const targetDraftKey = sessionKey(targetGroupId, modeSuffix)
-    const targetDraft = sessionsState.draftsByKey[targetDraftKey]
-    const currentMessage = serializeComposerMessage(currentDraft)
-    const targetMessage = serializeComposerMessage(targetDraft)
-    const targetEmpty = !targetMessage.content[0].text.trim() && !(targetMessage.fileReferences?.length)
-    const canTransferPlainText = currentMessage.content[0].text.trim().length > 0 && !(currentMessage.fileReferences?.length)
-    if (currentDraft && targetEmpty && canTransferPlainText) {
-      sessionsState.setDraft(targetDraftKey, currentDraft)
-      sessionsState.setDraft(newDraftKey)
-    }
+    transferDraftIfEmpty(newDraftKey, sessionKey(targetGroupId, modeSuffix), false)
     focusNewChatComposer(targetProjectId, draftMode)
+  }
+
+  /**
+   * 在新聊天上下文栏切换标准对话与团队对话模式，并在目标模式草稿为空时迁移当前输入内容。
+   * @param targetMode 目标首发模式（chat 或 work）。
+   * @returns 路由模式已切换并将焦点还给新聊天输入框。
+   */
+  function selectNewChatMode(targetMode: WorkspaceMode): void {
+    if (targetMode === draftMode || newChatView.busy) {
+      setOpenMenu(null)
+      return
+    }
+    const targetSuffix = targetMode === "work" ? "$new-work" : "$new-chat"
+    transferDraftIfEmpty(newDraftKey, sessionKey(groupId, targetSuffix), true)
+    focusNewChatComposer(groupId === "default" ? undefined : groupId, targetMode)
   }
 
   /**
@@ -1054,7 +1081,7 @@ function Workspace() {
         </div>
       </aside>}
       <div className="workspace-main">
-        <header className="panel-header">
+        {workspaceRoute.page === "session" && <header className="panel-header">
           <div className="panel-header-row">
             <div className="panel-header-context">
               <div className="breadcrumb">
@@ -1064,7 +1091,7 @@ function Workspace() {
                     onClick={() => focusNewChatComposer(activeProject.projectId, "chat")}>{activeProject.name}</button>
                   <span className="breadcrumb-divider">/</span>
                 </>}
-                {workspaceRoute.page === "session" && currentSession
+                {currentSession
                   ? (renamingBreadcrumbSession
                     ? <>
                       <input ref={breadcrumbInputRef} className="breadcrumb-rename-input" type="text" aria-label="修改对话名称"
@@ -1081,7 +1108,7 @@ function Workspace() {
                     : <button ref={breadcrumbSessionButtonRef} className="breadcrumb-session" type="button"
                         title={`${currentSession.name} · 点击修改对话名称`} aria-label={`修改对话名称：${currentSession.name}`}
                         onClick={startBreadcrumbRename}><strong>{currentSession.name}</strong></button>)
-                  : <strong title={currentSession?.name}>{workspaceRoute.page === "new-chat" ? newConversationLabel : currentSession?.name ?? "对话"}</strong>}
+                  : <strong>对话</strong>}
               </div>
             </div>
             <div className="panel-header-actions">
@@ -1090,7 +1117,7 @@ function Workspace() {
               {!sidebarOpen && <>
                 <button className="settings-icon-button" type="button" aria-label="设置" title="设置 · Ctrl ," onClick={() => openSettingsDialog()}><IconAdjustmentsHorizontal size={17} stroke={1.6} aria-hidden="true" /></button>
                 <button className="settings-icon-button" type="button" aria-label={theme === "light" ? "切换深色外观" : "切换浅色外观"} title={theme === "light" ? "深色外观" : "浅色外观"} onClick={() => setTheme((current) => current === "light" ? "dark" : "light")}>{theme === "light" ? <IconMoon size={17} stroke={1.6} aria-hidden="true" /> : <IconSun size={17} stroke={1.6} aria-hidden="true" />}</button>
-              </>}{(workspaceRoute.page === "session" || !sidebarOpen) && <button className="settings-icon-button" type="button" aria-label="在当前空间新建聊天" title="在当前空间新建聊天" onClick={() => focusNewChatComposer(groupId === "default" ? undefined : groupId, "chat")}><IconPlus size={17} stroke={1.6} aria-hidden="true" /></button>}
+              </>}<button className="settings-icon-button" type="button" aria-label="在当前空间新建聊天" title="在当前空间新建聊天" onClick={() => focusNewChatComposer(groupId === "default" ? undefined : groupId, "chat")}><IconPlus size={17} stroke={1.6} aria-hidden="true" /></button>
               <button className="settings-icon-button browser-toggle" type="button" aria-expanded={browserExpanded} aria-controls="chat-browser-pane"
                 aria-label={browserExpanded ? "收起内置浏览器" : "展开内置浏览器"} title={browserExpanded ? "收起内置浏览器" : "展开内置浏览器"}
                 onClick={() => {
@@ -1104,7 +1131,7 @@ function Workspace() {
               </button>
             </div>
           </div>
-        </header>
+        </header>}
         <main className="main-panel">
           <BrowserWorkspace manager={browserTags} teamSessions={teamSessions} sessionId={browserOwner} projectId={groupId}
             projects={projects.status === "ready" ? projects.value : []} theme={theme}
@@ -1172,10 +1199,27 @@ function Workspace() {
                     </div>}
                   </div>}
                 </div>
-                <span className="composer-context-mode">
-                  {draftMode === "work" && <IconUsers size={13} stroke={1.6} aria-hidden="true" />}
-                  <span>{draftMode === "work" ? "团队协作" : "标准对话"}</span>
-                </span>
+                <div className="selector-anchor context-selector-anchor context-mode-anchor">
+                  <button className="selector-trigger context-trigger context-mode-trigger" type="button" aria-label="对话模式" aria-haspopup="menu" aria-expanded={openMenu === "mode"}
+                    disabled={Boolean(newChatView.busy)}
+                    title={draftMode === "work" ? "当前为团队对话" : "当前为标准对话"}
+                    onClick={() => setOpenMenu((current) => current === "mode" ? null : "mode")}>
+                    {draftMode === "work" ? <IconUsers size={14} stroke={1.6} aria-hidden="true" /> : <IconMessage size={14} stroke={1.6} aria-hidden="true" />}
+                    <span className="context-trigger-label">{draftMode === "work" ? "团队对话" : "标准对话"}</span>
+                    <IconChevronDown className="context-trigger-chevron" size={12} stroke={1.7} aria-hidden="true" />
+                  </button>
+                  {openMenu === "mode" && <div className="selector-menu context-selector-menu context-mode-menu" role="menu" aria-label="选择对话模式">
+                    <p className="menu-label">选择对话模式</p>
+                    <button type="button" role="menuitemradio" aria-checked={draftMode === "chat"} onClick={() => selectNewChatMode("chat")}>
+                      <span><strong>标准对话</strong><small>单个助手直接协作</small></span>
+                      {draftMode === "chat" && <IconCheck size={15} stroke={1.8} aria-hidden="true" />}
+                    </button>
+                    <button type="button" role="menuitemradio" aria-checked={draftMode === "work"} onClick={() => selectNewChatMode("work")}>
+                      <span><strong>团队对话</strong><small>主控协调多成员分工</small></span>
+                      {draftMode === "work" && <IconCheck size={15} stroke={1.8} aria-hidden="true" />}
+                    </button>
+                  </div>}
+                </div>
               </div>
               <div className="composer new-chat-composer">
                 <ComposerInput key={newDraftKey} inputRef={composerRef} projectId={groupId} label="任务描述" placeholder={draftMode === "work" ? "描述要交给团队协作的任务…" : "描述你想做的事，剩下的一起完成…"}

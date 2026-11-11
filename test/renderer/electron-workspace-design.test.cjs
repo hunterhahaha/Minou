@@ -19,8 +19,18 @@ const typographyReports = []
 const PROJECT = "a0000000-0000-4000-8000-000000000001"
 const updatedAt = "2026-10-22T03:00:00.000Z"
 const model = { providerId: "local-fixture", protocol: "responses", modelId: "model-fixture", name: "GPT-5.4", reasoningLevel: "medium" }
+const extraModels = Array.from({ length: 14 }, (_, index) => ({
+  supportsReasoning: true,
+  modelId: `model-extra-${index + 1}`,
+  name: `GPT-5.4 Mini #${index + 1}`,
+  isDefault: false,
+  contextWindow: 128000,
+  maxOutputTokens: 16000,
+  reasoningLevels: ["low", "medium", "high"],
+  reasoningField: { path: ["reasoning", "effort"] },
+}))
 const providers = [{ providerId: model.providerId, name: "OpenAI", type: "custom", protocol: model.protocol, models: [{ supportsReasoning: true, modelId: model.modelId, name: model.name, isDefault: true, contextWindow: 128000, maxOutputTokens: 16000,
-  reasoningLevels: ["low", "medium", "high"], reasoningField: { path: ["reasoning", "effort"] } }] }]
+  reasoningLevels: ["low", "medium", "high"], reasoningField: { path: ["reasoning", "effort"] } }, ...extraModels] }]
 const sessions = [
   { sessionId: "design", name: "梳理项目结构与核心工作流", updatedAt },
   { sessionId: "review", name: "完善工具调用的错误处理", updatedAt },
@@ -169,6 +179,50 @@ async function assertLongModelOption(variant) {
   assert.ok(layout.text.every(item => item.whiteSpace !== 'nowrap' && item.height > item.lineHeight && item.scrollWidth <= item.clientWidth && item.scrollHeight <= item.clientHeight) && layout.iconWidth >= 14 && layout.separate, "长模型、供应商完整换行且不挤压勾选标记：" + JSON.stringify(layout))
   await screenshot("workspace-model-menu-long-" + variant)
   await evaluate(`(() => { for (const node of document.querySelectorAll('.model-menu [data-fixture-original]')) { node.textContent = node.dataset.fixtureOriginal; delete node.dataset.fixtureOriginal } })()`)
+}
+
+/**
+ * 验证模型选择列表按比例限制最大高度、固定顶部返回按钮并在列表内部滚动。
+ * @param variant 视口说明标识。
+ * @returns 检查通过。
+ */
+async function assertModelMenuScrollCapped(variant) {
+  const layout = await evaluate(`(() => {
+    const panel = document.querySelector('.composer-model-panel')
+    const back = panel.querySelector('.model-panel-back')
+    const list = panel.querySelector('.model-option-list')
+    const items = [...list.querySelectorAll('button')]
+    const panelRect = panel.getBoundingClientRect()
+    const backBefore = back.getBoundingClientRect()
+    const listRect = list.getBoundingClientRect()
+    const firstHeight = items[0]?.getBoundingClientRect().height ?? 0
+    const lastHeight = items[items.length - 1]?.getBoundingClientRect().height ?? 0
+    list.scrollTop = list.scrollHeight
+    const scrollAfter = list.scrollTop
+    const backAfter = back.getBoundingClientRect()
+    list.scrollTop = 0
+    return {
+      panelHeight: panelRect.height,
+      maxAllowedHeight: Math.ceil(innerHeight * 0.5) + 1,
+      scrollHeight: list.scrollHeight,
+      clientHeight: list.clientHeight,
+      backStickyBefore: backBefore.top >= panelRect.top - 1 && backBefore.bottom <= listRect.top + 1,
+      backPinnedOnScroll: Math.abs(backAfter.top - backBefore.top) < 1 && backAfter.top >= panelRect.top - 1,
+      scrollAfter,
+      firstHeight,
+      lastHeight,
+    }
+  })()`)
+  assert.ok(
+    layout.panelHeight <= layout.maxAllowedHeight &&
+    layout.scrollHeight > layout.clientHeight &&
+    layout.scrollAfter > 0 &&
+    layout.backStickyBefore &&
+    layout.backPinnedOnScroll &&
+    layout.firstHeight >= 40 &&
+    layout.lastHeight >= 40,
+    "模型菜单按 50% 视口高度限制，返回行固定且列表内部滚动 (" + variant + ")：" + JSON.stringify(layout)
+  )
 }
 
 /** 检查真实键盘焦点、鼠标悬停和当前项的视觉层级。 @param variant 截图名称后缀。 @returns 状态检查完成。 */
@@ -345,22 +399,25 @@ async function assertPaletteContrast(state) {
  * @returns 工作区配色与角色对比度断言完成。
  * @throws AssertionError 配色偏离预期、正文混入其它表面、壳层失去渐变或角色对比度不足。
  */
-async function assertWorkspacePalette(expectedColor, contentSelectors) {
+async function assertWorkspacePalette(expectedColor, contentSelectors, expectHeader = contentSelectors.includes('.chat-page')) {
   await evaluate("document.getAnimations().forEach(animation => { if (animation.effect?.getComputedTiming().endTime !== Infinity) animation.finish() })")
   await evaluate("new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done)))")
   const palette = await evaluate(`(() => {
     const panel = document.querySelector('.main-panel')
     const header = document.querySelector('.panel-header')
+    const expectHeader = ${JSON.stringify(expectHeader)}
     const expected = ${JSON.stringify(expectedColor)}
-    const shellStyles = ['.titlebar', '.sidebar', '.workspace-main', '.panel-header'].map(selector => getComputedStyle(document.querySelector(selector)))
+    const shellSelectors = expectHeader ? ['.titlebar', '.sidebar', '.workspace-main', '.panel-header'] : ['.titlebar', '.sidebar', '.workspace-main']
+    const shellStyles = shellSelectors.map(selector => getComputedStyle(document.querySelector(selector)))
     const surfaceChannels = [getComputedStyle(panel).backgroundColor, ...shellStyles.map(style => style.backgroundColor)].map(color => color.match(/[\\d.]+/g).slice(0, 3).map(Number))
     const panelRect = panel.getBoundingClientRect()
-    const headerRect = header.getBoundingClientRect()
+    const headerRect = header ? header.getBoundingClientRect() : null
     return {
       theme: document.documentElement.dataset.theme,
       canvas: getComputedStyle(panel).backgroundColor,
       surfaceChannelRanges: [0, 1, 2].map(channel => Math.max(...surfaceChannels.map(color => color[channel])) - Math.min(...surfaceChannels.map(color => color[channel]))),
-      headerSeparatedAbove: !panel.contains(header) && headerRect.bottom <= panelRect.top + 0.5,
+      hasHeader: Boolean(header),
+      headerSeparatedAbove: expectHeader ? (Boolean(header) && !panel.contains(header) && headerRect.bottom <= panelRect.top + 0.5) : !header,
       plainContent: ['.main-panel', ...${JSON.stringify(contentSelectors)}].every(selector => {
         let node = document.querySelector(selector)
         if (!node) return false
@@ -376,7 +433,8 @@ async function assertWorkspacePalette(expectedColor, contentSelectors) {
     }
   })()`)
   assert.equal(palette.canvas, expectedColor, "工作区使用浅色纯白或深色炭灰底色")
-  assert.equal(palette.headerSeparatedAbove, true, "工作区面包屑页头位于主工作区面板外侧上方，与内容区明确区分")
+  assert.equal(palette.hasHeader, expectHeader, expectHeader ? "会话页保留工作区页头栏" : "新聊天页不显示工作区页头栏")
+  assert.equal(palette.headerSeparatedAbove, true, expectHeader ? "工作区面包屑页头位于主工作区面板外侧上方，与内容区明确区分" : "新聊天页不渲染多余的工作区页头栏")
   assert.equal(palette.plainContent, true, "工作区正文容器保留纯色底面，不混入渐变或色阶")
   assert.equal(palette.solidShell, true, "标题栏、侧栏与上方页头使用纯色外壳底面，无渐变噪点")
   assert.equal(palette.noPermanentStatusbar, true, "移除常驻底部状态栏")
@@ -553,7 +611,8 @@ async function main() {
   await screenshot("workspace-sidebar-focus")
   await click(".project-action-button")
   await until(() => evaluate("location.hash.includes('/projects/') && document.activeElement.matches('.composer-editor')"))
-  assert.equal(await evaluate("document.querySelector('.breadcrumb-project').title"), projects[0].directories.join(" · "), "关联目录仍可从项目名称的悬停提示读取")
+  assert.equal(await evaluate("document.querySelector('.context-project-trigger').title"), projects[0].directories.join(" · "), "关联目录仍可从上下文项目入口的悬停提示读取")
+  assert.equal(await evaluate("document.querySelector('.panel-header')"), null, "项目新聊天页不显示工作区页头栏")
   assert.equal(historyReads, 0, "渐进披露入口打开项目新聊天，不读取历史")
   await click(".new-chat")
   await until(() => evaluate("location.hash.includes('/default/new-chat')"))
@@ -562,6 +621,7 @@ async function main() {
   await evaluate("document.activeElement.blur()")
   assert.equal(await evaluate("document.querySelectorAll('.sidebar-model-card').length"), 0, "移除侧栏模型就绪卡片")
   assert.equal(await evaluate("document.querySelector('.model-trigger').textContent.includes('GPT-5.4')"), true, "输入区保留当前模型选择入口")
+  assert.equal(await evaluate("document.querySelector('.panel-header')"), null, "默认新聊天页不显示工作区页头栏")
   assert.equal(await evaluate(`(() => {
     const style = getComputedStyle(document.querySelector('.main-panel'))
     return ['Top', 'Right', 'Bottom', 'Left'].every(side => style['border' + side + 'Width'] === '1px')
@@ -570,17 +630,15 @@ async function main() {
   assert.equal(await evaluate(`(() => {
     const titlebar = getComputedStyle(document.querySelector('.titlebar'))
     const sidebar = getComputedStyle(document.querySelector('.sidebar'))
-    const header = getComputedStyle(document.querySelector('.panel-header'))
     const composer = getComputedStyle(document.querySelector('.composer'))
     const dock = getComputedStyle(document.querySelector('.composer-dock'))
     const zeroSides = style => ['Top', 'Right', 'Bottom', 'Left'].every(side => style['border' + side + 'Width'] === '0px')
     const onePxSides = style => ['Top', 'Right', 'Bottom', 'Left'].every(side => style['border' + side + 'Width'] === '1px')
     return zeroSides(titlebar)
       && zeroSides(sidebar)
-      && zeroSides(header)
       && onePxSides(composer)
       && onePxSides(dock)
-  })()`), true, "外壳与无缝头部无多余描边，双层输入容器保留精细边框")
+  })()`), true, "外壳无多余描边，双层输入容器保留精细边框")
   const restingComposerShadow = await evaluate("getComputedStyle(document.querySelector('.composer')).boxShadow")
   const newChatSelectorAppearance = `Array.from(document.querySelectorAll('.new-chat-composer .selector-trigger')).map(node => {
     const style = getComputedStyle(node)
@@ -703,6 +761,7 @@ async function main() {
   await click('[aria-label="切换模型"]')
   await until(() => evaluate("Boolean(document.querySelector('.model-menu'))"))
   assertModelMenuGeometry(await evaluate(modelMenuGeometry))
+  await assertModelMenuScrollCapped("narrow")
   await assertLongModelOption("narrow")
   await click('.model-panel-back')
   await until(() => evaluate("Boolean(document.querySelector('.model-settings-menu'))"))
@@ -711,6 +770,7 @@ async function main() {
   await click('[aria-label="切换模型"]')
   await until(() => evaluate("Boolean(document.querySelector('.model-menu'))"))
   await screenshot("workspace-model-menu")
+  await assertModelMenuScrollCapped("light")
   await assertLongModelOption("light")
   await assertPaletteContrast("model menu")
   await key("Escape")
@@ -732,6 +792,7 @@ async function main() {
   await fits()
   await screenshot("workspace-conversation")
   await assertWorkspacePalette("rgb(255, 255, 255)", [".chat-page", ".chat-scroll", ".chat-messages", ".final-answer"])
+  assert.equal(await evaluate("['Top', 'Right', 'Bottom', 'Left'].every(side => getComputedStyle(document.querySelector('.panel-header'))['border' + side + 'Width'] === '0px')"), true, "会话页无缝头部无多余描边")
   assert.equal(await evaluate("document.querySelector('[aria-label=\"对话模型\"]').tagName"), "BUTTON", "已有对话使用统一模型和推理入口")
   await click('[aria-label="切换深色外观"]')
   await until(() => evaluate("document.documentElement.dataset.theme === 'dark'"))
@@ -762,6 +823,11 @@ async function main() {
   await click('[aria-label="切换浅色外观"]')
   await until(() => evaluate("document.documentElement.dataset.theme === 'light'"))
   await assertWorkspacePalette("rgb(255, 255, 255)", [".chat-page", ".chat-scroll", ".chat-messages", ".final-answer"])
+  await key("b", { ctrlKey: true })
+  await until(() => evaluate("!document.querySelector('.sidebar')"))
+  assert.equal(await evaluate("Boolean(document.querySelector('.panel-header [aria-label=\"设置\"]') && document.querySelector('.panel-header [aria-label=\"切换深色外观\"]') && document.querySelector('.panel-header [aria-label=\"在当前空间新建聊天\"]'))"), true, "会话页收起侧栏后仍可从页头访问设置、外观与新聊天")
+  await click('[aria-label="展开侧栏"]')
+  await until(() => evaluate("Boolean(document.querySelector('.sidebar'))"))
   for (const [seq, event] of [
     [5, { type: "turn/start", turn: 2, model }],
     [6, { type: "user/message", turn: 2, message: { id: "user-2", role: "user", content: [{ type: "text", text: "继续检查项目目录，并整理下一步建议。" }] } }],
@@ -948,7 +1014,7 @@ async function main() {
   await key("Escape")
   await key("b", { ctrlKey: true })
   await until(() => evaluate("!document.querySelector('.sidebar')"))
-  assert.equal(await evaluate("Boolean(document.querySelector('.panel-header [aria-label=\"设置\"]') && document.querySelector('.panel-header [aria-label=\"切换深色外观\"]') && document.querySelector('.panel-header [aria-label=\"在当前空间新建聊天\"]'))"), true, "收起侧栏后仍可访问设置、外观与新聊天")
+  assert.equal(await evaluate("!document.querySelector('.panel-header') && Boolean(document.querySelector('.titlebar [aria-label=\"展开侧栏\"]'))"), true, "新聊天页收起侧栏时仍隐藏工作区页头栏并保留展开侧栏入口")
   await click('[aria-label="展开侧栏"]')
   await until(() => evaluate("Boolean(document.querySelector('.sidebar'))"))
   window.setSize(640, 760)
@@ -1170,6 +1236,21 @@ async function main() {
   assert.equal(await evaluate("document.querySelectorAll('.project-sessions')[0].querySelectorAll('.session-name').length"), 5)
   assert.equal(await evaluate("Boolean(document.querySelector('.project-list > li:first-child .session-list-more'))"), false, "恰好五条无需展开")
 
+  await click(".new-chat")
+  await until(() => evaluate("location.hash.includes('/default/new-chat') && !location.hash.includes('mode=work')"))
+  assert.equal(await evaluate("document.querySelector('.composer-context-mode')"), null, "移除新聊天输入区右上角静态模式文字")
+  assert.equal(await evaluate("document.querySelector('.context-mode-trigger .context-trigger-label')?.textContent.trim()"), "标准对话", "默认显示标准对话模式选择器")
+  await input('[aria-label="任务描述"]', "通过模式选择器切换到团队")
+  await click(".context-mode-trigger")
+  await until(() => evaluate("Boolean(document.querySelector('.context-mode-menu'))"))
+  assert.equal(await evaluate("(() => { const rect = document.querySelector('.context-mode-menu').getBoundingClientRect(); const items = [...document.querySelectorAll('.context-mode-menu [role=menuitemradio] strong')].map(node => node.textContent); return items.length === 2 && items[0] === '标准对话' && items[1] === '团队对话' && rect.left >= 0 && rect.right <= innerWidth && rect.bottom <= innerHeight })()"), true, "对话模式菜单在视口内展开并提供标准对话和团队对话两个选项")
+  await evaluate("[...document.querySelectorAll('.context-mode-menu [role=menuitemradio]')].find(item => item.querySelector('strong')?.textContent === '团队对话').click()")
+  await until(() => evaluate("location.hash.includes('/default/new-chat') && location.hash.includes('mode=work') && document.querySelector('.context-mode-trigger .context-trigger-label')?.textContent.trim() === '团队对话' && document.querySelector('.composer-editor')?.textContent === '通过模式选择器切换到团队' && document.activeElement?.matches('.composer-editor')"))
+  await click(".context-mode-trigger")
+  await until(() => evaluate("Boolean(document.querySelector('.context-mode-menu'))"))
+  await evaluate("[...document.querySelectorAll('.context-mode-menu [role=menuitemradio]')].find(item => item.querySelector('strong')?.textContent === '标准对话').click()")
+  await until(() => evaluate("location.hash.includes('/default/new-chat') && !location.hash.includes('mode=work') && document.querySelector('.context-mode-trigger .context-trigger-label')?.textContent.trim() === '标准对话' && document.querySelector('.composer-editor')?.textContent === '通过模式选择器切换到团队' && document.activeElement?.matches('.composer-editor')"))
+  await input('[aria-label="任务描述"]', "")
   await click(".new-team-chat")
   await until(() => evaluate("location.hash.includes('/default/new-chat') && location.hash.includes('mode=work') && !document.querySelector('.context-branch-trigger')"))
   await input('[aria-label="任务描述"]', "保留文本切换项目")

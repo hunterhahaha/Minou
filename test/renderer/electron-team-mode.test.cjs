@@ -33,10 +33,10 @@ const click = (selector) => evaluate(`document.querySelector(${JSON.stringify(se
 const clickText = (selector, text) => evaluate(`[...document.querySelectorAll(${JSON.stringify(selector)})]
   .find((node) => node.textContent.trim() === ${JSON.stringify(text)}).click()`)
 const draftKind = (kind) => evaluate(`(() => {
-  if (document.querySelector('.workspace-mode')) return false
-  const expected = ${JSON.stringify(kind)} === 'work' ? '团队协作' : '标准对话'
-  const badge = document.querySelector('.composer-context-mode')?.textContent.trim()
-  if (badge !== expected) return false
+  if (document.querySelector('.workspace-mode') || document.querySelector('.composer-context-mode')) return false
+  const expected = ${JSON.stringify(kind)} === 'work' ? '团队对话' : '标准对话'
+  const trigger = document.querySelector('.context-mode-trigger .context-trigger-label')?.textContent.trim()
+  if (trigger !== expected) return false
   if (location.hash.includes('/default/new-chat') || location.hash === '' || location.hash === '#/') {
     const activeSelector = ${JSON.stringify(kind)} === 'work' ? '.new-team-chat' : '.new-chat'
     return document.querySelector(activeSelector)?.getAttribute('aria-current') === 'page'
@@ -81,14 +81,19 @@ async function send(projectId, kind, checkStreaming) {
 async function assertCleanHeader() {
   const diagnostic = await evaluate(`(() => {
     if (document.querySelector('.workspace-mode')) return { ok: false, reason: 'workspace-mode present' }
-    const header = document.querySelector('.panel-header')
+    if (document.querySelector('.titlebar-search > span, .titlebar-search kbd')) return { ok: false, reason: 'titlebar search text present' }
     const panel = document.querySelector('.main-panel')
-    if (!header || !panel) return { ok: false, reason: 'missing header or panel' }
+    const header = document.querySelector('.panel-header')
+    if (!panel) return { ok: false, reason: 'missing main-panel' }
+    if (!document.querySelector('.chat-page')) {
+      if (header) return { ok: false, reason: 'new-chat page should not show panel-header' }
+      return { ok: true }
+    }
+    if (!header) return { ok: false, reason: 'missing header' }
     if (panel.contains(header) || header.getBoundingClientRect().bottom > panel.getBoundingClientRect().top + 0.5) {
       return { ok: false, reason: 'header not separated above main-panel' }
     }
     if (getComputedStyle(header).borderBottomWidth !== '0px') return { ok: false, reason: 'header border: ' + getComputedStyle(header).borderBottomWidth }
-    if (document.querySelector('.titlebar-search > span, .titlebar-search kbd')) return { ok: false, reason: 'titlebar search text present' }
     const items = [...document.querySelectorAll('.panel-header-context, .panel-header-actions, .panel-header-actions button, .browser-toggle')]
       .map((element) => ({ element, tag: element.className || element.getAttribute('aria-label'), rect: element.getBoundingClientRect() }))
       .filter(({ rect }) => rect.width > 0 && rect.height > 0)
@@ -229,6 +234,14 @@ async function main() {
   await loaded
   await until("默认普通对话草稿", () => draftKind("chat"))
   await assertCleanHeader()
+  await type("模式选择器迁移")
+  await click(".context-mode-trigger")
+  await until("模式菜单展开", () => evaluate("Boolean(document.querySelector('.context-mode-menu'))"))
+  await clickText(".context-mode-menu [role=menuitemradio] strong", "团队对话")
+  await until("模式选择器切换为团队对话并迁移草稿", async () => (await draftKind("work")) && (await editorText()) === "模式选择器迁移")
+  await evaluate("(() => { const editor = document.querySelector('.composer-editor'); editor.focus(); getSelection().selectAllChildren(editor); document.execCommand('delete') })()")
+  assert.equal(await editorText(), "")
+  await selectDefaultCreate(".new-chat", "chat")
   await type("独立普通会话")
   await selectDefaultCreate(".new-team-chat", "work")
   assert.equal(await editorText(), "")
@@ -236,13 +249,14 @@ async function main() {
   await selectDefaultCreate(".new-chat", "chat")
   assert.equal(await editorText(), "独立普通会话")
   const chat = await send("default", "ordinary")
-  await selectDefaultCreate(".new-team-chat", "work")
-  assert.equal(await editorText(), "独立工作，创建成员")
-  await capture("team-mode-work-light")
+  await assertCleanHeader()
   await click(".browser-toggle")
   await until("聊天与浏览器分栏", () => evaluate("!!document.querySelector('.chat-browser-divider')"))
   await assertCleanHeader()
   await click(".browser-toggle")
+  await selectDefaultCreate(".new-team-chat", "work")
+  assert.equal(await editorText(), "独立工作，创建成员")
+  await capture("team-mode-work-light")
   await click(".new-chat-composer .send-button")
   await until("首发失败提示", () => evaluate("document.querySelector('.chat-error')?.textContent.includes('预期的首发失败')"))
   assert.equal(await editorText(), "独立工作，创建成员")
