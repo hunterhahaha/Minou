@@ -14,11 +14,20 @@
 }
 .chat-browser-chat { flex-direction: column; }
 .chat-browser-chat, .chat-browser-pane { flex-basis: 0; }
+.chat-browser-split[data-sized="true"] > .chat-browser-chat {
+  flex-grow: var(--chat-split-percent, 50);
+}
+.chat-browser-split[data-sized="true"] > .chat-browser-pane {
+  flex-grow: calc(100 - var(--chat-split-percent, 50));
+}
+.chat-browser-split[data-moving="true"] > :is(.chat-browser-chat, .chat-browser-pane) {
+  overflow: clip;
+}
 .chat-browser-split > [hidden] { display: none; }
 .browser-toggle[aria-expanded="true"] { background: var(--selected); color: var(--text-strong); }
 .chat-browser-divider {
   --divider-line: var(--border);
-  flex: 0 0 8px;
+  flex: 0 0 var(--chat-divider-width, 8px);
   cursor: col-resize;
   touch-action: none;
   user-select: none;
@@ -30,14 +39,6 @@
 .chat-browser-divider:focus-visible {
   --divider-line: var(--focus-ring);
   outline: none;
-}
-.chat-browser-divider[data-snapped="true"] {
-  /* 铺满预览时保留捕获指针的节点，同时移除它占用的分栏空间。 */
-  position: absolute;
-  inline-size: 8px;
-  inset-block: 0;
-  inset-inline-start: 0;
-  opacity: 0;
 }
 .chat-browser-pane { background: var(--canvas); }
 .chat-browser-tabs, .chat-browser-toolbar {

@@ -243,10 +243,59 @@ async function main() {
     await until("另一个对话隐藏原查看器", () => evaluate(`!document.querySelector('${visiblePage}')`))
     await evaluate(`location.hash = ${JSON.stringify(projectRoute)}`)
     await until("对话切回保留 PDF 页码", () => evaluate(pixel(1)))
-    await click(button("收起内置浏览器"))
-    assert.equal(await evaluate("document.querySelector('#chat-browser-pane').hidden"), true)
+    const split = "document.querySelector('.chat-browser-split')"
+    wc.debugger.attach()
+    await wc.debugger.sendCommand("Emulation.setEmulatedMedia", {
+      features: [{ name: "prefers-reduced-motion", value: "no-preference" }],
+    })
+    await until("浏览器分栏已稳定", () => evaluate(`${split}.dataset.moving === 'false'`))
+    const closing = await evaluate(`new Promise(resolve => {
+      const pane = document.querySelector('#chat-browser-pane')
+      const split = ${split}
+      const positions = []
+      const start = Number(split.style.getPropertyValue('--chat-split-percent'))
+      // 隐藏窗口的原生帧可能每秒只触发一次。用固定的帧步长采样真实组件。
+      const requestFrame = window.requestAnimationFrame
+      const cancelFrame = window.cancelAnimationFrame
+      const pending = new Map()
+      let id = 0
+      let now = performance.now()
+      window.requestAnimationFrame = callback => {
+        pending.set(++id, callback)
+        return id
+      }
+      window.cancelAnimationFrame = id => pending.delete(id)
+      ${button("收起内置浏览器")}.click()
+      const timer = setInterval(() => {
+        now += 1000 / 60
+        for (const [id, callback] of [...pending]) {
+          if (pending.delete(id)) callback(now)
+        }
+        positions.push(Number(split.style.getPropertyValue('--chat-split-percent')))
+        if (!pane.hidden && positions.length < 120) return
+        clearInterval(timer)
+        window.requestAnimationFrame = requestFrame
+        window.cancelAnimationFrame = cancelFrame
+        resolve({ start, positions, hidden: pane.hidden })
+      }, 8)
+    })`)
+    assert.equal(closing.hidden, true)
+    assert.ok(closing.positions.some(value => value > closing.start + 5 && value < 95),
+      `收起应经过中间宽度，实际采样 ${JSON.stringify(closing)}`)
+    const edge = closing.positions.indexOf(100)
+    assert.ok(edge >= 0 && closing.positions.slice(edge + 1).some(value => value < 99.5), "到达边界后应向内回弹")
+    assert.ok(closing.positions.every(value => value >= 0 && value <= 100), "分栏不得超出工作区")
     await click(button("展开内置浏览器"))
+    await until("展开动画结束", () => evaluate(`${split}.dataset.moving === 'false' && !document.querySelector('#chat-browser-pane').hidden`))
     await until("展开浏览器保留 PDF", () => evaluate(pixel(1)))
+    await wc.debugger.sendCommand("Emulation.setEmulatedMedia", {
+      features: [{ name: "prefers-reduced-motion", value: "reduce" }],
+    })
+    await click(button("收起内置浏览器"))
+    assert.equal(await evaluate("document.querySelector('#chat-browser-pane').hidden"), true, "减少动效时立即收起")
+    await click(button("展开内置浏览器"))
+    await until("减少动效时展开保留 PDF", () => evaluate(pixel(1)))
+    wc.debugger.detach()
     await capture("file-explorer-light.png")
 
     await click(button("切换深色外观"))

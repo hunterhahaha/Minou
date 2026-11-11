@@ -1,4 +1,4 @@
-import { Component, lazy, Suspense, useLayoutEffect, useRef, useState, useCallback, useSyncExternalStore, type ReactNode } from "react"
+import { Component, lazy, Suspense, useLayoutEffect, useRef, useState, useCallback, useSyncExternalStore, type PointerEvent, type ReactNode } from "react"
 import { IconArrowLeft, IconArrowRight, IconFile, IconFileDiff, IconFolderOpen, IconMaximize, IconMessage, IconMinimize, IconPlus, IconRefresh, IconUsers, IconWorld, IconX } from "@tabler/icons-react"
 import type { FileChange, FileReference } from "../../runtime/session/src/events.ts"
 import type { BrowserPresentation, WebTagRef, WebTagState } from "../preload/browser-api.ts"
@@ -13,6 +13,19 @@ const FileExplorerViewer = lazy(() => import("./file-explorer-viewer.tsx"))
 const ReferencedFilePreview = lazy(async () => ({ default: (await import("./file-preview.tsx")).ReferencedFilePreview }))
 const minimumSplitPercent = 25
 const maximumSplitPercent = 100 - minimumSplitPercent
+const splitFrequency = 18
+const splitDividerWidth = 8
+
+/** 分栏拖动的起点和最近一次有效速度采样，位置以百分比表示。 */
+interface SplitDrag {
+  pointerId: number
+  startX: number
+  startPercent: number
+  percentPerPixel: number
+  position: number
+  time: number
+  velocity: number
+}
 
 /** 标签只持有重新渲染所需的数据。 */
 export type BrowserTag =
@@ -241,6 +254,9 @@ export function BrowserWorkspace({ manager, teamSessions, sessionId, projectId, 
   const split = useRef<HTMLDivElement>(null)
   const [chatPercent, setChatPercent] = useState(50)
   const [dragPercent, setDragPercent] = useState<number | null>(null)
+  const [settling, setSettling] = useState(false)
+  const drag = useRef<SplitDrag | null>(null)
+  const motion = useRef({ sessionId, position: 100, velocity: 0 })
   const [browserMaximized, setBrowserMaximized] = useState(false)
   const [chatTabSelected, setChatTabSelected] = useState(false)
   const slot = useRef<HTMLDivElement>(null)
@@ -264,12 +280,13 @@ export function BrowserWorkspace({ manager, teamSessions, sessionId, projectId, 
   const webUrl = web?.url
   const showBrowser = browser.narrowPanel === "browser"
   const showDivider = showBrowser && !narrow && !browserMaximized
-  const previewBrowserOnly = showDivider && dragPercent !== null && dragPercent < minimumSplitPercent
-  const previewChatOnly = showDivider && dragPercent !== null && dragPercent > maximumSplitPercent
-  const browserVisible = showBrowser && !previewChatOnly
-  const chatHidden = (showBrowser && !showDivider) || previewBrowserOnly
+  const dragging = showDivider && dragPercent !== null
+  const moving = dragging || settling
+  const browserVisible = showBrowser || settling
+  const chatHidden = showBrowser && !showDivider
   const showChatTabContent = chatHidden && chatTabSelected
   const visibleChatPercent = dragPercent ?? chatPercent
+  const targetPercent = showDivider ? chatPercent : showBrowser ? 0 : 100
   const maximizeLabel = browserMaximized ? "恢复分栏" : "铺满工作区"
   const api = window.nicodeBrowser
 
@@ -284,6 +301,66 @@ export function BrowserWorkspace({ manager, teamSessions, sessionId, projectId, 
   useLayoutEffect(() => {
     setChatTabSelected(false)
   }, [sessionId, showBrowser, showDivider, active?.id, activeFile, activeTeam])
+
+  useLayoutEffect(() => {
+    const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)")
+    const sessionChanged = motion.current.sessionId !== sessionId
+    if (sessionChanged || !showDivider) {
+      drag.current = null
+      setDragPercent(null)
+    }
+    if (dragging && !sessionChanged) return
+
+    let initial = motion.current
+    let start = performance.now()
+    let frame = 0
+    let rebounded = false
+
+    if (sessionChanged || reducedMotion.matches ||
+      (initial.position === targetPercent && initial.velocity === 0)) {
+      writeSplit(targetPercent, 0)
+      setSettling(false)
+      return
+    }
+
+    setSettling(true)
+    /** 每帧求解阻尼比为 1 的弹簧，到达外沿时反向释放一小部分速度。
+     * @param now 当前帧时间，单位为毫秒。
+     */
+    function animate(now: number): void {
+      const time = Math.max(0, now - start) / 1000
+      const displacement = initial.position - targetPercent
+      const slope = initial.velocity + splitFrequency * displacement
+      const decay = Math.exp(-splitFrequency * time)
+      const offset = (displacement + slope * time) * decay
+      const velocity = (initial.velocity - splitFrequency * slope * time) * decay
+      const position = targetPercent + offset
+      if (reducedMotion.matches) {
+        writeSplit(targetPercent, 0)
+        setSettling(false)
+        return
+      }
+
+      const left = velocity < 0 && (position <= 0 || (targetPercent === 0 && position < 0.6))
+      const right = velocity > 0 && (position >= 100 || (targetPercent === 100 && position > 99.4))
+      if (!rebounded && (left || right)) {
+        const reboundSpeed = Math.max(60, Math.min(100, Math.abs(velocity) * 0.25))
+        writeSplit(left ? 0 : 100, left ? reboundSpeed : -reboundSpeed)
+        initial = motion.current
+        start = now
+        rebounded = true
+      } else if (Math.abs(offset) < 0.12 && Math.abs(velocity) < 2) {
+        writeSplit(targetPercent, 0)
+        setSettling(false)
+        return
+      } else {
+        writeSplit(Math.max(0, Math.min(100, position)), velocity)
+      }
+      frame = requestAnimationFrame(animate)
+    }
+    animate(start)
+    return () => cancelAnimationFrame(frame)
+  }, [sessionId, targetPercent, dragging, showDivider])
 
   useLayoutEffect(() => {
     const element = workspace.current
@@ -372,47 +449,82 @@ export function BrowserWorkspace({ manager, teamSessions, sessionId, projectId, 
     setChatPercent(Math.min(maximumSplitPercent, Math.max(minimumSplitPercent, Math.round(percent))))
   }
 
-  /** 将指针位置转换为当前分栏比例。
-   * @param clientX 指针在视口中的横坐标。
-   * @param dividerWidth 分隔线热区宽度。
-   * @returns 聊天栏预览比例。
+  /** 写入分栏位置和速度，动画逐帧更新布局而无需重新渲染聊天。
+   * @param position 聊天所占百分比。
+   * @param velocity 聊天比例每秒的变化量。
    */
-  function pointerPercent(clientX: number, dividerWidth: number): number {
-    const bounds = split.current?.getBoundingClientRect()
-    if (!bounds || bounds.width <= dividerWidth) return visibleChatPercent
-    const percent = (clientX - bounds.left - dividerWidth / 2) / (bounds.width - dividerWidth) * 100
-    return Math.min(100, Math.max(0, Math.round(percent)))
+  function writeSplit(position: number, velocity: number): void {
+    motion.current = { sessionId, position, velocity }
+    split.current?.style.setProperty("--chat-split-percent", String(position))
+    split.current?.style.setProperty("--chat-divider-width", `${Math.min(splitDividerWidth, position * 2, (100 - position) * 2)}px`)
+  }
+
+  /** 从正在显示的位置接管分隔线并捕获主指针。
+   * @param event 分隔线收到的按下事件。
+   */
+  function startDrag(event: PointerEvent<HTMLDivElement>): void {
+    const width = (split.current?.getBoundingClientRect().width ?? 0) - splitDividerWidth
+    if (event.button !== 0 || !event.isPrimary || width <= 0) return
+    event.currentTarget.focus()
+    event.currentTarget.setPointerCapture(event.pointerId)
+    const position = motion.current.position
+    drag.current = { pointerId: event.pointerId, startX: event.clientX, startPercent: position,
+      percentPerPixel: 100 / width, position, time: event.timeStamp, velocity: 0 }
+    setDragPercent(position)
+  }
+
+  /** 根据指针位移更新分栏，并采样松手后延续的速度。
+   * @param event 捕获的指针移动事件。
+   */
+  function moveDrag(event: PointerEvent<HTMLDivElement>): void {
+    const current = drag.current
+    if (!current || current.pointerId !== event.pointerId) return
+    const position = current.startPercent + (event.clientX - current.startX) * current.percentPerPixel
+    if (position !== current.position) {
+      current.velocity = Math.max(-350, Math.min(350, (position - current.position) * 1000 / Math.max(1, event.timeStamp - current.time)))
+      current.position = position
+      current.time = event.timeStamp
+    }
+    const bounded = Math.max(0, Math.min(100, position))
+    writeSplit(bounded, current.velocity)
+    setDragPercent(bounded)
+  }
+
+  /** 松手时按原有阈值决定落点，取消捕获时回到已提交的分栏位置。
+   * @param event 捕获的指针释放或取消事件。
+   */
+  function finishDrag(event: PointerEvent<HTMLDivElement>): void {
+    const current = drag.current
+    if (!current || current.pointerId !== event.pointerId) return
+    const released = event.type === "pointerup"
+    if (released) moveDrag(event)
+    const velocity = released && event.timeStamp - current.time < 80 ? current.velocity : 0
+    writeSplit(motion.current.position, velocity)
+    drag.current = null
+    setDragPercent(null)
+    if (!released || current.position === current.startPercent) return
+    const percent = Math.round(current.position)
+    if (percent < minimumSplitPercent) setBrowserMaximized(true)
+    else if (percent > maximumSplitPercent) manager.set(sessionId, { ...browser, narrowPanel: "chat" })
+    else resizeChat(percent)
   }
 
   const ref: WebTagRef | undefined = web && { sessionId, tagId: web.id }
-  return <div className="chat-browser-workspace" ref={workspace} data-narrow={narrow} data-expanded={browserVisible}
+  return <div className="chat-browser-workspace" ref={workspace} data-narrow={narrow} data-expanded={showBrowser}
     data-chat-tab-selected={showChatTabContent}>
-    <div className="chat-browser-split" ref={split}>
-      <div id="chat-browser-chat" className="chat-browser-chat" hidden={chatHidden && !showChatTabContent}
-        style={showDivider ? { flexGrow: visibleChatPercent } : undefined}>{children}</div>
-      {showDivider && <div className="chat-browser-divider" role="separator" tabIndex={0}
-        data-snapped={previewBrowserOnly || previewChatOnly}
+    <div className="chat-browser-split" ref={split} data-sized={moving || showDivider} data-moving={moving}>
+      <div id="chat-browser-chat" className="chat-browser-chat" hidden={chatHidden && !showChatTabContent && !settling}
+        inert={chatHidden && !showChatTabContent}>{children}</div>
+      {(showDivider || moving) && <div className="chat-browser-divider" role="separator" tabIndex={showDivider ? 0 : -1}
+        inert={!showDivider}
         aria-label="调整聊天与浏览器宽度" aria-orientation="vertical" aria-controls="chat-browser-pane"
         aria-valuemin={dragPercent === null ? minimumSplitPercent : 0}
         aria-valuemax={dragPercent === null ? maximumSplitPercent : 100} aria-valuenow={visibleChatPercent}
-        onPointerDown={(event) => {
-          if (event.button !== 0 || !event.isPrimary) return
-          event.currentTarget.focus()
-          event.currentTarget.setPointerCapture(event.pointerId)
-        }}
-        onPointerMove={(event) => {
-          if (!event.currentTarget.hasPointerCapture(event.pointerId)) return
-          setDragPercent(pointerPercent(event.clientX, event.currentTarget.offsetWidth))
-        }}
-        onPointerUp={(event) => {
-          if (!event.currentTarget.hasPointerCapture(event.pointerId)) return
-          const percent = pointerPercent(event.clientX, event.currentTarget.offsetWidth)
-          setDragPercent(null)
-          if (percent < minimumSplitPercent) setBrowserMaximized(true)
-          else if (percent > maximumSplitPercent) manager.set(sessionId, { ...browser, narrowPanel: "chat" })
-          else resizeChat(percent)
-        }}
-        onLostPointerCapture={() => setDragPercent(null)}
+        onPointerDown={startDrag}
+        onPointerMove={moveDrag}
+        onPointerUp={finishDrag}
+        onPointerCancel={finishDrag}
+        onLostPointerCapture={finishDrag}
         onKeyDown={(event) => {
           const percent = { ArrowLeft: chatPercent - 5, ArrowRight: chatPercent + 5, Home: minimumSplitPercent, End: maximumSplitPercent }[event.key]
           if (typeof percent !== "number") return
@@ -421,7 +533,7 @@ export function BrowserWorkspace({ manager, teamSessions, sessionId, projectId, 
         }}
       />}
       <section id="chat-browser-pane" className="chat-browser-pane" aria-label="内置浏览器" hidden={!browserVisible}
-        style={showDivider ? { flexGrow: 100 - visibleChatPercent } : undefined}>
+        inert={!showBrowser}>
         <div className="chat-browser-tabs">
           <div className="chat-browser-tab-list" ref={tabList} aria-label="已打开的标签">
           {chatHidden && <div className="chat-browser-tab-item" data-active={showChatTabContent}>
@@ -474,7 +586,7 @@ export function BrowserWorkspace({ manager, teamSessions, sessionId, projectId, 
           <button className="chat-browser-submit" type="submit" aria-label="打开" title="打开网址" disabled={!address.trim() || !api}><IconArrowRight size={16} aria-hidden="true" /></button>
         </form>}
         {error && <p className="chat-browser-message" role="alert">{error}</p>}
-        {active?.kind === "team-session" ? browserVisible && !showChatTabContent &&
+        {active?.kind === "team-session" ? showBrowser && !showChatTabContent &&
           <BrowserPageBoundary key={active.id} message="无法显示团队成员对话。">
             <TeamSessionPage target={active.target} state={teamSessions} manager={manager} />
           </BrowserPageBoundary>
