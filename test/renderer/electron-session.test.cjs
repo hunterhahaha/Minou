@@ -274,6 +274,11 @@ async function main() {
   for (const type of ["mouseDown", "mouseUp"]) window.webContents.sendInputEvent({ type, x: permissionIconPoint.x, y: permissionIconPoint.y, button: "left", clickCount: 1 })
   await until(() => evaluate("document.querySelector('[aria-label=\"对话权限\"]').matches(':open')"))
   assert.equal(await evaluate(`(() => {
+    const group = document.querySelector('.chat-permission-select optgroup')
+    const firstOption = group.querySelector('option')
+    return group.label === '权限' && group.getBoundingClientRect().top < firstOption.getBoundingClientRect().top
+  })()`), true, "已有对话权限菜单在选项上方显示标题")
+  assert.equal(await evaluate(`(() => {
     const rects = [...document.querySelector('[aria-label="对话权限"]').options].map(option => option.getBoundingClientRect())
     return rects.every((rect, index) => rect.width > 0 && rect.left >= 0 && rect.right <= innerWidth && rect.top >= 0 && rect.bottom <= innerHeight && (index === 0 || rect.top - rects[index - 1].bottom >= 2))
   })()`), true, "权限菜单选项之间有留白且均在窗口内")

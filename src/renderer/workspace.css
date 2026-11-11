@@ -332,15 +332,14 @@ kbd { font: var(--font-size-caption)/var(--line-height-caption) var(--font-ui); 
 .menu-backdrop { position: fixed; inset: 0; z-index: 20; }
 .selector-anchor:has(.selector-menu) { z-index: 21; }
 .selector-menu { position: absolute; bottom: calc(100% + 10px); display: flex; flex-direction: column; width: 270px; max-width: 80vw; max-height: min(320px, 52vh); padding: 6px; overflow-y: auto; border: 0; border-radius: 10px; color: var(--text); background: var(--popover); box-shadow: var(--shadow-popover); }
-.permission-menu { right: 0; }
+.permission-menu { right: 0; width: 164px; }
 .context-selector-menu { left: 0; width: 256px; max-width: min(256px, calc(100vw - 48px)); }
 .context-branch-menu { max-width: min(250px, 58vw); }
-.context-mode-menu { left: auto; right: 0; width: 228px; max-width: min(228px, calc(100vw - 48px)); }
+.context-mode-menu { left: auto; right: 0; width: 136px; }
 .menu-label { margin: 5px 9px 7px; color: var(--muted); font-size: var(--font-size-note); line-height: var(--line-height-note); }
 .menu-empty { margin: 4px 10px 6px; color: var(--muted); font-size: var(--font-size-note); line-height: var(--line-height-note); }
 .selector-menu button { display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%; min-height: 36px; padding: 8px 10px; border: 0; border-radius: var(--radius-sm); color: var(--secondary); background: transparent; font-size: var(--font-size-ui); line-height: var(--line-height-ui); text-align: left; }
 .selector-menu button:hover, .selector-menu button[aria-checked="true"] { color: var(--text-strong); background: var(--selected); }
-.permission-menu button + button, .context-selector-menu button + button { margin-block-start: var(--space-1); }
 .permission-menu button:focus-visible, .permission-menu button:focus-visible:hover,
 .context-selector-menu button:focus-visible, .context-selector-menu button:focus-visible:hover { outline: 0; box-shadow: none; background: var(--hover); color: var(--text-strong); }
 .context-selector-menu button > svg { flex: none; color: var(--accent); }
@@ -348,6 +347,14 @@ kbd { font: var(--font-size-caption)/var(--line-height-caption) var(--font-ui); 
 .selector-menu strong, .selector-menu small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .selector-menu strong { font-size: var(--font-size-ui); line-height: var(--line-height-ui); font-weight: 500; }
 .selector-menu small { margin-top: 4px; color: var(--muted); font-size: var(--font-size-note); line-height: var(--line-height-note); }
+.context-project-menu { width: 232px; }
+:is(.context-selector-menu, .permission-menu) .menu-label { margin: 2px var(--space-2) var(--space-1); }
+:is(.context-selector-menu, .permission-menu) button { min-height: 28px; gap: var(--space-2); padding: var(--space-1) var(--space-2); }
+:is(.context-selector-menu, .permission-menu) button + button { margin-block-start: 2px; }
+.context-project-menu button > span:first-child { display: flex; flex: 1; align-items: baseline; gap: 6px; }
+.context-project-menu :is(strong, small) { min-width: 0; }
+.context-project-menu small { flex: 0 0 auto; max-width: 55%; margin: 0; }
+@media (pointer: coarse) { :is(.context-selector-menu, .permission-menu) button { min-height: 44px; } }
 
 /* 搜索消费摘要，不读取消息正文。 */
 .search-backdrop { z-index: 40; align-items: flex-start; padding-top: min(18vh, 150px); }
@@ -396,7 +403,6 @@ kbd { font: var(--font-size-caption)/var(--line-height-caption) var(--font-ui); 
   .welcome { width: calc(100% - 20px); }
   .context-selector-menu { max-width: min(250px, calc(100vw - 40px)); }
   .context-branch-menu { max-width: min(230px, 56vw); }
-  .context-mode-menu { max-width: min(228px, calc(100vw - 40px)); }
 }
 @container (max-width: 360px) {
   .welcome { grid-template-rows: minmax(min-content, 1fr) auto; }
@@ -409,7 +415,7 @@ kbd { font: var(--font-size-caption)/var(--line-height-caption) var(--font-ui); 
   .welcome .context-branch-anchor { position: static; }
   .welcome .context-mode-anchor { margin-left: auto; }
   .welcome .selector-menu { max-width: min(100cqi - 52px, 256px); }
-  .welcome .permission-menu { max-width: min(100cqi - 72px, 270px); }
+  .welcome .permission-menu { max-width: calc(100cqi - 72px); }
   .welcome .composer-model-picker { min-width: 0; }
   .welcome .composer-model-picker .composer-model-reasoning { display: none; }
   .welcome .model-trigger { max-width: min(145px, 100%); }

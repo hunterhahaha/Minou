@@ -441,7 +441,9 @@ export function SessionPage({ projectId, sessionId, state, providers, onOpenDiff
           <div className="composer-controls composer-controls-right">
             <div className="chat-selectors">
               <label className="chat-select-label chat-permission-select"><IconShieldCheck size={15} aria-hidden="true" /><select aria-label="对话权限" disabled={!control || view.busy} value={control?.sandboxMode ?? "sandbox-full-access"} onChange={(event) => void settings({ sandboxMode: event.target.value as SandboxMode })}>
-                {Object.entries(sandboxLabels).map(([mode, label]) => <option value={mode} key={mode}>{label}</option>)}
+                <optgroup label="权限">
+                  {Object.entries(sandboxLabels).map(([mode, label]) => <option value={mode} key={mode}>{label}</option>)}
+                </optgroup>
               </select></label>
             </div>
             <div className="session-usage-anchor">

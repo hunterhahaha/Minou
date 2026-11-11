@@ -1161,20 +1161,20 @@ function Workspace() {
                 <div className="composer-context-controls">
                   <div className="selector-anchor context-selector-anchor context-project-anchor">
                     <button className="selector-trigger context-trigger context-project-trigger" type="button" aria-label="所属项目" aria-haspopup="menu" aria-expanded={openMenu === "project"}
-                      title={activeProject ? (activeProject.directories.join(" · ") || activeProject.name) : "全局独立对话"}
+                      title={activeProject ? (activeProject.directories.join(" · ") || activeProject.name) : "无项目"}
                       onClick={() => setOpenMenu((current) => current === "project" ? null : "project")}>
                       {activeProject ? <IconFolder size={14} stroke={1.6} aria-hidden="true" /> : <IconTerminal2 size={14} stroke={1.6} aria-hidden="true" />}
-                      <span className="context-trigger-label">{activeProject ? activeProject.name : "独立对话"}</span>
+                      <span className="context-trigger-label">{activeProject ? activeProject.name : "无项目"}</span>
                       <IconChevronDown className="context-trigger-chevron" size={12} stroke={1.7} aria-hidden="true" />
                     </button>
                     {openMenu === "project" && <div className="selector-menu context-selector-menu context-project-menu" role="menu" aria-label="选择项目">
                       <p className="menu-label">选择新对话归属</p>
                       <button type="button" role="menuitemradio" aria-checked={groupId === "default"} onClick={() => selectNewChatProject(undefined)}>
-                        <span><strong>独立对话</strong><small>默认工作区</small></span>
+                        <span><strong>无项目</strong></span>
                         {groupId === "default" && <IconCheck size={15} stroke={1.8} aria-hidden="true" />}
                       </button>
                       {projects.status === "ready" && [...projects.value].sort(newestFirst).map((project) => (
-                        <button key={project.projectId} type="button" role="menuitemradio" aria-checked={groupId === project.projectId} onClick={() => selectNewChatProject(project.projectId)}>
+                        <button key={project.projectId} type="button" role="menuitemradio" aria-checked={groupId === project.projectId} title={[project.name, project.directories[0]].filter(Boolean).join(" · ")} onClick={() => selectNewChatProject(project.projectId)}>
                           <span><strong>{project.name}</strong>{project.directories[0] && <small>{project.directories[0]}</small>}</span>
                           {groupId === project.projectId && <IconCheck size={15} stroke={1.8} aria-hidden="true" />}
                         </button>
@@ -1200,8 +1200,9 @@ function Workspace() {
                       <p className="menu-label">切换本地分支</p>
                       {gitBranchState.branches.length === 0
                         ? <p className="menu-empty">暂无本地分支</p>
-                        : gitBranchState.branches.map((branch) => (
-                          <button key={branch} type="button" role="menuitemradio" aria-checked={gitBranchState.currentBranch === branch} onClick={() => { void selectProjectGitBranch(branch) }}>
+                        : [...gitBranchState.branches].sort((left, right) =>
+                          Number(right === gitBranchState.currentBranch) - Number(left === gitBranchState.currentBranch)).map((branch) => (
+                          <button key={branch} type="button" role="menuitemradio" title={branch} aria-checked={gitBranchState.currentBranch === branch} onClick={() => { void selectProjectGitBranch(branch) }}>
                             <span><strong>{branch}</strong></span>
                             {gitBranchState.currentBranch === branch && <IconCheck size={15} stroke={1.8} aria-hidden="true" />}
                           </button>
@@ -1218,14 +1219,14 @@ function Workspace() {
                     <span className="context-trigger-label">{draftMode === "work" ? "团队对话" : "标准对话"}</span>
                     <IconChevronDown className="context-trigger-chevron" size={12} stroke={1.7} aria-hidden="true" />
                   </button>
-                  {openMenu === "mode" && <div className="selector-menu context-selector-menu context-mode-menu" role="menu" aria-label="选择对话模式">
-                    <p className="menu-label">选择对话模式</p>
+                  {openMenu === "mode" && <div className="selector-menu context-selector-menu context-mode-menu" role="menu" aria-label="模式">
+                    <p className="menu-label">模式</p>
                     <button type="button" role="menuitemradio" aria-checked={draftMode === "chat"} onClick={() => selectNewChatMode("chat")}>
-                      <span><strong>标准对话</strong><small>单个助手直接协作</small></span>
+                      <span><strong>标准对话</strong></span>
                       {draftMode === "chat" && <IconCheck size={15} stroke={1.8} aria-hidden="true" />}
                     </button>
                     <button type="button" role="menuitemradio" aria-checked={draftMode === "work"} onClick={() => selectNewChatMode("work")}>
-                      <span><strong>团队对话</strong><small>主控协调多成员分工</small></span>
+                      <span><strong>团队对话</strong></span>
                       {draftMode === "work" && <IconCheck size={15} stroke={1.8} aria-hidden="true" />}
                     </button>
                   </div>}
@@ -1247,7 +1248,7 @@ function Workspace() {
                   </div>
                   <div className="composer-controls composer-controls-right">
                     <div className="selector-anchor"><button className="selector-trigger" type="button" aria-label="权限" aria-haspopup="menu" aria-expanded={openMenu === "permission"} onClick={() => setOpenMenu((current) => current === "permission" ? null : "permission")}><IconShieldCheck size={15} aria-hidden="true" /><span>{permission === "default" ? "工作区读写" : permissionLabels[permission]}</span></button>
-                      {openMenu === "permission" && <div className="selector-menu permission-menu" role="menu" aria-label="权限选项"><p className="menu-label">允许 NiCode 做什么</p>{permissionOptions.map((option) => <button type="button" role="menuitemradio" aria-checked={permission === option || (permission === "default" && option === "workspace-read-write")} key={option} onClick={() => { setPermission(option); setOpenMenu(null) }}>{permissionLabels[option]}{(permission === option || (permission === "default" && option === "workspace-read-write")) && <span aria-hidden="true">✓</span>}</button>)}</div>}
+                      {openMenu === "permission" && <div className="selector-menu permission-menu" role="menu" aria-label="权限"><p className="menu-label">权限</p>{permissionOptions.map((option) => <button type="button" role="menuitemradio" aria-checked={permission === option || (permission === "default" && option === "workspace-read-write")} key={option} onClick={() => { setPermission(option); setOpenMenu(null) }}>{permissionLabels[option]}{(permission === option || (permission === "default" && option === "workspace-read-write")) && <span aria-hidden="true">✓</span>}</button>)}</div>}
                     </div>
                     <button className="send-button" type="button" disabled={!selectedModel || !selectedReasoningLevel || savingDefaultModel || newChatView.busy || !serializeComposerMessage(sessionsState.draftsByKey[newDraftKey]).content[0].text.trim()} onClick={() => void sendNewChat()} aria-label="发送消息"><IconArrowUp size={18} stroke={2} /></button>
                   </div>

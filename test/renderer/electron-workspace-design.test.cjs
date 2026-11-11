@@ -736,8 +736,10 @@ async function main() {
   await nativeClick('[aria-label="权限"] svg')
   await until(() => evaluate("Boolean(document.querySelector('.permission-menu'))"))
   const permissionMenuFits = `(() => {
-    const rects = [...document.querySelectorAll('.permission-menu button')].map(button => button.getBoundingClientRect())
-    return rects.length === 4 && rects.every((rect, index) => rect.width > 0 && rect.left >= 0 && rect.right <= innerWidth && rect.top >= 0 && rect.bottom <= innerHeight && (index === 0 || rect.top - rects[index - 1].bottom >= 3.5))
+    const menu = document.querySelector('.permission-menu')
+    const rects = [...menu.querySelectorAll('button')].map(button => button.getBoundingClientRect())
+    return menu.querySelector('.menu-label').textContent === '权限' && menu.getBoundingClientRect().width <= 164
+      && rects.length === 4 && rects.every((rect, index) => rect.width > 0 && rect.height === 28 && rect.left >= 0 && rect.right <= innerWidth && rect.top >= 0 && rect.bottom <= innerHeight && (index === 0 || rect.top - rects[index - 1].bottom >= 2))
   })()`
   assert.equal(await evaluate(permissionMenuFits), true, "新对话权限选项之间有留白且菜单位于窗口内")
   await screenshot("workspace-permission-light")
@@ -917,17 +919,32 @@ async function main() {
   await screenshot("workspace-project")
   await click(".context-branch-trigger")
   await until(() => evaluate("[...document.querySelectorAll('.context-branch-menu [role=menuitemradio]')].length === 3"))
+  assert.deepEqual(await evaluate("[...document.querySelectorAll('.context-branch-menu button')].map(row => [row.title, row.getAttribute('aria-checked'), row.getBoundingClientRect().height])"),
+    [["main", "true", 28], ["feature/ui", "false", 28], ["release/v2", "false", 28]], "当前分支置顶，其余分支沿用顺序和紧凑行高")
   await screenshot("workspace-git-branch-menu")
   await evaluate("[...document.querySelectorAll('.context-branch-menu [role=menuitemradio]')].find(item => item.querySelector('strong')?.textContent === 'feature/ui').click()")
   await until(() => evaluate("document.querySelector('.context-branch-trigger')?.textContent.trim() === 'feature/ui' && !document.querySelector('.context-branch-menu')"))
   assert.equal(runGit("rev-parse", "--abbrev-ref", "HEAD"), "feature/ui", "切换 Git 分支后真实执行 git switch")
   forceGitSwitchError = true
   await click(".context-branch-trigger")
-  await until(() => evaluate("document.querySelector('.context-branch-menu [aria-checked=true]')?.textContent.trim() === 'feature/ui'"))
+  await until(() => evaluate("document.querySelector('.context-branch-menu button')?.matches('[aria-checked=true][title=\"feature/ui\"]')"))
   await evaluate("[...document.querySelectorAll('.context-branch-menu [role=menuitemradio]')].find(item => item.querySelector('strong')?.textContent === 'release/v2').click()")
   await until(() => evaluate("document.querySelector('.welcome-dock .chat-error[role=alert]')?.textContent.includes('注入分支切换失败')"))
   assert.equal(await evaluate("document.querySelector('.context-branch-trigger')?.textContent.trim()"), "feature/ui", "切换失败时保留当前 Git 分支")
   assert.equal(runGit("rev-parse", "--abbrev-ref", "HEAD"), "feature/ui")
+  await click(".context-project-trigger")
+  await until(() => evaluate("Boolean(document.querySelector('.context-project-menu'))"))
+  assert.equal(await evaluate(`(() => {
+    const rows = [...document.querySelectorAll('.context-project-menu [role=menuitemradio]')]
+    const active = rows.find(row => row.getAttribute('aria-checked') === 'true')
+    const name = active.querySelector('strong').getBoundingClientRect()
+    const directory = active.querySelector('small').getBoundingClientRect()
+    return rows[0].textContent.trim() === '无项目' && rows.every(row => row.getBoundingClientRect().height === 28)
+      && name.right <= directory.left && name.top < directory.bottom && active.title.includes(active.querySelector('small').textContent)
+  })()`), true, "项目选项使用紧凑单行布局，完整目录保留在提示中")
+  await screenshot("workspace-project-picker-compact")
+  await click(".context-project-menu [role=menuitemradio]")
+  await until(() => evaluate("location.hash === '#/default/new-chat' && document.querySelector('.context-project-trigger').textContent.trim() === '无项目'"))
   await click(".context-project-trigger")
   await until(() => evaluate("Boolean(document.querySelector('.context-project-menu'))"))
   await evaluate("[...document.querySelectorAll('.context-project-menu [role=menuitemradio]')].find(item => item.querySelector('strong')?.textContent.includes('较长名称')).click()")
@@ -1334,7 +1351,16 @@ async function main() {
   await input('[aria-label="任务描述"]', "通过模式选择器切换到团队")
   await click(".context-mode-trigger")
   await until(() => evaluate("Boolean(document.querySelector('.context-mode-menu'))"))
-  assert.equal(await evaluate("(() => { const rect = document.querySelector('.context-mode-menu').getBoundingClientRect(); const items = [...document.querySelectorAll('.context-mode-menu [role=menuitemradio] strong')].map(node => node.textContent); return items.length === 2 && items[0] === '标准对话' && items[1] === '团队对话' && rect.left >= 0 && rect.right <= innerWidth && rect.bottom <= innerHeight })()"), true, "对话模式菜单在视口内展开并提供标准对话和团队对话两个选项")
+  assert.equal(await evaluate(`(() => {
+    const menu = document.querySelector('.context-mode-menu')
+    const bounds = menu.getBoundingClientRect()
+    const items = [...menu.querySelectorAll('[role=menuitemradio]')]
+    return menu.querySelector('.menu-label').textContent === '模式' && !menu.querySelector('small')
+      && items.length === 2 && items[0].querySelector('strong').textContent === '标准对话' && items[1].querySelector('strong').textContent === '团队对话'
+      && items.every(item => item.getBoundingClientRect().height === 28)
+      && bounds.width <= 136 && bounds.left >= 0 && bounds.right <= innerWidth && bounds.top >= 0 && bounds.bottom <= innerHeight
+  })()`), true, "模式菜单紧凑且仅显示模式名称和选中状态")
+  await screenshot("workspace-mode-menu-compact")
   await evaluate("[...document.querySelectorAll('.context-mode-menu [role=menuitemradio]')].find(item => item.querySelector('strong')?.textContent === '团队对话').click()")
   await until(() => evaluate("location.hash.includes('/default/new-chat') && location.hash.includes('mode=work') && document.querySelector('.context-mode-trigger .context-trigger-label')?.textContent.trim() === '团队对话' && document.querySelector('.composer-editor')?.textContent === '通过模式选择器切换到团队' && document.activeElement?.matches('.composer-editor')"))
   await click(".context-mode-trigger")
