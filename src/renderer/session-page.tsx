@@ -1,5 +1,5 @@
 /** 从工作区事件字典派生聊天页面；输入操作仅走 preload 的固定 Session API。 */
-import { Fragment, memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type Ref } from "react"
+import { Fragment, memo, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type Ref } from "react"
 import { IconArrowDown, IconArrowUp, IconBrain, IconCheck, IconCode, IconCopy, IconDashboard, IconDatabase, IconGitCompare, IconPlayerStop, IconShieldCheck, IconSparkles, IconTool } from "@tabler/icons-react"
 import type { AssistantContentBlock } from "../../runtime/model/src/types.ts"
 import { preferredReasoningLevel } from "../../runtime/model/src/reasoning.ts"
@@ -280,6 +280,7 @@ export function SessionTranscript({ projectId, sessionId, state, onOpenDiff, onO
  * @returns 消息、审批、Queue、权限与固定在底部的输入区。
  */
 export function SessionPage({ projectId, sessionId, state, providers, onOpenDiff, onOpenWeb, onOpenFile }: SessionPageProps) {
+  const usageTooltipId = useId()
   const key = sessionKey(projectId, sessionId)
   const events = state.sessionEventsByKey[key] ?? []
   const hasHistory = state.has(key)
@@ -442,35 +443,33 @@ export function SessionPage({ projectId, sessionId, state, providers, onOpenDiff
                   ...reference, reasoningLevel: preferredReasoningLevel(reasoningLevels, control?.currentModel.reasoningLevel),
                 } }) }
               }} onReasoningChange={(reasoningLevel) => { if (control) void settings({ model: { ...control.currentModel, reasoningLevel } }) }} />
+            <div className="session-usage-anchor">
+              <button type="button" className="session-usage-trigger" aria-label="会话用量" aria-describedby={usageTooltipId}>
+                <svg viewBox="0 0 20 20" aria-hidden="true" fill="none" strokeWidth="2.5">
+                  <circle cx="10" cy="10" r="7" className="session-usage-track" />
+                  {contextUsage !== undefined && contextUsage > 0 && <circle cx="10" cy="10" r="7" pathLength="100"
+                    stroke="currentColor" strokeLinecap="round" strokeDasharray={`${Math.min(contextUsage * 100, 100)} 100`} transform="rotate(-90 10 10)" />}
+                </svg>
+              </button>
+              <div id={usageTooltipId} className="session-usage-tooltip" role="tooltip">
+                <ul className="session-usage">
+                  <li><IconDashboard aria-hidden="true" /><span className="session-usage-metrics">
+                    <span data-usage-metric="turns">轮数 {hasHistory ? usageCountFormat.format(usage.turns) : "—"}</span>
+                    <span data-usage-metric="tools">工具调用 {hasHistory ? usageCountFormat.format(usage.toolCalls) : "—"}</span>
+                  </span></li>
+                  <li><IconDatabase aria-hidden="true" /><span className="session-usage-metrics">
+                    <span data-usage-metric="context">上下文 {usage.inputTokens === undefined ? "—" : usageCountFormat.format(usage.inputTokens)}{inputFromOtherModel && "（来自其他模型）"} / {contextWindow === undefined ? "—" : usageCountFormat.format(contextWindow)} Token</span>
+                    <span data-usage-metric="cache">缓存命中率 {usage.cacheHitRate === undefined ? "—" : usagePercentFormat.format(usage.cacheHitRate)}</span>
+                  </span></li>
+                  <li><span>上下文占用</span><span data-usage-metric="pressure">{contextUsage === undefined ? "—" : usagePercentFormat.format(contextUsage)}</span></li>
+                </ul>
+              </div>
+            </div>
             <button type="button" className="send-button" aria-label={showStop ? (control?.phase === "stopping" ? "正在停止" : "停止") : (control?.phase === "running" ? "加入队列" : "发送消息")} title={showStop ? (control?.phase === "stopping" ? "正在停止" : "停止") : (control?.phase === "running" ? "加入队列" : "发送消息")} disabled={!control || view.busy || control.phase === "stopping" || (!showStop && !hasDraft)} onClick={() => { if (showStop) void operate(() => window.nicode.stopSession(projectId, sessionId)); else void send() }}>{showStop ? <IconPlayerStop size={16} stroke={2} aria-hidden="true" /> : <IconArrowUp size={18} stroke={2} aria-hidden="true" />}</button>
           </div>
         </div>
       </div>
       </div>
-      <ul className="session-usage" aria-label="会话用量">
-        <li>
-          <IconDashboard aria-hidden="true" />
-          <span className="session-usage-metrics">
-            <span data-usage-metric="turns">轮数 {hasHistory ? usageCountFormat.format(usage.turns) : "—"}</span>
-            <span data-usage-metric="tools">工具调用 {hasHistory ? usageCountFormat.format(usage.toolCalls) : "—"}</span>
-          </span>
-        </li>
-        <li>
-          <IconDatabase aria-hidden="true" />
-          <span className="session-usage-metrics">
-            <span data-usage-metric="context">上下文 {usage.inputTokens === undefined ? "—" : usageCountFormat.format(usage.inputTokens)}{inputFromOtherModel && "（来自其他模型）"} / {contextWindow === undefined ? "—" : usageCountFormat.format(contextWindow)} Token</span>
-            <span data-usage-metric="cache">缓存命中率 {usage.cacheHitRate === undefined ? "—" : usagePercentFormat.format(usage.cacheHitRate)}</span>
-          </span>
-        </li>
-        <li aria-label="上下文占用" title="上下文占用">
-          <svg viewBox="0 0 20 20" aria-hidden="true" fill="none" strokeWidth="2.5">
-            <circle cx="10" cy="10" r="7" className="session-usage-track" />
-            {contextUsage !== undefined && contextUsage > 0 && <circle cx="10" cy="10" r="7" pathLength="100"
-              stroke="currentColor" strokeLinecap="round" strokeDasharray={`${Math.min(contextUsage * 100, 100)} 100`} transform="rotate(-90 10 10)" />}
-          </svg>
-          <span data-usage-metric="pressure">{contextUsage === undefined ? "—" : usagePercentFormat.format(contextUsage)}</span>
-        </li>
-      </ul>
-      {control?.phase === "running" && <div className="composer-caption"><span>发送的消息将加入队列</span></div>}
+      {control?.phase === "running" && <div className="composer-caption session-queue-caption"><span>发送的消息将加入队列</span></div>}
     </>} />
 }

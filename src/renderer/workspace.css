@@ -402,14 +402,21 @@ kbd { font: var(--font-size-caption)/var(--line-height-caption) var(--font-ui); 
   .welcome { grid-template-rows: minmax(min-content, 1fr) auto; }
   .welcome-hero { gap: var(--space-2); }
   .welcome-dock { padding-top: var(--space-3); }
-  .welcome .composer-context-bar, .welcome .composer-toolbar { flex-wrap: wrap; }
-  .welcome .composer-context-controls, .welcome .composer-toolbar > .composer-controls { flex: 0 0 100%; }
+  .welcome .composer-context-bar, .welcome .composer-toolbar { flex-wrap: nowrap; gap: var(--space-1); }
+  .welcome .composer-toolbar > .composer-controls:first-child { flex: none; }
+  .welcome .composer-controls-right { flex: 1; gap: var(--space-1); }
   .welcome .composer-context-controls { position: relative; }
   .welcome .context-branch-anchor { position: static; }
   .welcome .context-mode-anchor { margin-left: auto; }
   .welcome .selector-menu { max-width: min(100cqi - 52px, 256px); }
   .welcome .composer-model-picker { min-width: 0; }
+  .welcome .composer-model-picker .composer-model-reasoning { display: none; }
   .welcome .model-trigger { max-width: min(145px, 100%); }
+}
+@container (max-width: 260px) {
+  .welcome .composer-context-bar, .welcome .composer-toolbar { flex-wrap: wrap; }
+  .welcome .composer-context-controls, .welcome .composer-toolbar > .composer-controls:first-child,
+  .welcome .composer-controls-right { flex: 0 0 100%; }
 }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; } }
 

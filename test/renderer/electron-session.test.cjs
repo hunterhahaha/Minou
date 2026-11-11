@@ -313,30 +313,51 @@ async function main() {
   await until(async () => (await readUsage())[0] === "上下文 11,000（来自其他模型） / 128,000 Token")
   assert.deepEqual((await readUsage()).slice(1), ["缓存命中率 20%", "轮数 2", "工具调用 0"], "切换模型时保留会话统计")
   assert.equal(await evaluate("document.querySelector('[data-usage-metric=pressure]').textContent"), "8.6%", "占用比例使用当前模型上限")
-  assert.equal(await evaluate(`(() => {
-    const usage = document.querySelector('.session-usage'), { top } = usage.getBoundingClientRect()
-    return usage.previousElementSibling.getBoundingClientRect().bottom < top &&
-      !usage.nextElementSibling && !document.querySelector('.chat-footer .composer-caption') &&
-      [...usage.children].every(item => item.getBoundingClientRect().top === top)
-  })()`), true, "宽窗用量保持一行且会话就绪时没有快捷键提示")
+  const usagePoint = await evaluate(`(() => {
+    const rect = document.querySelector('.session-usage-trigger').getBoundingClientRect()
+    return { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2) }
+  })()`)
+  assert.equal(await evaluate("getComputedStyle(document.querySelector('.session-usage-tooltip')).visibility"), "hidden", "统计默认收起")
+  window.webContents.sendInputEvent({ type: "mouseMove", ...usagePoint })
+  await until(() => evaluate("getComputedStyle(document.querySelector('.session-usage-tooltip')).visibility === 'visible'"))
+  const usagePlacement = await evaluate(`(() => {
+    const trigger = document.querySelector('.session-usage-trigger')
+    const tooltip = document.querySelector('.session-usage-tooltip').getBoundingClientRect()
+    const send = document.querySelector('.chat-footer .send-button').getBoundingClientRect()
+    const ring = trigger.getBoundingClientRect()
+    return { toolbar: Boolean(trigger.closest('.composer-toolbar')), gap: send.left - ring.right,
+      verticalOffset: send.top - ring.top, tooltipOffset: ring.top - tooltip.bottom,
+      footerUsage: Boolean(document.querySelector('.chat-footer > .session-usage')),
+      caption: Boolean(document.querySelector('.chat-footer .composer-caption')) }
+  })()`)
+  assert.ok(usagePlacement.toolbar && usagePlacement.gap >= 0 && Math.abs(usagePlacement.verticalOffset) < 1 &&
+    usagePlacement.tooltipOffset >= -0.5 && !usagePlacement.footerUsage && !usagePlacement.caption,
+    `悬停时用量显示在发送按钮左侧圆环上方：${JSON.stringify(usagePlacement)}`)
   await copyScreenshot("electron-session-usage-light")
+  window.webContents.sendInputEvent({ type: "mouseMove", x: 2, y: 2 })
+  await until(() => evaluate("getComputedStyle(document.querySelector('.session-usage-tooltip')).visibility === 'hidden'"))
   await evaluate("document.querySelector('[aria-label=切换深色外观]').click()")
-  await evaluate("document.querySelector('[aria-label=收起侧栏]').click()")
   window.setContentSize(480, 760)
   window.webContents.setZoomFactor(1.5)
-  await until(() => evaluate("innerWidth <= 320 && document.documentElement.dataset.theme === 'dark'"))
-  assert.equal(await evaluate(`(() => {
-    const row = document.querySelector('.session-usage'), { left, right } = row.getBoundingClientRect()
-    const items = [...row.children].map(item => item.getBoundingClientRect())
-    return getComputedStyle(row).fontSize === '12px' && new Set(items.map(item => item.top)).size > 1 &&
-      items.every(item => item.left >= left && item.right <= right)
-  })()`), true, "150% 窄窗换行显示用量，不缩小字号或溢出")
+  await until(() => evaluate("innerWidth <= 320 && document.documentElement.dataset.theme === 'dark' && !document.querySelector('.sidebar')"))
+  await evaluate("document.querySelector('.session-usage-trigger').focus()")
+  const narrowUsage = await evaluate(`(() => {
+    const tooltip = document.querySelector('.session-usage-tooltip')
+    const bounds = tooltip.getBoundingClientRect()
+    const panel = document.querySelector('.main-panel').getBoundingClientRect()
+    const row = document.querySelector('.session-usage')
+    return { visibility: getComputedStyle(tooltip).visibility, fontSize: getComputedStyle(row).fontSize,
+      leftInset: bounds.left - panel.left, rightInset: panel.right - bounds.right, topInset: bounds.top - panel.top,
+      overflow: row.scrollWidth - row.clientWidth }
+  })()`)
+  assert.ok(narrowUsage.visibility === 'visible' && narrowUsage.fontSize === '12px' && narrowUsage.leftInset >= 0 &&
+    narrowUsage.rightInset >= 0 && narrowUsage.topInset >= 0 && narrowUsage.overflow <= 0,
+    `150% 深色窄窗聚焦圆环时用量浮窗可读且不溢出：${JSON.stringify(narrowUsage)}`)
   await copyScreenshot("electron-session-usage-dark-narrow")
   window.webContents.setZoomFactor(1)
   window.setContentSize(1200, 800)
-  await evaluate("document.querySelector('[aria-label=展开侧栏]').click()")
-  await until(() => evaluate("Boolean(document.querySelector('[aria-label=切换浅色外观]'))"))
-  await evaluate("document.querySelector('[aria-label=切换浅色外观]').click()")
+  await until(() => evaluate("innerWidth === 1200 && Boolean(document.querySelector('.sidebar [aria-label=切换浅色外观]'))"))
+  await evaluate("document.querySelector('.sidebar [aria-label=切换浅色外观]').click()")
   await until(() => evaluate("innerWidth === 1200 && document.documentElement.dataset.theme === 'light'"))
   await evaluate(`document.querySelector('.turn-process > summary').click()`)
   await until(() => evaluate(`document.querySelector('.turn-process').open`))

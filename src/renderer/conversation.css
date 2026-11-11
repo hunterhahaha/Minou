@@ -14,13 +14,17 @@
 .phase-loading .status-dot { background: var(--muted); }
 .chat-scroll { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; }
 .chat-messages, .chat-footer { width: min(820px, 100%); margin: 0 auto; padding: 20px 40px; }
-.chat-footer { position: relative; flex: none; padding-top: 12px; padding-bottom: 16px; }
+.chat-footer { position: relative; flex: none; padding-top: 12px; padding-bottom: 16px; container-type: inline-size; }
+.session-usage-anchor { position: relative; flex: none; }
+.session-usage-trigger { display: grid; place-items: center; width: var(--size-control); height: var(--size-control); padding: 0; border: 0; border-radius: var(--radius-control); color: var(--secondary); background: transparent; }
+.session-usage-trigger:hover { background: var(--hover); }
+.session-usage-trigger > svg { width: 20px; height: 20px; }
+.session-usage-tooltip { position: absolute; z-index: 12; right: 0; bottom: 100%; width: min(288px, 100cqi - 56px); padding: var(--space-3); border: 1px solid var(--border); border-radius: var(--radius-panel); background: var(--popover); box-shadow: var(--shadow-popover); visibility: hidden; }
+.session-usage-anchor:is(:hover, :focus-within) .session-usage-tooltip { visibility: visible; }
 .session-usage {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: var(--space-1) var(--space-6);
-  margin: var(--space-2) var(--space-2) 0;
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
   padding: 0;
   list-style: none;
   color: var(--muted);
@@ -33,7 +37,7 @@
 .session-usage > li > svg { flex: none; align-self: flex-start; width: 16px; height: 16px; margin-top: 1px; }
 .session-usage-metrics { display: flex; flex-wrap: wrap; gap: 0 var(--space-2); min-width: 0; }
 .session-usage-track { stroke: var(--border-strong); }
-.session-usage + .composer-caption { margin-top: var(--space-1); }
+.chat-footer .session-queue-caption { margin-top: var(--space-1); }
 .chat-entry { margin: 0 0 24px; color: var(--text); font-size: var(--font-size-prose); line-height: var(--line-height-prose); overflow-wrap: anywhere; }
 .message-label { display: flex; align-items: center; gap: 7px; margin-bottom: 11px; color: var(--muted); font-size: var(--font-size-note); line-height: var(--line-height-note); }
 .message-label strong { color: var(--text); font-size: var(--font-size-ui); line-height: var(--line-height-ui); font-weight: 600; }
@@ -145,6 +149,19 @@
   .chat-selectors { flex-wrap: wrap; }
   .chat-select-label select { max-width: 140px; font-size: var(--font-size-ui); line-height: var(--line-height-ui); }
   .chat-footer .composer-toolbar > .composer-controls { margin-left: auto; }
+}
+@container (max-width: 360px) {
+  .chat-footer .composer-toolbar { flex-wrap: nowrap; gap: var(--space-1); padding-inline: var(--space-2); }
+  .chat-footer .chat-selectors { flex: none; }
+  .chat-footer .chat-permission-select select { max-width: 100px; text-overflow: ellipsis; }
+  .chat-footer .composer-toolbar > .composer-controls { flex: 1; justify-content: flex-end; gap: var(--space-1); }
+  .chat-footer .composer-model-picker { min-width: 0; }
+  .chat-footer .composer-model-picker .model-trigger { max-width: min(145px, 100%); }
+  .chat-footer .composer-model-picker .composer-model-reasoning { display: none; }
+}
+@container (max-width: 210px) {
+  .chat-footer .composer-toolbar { flex-wrap: wrap; }
+  .chat-footer .chat-selectors, .chat-footer .composer-toolbar > .composer-controls { flex: 0 0 100%; }
 }
 .turn-file-changes {
   --file-added: #207749;
