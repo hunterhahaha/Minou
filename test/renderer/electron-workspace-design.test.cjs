@@ -1,10 +1,12 @@
 /** 使用真实 Electron 和 preload 验证工作台导航、摘要搜索、主题与焦点；全部数据为离线夹具。 */
 const assert = require("node:assert/strict")
-const { mkdtemp, rm, writeFile } = require("node:fs/promises")
+const { execFileSync } = require("node:child_process")
+const { mkdir, mkdtemp, rm, writeFile } = require("node:fs/promises")
 const { tmpdir } = require("node:os")
 const { join, resolve, sep } = require("node:path")
 const { app, BrowserWindow, ipcMain } = require("electron")
 const { registerWindowIpcHandlers } = require("../../dist/src/main/window-ipc.js")
+const { inspectProjectGitBranches, NON_GIT_BRANCH_STATE, switchProjectGitBranch } = require("../../dist/src/main/project-git.js")
 const { STARTUP_DATA_IPC_CHANNELS: startup, SESSION_IPC_CHANNELS: session, PROJECT_IPC_CHANNELS: projectChannels, SKILL_IPC_CHANNELS: skill, MCP_IPC_CHANNELS: mcp, PROVIDER_IPC_CHANNELS: provider } = require("../../dist/src/preload/session-api.js")
 const { createElectronWindowManager } = require("../../dist/src/main/electron-windows.js")
 let window, profile, failed = false, historyReads = 0, skillReads = 0, mcpReads = 0
@@ -285,12 +287,15 @@ async function assertPaletteContrast(state) {
       probe.style.color = 'var(' + token + ')'
       return getComputedStyle(probe).color
     }
-    const tokens = Object.fromEntries(['--canvas', '--surface', '--surface-muted', '--popover', '--focus-ring', '--surface-focus', '--field', '--field-focus', '--hover', '--selected', '--accent-soft', '--text', '--secondary', '--muted', '--accent', '--accent-hover', '--on-accent'].map(token => [token, color(token)]))
+    const tokens = Object.fromEntries(['--canvas', '--sidebar', '--surface', '--surface-muted', '--popover', '--focus-ring', '--surface-focus', '--field', '--field-focus', '--hover', '--selected', '--accent-soft', '--text', '--secondary', '--muted', '--accent', '--accent-hover', '--on-accent'].map(token => [token, color(token)]))
     probe.remove()
-    const backgrounds = Object.entries(tokens).filter(([name]) => ['--canvas', '--surface', '--surface-muted', '--popover', '--surface-focus', '--field', '--field-focus', '--hover', '--selected', '--accent-soft'].includes(name))
-    for (const selector of ['.titlebar', '.sidebar', '.app-statusbar', '.settings-dialog', '.settings-dialog-nav', '.settings-dialog-content']) {
+    const backgrounds = Object.entries(tokens).filter(([name]) => ['--canvas', '--sidebar', '--surface', '--surface-muted', '--popover', '--surface-focus', '--field', '--field-focus', '--hover', '--selected', '--accent-soft'].includes(name))
+    for (const selector of ['.titlebar', '.sidebar', '.settings-dialog', '.settings-dialog-nav', '.settings-dialog-content']) {
       const node = document.querySelector(selector)
-      if (node) (getComputedStyle(node).backgroundImage.match(/rgba?\\([^)]*\\)/g) ?? []).forEach((value, index) => backgrounds.push([selector + ' gradient stop ' + index, value]))
+      if (!node) continue
+      const style = getComputedStyle(node)
+      if (style.backgroundColor !== 'rgba(0, 0, 0, 0)') backgrounds.push([selector + ' background', style.backgroundColor])
+      ;(style.backgroundImage.match(/rgba?\\([^)]*\\)/g) ?? []).forEach((value, index) => backgrounds.push([selector + ' gradient stop ' + index, value]))
     }
     const placeholders = [...document.querySelectorAll('.settings-field input, .search-input-row input')].map((node, index) => [node.tagName.toLowerCase() + '::placeholder ' + index, getComputedStyle(node, '::placeholder').color])
     const editor = document.querySelector('.composer-editor')
@@ -345,14 +350,18 @@ async function assertWorkspacePalette(expectedColor, contentSelectors) {
   await evaluate("new Promise(done => requestAnimationFrame(() => requestAnimationFrame(done)))")
   const palette = await evaluate(`(() => {
     const panel = document.querySelector('.main-panel')
+    const header = document.querySelector('.panel-header')
     const expected = ${JSON.stringify(expectedColor)}
-    const shellGradients = ['.titlebar', '.sidebar', '.app-statusbar'].map(selector => [selector, getComputedStyle(document.querySelector(selector)).backgroundImage])
-    const surfaceChannels = [getComputedStyle(panel).backgroundColor, ...shellGradients.flatMap(([, gradient]) => gradient.match(/rgba?\\([^)]*\\)/g) ?? [])].map(color => color.match(/[\\d.]+/g).slice(0, 3).map(Number))
+    const shellStyles = ['.titlebar', '.sidebar', '.workspace-main', '.panel-header'].map(selector => getComputedStyle(document.querySelector(selector)))
+    const surfaceChannels = [getComputedStyle(panel).backgroundColor, ...shellStyles.map(style => style.backgroundColor)].map(color => color.match(/[\\d.]+/g).slice(0, 3).map(Number))
+    const panelRect = panel.getBoundingClientRect()
+    const headerRect = header.getBoundingClientRect()
     return {
       theme: document.documentElement.dataset.theme,
       canvas: getComputedStyle(panel).backgroundColor,
       surfaceChannelRanges: [0, 1, 2].map(channel => Math.max(...surfaceChannels.map(color => color[channel])) - Math.min(...surfaceChannels.map(color => color[channel]))),
-      plainContent: ['.main-panel', '.panel-header', ...${JSON.stringify(contentSelectors)}].every(selector => {
+      headerSeparatedAbove: !panel.contains(header) && headerRect.bottom <= panelRect.top + 0.5,
+      plainContent: ['.main-panel', ...${JSON.stringify(contentSelectors)}].every(selector => {
         let node = document.querySelector(selector)
         if (!node) return false
         while (node && panel.contains(node)) {
@@ -362,14 +371,17 @@ async function assertWorkspacePalette(expectedColor, contentSelectors) {
         }
         return true
       }),
-      gradientShell: shellGradients.every(([selector, gradient]) => gradient.includes('linear-gradient') && (gradient.match(/rgba?\\([^)]*\\)/g)?.length ?? 0) >= 2),
+      solidShell: shellStyles.every(style => style.backgroundImage === 'none' && style.backgroundColor !== 'rgba(0, 0, 0, 0)'),
+      noPermanentStatusbar: !document.querySelector('.app-statusbar'),
     }
   })()`)
   assert.equal(palette.canvas, expectedColor, "工作区使用浅色纯白或深色炭灰底色")
-  assert.equal(palette.plainContent, true, "工作区标题与正文容器保留纯色底面，不混入渐变或色阶")
-  assert.equal(palette.gradientShell, true, "标题栏、侧栏、导航与状态栏使用轻微渐变")
+  assert.equal(palette.headerSeparatedAbove, true, "工作区面包屑页头位于主工作区面板外侧上方，与内容区明确区分")
+  assert.equal(palette.plainContent, true, "工作区正文容器保留纯色底面，不混入渐变或色阶")
+  assert.equal(palette.solidShell, true, "标题栏、侧栏与上方页头使用纯色外壳底面，无渐变噪点")
+  assert.equal(palette.noPermanentStatusbar, true, "移除常驻底部状态栏")
   const maximumSurfaceDifference = palette.theme === "dark" ? 24 : 32
-  assert.ok(palette.surfaceChannelRanges.every(range => range <= maximumSurfaceDifference), "标题栏、侧栏、导航、状态栏与正文的背景明度接近；RGB 通道范围：" + palette.surfaceChannelRanges.join(", ") + "，上限：" + maximumSurfaceDifference)
+  assert.ok(palette.surfaceChannelRanges.every(range => range <= maximumSurfaceDifference), "标题栏、侧栏与正文的背景明度接近；RGB 通道范围：" + palette.surfaceChannelRanges.join(", ") + "，上限：" + maximumSurfaceDifference)
   await assertPaletteContrast("workspace")
 }
 /** @returns 工作台展示与新增交互的回归验证完成。 */
@@ -379,8 +391,26 @@ async function main() {
   registerWindowIpcHandlers(ipcMain, BrowserWindow)
   profile = await mkdtemp(join(tmpdir(), "nicode-workspace-design-"))
   app.setPath("userData", join(profile, "electron"))
+  const gitProjectDir = join(profile, "nicode-git-repo")
+  await mkdir(gitProjectDir)
+  const runGit = (...args) => execFileSync("git", args, {
+    cwd: gitProjectDir,
+    encoding: "utf8",
+    env: { ...process.env, LC_ALL: "C.UTF-8" },
+  }).trim()
+  runGit("init", "-b", "main")
+  runGit("config", "user.name", "NiCode Test")
+  runGit("config", "user.email", "test@nicode.local")
+  await writeFile(join(gitProjectDir, "README.md"), "# NiCode\n", "utf8")
+  runGit("add", "README.md")
+  runGit("commit", "-m", "initial")
+  runGit("branch", "feature/ui")
+  runGit("branch", "release/v2")
+  projects[0].directories = [gitProjectDir]
   let renameFails = true
+  let forceGitSwitchError = false
   let pickDirectory = false
+  const startedNewSessions = []
   const folder = join(profile, "associated")
   const transcript = "## 用户\n\n**原文**\n\n## 助手\n\n回复"
   ipcMain.handle(projectChannels.renameProject, (_event, id, name) => {
@@ -400,6 +430,24 @@ async function main() {
     assert.equal(id, PROJECT)
     projects[0].directories = projects[0].directories.filter((directory) => directory !== path)
     return { success: true }
+  })
+  ipcMain.handle(projectChannels.listProjectGitBranches, async (_event, id) => {
+    const project = projects.find((item) => item.projectId === id)
+    return project?.directories[0] ? inspectProjectGitBranches(project.directories[0]) : NON_GIT_BRANCH_STATE
+  })
+  ipcMain.handle(projectChannels.switchProjectGitBranch, async (_event, id, branch) => {
+    if (forceGitSwitchError) {
+      forceGitSwitchError = false
+      return { success: false, error: "注入分支切换失败：工作区存在未提交修改" }
+    }
+    const project = projects.find((item) => item.projectId === id)
+    return project?.directories[0]
+      ? switchProjectGitBranch(project.directories[0], branch)
+      : { success: false, error: "当前项目未关联工作目录" }
+  })
+  ipcMain.handle(session.startNewSession, (_event, projectId, input) => {
+    startedNewSessions.push({ projectId, text: input.content?.[0]?.text ?? "" })
+    return { sessionId: "context-created-session", turn: 1 }
   })
   ipcMain.handle(session.renameSession, (_event, id, sessionId, name) => {
     assert.equal(id, PROJECT)
@@ -477,12 +525,14 @@ async function main() {
   await assertWorkspacePalette("rgb(255, 255, 255)", [".welcome-scroll", ".welcome"])
   assert.equal(await evaluate("Boolean(document.querySelector('.activity-rail, .workspace-identity, .sidebar-search, .session-name svg, .workspace-badge'))"), false, "单侧栏移除重复身份、搜索、图标和空间标记")
   assert.equal(await evaluate("getComputedStyle(document.querySelector('.project-action-button')).opacity"), "0", "项目添加按钮默认隐去")
-  assert.equal(await evaluate("getComputedStyle(document.querySelector('.section-action-button')).opacity"), "0", "分组操作默认隐去")
+  const sectionActionOpacity = await evaluate("parseFloat(getComputedStyle(document.querySelector('.section-action-button')).opacity)")
+  assert.ok(sectionActionOpacity > 0.5 && sectionActionOpacity < 1, "分组操作在默认状态下保持克制弱显")
   assert.equal(await evaluate("getComputedStyle(document.querySelector('.composer-caption')).opacity"), "0", "输入提示在输入前保持安静")
   const projectRow = await evaluate("(() => { const rect = document.querySelector('.project-row').getBoundingClientRect(); return { x: Math.round(rect.x + rect.width / 2), y: Math.round(rect.y + rect.height / 2), width: rect.width } })()")
   window.webContents.sendInputEvent({ type: "mouseMove", x: projectRow.x, y: projectRow.y })
   await until(() => evaluate("getComputedStyle(document.querySelector('.project-action-button')).opacity === '1'"))
-  assert.equal(await evaluate("getComputedStyle(document.querySelector('.chats-section .section-action-button')).opacity"), "0", "悬停项目只披露当前行操作")
+  const hoveredChatsActionOpacity = await evaluate("parseFloat(getComputedStyle(document.querySelector('.chats-section .section-action-button')).opacity)")
+  assert.ok(hoveredChatsActionOpacity < 1, "悬停项目只披露当前行操作")
   assert.equal(await evaluate("getComputedStyle(document.querySelectorAll('.project-action-button')[1]).opacity"), "0", "其它项目的操作保持隐藏")
   assert.equal(await evaluate("(() => { const node = document.querySelectorAll('.project-name > span')[1]; return node.scrollWidth > node.clientWidth && getComputedStyle(node).textOverflow === 'ellipsis' })()"), true, "长项目名称省略显示，完整名称仍可通过 title 读取")
   assert.equal(await evaluate("document.querySelector('.project-row').getBoundingClientRect().width"), projectRow.width, "披露操作不挤动列表")
@@ -503,7 +553,7 @@ async function main() {
   await screenshot("workspace-sidebar-focus")
   await click(".project-action-button")
   await until(() => evaluate("location.hash.includes('/projects/') && document.activeElement.matches('.composer-editor')"))
-  assert.equal(await evaluate("document.querySelector('.breadcrumb > span').title"), projects[0].directories.join(" · "), "关联目录仍可从项目名称的悬停提示读取")
+  assert.equal(await evaluate("document.querySelector('.breadcrumb-project').title"), projects[0].directories.join(" · "), "关联目录仍可从项目名称的悬停提示读取")
   assert.equal(historyReads, 0, "渐进披露入口打开项目新聊天，不读取历史")
   await click(".new-chat")
   await until(() => evaluate("location.hash.includes('/default/new-chat')"))
@@ -514,12 +564,23 @@ async function main() {
   assert.equal(await evaluate("document.querySelector('.model-trigger').textContent.includes('GPT-5.4')"), true, "输入区保留当前模型选择入口")
   assert.equal(await evaluate(`(() => {
     const style = getComputedStyle(document.querySelector('.main-panel'))
-    return ['Top', 'Right', 'Bottom', 'Left'].every(side => style['border' + side + 'Width'] === '1px') && parseFloat(style.borderTopLeftRadius) > 0 && parseFloat(style.borderBottomLeftRadius) > 0
-  })()`), true, "工作区保留单像素边框和左侧圆角")
-  assert.equal(await evaluate(`['.titlebar', '.sidebar', '.panel-header', '.composer'].every(selector => {
-    const style = getComputedStyle(document.querySelector(selector))
-    return ['Top', 'Right', 'Bottom', 'Left'].every(side => style['border' + side + 'Width'] === '0px')
-  })`), true, "标题栏、侧栏、面包屑与输入容器通过色阶区分，无区域描边")
+    return ['Top', 'Right', 'Bottom', 'Left'].every(side => style['border' + side + 'Width'] === '1px')
+      && ['TopLeft', 'TopRight', 'BottomRight', 'BottomLeft'].every(corner => parseFloat(style['border' + corner + 'Radius']) > 0)
+  })()`), true, "主工作区保留全四周单像素边框和圆角")
+  assert.equal(await evaluate(`(() => {
+    const titlebar = getComputedStyle(document.querySelector('.titlebar'))
+    const sidebar = getComputedStyle(document.querySelector('.sidebar'))
+    const header = getComputedStyle(document.querySelector('.panel-header'))
+    const composer = getComputedStyle(document.querySelector('.composer'))
+    const dock = getComputedStyle(document.querySelector('.composer-dock'))
+    const zeroSides = style => ['Top', 'Right', 'Bottom', 'Left'].every(side => style['border' + side + 'Width'] === '0px')
+    const onePxSides = style => ['Top', 'Right', 'Bottom', 'Left'].every(side => style['border' + side + 'Width'] === '1px')
+    return zeroSides(titlebar)
+      && zeroSides(sidebar)
+      && zeroSides(header)
+      && onePxSides(composer)
+      && onePxSides(dock)
+  })()`), true, "外壳与无缝头部无多余描边，双层输入容器保留精细边框")
   const restingComposerShadow = await evaluate("getComputedStyle(document.querySelector('.composer')).boxShadow")
   const newChatSelectorAppearance = `Array.from(document.querySelectorAll('.new-chat-composer .selector-trigger')).map(node => {
     const style = getComputedStyle(node)
@@ -696,7 +757,7 @@ async function main() {
   await until(() => evaluate("Boolean(document.querySelector('.reasoning-menu'))"))
   await assertModelStates("dark")
   await key("Escape")
-  await assertWorkspacePalette("rgb(35, 35, 35)", [".chat-page", ".chat-scroll", ".chat-messages", ".final-answer"])
+  await assertWorkspacePalette("rgb(24, 24, 27)", [".chat-page", ".chat-scroll", ".chat-messages", ".final-answer"])
   assert.equal(historyReads, 1, "切换深色外观不重新读取对话历史")
   await click('[aria-label="切换浅色外观"]')
   await until(() => evaluate("document.documentElement.dataset.theme === 'light'"))
@@ -740,14 +801,36 @@ async function main() {
   await until(() => evaluate("document.activeElement.getAttribute('aria-label') === '搜索项目或对话'"))
   await input('[aria-label="搜索项目或对话"]', "NiCode")
   await key("Enter")
-  await until(() => evaluate("location.hash.includes('/projects/')"))
+  await until(() => evaluate("location.hash.includes('/projects/') && document.querySelector('.context-branch-trigger')?.textContent.trim() === 'main'"))
   assert.equal(historyReads, 1, "进入项目工作台不预载项目对话")
   await screenshot("workspace-project")
+  await click(".context-branch-trigger")
+  await until(() => evaluate("[...document.querySelectorAll('.context-branch-menu [role=menuitemradio]')].length === 3"))
+  await screenshot("workspace-git-branch-menu")
+  await evaluate("[...document.querySelectorAll('.context-branch-menu [role=menuitemradio]')].find(item => item.querySelector('strong')?.textContent === 'feature/ui').click()")
+  await until(() => evaluate("document.querySelector('.context-branch-trigger')?.textContent.trim() === 'feature/ui' && !document.querySelector('.context-branch-menu')"))
+  assert.equal(runGit("rev-parse", "--abbrev-ref", "HEAD"), "feature/ui", "切换 Git 分支后真实执行 git switch")
+  forceGitSwitchError = true
+  await click(".context-branch-trigger")
+  await until(() => evaluate("document.querySelector('.context-branch-menu [aria-checked=true]')?.textContent.trim() === 'feature/ui'"))
+  await evaluate("[...document.querySelectorAll('.context-branch-menu [role=menuitemradio]')].find(item => item.querySelector('strong')?.textContent === 'release/v2').click()")
+  await until(() => evaluate("document.querySelector('.welcome-dock .chat-error[role=alert]')?.textContent.includes('注入分支切换失败')"))
+  assert.equal(await evaluate("document.querySelector('.context-branch-trigger')?.textContent.trim()"), "feature/ui", "切换失败时保留当前 Git 分支")
+  assert.equal(runGit("rev-parse", "--abbrev-ref", "HEAD"), "feature/ui")
+  await click(".context-project-trigger")
+  await until(() => evaluate("Boolean(document.querySelector('.context-project-menu'))"))
+  await evaluate("[...document.querySelectorAll('.context-project-menu [role=menuitemradio]')].find(item => item.querySelector('strong')?.textContent.includes('较长名称')).click()")
+  await until(() => evaluate("location.hash.includes('000000000002/new-chat') && !document.querySelector('.context-branch-trigger') && !document.querySelector('.welcome-dock .chat-error')"))
+  assert.equal(await evaluate("(() => { const label = document.querySelector('.context-project-trigger .context-trigger-label'); return label.scrollWidth > label.clientWidth && getComputedStyle(label).textOverflow === 'ellipsis' })()"), true, "长项目名在输入上下文栏截断且不隐藏非 Git 规则")
+  await click(".context-project-trigger")
+  await until(() => evaluate("Boolean(document.querySelector('.context-project-menu'))"))
+  await evaluate("[...document.querySelectorAll('.context-project-menu [role=menuitemradio]')].find(item => item.querySelector('strong')?.textContent === 'NiCode').click()")
+  await until(() => evaluate(`location.hash.includes('${PROJECT}/new-chat') && document.querySelector('.context-branch-trigger')?.textContent.trim() === 'feature/ui'`))
   await click('[aria-label="切换深色外观"]')
   await until(() => evaluate("document.documentElement.dataset.theme === 'dark'"))
   await evaluate("document.activeElement.blur()")
   await screenshot("workspace-dark")
-  await assertWorkspacePalette("rgb(35, 35, 35)", [".welcome-scroll", ".welcome"])
+  await assertWorkspacePalette("rgb(24, 24, 27)", [".welcome-scroll", ".welcome"])
   await nativeClick('[aria-label="权限"]')
   await until(() => evaluate("Boolean(document.querySelector('.permission-menu'))"))
   assert.equal(await evaluate(permissionMenuFits), true, "深色主题的新对话权限选项有留白且位于窗口内")
@@ -757,18 +840,18 @@ async function main() {
   await evaluate("document.activeElement.blur()")
   window.webContents.sendInputEvent({ type: "mouseMove", x: 4, y: 4 })
   await evaluate("Promise.all(document.querySelector('.composer').getAnimations().map(animation => animation.finished))")
-  const restingDarkComposer = await evaluate("getComputedStyle(document.querySelector('.composer')).backgroundColor.match(/[\\d.]+/g).slice(0, 3).map(Number)")
+  const darkCanvasChannels = await evaluate("getComputedStyle(document.querySelector('.main-panel')).backgroundColor.match(/[\\d.]+/g).slice(0, 3).map(Number)")
   await evaluate("document.querySelector('.composer-editor').focus()")
   await screenshot("workspace-dark-focus")
   assert.equal(await evaluate(`(() => {
     const style = getComputedStyle(document.querySelector('.composer'))
     const channels = style.backgroundColor.match(/[\\d.]+/g).slice(0, 3).map(Number)
-    return channels.every((value, index) => value < ${JSON.stringify(restingDarkComposer)}[index]) && style.boxShadow !== 'none' && style.boxShadow.replace(/\\([^)]*\\)/g, '').split(',').length >= 2 && style.outlineStyle === 'none'
-  })()`), true, "深色输入框聚焦时整体加深并显示柔和阴影，不显示描边")
+    return channels.every((value, index) => value > ${JSON.stringify(darkCanvasChannels)}[index]) && style.boxShadow !== 'none' && style.boxShadow.replace(/\\([^)]*\\)/g, '').split(',').length >= 2 && style.outlineStyle === 'none'
+  })()`), true, "深色输入卡片保持高于画布的悬浮质感，聚焦时显示柔和阴影且不显示描边")
   await window.reload()
   await until(() => evaluate("document.documentElement.dataset.theme === 'dark' && Boolean(document.querySelector('.welcome'))"))
   assert.equal(await evaluate("localStorage.getItem('nicode.appearance')"), "dark", "重新载入后保留主题")
-  await assertWorkspacePalette("rgb(35, 35, 35)", [".welcome-scroll", ".welcome"])
+  await assertWorkspacePalette("rgb(24, 24, 27)", [".welcome-scroll", ".welcome"])
   await click(".sidebar-settings")
   await until(() => evaluate("Boolean(document.querySelector('.provider-detail'))"))
   await screenshot("workspace-settings-dark")
@@ -927,6 +1010,8 @@ async function main() {
   await click(projectMore)
   await until(() => evaluate("document.activeElement.textContent === '设置关联目录'"))
   await key("ArrowDown")
+  assert.equal(await evaluate("document.activeElement.textContent"), "新建团队会话")
+  await key("ArrowDown")
   assert.equal(await evaluate("document.activeElement.textContent"), "重命名")
   await key("Escape")
   await until(() => evaluate("document.activeElement.matches('.project-row .sidebar-more') && !document.querySelector('.sidebar-action-menu')"))
@@ -948,7 +1033,7 @@ async function main() {
   assert.equal(await evaluate("document.querySelector('#sidebar-target-name').value"), "NiCode")
   await input(nameField, "  NiCode Workspace  ")
   await click(dialog + " button[type=submit]")
-  await until(() => evaluate("document.querySelector('.breadcrumb > span').textContent === 'NiCode Workspace'"))
+  await until(() => evaluate("document.querySelector('.breadcrumb-project').textContent === 'NiCode Workspace'"))
   await click(projectSessionMore)
   await click(menu + " button:first-child")
   await until(() => evaluate("document.activeElement.id === 'sidebar-target-name'"))
@@ -981,13 +1066,30 @@ async function main() {
   assert.equal(await evaluate("location.hash"), originalRoute)
   assert.equal(historyReads, historyBeforeCopy, "后台复制和重命名均不导航或重新读取对话")
 
+  await click(".breadcrumb-session")
+  await until(() => evaluate("document.activeElement?.matches('.breadcrumb-rename-input')"))
+  await input(".breadcrumb-rename-input", "放弃保存的草稿")
+  await key("Escape")
+  await until(() => evaluate("!document.querySelector('.breadcrumb-rename-input') && document.activeElement?.matches('.breadcrumb-session')"))
+  assert.equal(await evaluate("document.querySelector('.breadcrumb strong')?.textContent"), "已重命名的项目对话")
+  renameFails = true
+  await click(".breadcrumb-session")
+  await until(() => evaluate("document.activeElement?.matches('.breadcrumb-rename-input')"))
+  await input(".breadcrumb-rename-input", "  头部内联重命名  ")
+  await key("Enter")
+  await until(() => evaluate("document.querySelector('.breadcrumb-rename-error[role=alert]')?.textContent.includes('保存失败')"))
+  assert.equal(await evaluate("document.querySelector('.breadcrumb-rename-input')?.value"), "  头部内联重命名  ")
+  assert.equal(await evaluate("document.activeElement?.matches('.breadcrumb-rename-input')"), true, "重命名失败保留编辑输入与焦点以支持重试")
+  await key("Enter")
+  await until(() => evaluate("document.querySelector('.breadcrumb strong')?.textContent === '头部内联重命名' && document.querySelector('.project-sessions .session-name')?.textContent === '头部内联重命名'"))
+
   await click('.project-name')
   await until(() => evaluate("!document.querySelector('.project-sessions')"))
   assert.equal(await evaluate("document.querySelector('.project-row').classList.contains('project-row-active')"), false, "收起当前对话所属项目不恢复项目行高亮")
   await click('.project-name')
   await until(() => evaluate("Boolean(document.querySelector('.project-sessions .session-name[aria-current=\"page\"]'))"))
-  await click('.project-action-button')
-  await until(() => evaluate("location.hash.includes('/projects/') && Boolean(document.querySelector('.project-row-active'))"))
+  await click('.breadcrumb-project')
+  await until(() => evaluate("location.hash.includes('/projects/') && location.hash.endsWith('/new-chat') && Boolean(document.querySelector('.project-row-active')) && document.activeElement?.matches('.composer-editor')"))
   assert.equal(await evaluate("document.querySelector('.project-name').getAttribute('aria-current')"), "page", "项目新聊天页面仍标记当前项目入口")
 
   const sidebarFixture = [4, 1, 12, 3, 9, 6, 10, 2, 8, 11, 5, 7].map((number) => ({
@@ -1067,6 +1169,26 @@ async function main() {
   await until(() => evaluate("document.querySelectorAll('.project-sessions').length === 2"))
   assert.equal(await evaluate("document.querySelectorAll('.project-sessions')[0].querySelectorAll('.session-name').length"), 5)
   assert.equal(await evaluate("Boolean(document.querySelector('.project-list > li:first-child .session-list-more'))"), false, "恰好五条无需展开")
+
+  await click(".new-team-chat")
+  await until(() => evaluate("location.hash.includes('/default/new-chat') && location.hash.includes('mode=work') && !document.querySelector('.context-branch-trigger')"))
+  await input('[aria-label="任务描述"]', "保留文本切换项目")
+  await click(".context-project-trigger")
+  await until(() => evaluate("Boolean(document.querySelector('.context-project-menu'))"))
+  await evaluate("[...document.querySelectorAll('.context-project-menu [role=menuitemradio]')].find(item => item.querySelector('strong')?.textContent === 'NiCode Workspace').click()")
+  await until(() => evaluate(`location.hash.includes('${PROJECT}/new-chat') && location.hash.includes('mode=work') && document.querySelector('.composer-editor')?.textContent === '保留文本切换项目' && document.activeElement?.matches('.composer-editor')`))
+  await click(".new-chat")
+  await until(() => evaluate("location.hash.includes('/default/new-chat') && !location.hash.includes('mode=work')"))
+  await input('[aria-label="任务描述"]', "发往选定项目的新对话")
+  await click(".context-project-trigger")
+  await until(() => evaluate("Boolean(document.querySelector('.context-project-menu'))"))
+  await evaluate("[...document.querySelectorAll('.context-project-menu [role=menuitemradio]')].find(item => item.querySelector('strong')?.textContent === 'NiCode Workspace').click()")
+  await until(() => evaluate(`location.hash.includes('${PROJECT}/new-chat') && document.querySelector('.composer-editor')?.textContent === '发往选定项目的新对话'`))
+  await until(() => evaluate("!document.querySelector('.send-button').disabled"))
+  await click(".send-button")
+  await until(() => startedNewSessions.length === 1)
+  assert.deepEqual(startedNewSessions[0], { projectId: PROJECT, text: "发往选定项目的新对话" }, "在上下文栏选定项目后新对话归属该项目")
+  await until(() => evaluate("location.hash.includes('/sessions/' + " + JSON.stringify(PROJECT) + " + '/context-created-session')"))
 
   window.setOpacity(0)
   window.setSkipTaskbar(true)

@@ -292,6 +292,8 @@ async function testRegistersIpcAndWindowLifecycle(): Promise<void> {
       PROJECT_IPC_CHANNELS.renameProject,
       PROJECT_IPC_CHANNELS.addProjectDirectory,
       PROJECT_IPC_CHANNELS.removeProjectDirectory,
+      PROJECT_IPC_CHANNELS.listProjectGitBranches,
+      PROJECT_IPC_CHANNELS.switchProjectGitBranch,
       ...Object.values(MCP_IPC_CHANNELS),
       ...Object.values(SKILL_IPC_CHANNELS),
     ])

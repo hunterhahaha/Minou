@@ -5,11 +5,13 @@ import { createPortal } from "react-dom"
 import { createRoot } from "react-dom/client"
 import { HashRouter, Navigate, Outlet, Route, Routes, useMatch, useNavigate, useParams, useOutletContext, useSearchParams } from "react-router"
 import {
+  IconCheck,
   IconChevronDown,
   IconDots,
   IconFolder,
   IconFolderOpen,
   IconFolderPlus,
+  IconGitBranch,
   IconLayoutSidebar,
   IconLayoutSidebarRight,
   IconPlus,
@@ -24,7 +26,13 @@ import {
   IconTerminal2,
   IconUsers,
 } from "@tabler/icons-react"
-import type { DirectorySelection, ProjectSummary, ProviderSummary, SessionSummary } from "../preload/session-api.ts"
+import type {
+  DirectorySelection,
+  ProjectGitBranchState,
+  ProjectSummary,
+  ProviderSummary,
+  SessionSummary,
+} from "../preload/session-api.ts"
 import { preferredReasoningLevel } from "../../runtime/model/src/reasoning.ts"
 import { SettingsDialog } from "./settings-dialog.tsx"
 import type { SkillCache } from "./skill-settings.tsx"
@@ -245,10 +253,7 @@ function Workspace() {
   const currentKind = workspaceRoute.page === "session"
     ? sessionsState.view(sessionKey(groupId, workspaceRoute.sessionId)).kind
     : undefined
-  const activeMode = workspaceRoute.page === "new-chat" ? draftMode
-    : currentKind === "router" ? "work" : currentKind === "ordinary" ? "chat" : undefined
-  const newConversationLabel = activeMode === "work" ? "新团队会话" : "新聊天"
-  const createConversationLabel = activeMode === "work" ? "新建团队会话" : "新建聊天"
+  const newConversationLabel = draftMode === "work" ? "新团队会话" : "新聊天"
   const newDraftKey = sessionKey(groupId, draftMode === "work" ? "$new-work" : "$new-chat")
   const [, setBrowserVersion] = useState(0)
   const [teamSessions] = useState(() => new TeamSessionState(window.nicode))
@@ -266,9 +271,16 @@ function Workspace() {
   const [sidebarName, setSidebarName] = useState("")
   const [sidebarBusy, setSidebarBusy] = useState(false)
   const [sidebarError, setSidebarError] = useState<string | null>(null)
+  const [renamingBreadcrumbSession, setRenamingBreadcrumbSession] = useState(false)
+  const [breadcrumbSessionName, setBreadcrumbSessionName] = useState("")
+  const [breadcrumbRenameBusy, setBreadcrumbRenameBusy] = useState(false)
+  const [breadcrumbRenameError, setBreadcrumbRenameError] = useState<string | null>(null)
   const [copyStatus, setCopyStatus] = useState<{ text: string; error: boolean } | null>(null)
   const sidebarMenuRef = useRef<HTMLDivElement>(null)
   const sidebarDialogRef = useRef<HTMLElement>(null)
+  const breadcrumbInputRef = useRef<HTMLInputElement>(null)
+  const breadcrumbSessionButtonRef = useRef<HTMLButtonElement>(null)
+  const skipBreadcrumbBlurCommitRef = useRef(false)
   useDialogFocus(sidebarDialogRef, sidebarDialog !== null)
 
   useLayoutEffect(() => {
@@ -300,7 +312,11 @@ function Workspace() {
     return () => window.clearTimeout(timer)
   }, [copyStatus])
 
-  const [openMenu, setOpenMenu] = useState<"permission" | null>(null)
+  const [openMenu, setOpenMenu] = useState<"permission" | "project" | "branch" | null>(null)
+  const [gitBranchState, setGitBranchState] = useState<ProjectGitBranchState | null>(null)
+  const [switchingGitBranch, setSwitchingGitBranch] = useState(false)
+  const [gitSwitchError, setGitSwitchError] = useState<string | undefined>()
+  const gitBranchRequestIdRef = useRef(0)
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [projectsOpen, setProjectsOpen] = useState(true)
   const [chatsOpen, setChatsOpen] = useState(true)
@@ -313,7 +329,7 @@ function Workspace() {
   const [projectDialogError, setProjectDialogError] = useState<string | null>(null)
   const [selectingProjectDirectory, setSelectingProjectDirectory] = useState(false)
   const [creatingProject, setCreatingProject] = useState(false)
-  const [focusComposerAfterNavigation, setFocusComposerAfterNavigation] = useState(false)
+  const [focusDraftKey, setFocusDraftKey] = useState<string | null>(null)
   const [settingsDialogOpen, setSettingsDialogOpen] = useState(false)
   const [settingsSection, setSettingsSection] = useState<"models" | "mcp" | "skills">("models")
   const [searchOpen, setSearchOpen] = useState(false)
@@ -362,6 +378,22 @@ function Workspace() {
   }
 
   /**
+   * 持久化会话新名称，并同步工作区缓存与所属分组的侧栏摘要。
+   * @param projectId 会话所属分组 ID；独立对话传 "default"。
+   * @param sessionId 目标持久化会话 ID。
+   * @param name 去除首尾空白后的非空会话名称。
+   * @returns 更新后的会话摘要。
+   * @throws 当 IPC 重命名失败时向上抛出错误，由调用方负责恢复与提示。
+   */
+  async function persistSessionRename(projectId: string, sessionId: string, name: string): Promise<SessionSummary> {
+    const summary = await window.nicode.renameSession(projectId, sessionId, name)
+    const key = sessionKey(projectId, sessionId)
+    if (sessionsState.has(key)) sessionsState.setView(key, { summary })
+    await refreshSessionSummaries(projectId)
+    return summary
+  }
+
+  /**
    * 提交名称并同步侧栏及对话缓存。
    * @returns 保存或错误提示完成。
    */
@@ -378,10 +410,7 @@ function Workspace() {
           ? { status: "ready", value: current.value.map((item) => item.projectId === projectId ? { ...item, name: project.name, updatedAt: project.updatedAt } : item) }
           : current)
       } else {
-        const summary = await window.nicode.renameSession(projectId, sessionId, name)
-        const key = sessionKey(projectId, sessionId)
-        if (sessionsState.has(key)) sessionsState.setView(key, { summary })
-        await refreshSessionSummaries(projectId)
+        await persistSessionRename(projectId, sessionId, name)
       }
       setSidebarDialog(null)
     } catch (error) { setSidebarError(errorMessage(error)) }
@@ -505,24 +534,15 @@ function Workspace() {
   /**
    * 切换到 default 或指定 Project 的新聊天路由。
    * @param projectId 指定时表示项目分组；省略时表示 default 分组。
-   * @param mode 首发模式，默认延续当前模式。
+   * @param mode 首发模式，默认为普通聊天。
    * @returns 导航完成时无返回值。
    */
-  function navigateToNewChat(projectId?: string, mode: WorkspaceMode = activeMode ?? "chat"): void {
+  function navigateToNewChat(projectId?: string, mode: WorkspaceMode = "chat"): void {
     setOpenMenu(null)
     const path = projectId === undefined
       ? "/default/new-chat"
       : `/projects/${encodeURIComponent(projectId)}/new-chat`
     navigate(mode === "work" ? path + "?mode=work" : path)
-  }
-
-  /**
-   * 在当前分组打开目标模式的新会话页，保留各自草稿。
-   * @param mode 目标模式。
-   */
-  function switchMode(mode: WorkspaceMode): void {
-    if (activeMode === mode || (workspaceRoute.page === "new-chat" && sessionsState.view(newDraftKey).busy)) return
-    navigateToNewChat(groupId === "default" ? undefined : groupId, mode)
   }
 
   /**
@@ -537,13 +557,14 @@ function Workspace() {
   }
 
   /**
-   * 切换到指定分组的新聊天并聚焦任务输入框。
+   * 切换到指定分组与模式的新会话并聚焦任务输入框。
    * @param projectId 指定时使用该项目；省略时使用 default 分组。
+   * @param mode 首发模式，默认为普通聊天。
    * @returns 输入框获得焦点时无返回值；已有草稿保持不变。
    */
-  function focusNewChatComposer(projectId?: string): void {
-    setFocusComposerAfterNavigation(true)
-    navigateToNewChat(projectId)
+  function focusNewChatComposer(projectId?: string, mode: WorkspaceMode = "chat"): void {
+    setFocusDraftKey(sessionKey(projectId ?? "default", mode === "work" ? "$new-work" : "$new-chat"))
+    navigateToNewChat(projectId, mode)
   }
 
   /**
@@ -675,18 +696,18 @@ function Workspace() {
       if (!(event.ctrlKey || event.metaKey) || event.isComposing || document.querySelector('[aria-modal="true"]')) return
       if (event.key.toLowerCase() === "k") { event.preventDefault(); setOpenMenu(null); setSearchOpen(true) }
       if (event.key.toLowerCase() === "b") { event.preventDefault(); setSidebarOpen((current) => !current) }
-      if (event.key.toLowerCase() === "o" && event.shiftKey) { event.preventDefault(); focusNewChatComposer(groupId === "default" ? undefined : groupId) }
+      if (event.key.toLowerCase() === "o" && event.shiftKey) { event.preventDefault(); focusNewChatComposer(groupId === "default" ? undefined : groupId, "chat") }
       if (event.key === ",") { event.preventDefault(); openSettingsDialog() }
     }
     window.addEventListener("keydown", workspaceShortcut)
     return () => window.removeEventListener("keydown", workspaceShortcut)
-  }, [groupId, activeMode])
+  }, [groupId])
 
   useEffect(() => {
-    if (!focusComposerAfterNavigation || workspaceRoute.page !== "new-chat") return
+    if (focusDraftKey === null || workspaceRoute.page !== "new-chat" || newDraftKey !== focusDraftKey) return
     if (!document.querySelector('[aria-modal="true"]')) composerRef.current?.focus()
-    setFocusComposerAfterNavigation(false)
-  }, [focusComposerAfterNavigation, workspaceRoute.page, draftMode])
+    setFocusDraftKey(null)
+  }, [focusDraftKey, workspaceRoute.page, newDraftKey])
 
   useEffect(() => {
     if (openMenu === null) return
@@ -738,6 +759,7 @@ function Workspace() {
   const activeProject = workspaceRoute.group === "project" && projects.status === "ready"
     ? projects.value.find((project) => project.projectId === workspaceRoute.projectId)
     : undefined
+  const activePrimaryDirectory = activeProject?.directories[0]
   const currentSessions = groupId === "default"
     ? defaultSessions.status === "ready" ? defaultSessions.value : []
     : activeProject?.sessions ?? []
@@ -746,8 +768,174 @@ function Workspace() {
   const teamMembersOpen = currentKind === "router" && teamMembersRouter === browserOwner
   const browserState = browserTags.get(browserOwner)
   const browserExpanded = browserState.narrowPanel === "browser"
-  const currentSession = workspaceRoute.page === "session" ? currentSessions.find((session) => session.sessionId === workspaceRoute.sessionId) : undefined
+  const currentRouteSessionId = workspaceRoute.page === "session" ? workspaceRoute.sessionId : undefined
+  const activeSessionKey = currentRouteSessionId ? sessionKey(groupId, currentRouteSessionId) : undefined
+  const currentSession = workspaceRoute.page === "session"
+    ? (currentSessions.find((session) => session.sessionId === workspaceRoute.sessionId)
+      ?? (activeSessionKey && sessionsState.has(activeSessionKey) ? sessionsState.sessionViewsByKey[activeSessionKey]?.summary : undefined))
+    : undefined
   const runningCount = Object.values(sessionsState.sessionViewsByKey).filter((view) => view.control?.phase === "running" || view.control?.phase === "stopping").length
+
+  useEffect(() => {
+    skipBreadcrumbBlurCommitRef.current = false
+    setRenamingBreadcrumbSession(false)
+    setBreadcrumbSessionName("")
+    setBreadcrumbRenameBusy(false)
+    setBreadcrumbRenameError(null)
+  }, [workspaceRoute.page, groupId, currentRouteSessionId])
+
+  useEffect(() => {
+    if (!renamingBreadcrumbSession) return
+    const input = breadcrumbInputRef.current
+    if (!input) return
+    input.focus()
+    input.select()
+  }, [renamingBreadcrumbSession])
+
+  /**
+   * 同步指定 Project 主目录的 Git 分支状态，使用递增请求号丢弃过期响应。
+   * @param projectId 非 default Project UUID。
+   * @returns 分支查询完成；无法读取或未提供分支 handler 时收起分支入口。
+   */
+  async function loadProjectGitBranches(projectId: string): Promise<void> {
+    const requestId = ++gitBranchRequestIdRef.current
+    try {
+      const state = await window.nicode.listProjectGitBranches(projectId)
+      if (requestId === gitBranchRequestIdRef.current) setGitBranchState(state)
+    } catch {
+      if (requestId === gitBranchRequestIdRef.current) setGitBranchState(null)
+    }
+  }
+
+  useEffect(() => {
+    setGitSwitchError(undefined)
+    setOpenMenu((current) => current === "branch" ? null : current)
+    if (workspaceRoute.page !== "new-chat" || !activeProject || !activePrimaryDirectory) {
+      gitBranchRequestIdRef.current++
+      setGitBranchState(null)
+      return
+    }
+    const targetProjectId = activeProject.projectId
+    void loadProjectGitBranches(targetProjectId)
+    /** 窗口重新获得焦点时同步外部 Git CLI 变更的当前分支与列表。 */
+    function handleWindowFocus(): void {
+      void loadProjectGitBranches(targetProjectId)
+    }
+    window.addEventListener("focus", handleWindowFocus)
+    return () => {
+      gitBranchRequestIdRef.current++
+      window.removeEventListener("focus", handleWindowFocus)
+    }
+  }, [workspaceRoute.page, activeProject?.projectId, activePrimaryDirectory])
+
+  /**
+   * 在新聊天上下文栏切换归属工作区或项目，并在目标草稿为空且不含跨项目文件引用时迁移当前输入内容。
+   * @param targetProjectId 目标 Project UUID；省略时切换为独立对话（default）。
+   * @returns 路由已切换，保留当前普通/团队模式并将焦点还给新聊天输入框。
+   */
+  function selectNewChatProject(targetProjectId?: string): void {
+    const targetGroupId = targetProjectId ?? "default"
+    if (targetGroupId === groupId) {
+      setOpenMenu(null)
+      return
+    }
+    const modeSuffix = draftMode === "work" ? "$new-work" : "$new-chat"
+    const currentDraft = sessionsState.draftsByKey[newDraftKey]
+    const targetDraftKey = sessionKey(targetGroupId, modeSuffix)
+    const targetDraft = sessionsState.draftsByKey[targetDraftKey]
+    const currentMessage = serializeComposerMessage(currentDraft)
+    const targetMessage = serializeComposerMessage(targetDraft)
+    const targetEmpty = !targetMessage.content[0].text.trim() && !(targetMessage.fileReferences?.length)
+    const canTransferPlainText = currentMessage.content[0].text.trim().length > 0 && !(currentMessage.fileReferences?.length)
+    if (currentDraft && targetEmpty && canTransferPlainText) {
+      sessionsState.setDraft(targetDraftKey, currentDraft)
+      sessionsState.setDraft(newDraftKey)
+    }
+    focusNewChatComposer(targetProjectId, draftMode)
+  }
+
+  /**
+   * 通过主进程在当前项目主目录执行 `git switch`，成功后更新分支状态，失败时保留原分支并报告真实错误。
+   * @param branch 目标本地分支名称。
+   * @returns 分支切换请求结束；所有错误均转为页面警告提示。
+   */
+  async function selectProjectGitBranch(branch: string): Promise<void> {
+    if (!activeProject || switchingGitBranch) return
+    const targetProjectId = activeProject.projectId
+    const requestId = ++gitBranchRequestIdRef.current
+    setOpenMenu(null)
+    setSwitchingGitBranch(true)
+    setGitSwitchError(undefined)
+    try {
+      const result = await window.nicode.switchProjectGitBranch(targetProjectId, branch)
+      if (result.success) {
+        if (requestId === gitBranchRequestIdRef.current) setGitBranchState(result.branchState)
+      } else {
+        setGitSwitchError(result.error)
+        void loadProjectGitBranches(targetProjectId)
+      }
+    } catch (error) {
+      setGitSwitchError(errorMessage(error))
+      void loadProjectGitBranches(targetProjectId)
+    } finally {
+      setSwitchingGitBranch(false)
+    }
+  }
+
+  /**
+   * 进入页头当前对话名称的原地重命名状态。
+   * @returns 处于已有持久化会话页面时开启编辑框；其余路由保持静态标题。
+   */
+  function startBreadcrumbRename(): void {
+    if (!currentSession) return
+    skipBreadcrumbBlurCommitRef.current = false
+    setBreadcrumbSessionName(currentSession.name)
+    setBreadcrumbRenameError(null)
+    setRenamingBreadcrumbSession(true)
+  }
+
+  /**
+   * 取消页头对话名称重命名，丢弃未提交输入并避免后续失焦重复提交。
+   * @param restoreFocus 是否在退出编辑后将焦点还原到标题按钮。
+   * @returns 编辑状态已重置。
+   */
+  function cancelBreadcrumbRename(restoreFocus = false): void {
+    skipBreadcrumbBlurCommitRef.current = true
+    setRenamingBreadcrumbSession(false)
+    setBreadcrumbRenameError(null)
+    if (restoreFocus) queueMicrotask(() => breadcrumbSessionButtonRef.current?.focus())
+  }
+
+  /**
+   * 提交页头编辑后的对话名称；空白或未变化时直接退出，失败时保留输入并展示错误提示。
+   * @param trigger 触发来源：回车提交（submit）或失焦提交（blur）。
+   * @returns 重命名处理完成；IPC 错误已转为行内提示且可再次提交。
+   */
+  async function commitBreadcrumbRename(trigger: "submit" | "blur"): Promise<void> {
+    if (trigger === "blur" && skipBreadcrumbBlurCommitRef.current) {
+      skipBreadcrumbBlurCommitRef.current = false
+      return
+    }
+    if (breadcrumbRenameBusy || workspaceRoute.page !== "session" || !currentSession) return
+    const trimmed = breadcrumbSessionName.trim()
+    if (!trimmed || trimmed === currentSession.name) {
+      setRenamingBreadcrumbSession(false)
+      setBreadcrumbRenameError(null)
+      if (trigger === "submit") queueMicrotask(() => breadcrumbSessionButtonRef.current?.focus())
+      return
+    }
+    setBreadcrumbRenameBusy(true)
+    setBreadcrumbRenameError(null)
+    try {
+      await persistSessionRename(groupId, currentSession.sessionId, trimmed)
+      setRenamingBreadcrumbSession(false)
+      if (trigger === "submit") queueMicrotask(() => breadcrumbSessionButtonRef.current?.focus())
+    } catch (error) {
+      setBreadcrumbRenameError(errorMessage(error))
+    } finally {
+      setBreadcrumbRenameBusy(false)
+    }
+  }
 
   /**
    * 保存新聊天选择的全局默认模型，成功后同步本地默认标记；失败时保留原选择并显示错误。
@@ -810,15 +998,21 @@ function Workspace() {
 
   return <div className="app-shell">
     <header className="titlebar">
-      <div className="titlebar-brand"><span className="brand-mark" aria-hidden="true"><IconTerminal2 size={17} stroke={1.6} /></span><span className="brand-name">NiCode</span></div>
-      <button className="titlebar-search" type="button" disabled={settingsDialogOpen || projectDialogOpen || searchOpen} onClick={() => setSearchOpen(true)} aria-label="搜索工作区"><IconSearch size={14} /><span>搜索项目和对话</span><kbd>Ctrl K</kbd></button>
+      <div className="titlebar-left">
+        <div className="titlebar-brand"><span className="brand-mark" aria-hidden="true"><IconTerminal2 size={13} stroke={1.9} /></span><span className="brand-name">NiCode</span></div>
+        <button type="button" className="sidebar-toggle" aria-label={sidebarOpen ? "收起侧栏" : "展开侧栏"} title={sidebarOpen ? "收起侧栏 · Ctrl B" : "展开侧栏 · Ctrl B"} onClick={() => setSidebarOpen((current) => !current)}><IconLayoutSidebar size={16} stroke={1.6} aria-hidden="true" /></button>
+        <button className="titlebar-search" type="button" disabled={settingsDialogOpen || projectDialogOpen || searchOpen} onClick={() => setSearchOpen(true)} aria-label="搜索工作区" title="搜索项目和对话 · Ctrl K"><IconSearch size={16} stroke={1.6} aria-hidden="true" /></button>
+      </div>
+      <div className="titlebar-actions">
+        {runningCount > 0 && <span className="titlebar-running" role="status"><i className="status-dot" />{runningCount} 个对话运行中</span>}
+      </div>
       <WindowControls />
     </header>
     <div className="workspace-shell">
       {sidebarOpen && <aside className="sidebar" aria-label="工作区侧栏">
-        <div className="sidebar-toolbar">
-          <button className="new-chat" type="button" title={`${newConversationLabel} · Ctrl Shift O`} aria-current={workspaceRoute.page === "new-chat" && workspaceRoute.group === "default" ? "page" : undefined} onClick={() => focusNewChatComposer()}><IconPlus size={17} stroke={1.6} aria-hidden="true" /><span>{newConversationLabel}</span><kbd>Ctrl ⇧ O</kbd></button>
-          <button type="button" className="sidebar-toggle" aria-label="收起侧栏" title="收起侧栏 · Ctrl B" onClick={() => setSidebarOpen(false)}><IconLayoutSidebar size={17} stroke={1.6} aria-hidden="true" /></button>
+        <div className="sidebar-create" aria-label="创建对话">
+          <button className="new-chat sidebar-create-item" type="button" title="新聊天 · Ctrl Shift O" aria-current={workspaceRoute.page === "new-chat" && workspaceRoute.group === "default" && draftMode === "chat" ? "page" : undefined} onClick={() => focusNewChatComposer(undefined, "chat")}><IconPlus size={16} stroke={1.6} aria-hidden="true" /><span>新聊天</span></button>
+          <button className="new-team-chat sidebar-create-item" type="button" title="新团队会话" aria-current={workspaceRoute.page === "new-chat" && workspaceRoute.group === "default" && draftMode === "work" ? "page" : undefined} onClick={() => focusNewChatComposer(undefined, "work")}><IconUsers size={16} stroke={1.6} aria-hidden="true" /><span>新团队会话</span></button>
         </div>
         <nav className="sidebar-scroll" aria-label="项目和对话">
           <section className="sidebar-section project-section" aria-label="项目">
@@ -835,11 +1029,11 @@ function Workspace() {
                         {expandedProjects.has(project.projectId) ? <IconFolderOpen stroke={1.6} aria-hidden="true" /> : <IconFolder stroke={1.6} aria-hidden="true" />}
                         <span>{project.name}</span>
                       </button>
-                      <button className="project-action-button" type="button" aria-label={`在 ${project.name} 中${createConversationLabel}`} title={`在 ${project.name} 中${createConversationLabel}`} onClick={() => focusNewChatComposer(project.projectId)}><IconPlus size={16} stroke={1.6} aria-hidden="true" /></button>
+                      <button className="project-action-button" type="button" aria-label={`在 ${project.name} 中新建聊天`} title={`在 ${project.name} 中新建聊天`} onClick={() => focusNewChatComposer(project.projectId, "chat")}><IconPlus size={16} stroke={1.6} aria-hidden="true" /></button>
                       <SidebarMore target={project} expanded={sidebarMenu?.target.projectId === project.projectId && sidebarMenu.target.sessionId === undefined} onOpen={openSidebarMenu} />
                     </div>
                     {expandedProjects.has(project.projectId) && <div className="project-sessions"><SessionList projectId={project.projectId} sessions={project.sessions} activeSessionId={workspaceRoute.page === "session" && workspaceRoute.group === "project" && workspaceRoute.projectId === project.projectId ? workspaceRoute.sessionId : undefined} onOpenSession={navigateToSession} menuAnchor={sidebarMenu?.target} onMore={openSidebarMenu} />
-                      {project.sessions.length === 0 && <button className="project-first-chat" type="button" onClick={() => focusNewChatComposer(project.projectId)}>{activeMode === "work" ? "开始第一个团队会话" : "开始第一段对话"} <IconArrowUpRight size={12} /></button>}
+                      {project.sessions.length === 0 && <button className="project-first-chat" type="button" onClick={() => focusNewChatComposer(project.projectId, "chat")}>开始第一段对话 <IconArrowUpRight size={12} /></button>}
                     </div>}
                   </li>)}</ul>)}
             </>}
@@ -847,7 +1041,7 @@ function Workspace() {
           <section className="sidebar-section chats-section" aria-label="聊天">
             <div className="section-heading-row">
               <button className="section-heading" type="button" aria-expanded={chatsOpen} onClick={() => setChatsOpen((current) => !current)}><span>独立对话</span>{defaultSessions.status === "ready" && <span className="section-count">{defaultSessions.value.length}</span>}<span className={chatsOpen ? "chevron" : "chevron collapsed"}><IconChevronDown size={12} /></span></button>
-              <button className="section-action section-action-button" type="button" aria-label={createConversationLabel} title={createConversationLabel} onClick={() => focusNewChatComposer()}><IconPlus size={16} stroke={1.6} aria-hidden="true" /></button>
+              <button className="section-action section-action-button" type="button" aria-label="新建聊天" title="新建聊天" onClick={() => focusNewChatComposer(undefined, "chat")}><IconPlus size={16} stroke={1.6} aria-hidden="true" /></button>
             </div>
             {chatsOpen && <><DataStatus state={defaultSessions} retry={() => { void loadDefaultSessions() }} />
               {defaultSessions.status === "ready" && (defaultSessions.value.length === 0 ? <p className="empty-list">你的下一段对话，从这里开始。</p> : <SessionList projectId="default" sessions={defaultSessions.value} activeSessionId={workspaceRoute.page === "session" && workspaceRoute.group === "default" ? workspaceRoute.sessionId : undefined} onOpenSession={navigateToSession} menuAnchor={sidebarMenu?.target} onMore={openSidebarMenu} />)}
@@ -859,73 +1053,160 @@ function Workspace() {
           <button className="sidebar-theme" type="button" aria-label={theme === "light" ? "切换深色外观" : "切换浅色外观"} title={theme === "light" ? "深色外观" : "浅色外观"} onClick={() => setTheme((current) => current === "light" ? "dark" : "light")}>{theme === "light" ? <IconMoon size={17} stroke={1.6} aria-hidden="true" /> : <IconSun size={17} stroke={1.6} aria-hidden="true" />}</button>
         </div>
       </aside>}
-      <main className="main-panel">
-        <BrowserWorkspace manager={browserTags} teamSessions={teamSessions} sessionId={browserOwner} projectId={groupId}
-          projects={projects.status === "ready" ? projects.value : []} theme={theme}
-          obscured={teamMembersOpen || settingsDialogOpen || projectDialogOpen || searchOpen || openMenu !== null || sidebarMenu !== null || sidebarDialog !== null}
-          toggle={<button className="settings-icon-button browser-toggle" type="button" aria-expanded={browserExpanded} aria-controls="chat-browser-pane"
-              aria-label={browserExpanded ? "收起内置浏览器" : "展开内置浏览器"} title={browserExpanded ? "收起内置浏览器" : "展开内置浏览器"}
-              onClick={() => {
-                if (!browserExpanded && browserState.activeTagId === null) {
-                  browserTags.open(browserOwner, { kind: "blank", id: crypto.randomUUID() })
-                  return
-                }
-                browserTags.set(browserOwner, { ...browserState, narrowPanel: browserExpanded ? "chat" : "browser" })
-              }}>
-              <IconLayoutSidebarRight size={17} stroke={1.6} aria-hidden="true" />
-            </button>}>
+      <div className="workspace-main">
         <header className="panel-header">
           <div className="panel-header-row">
             <div className="panel-header-context">
-              {!sidebarOpen && <button className="settings-icon-button" type="button" aria-label="展开侧栏" title="展开侧栏 · Ctrl B" onClick={() => setSidebarOpen(true)}><IconLayoutSidebar size={17} stroke={1.6} aria-hidden="true" /></button>}
-              <div className="breadcrumb">{activeProject && <><span title={activeProject.directories.join(" · ") || activeProject.name}>{activeProject.name}</span><span className="breadcrumb-divider">/</span></>}<strong title={currentSession?.name}>{workspaceRoute.page === "new-chat" ? newConversationLabel : currentSession?.name ?? "对话"}</strong></div>
-            </div>
-            <div className="workspace-mode" role="group" aria-label="会话模式">
-              <button type="button" aria-pressed={activeMode === "chat"} disabled={workspaceRoute.page === "new-chat" && newChatView.busy} onClick={() => switchMode("chat")}>普通模式</button>
-              <button type="button" aria-pressed={activeMode === "work"} disabled={workspaceRoute.page === "new-chat" && newChatView.busy} onClick={() => switchMode("work")}>团队模式</button>
+              <div className="breadcrumb">
+                {activeProject && <>
+                  <button className="breadcrumb-project" type="button" title={activeProject.directories.join(" · ") || activeProject.name}
+                    aria-label={`进入项目 ${activeProject.name} 的新聊天`}
+                    onClick={() => focusNewChatComposer(activeProject.projectId, "chat")}>{activeProject.name}</button>
+                  <span className="breadcrumb-divider">/</span>
+                </>}
+                {workspaceRoute.page === "session" && currentSession
+                  ? (renamingBreadcrumbSession
+                    ? <>
+                      <input ref={breadcrumbInputRef} className="breadcrumb-rename-input" type="text" aria-label="修改对话名称"
+                        value={breadcrumbSessionName} readOnly={breadcrumbRenameBusy}
+                        onChange={(event) => { setBreadcrumbSessionName(event.target.value); setBreadcrumbRenameError(null) }}
+                        onKeyDown={(event) => {
+                          if (event.nativeEvent.isComposing) return
+                          if (event.key === "Enter") { event.preventDefault(); void commitBreadcrumbRename("submit") }
+                          else if (event.key === "Escape") { event.preventDefault(); cancelBreadcrumbRename(true) }
+                        }}
+                        onBlur={() => { void commitBreadcrumbRename("blur") }} />
+                      {breadcrumbRenameError && <span className="breadcrumb-rename-error" role="alert" title={breadcrumbRenameError}>{breadcrumbRenameError}</span>}
+                    </>
+                    : <button ref={breadcrumbSessionButtonRef} className="breadcrumb-session" type="button"
+                        title={`${currentSession.name} · 点击修改对话名称`} aria-label={`修改对话名称：${currentSession.name}`}
+                        onClick={startBreadcrumbRename}><strong>{currentSession.name}</strong></button>)
+                  : <strong title={currentSession?.name}>{workspaceRoute.page === "new-chat" ? newConversationLabel : currentSession?.name ?? "对话"}</strong>}
+              </div>
             </div>
             <div className="panel-header-actions">
               {currentKind === "router" && <button className="settings-icon-button" type="button" aria-label="团队成员" title="团队成员"
                 aria-haspopup="dialog" onClick={() => setTeamMembersRouter(browserOwner)}><IconUsers size={17} aria-hidden="true" /></button>}
               {!sidebarOpen && <>
-              <button className="settings-icon-button" type="button" aria-label="设置" title="设置 · Ctrl ," onClick={() => openSettingsDialog()}><IconAdjustmentsHorizontal size={17} stroke={1.6} aria-hidden="true" /></button>
-              <button className="settings-icon-button" type="button" aria-label={theme === "light" ? "切换深色外观" : "切换浅色外观"} title={theme === "light" ? "深色外观" : "浅色外观"} onClick={() => setTheme((current) => current === "light" ? "dark" : "light")}>{theme === "light" ? <IconMoon size={17} stroke={1.6} aria-hidden="true" /> : <IconSun size={17} stroke={1.6} aria-hidden="true" />}</button>
-            </>}{(workspaceRoute.page === "session" || !sidebarOpen) && <button className="settings-icon-button" type="button" aria-label={`在当前空间${createConversationLabel}`} title={newConversationLabel} onClick={() => focusNewChatComposer(groupId === "default" ? undefined : groupId)}><IconPlus size={17} stroke={1.6} aria-hidden="true" /></button>}
+                <button className="settings-icon-button" type="button" aria-label="设置" title="设置 · Ctrl ," onClick={() => openSettingsDialog()}><IconAdjustmentsHorizontal size={17} stroke={1.6} aria-hidden="true" /></button>
+                <button className="settings-icon-button" type="button" aria-label={theme === "light" ? "切换深色外观" : "切换浅色外观"} title={theme === "light" ? "深色外观" : "浅色外观"} onClick={() => setTheme((current) => current === "light" ? "dark" : "light")}>{theme === "light" ? <IconMoon size={17} stroke={1.6} aria-hidden="true" /> : <IconSun size={17} stroke={1.6} aria-hidden="true" />}</button>
+              </>}{(workspaceRoute.page === "session" || !sidebarOpen) && <button className="settings-icon-button" type="button" aria-label="在当前空间新建聊天" title="在当前空间新建聊天" onClick={() => focusNewChatComposer(groupId === "default" ? undefined : groupId, "chat")}><IconPlus size={17} stroke={1.6} aria-hidden="true" /></button>}
+              <button className="settings-icon-button browser-toggle" type="button" aria-expanded={browserExpanded} aria-controls="chat-browser-pane"
+                aria-label={browserExpanded ? "收起内置浏览器" : "展开内置浏览器"} title={browserExpanded ? "收起内置浏览器" : "展开内置浏览器"}
+                onClick={() => {
+                  if (!browserExpanded && browserState.activeTagId === null) {
+                    browserTags.open(browserOwner, { kind: "blank", id: crypto.randomUUID() })
+                    return
+                  }
+                  browserTags.set(browserOwner, { ...browserState, narrowPanel: browserExpanded ? "chat" : "browser" })
+                }}>
+                <IconLayoutSidebarRight size={17} stroke={1.6} aria-hidden="true" />
+              </button>
             </div>
           </div>
         </header>
+        <main className="main-panel">
+          <BrowserWorkspace manager={browserTags} teamSessions={teamSessions} sessionId={browserOwner} projectId={groupId}
+            projects={projects.status === "ready" ? projects.value : []} theme={theme}
+            obscured={teamMembersOpen || settingsDialogOpen || projectDialogOpen || searchOpen || openMenu !== null || sidebarMenu !== null || sidebarDialog !== null}
+            toggle={null}>
         {workspaceRoute.page === "session" ? <Outlet context={{ state: sessionsState, browserTags, providers: providers.status === "ready" ? providers.value : [] }} /> : <div className="welcome-scroll"><div className="welcome">
-          <div className="welcome-intro"><h1>{draftMode === "work" ? "我们要做什么？" : "有什么想一起完成？"}</h1></div>
-          {newChatView.operationError && <p className="chat-error" role="alert">{newChatView.operationError}</p>}
-          {defaultModelError && <p className="chat-error" role="alert">{defaultModelError}</p>}
-          <div className="composer new-chat-composer">
-            <ComposerInput key={newDraftKey} inputRef={composerRef} projectId={groupId} label="任务描述" placeholder={draftMode === "work" ? "描述要交给团队协作的任务…" : "描述你想做的事，剩下的一起完成…"}
-              value={sessionsState.draftsByKey[newDraftKey]} onChange={(document) => sessionsState.setDraft(newDraftKey, document)}
-              onSend={() => void sendNewChat()} onOpenFile={(file) => browserTags.openFileReference(browserOwner, file)} />
-            <div className="composer-toolbar">
-              <div className="composer-controls">
-                <div className="selector-anchor"><button className="selector-trigger" type="button" aria-label="权限" aria-haspopup="menu" aria-expanded={openMenu === "permission"} onClick={() => setOpenMenu((current) => current === "permission" ? null : "permission")}><IconShieldCheck size={15} aria-hidden="true" /><span>{permission === "default" ? "工作区读写" : permissionLabels[permission]}</span></button>
-                  {openMenu === "permission" && <div className="selector-menu permission-menu" role="menu" aria-label="权限选项"><p className="menu-label">允许 NiCode 做什么</p>{permissionOptions.map((option) => <button type="button" role="menuitemradio" aria-checked={permission === option || (permission === "default" && option === "workspace-read-write")} key={option} onClick={() => { setPermission(option); setOpenMenu(null) }}>{permissionLabels[option]}{(permission === option || (permission === "default" && option === "workspace-read-write")) && <span aria-hidden="true">✓</span>}</button>)}</div>}
+          <div className="welcome-hero">
+            <div className="welcome-mark" aria-hidden="true"><IconTerminal2 size={42} stroke={1.4} /></div>
+            <h1>{draftMode === "work" ? "我们要做什么？" : "有什么想一起完成？"}</h1>
+          </div>
+          <div className="welcome-dock">
+            {newChatView.operationError && <p className="chat-error" role="alert">{newChatView.operationError}</p>}
+            {defaultModelError && <p className="chat-error" role="alert">{defaultModelError}</p>}
+            {gitSwitchError && <p className="chat-error" role="alert">{gitSwitchError}</p>}
+            <div className="composer-dock">
+              <div className="composer-context-bar">
+                <div className="composer-context-controls">
+                  <div className="selector-anchor context-selector-anchor context-project-anchor">
+                    <button className="selector-trigger context-trigger context-project-trigger" type="button" aria-label="所属项目" aria-haspopup="menu" aria-expanded={openMenu === "project"}
+                      title={activeProject ? (activeProject.directories.join(" · ") || activeProject.name) : "全局独立对话"}
+                      onClick={() => setOpenMenu((current) => current === "project" ? null : "project")}>
+                      {activeProject ? <IconFolder size={14} stroke={1.6} aria-hidden="true" /> : <IconTerminal2 size={14} stroke={1.6} aria-hidden="true" />}
+                      <span className="context-trigger-label">{activeProject ? activeProject.name : "独立对话"}</span>
+                      <IconChevronDown className="context-trigger-chevron" size={12} stroke={1.7} aria-hidden="true" />
+                    </button>
+                    {openMenu === "project" && <div className="selector-menu context-selector-menu context-project-menu" role="menu" aria-label="选择项目">
+                      <p className="menu-label">选择新对话归属</p>
+                      <button type="button" role="menuitemradio" aria-checked={groupId === "default"} onClick={() => selectNewChatProject(undefined)}>
+                        <span><strong>独立对话</strong><small>默认工作区</small></span>
+                        {groupId === "default" && <IconCheck size={15} stroke={1.8} aria-hidden="true" />}
+                      </button>
+                      {projects.status === "ready" && [...projects.value].sort(newestFirst).map((project) => (
+                        <button key={project.projectId} type="button" role="menuitemradio" aria-checked={groupId === project.projectId} onClick={() => selectNewChatProject(project.projectId)}>
+                          <span><strong>{project.name}</strong>{project.directories[0] && <small>{project.directories[0]}</small>}</span>
+                          {groupId === project.projectId && <IconCheck size={15} stroke={1.8} aria-hidden="true" />}
+                        </button>
+                      ))}
+                      {projects.status === "loading" && <p className="menu-empty">项目加载中…</p>}
+                      {projects.status === "error" && <p className="menu-empty">项目列表加载失败</p>}
+                    </div>}
+                  </div>
+                  {activeProject && gitBranchState?.isGitRepo && <div className="selector-anchor context-selector-anchor context-branch-anchor">
+                    <button className="selector-trigger context-trigger context-branch-trigger" type="button" aria-label="Git 分支" aria-haspopup="menu" aria-expanded={openMenu === "branch"} disabled={switchingGitBranch}
+                      title={gitBranchState.currentBranch ? `当前 Git 分支：${gitBranchState.currentBranch}` : "当前处于游离 HEAD"}
+                      onClick={() => {
+                        setGitSwitchError(undefined)
+                        if (openMenu === "branch") { setOpenMenu(null); return }
+                        setOpenMenu("branch")
+                        void loadProjectGitBranches(activeProject.projectId)
+                      }}>
+                      <IconGitBranch size={14} stroke={1.6} aria-hidden="true" />
+                      <span className="context-trigger-label">{switchingGitBranch ? "切换中…" : gitBranchState.currentBranch ?? "游离 HEAD"}</span>
+                      <IconChevronDown className="context-trigger-chevron" size={12} stroke={1.7} aria-hidden="true" />
+                    </button>
+                    {openMenu === "branch" && <div className="selector-menu context-selector-menu context-branch-menu" role="menu" aria-label="选择 Git 分支">
+                      <p className="menu-label">切换本地分支</p>
+                      {gitBranchState.branches.length === 0
+                        ? <p className="menu-empty">暂无本地分支</p>
+                        : gitBranchState.branches.map((branch) => (
+                          <button key={branch} type="button" role="menuitemradio" aria-checked={gitBranchState.currentBranch === branch} onClick={() => { void selectProjectGitBranch(branch) }}>
+                            <span><strong>{branch}</strong></span>
+                            {gitBranchState.currentBranch === branch && <IconCheck size={15} stroke={1.8} aria-hidden="true" />}
+                          </button>
+                        ))}
+                    </div>}
+                  </div>}
+                </div>
+                <span className="composer-context-mode">
+                  {draftMode === "work" && <IconUsers size={13} stroke={1.6} aria-hidden="true" />}
+                  <span>{draftMode === "work" ? "团队协作" : "标准对话"}</span>
+                </span>
+              </div>
+              <div className="composer new-chat-composer">
+                <ComposerInput key={newDraftKey} inputRef={composerRef} projectId={groupId} label="任务描述" placeholder={draftMode === "work" ? "描述要交给团队协作的任务…" : "描述你想做的事，剩下的一起完成…"}
+                  value={sessionsState.draftsByKey[newDraftKey]} onChange={(document) => sessionsState.setDraft(newDraftKey, document)}
+                  onSend={() => void sendNewChat()} onOpenFile={(file) => browserTags.openFileReference(browserOwner, file)} />
+                <div className="composer-toolbar">
+                  <div className="composer-controls">
+                    <div className="selector-anchor"><button className="selector-trigger" type="button" aria-label="权限" aria-haspopup="menu" aria-expanded={openMenu === "permission"} onClick={() => setOpenMenu((current) => current === "permission" ? null : "permission")}><IconShieldCheck size={15} aria-hidden="true" /><span>{permission === "default" ? "工作区读写" : permissionLabels[permission]}</span></button>
+                      {openMenu === "permission" && <div className="selector-menu permission-menu" role="menu" aria-label="权限选项"><p className="menu-label">允许 NiCode 做什么</p>{permissionOptions.map((option) => <button type="button" role="menuitemradio" aria-checked={permission === option || (permission === "default" && option === "workspace-read-write")} key={option} onClick={() => { setPermission(option); setOpenMenu(null) }}>{permissionLabels[option]}{(permission === option || (permission === "default" && option === "workspace-read-write")) && <span aria-hidden="true">✓</span>}</button>)}</div>}
+                    </div>
+                  </div>
+                  <div className="composer-controls composer-controls-right">
+                    {providers.status === "loading" && <span className="model-status" role="status">模型加载中…</span>}
+                    {providers.status === "error" && <span className="model-status" role="alert">模型加载失败 <button className="retry-button" type="button" onClick={() => { void loadProviders() }}>重试</button></span>}
+                    {providers.status === "ready" && (modelOptions.length === 0 ? <button className="selector-trigger setup-model-trigger" type="button" onClick={() => openSettingsDialog()}>配置模型</button>
+                      : <ComposerModelPicker label="模型" options={modelOptions.map((model) => ({ key: model.selectionKey, name: model.name, providerName: model.providerName }))}
+                          selectedKey={selectedModel?.selectionKey ?? ""} modelName={selectedModel?.name ?? "选择模型"}
+                          supportsReasoning={selectedModel?.supportsReasoning ?? false} reasoningLevel={selectedReasoningLevel ?? ""} reasoningLevels={selectedModel?.reasoningLevels ?? []}
+                          disabled={savingDefaultModel || Boolean(newChatView.busy)} onModelChange={(key) => { void selectDefaultModel(key) }} onReasoningChange={setNewChatReasoningLevel} />)}
+                    <button className="send-button" type="button" disabled={!selectedModel || !selectedReasoningLevel || savingDefaultModel || newChatView.busy || !serializeComposerMessage(sessionsState.draftsByKey[newDraftKey]).content[0].text.trim()} onClick={() => void sendNewChat()} aria-label="发送消息"><IconArrowUp size={18} stroke={2} /></button>
+                  </div>
                 </div>
               </div>
-              <div className="composer-controls composer-controls-right">
-                {providers.status === "loading" && <span className="model-status" role="status">模型加载中…</span>}
-                {providers.status === "error" && <span className="model-status" role="alert">模型加载失败 <button className="retry-button" type="button" onClick={() => { void loadProviders() }}>重试</button></span>}
-                {providers.status === "ready" && (modelOptions.length === 0 ? <button className="selector-trigger setup-model-trigger" type="button" onClick={() => openSettingsDialog()}>配置模型</button>
-                  : <ComposerModelPicker label="模型" options={modelOptions.map((model) => ({ key: model.selectionKey, name: model.name, providerName: model.providerName }))}
-                      selectedKey={selectedModel?.selectionKey ?? ""} modelName={selectedModel?.name ?? "选择模型"}
-                      supportsReasoning={selectedModel?.supportsReasoning ?? false} reasoningLevel={selectedReasoningLevel ?? ""} reasoningLevels={selectedModel?.reasoningLevels ?? []}
-                      disabled={savingDefaultModel || Boolean(newChatView.busy)} onModelChange={(key) => { void selectDefaultModel(key) }} onReasoningChange={setNewChatReasoningLevel} />)}
-                <button className="send-button" type="button" disabled={!selectedModel || !selectedReasoningLevel || savingDefaultModel || newChatView.busy || !serializeComposerMessage(sessionsState.draftsByKey[newDraftKey]).content[0].text.trim()} onClick={() => void sendNewChat()} aria-label="发送消息"><IconArrowUp size={18} stroke={2} /></button>
-              </div>
             </div>
+            <div className="composer-caption"><span>Enter 发送 · Shift + Enter 换行</span></div>
           </div>
-          <div className="composer-caption"><span>Enter 发送 · Shift + Enter 换行</span></div>
         </div></div>}
-        </BrowserWorkspace>
-      </main>
+          </BrowserWorkspace>
+        </main>
+      </div>
     </div>
-    <footer className="app-statusbar"><span><i className="status-dot" />{runningCount > 0 ? `${runningCount} 个对话运行中` : "本地工作台"}</span></footer>
     {openMenu !== null && <div className="menu-backdrop" role="presentation" onClick={() => setOpenMenu(null)} />}
     {searchOpen && <WorkspaceSearch projects={projects.status === "ready" ? projects.value : []} sessions={defaultSessions.status === "ready" ? defaultSessions.value : []} status={projects.status === "error" || defaultSessions.status === "error" ? "部分摘要加载失败，可在侧栏重试；下方显示已加载结果。" : projects.status === "loading" || defaultSessions.status === "loading" ? "正在加载更多摘要…" : undefined} onClose={() => setSearchOpen(false)} onProject={navigateToNewChat} onSession={navigateToSession} />}
     {teamMembersOpen && <TeamMembersDialog key={browserOwner} projectId={groupId} routerId={browserOwner}
@@ -957,6 +1238,7 @@ function Workspace() {
           }
         }}>
         {sidebarMenu.target.sessionId === undefined && <button type="button" role="menuitem" onClick={() => openSidebarDialog("directories")}>设置关联目录</button>}
+        {sidebarMenu.target.sessionId === undefined && <button type="button" role="menuitem" onClick={() => { const projectId = sidebarMenu.target.projectId; setSidebarMenu(null); focusNewChatComposer(projectId, "work") }}>新建团队会话</button>}
         <button type="button" role="menuitem" onClick={() => openSidebarDialog("rename")}>重命名</button>
         {sidebarMenu.target.sessionId !== undefined && <button type="button" role="menuitem" onClick={() => void copySidebarConversation()}>复制对话</button>}
       </div>

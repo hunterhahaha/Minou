@@ -171,13 +171,15 @@ export const STARTUP_DATA_IPC_CHANNELS = {
   listProviders: "nicode:data:providers",
 } as const
 
-/** Project 创建和目录操作的固定 IPC channel。 */
+/** Project 创建、目录与 Git 分支操作的固定 IPC channel。 */
 export const PROJECT_IPC_CHANNELS = {
   selectDirectory: "nicode:project:select-directory",
   createProject: "nicode:project:create",
   renameProject: "nicode:project:rename",
   addProjectDirectory: "nicode:project:add-directory",
   removeProjectDirectory: "nicode:project:remove-directory",
+  listProjectGitBranches: "nicode:project:git-branches",
+  switchProjectGitBranch: "nicode:project:git-switch",
 } as const
 
 /** 供应商创建和修改的固定 IPC channel。 */
@@ -225,6 +227,31 @@ export interface DirectorySelection {
 
 /** 关联目录变更的确认或失败原因。 */
 export type ProjectDirectoryResult = { success: true } | { success: false; error: string }
+
+/** Project 主目录的 Git 仓库与本地分支状态。 */
+export interface ProjectGitBranchState {
+  /** 主目录是否位于 Git 工作树中。 */
+  isGitRepo: boolean
+  /** 当前检出的本地分支名；游离 HEAD 或非仓库时为 null。 */
+  currentBranch: string | null
+  /** 按名称排序的本地分支列表；未提交新库含当前初始分支。 */
+  branches: string[]
+}
+
+/** 切换 Project Git 分支后的最新状态或失败原因。 */
+export type ProjectGitSwitchResult =
+  | {
+    /** 切换是否成功。 */
+    success: true
+    /** 切换完成后的最新分支状态。 */
+    branchState: ProjectGitBranchState
+  }
+  | {
+    /** 切换是否成功。 */
+    success: false
+    /** Git 返回或参数校验失败的具体原因。 */
+    error: string
+  }
 
 /** 页面列表中的对话索引摘要。 */
 export interface SessionSummary {
@@ -510,6 +537,21 @@ export interface NiCodePreloadApi {
    * @throws Error 保存失败或摘要无效。
    */
   renameProject(projectId: string, name: string): Promise<ProjectSummary>
+  /**
+   * 读取 Project 主目录的 Git 仓库与本地分支列表。
+   * @param projectId 非 default Project UUID。
+   * @returns 主目录的 Git 仓库状态与本地分支列表。
+   * @throws Error IPC 调用、后端处理或返回值校验失败时拒绝。
+   */
+  listProjectGitBranches(projectId: string): Promise<ProjectGitBranchState>
+  /**
+   * 在 Project 主目录执行 `git switch` 切换到指定本地分支。
+   * @param projectId 非 default Project UUID。
+   * @param branch 目标本地分支名。
+   * @returns 切换成功后的分支状态或失败原因。
+   * @throws Error IPC 调用或返回值校验失败时拒绝。
+   */
+  switchProjectGitBranch(projectId: string, branch: string): Promise<ProjectGitSwitchResult>
   /**
    * 保存指定分组下的对话名称。
    * @param projectId 所属分组。
@@ -951,6 +993,27 @@ export function createSessionApi(ipcRenderer: IpcRendererInvokePort): NiCodePrel
      */
     async removeProjectDirectory(projectId: string, directory: string): Promise<ProjectDirectoryResult> {
       return requireProjectDirectoryResult(await ipcRenderer.invoke(PROJECT_IPC_CHANNELS.removeProjectDirectory, projectId, directory))
+    },
+
+    /**
+     * 读取 Project 主目录的 Git 仓库与本地分支列表。
+     * @param projectId 非 default Project UUID。
+     * @returns 主目录的 Git 仓库状态与本地分支列表。
+     * @throws Error IPC 调用、后端处理或返回值校验失败时拒绝。
+     */
+    async listProjectGitBranches(projectId: string): Promise<ProjectGitBranchState> {
+      return requireProjectGitBranchState(await ipcRenderer.invoke(PROJECT_IPC_CHANNELS.listProjectGitBranches, projectId))
+    },
+
+    /**
+     * 在 Project 主目录执行 `git switch` 切换到指定本地分支。
+     * @param projectId 非 default Project UUID。
+     * @param branch 目标本地分支名。
+     * @returns 切换成功后的分支状态或失败原因。
+     * @throws Error IPC 调用或返回值校验失败时拒绝。
+     */
+    async switchProjectGitBranch(projectId: string, branch: string): Promise<ProjectGitSwitchResult> {
+      return requireProjectGitSwitchResult(await ipcRenderer.invoke(PROJECT_IPC_CHANNELS.switchProjectGitBranch, projectId, branch))
     },
 
     /**
@@ -1642,6 +1705,48 @@ function requireProjectDirectoryResult(value: unknown): ProjectDirectoryResult {
     return { success: false, error: value.error }
   }
   throw new TypeError("主进程返回了无效的项目目录操作结果")
+}
+
+/**
+ * 检查主进程返回的 Project Git 分支状态结构。
+ * @param value 未经检查的 IPC 结果。
+ * @returns 已校验的 Git 分支状态。
+ * @throws TypeError 当状态字段缺失、类型错误或非 Git 仓库附带分支时抛出。
+ */
+function requireProjectGitBranchState(value: unknown): ProjectGitBranchState {
+  if (!isRecord(value) || typeof value.isGitRepo !== "boolean") {
+    throw new TypeError("主进程返回了无效的 Git 分支状态")
+  }
+  const currentBranchValid = value.currentBranch === null ||
+    (typeof value.currentBranch === "string" && value.currentBranch.trim() !== "")
+  const branchesValid = Array.isArray(value.branches) &&
+    value.branches.every((branch: unknown) => typeof branch === "string" && branch.trim() !== "")
+  if (!currentBranchValid || !branchesValid) {
+    throw new TypeError("主进程返回了无效的 Git 分支列表")
+  }
+  const currentBranch = value.currentBranch as string | null
+  const branches = value.branches as string[]
+  if (!value.isGitRepo && (currentBranch !== null || branches.length > 0)) {
+    throw new TypeError("非 Git 仓库不应包含分支状态")
+  }
+  return { isGitRepo: value.isGitRepo, currentBranch, branches }
+}
+
+/**
+ * 检查主进程返回的 Git 分支切换结果。
+ * @param value 未经检查的 IPC 结果。
+ * @returns 已校验的切换确认或失败原因。
+ * @throws TypeError 当切换结果缺少状态或错误信息时抛出。
+ */
+function requireProjectGitSwitchResult(value: unknown): ProjectGitSwitchResult {
+  if (isRecord(value) && value.success === true) {
+    return { success: true, branchState: requireProjectGitBranchState(value.branchState) }
+  }
+  if (isRecord(value) && value.success === false &&
+      typeof value.error === "string" && value.error.length > 0) {
+    return { success: false, error: value.error }
+  }
+  throw new TypeError("主进程返回了无效的 Git 分支切换结果")
 }
 
 /**

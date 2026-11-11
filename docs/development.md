@@ -131,4 +131,4 @@ $testProcess.ExitCode
 
 ## 前端资料
 
-前端任务按 AGENTS.md 要求先阅读 [设计规范](design-system.md) 与 [UI 路线图](ui-roadmap.md)。这些文件描述展示规则和任务计划，功能是否实现仍需核对源码；路线图的待办不构成一次实现全部任务的授权。
+前端任务按 AGENTS.md 要求先阅读根目录的 [DESIGN.md](../DESIGN.md)，再结合 [架构与执行流程](architecture.md) 和当前源码确认实现范围。界面设计约定和验收标准统一维护在 DESIGN.md。

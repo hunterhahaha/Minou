@@ -32,13 +32,25 @@ const evaluate = (code) => window.webContents.executeJavaScript(code)
 const click = (selector) => evaluate(`document.querySelector(${JSON.stringify(selector)}).click()`)
 const clickText = (selector, text) => evaluate(`[...document.querySelectorAll(${JSON.stringify(selector)})]
   .find((node) => node.textContent.trim() === ${JSON.stringify(text)}).click()`)
-const ORDINARY_MODE = "普通模式"
-const TEAM_MODE = "团队模式"
-const mode = (name) => evaluate(`[...document.querySelectorAll('.workspace-mode button')]
-  .find((node) => node.textContent === ${JSON.stringify(name)})?.getAttribute('aria-pressed') === 'true'`)
-const selectMode = async (name) => {
-  await clickText(".workspace-mode button", name)
-  await until(name, () => mode(name))
+const draftKind = (kind) => evaluate(`(() => {
+  if (document.querySelector('.workspace-mode')) return false
+  const expected = ${JSON.stringify(kind)} === 'work' ? '团队协作' : '标准对话'
+  const badge = document.querySelector('.composer-context-mode')?.textContent.trim()
+  if (badge !== expected) return false
+  if (location.hash.includes('/default/new-chat') || location.hash === '' || location.hash === '#/') {
+    const activeSelector = ${JSON.stringify(kind)} === 'work' ? '.new-team-chat' : '.new-chat'
+    return document.querySelector(activeSelector)?.getAttribute('aria-current') === 'page'
+  }
+  return true
+})()`)
+const sessionKind = (kind) => evaluate(`(() => {
+  if (!document.querySelector('.chat-page')) return false
+  const hasMembers = Boolean(document.querySelector('.panel-header [aria-label="团队成员"]'))
+  return ${JSON.stringify(kind)} === 'router' ? hasMembers : !hasMembers
+})()`)
+const selectDefaultCreate = async (selector, kind) => {
+  await click(selector)
+  await until("侧栏切换至" + (kind === "work" ? "团队会话" : "普通聊天"), () => draftKind(kind))
 }
 const editorText = () => evaluate("document.querySelector('.composer-editor')?.textContent")
 
@@ -60,29 +72,43 @@ async function send(projectId, kind, checkStreaming) {
   const sessionId = await evaluate("document.querySelector('.chat-page').dataset.sessionId")
   const data = await evaluate(`window.nicode.getSessionData(${JSON.stringify(projectId)}, ${JSON.stringify(sessionId)})`)
   assert.equal(data.kind, kind)
-  assert.ok(await mode(kind === "router" ? TEAM_MODE : ORDINARY_MODE))
+  await until("会话头部角色就绪", () => sessionKind(kind))
   await checkStreaming?.(data)
   return sessionId
 }
 
-/** 确认切换框以聊天栏为基准居中，且与页头操作互不遮挡。 */
-async function assertCenteredMode() {
-  assert.ok(await evaluate(`(() => {
-    const modeElement = document.querySelector('.workspace-mode')
-    const mode = modeElement.getBoundingClientRect()
-    const chat = document.querySelector('.chat-browser-chat').getBoundingClientRect()
-    const controls = document.querySelectorAll('.panel-header-context, .panel-header-actions, .browser-toggle')
-    const intersects = (rect) => rect.width > 0 && rect.height > 0 &&
-      rect.left < mode.right && rect.right > mode.left && rect.top < mode.bottom && rect.bottom > mode.top
-    return modeElement.closest('.panel-header') !== null && modeElement.closest('.titlebar') === null &&
-      mode.width > 0 && Math.abs((mode.left + mode.right - chat.left - chat.right) / 2) < 2 &&
-      [...controls].every((element) => !intersects(element.getBoundingClientRect()))
-  })()`))
+/** 确认已移除切换器与底边线，页头独立于主面板上方且控件互不遮挡、顶栏保持简洁。 */
+async function assertCleanHeader() {
+  const diagnostic = await evaluate(`(() => {
+    if (document.querySelector('.workspace-mode')) return { ok: false, reason: 'workspace-mode present' }
+    const header = document.querySelector('.panel-header')
+    const panel = document.querySelector('.main-panel')
+    if (!header || !panel) return { ok: false, reason: 'missing header or panel' }
+    if (panel.contains(header) || header.getBoundingClientRect().bottom > panel.getBoundingClientRect().top + 0.5) {
+      return { ok: false, reason: 'header not separated above main-panel' }
+    }
+    if (getComputedStyle(header).borderBottomWidth !== '0px') return { ok: false, reason: 'header border: ' + getComputedStyle(header).borderBottomWidth }
+    if (document.querySelector('.titlebar-search > span, .titlebar-search kbd')) return { ok: false, reason: 'titlebar search text present' }
+    const items = [...document.querySelectorAll('.panel-header-context, .panel-header-actions, .panel-header-actions button, .browser-toggle')]
+      .map((element) => ({ element, tag: element.className || element.getAttribute('aria-label'), rect: element.getBoundingClientRect() }))
+      .filter(({ rect }) => rect.width > 0 && rect.height > 0)
+    for (let i = 0; i < items.length; i++) {
+      for (let j = i + 1; j < items.length; j++) {
+        if (items[i].element.contains(items[j].element) || items[j].element.contains(items[i].element)) continue
+        const a = items[i].rect, b = items[j].rect
+        if (a.left < b.right - 0.5 && a.right > b.left + 0.5 && a.top < b.bottom - 0.5 && a.bottom > b.top + 0.5) {
+          return { ok: false, reason: 'overlap: ' + items[i].tag + ' vs ' + items[j].tag, a, b }
+        }
+      }
+    }
+    return { ok: true }
+  })()`)
+  assert.equal(diagnostic.ok, true, "页头布局异常：" + JSON.stringify(diagnostic))
 }
 
 /** 保存通过页头布局断言的窗口截图。 */
 async function capture(name) {
-  await assertCenteredMode()
+  await assertCleanHeader()
   await evaluate("document.getAnimations().forEach(animation => { if (animation.effect?.getComputedTiming().endTime !== Infinity) animation.finish() })")
   await evaluate("new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))")
   await writeFile(join(process.cwd(), "dist", name + ".png"), (await window.webContents.capturePage()).toPNG())
@@ -201,21 +227,21 @@ async function main() {
     onSessionCompletionFailure: (failure) => failures.push(failure),
   })
   await loaded
-  await until("默认普通模式", () => mode(ORDINARY_MODE))
-  await assertCenteredMode()
+  await until("默认普通对话草稿", () => draftKind("chat"))
+  await assertCleanHeader()
   await type("独立普通会话")
-  await selectMode(TEAM_MODE)
+  await selectDefaultCreate(".new-team-chat", "work")
   assert.equal(await editorText(), "")
   await type("独立工作，创建成员")
-  await selectMode(ORDINARY_MODE)
+  await selectDefaultCreate(".new-chat", "chat")
   assert.equal(await editorText(), "独立普通会话")
   const chat = await send("default", "ordinary")
-  await selectMode(TEAM_MODE)
+  await selectDefaultCreate(".new-team-chat", "work")
   assert.equal(await editorText(), "独立工作，创建成员")
   await capture("team-mode-work-light")
   await click(".browser-toggle")
   await until("聊天与浏览器分栏", () => evaluate("!!document.querySelector('.chat-browser-divider')"))
-  await assertCenteredMode()
+  await assertCleanHeader()
   await click(".browser-toggle")
   await click(".new-chat-composer .send-button")
   await until("首发失败提示", () => evaluate("document.querySelector('.chat-error')?.textContent.includes('预期的首发失败')"))
@@ -404,7 +430,7 @@ async function main() {
   await until("重新订阅时补齐关闭期间历史", () => memberHas("标签已关闭流"))
   await runMember("重载已退订")
   await new Promise((done) => { window.webContents.once("did-finish-load", done); window.webContents.reload() })
-  await until("Router 重新加载", () => mode(TEAM_MODE))
+  await until("Router 重新加载", () => sessionKind("router"))
   assert.equal(await hasMemberPage(), false)
   const beforeReloadedStream = memberUpdates().length
   await finishMember("重载已退订")
@@ -413,10 +439,14 @@ async function main() {
   const project = await evaluate("window.nicode.createProject('协作项目')")
   const projectId = project.projectId
   await evaluate(`location.hash = ${JSON.stringify("#/projects/" + projectId + "/new-chat")}`)
-  await until("项目聊天草稿页", () => mode(ORDINARY_MODE))
+  await until("项目聊天草稿页", () => draftKind("chat"))
   await type("项目普通会话")
   const projectChat = await send(projectId, "ordinary")
-  await selectMode(TEAM_MODE)
+  await until("侧栏刷新协作项目", () => evaluate("document.querySelector('.project-name')?.textContent === '协作项目'"))
+  await click(".project-row .sidebar-more")
+  await until("项目更多菜单显示团队创建项", () => evaluate("!!document.querySelector('.sidebar-action-menu')"))
+  await clickText(".sidebar-action-menu [role=menuitem]", "新建团队会话")
+  await until("从侧栏创建项目团队草稿", () => draftKind("work"))
   assert.ok(await evaluate(`location.hash.includes(${JSON.stringify(projectId)})`))
   assert.equal(await editorText(), "")
   await type("项目工作，创建成员")
@@ -428,13 +458,13 @@ async function main() {
   assert.deepEqual(new Set(projects.find((item) => item.projectId === projectId).sessions.map((item) => item.sessionId)),
     new Set([projectChat, projectRouter]))
   await evaluate(`window.nicode.renameSession(${JSON.stringify(projectId)}, ${JSON.stringify(projectRouter)}, '项目 Router 历史')`)
-  await selectMode(ORDINARY_MODE)
+  await selectDefaultCreate(".new-chat", "chat")
   await click(".titlebar-search")
   await until("共用搜索结果", () => evaluate("document.querySelectorAll('.search-result').length === 5"))
   await clickText(".search-result strong", "项目 Router 历史")
-  await until("搜索回到 Router", () => mode(TEAM_MODE))
+  await until("搜索回到 Router", () => sessionKind("router"))
   await new Promise((done) => { window.webContents.once("did-finish-load", done); window.webContents.reload() })
-  await until("刷新后从持久角色恢复模式", () => mode(TEAM_MODE))
+  await until("刷新后从持久角色恢复模式", () => sessionKind("router"))
   assert.equal(await evaluate("document.querySelector('.chat-page').dataset.sessionId"), projectRouter)
 
   await click(".sidebar-settings")

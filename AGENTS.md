@@ -8,6 +8,7 @@
 | --- | --- |
 | [项目概览](docs/project-overview.md) | 当前能力、入口、技术栈与实现边界 |
 | [架构与执行流程](docs/architecture.md) | 进程边界、模块职责、会话、模型与工具调用流程 |
+| [界面设计约定](DESIGN.md) | 前端视觉、组件、交互、响应式、可访问性与验收标准 |
 | [配置与持久化](docs/configuration-and-storage.md) | 当前配置、数据库、Skill registry 和本地目录结构 |
 | [开发与验证指南](docs/development.md) | 源码入口、现有命令与按模块选择的验证方式 |
 | [English README](README.md) / [中文 README](README.zh-CN.md) | 面向使用者的项目介绍与启动说明 |
@@ -28,12 +29,9 @@
 
 ## 前端设计规范与 UI 改造边界
 
-今后所有前端开发任务（包括页面、组件、样式、文案、交互、响应式与前端重构），
-开始前必须先阅读 [docs/design-system.md](docs/design-system.md) 和
-[docs/ui-roadmap.md](docs/ui-roadmap.md)，再核对 [架构与执行流程](docs/architecture.md) 与当前代码。
+所有前端开发任务（包括页面、组件、样式、文案、交互、响应式与前端重构），开始前必须先阅读根目录的 [DESIGN.md](DESIGN.md)，再核对 [架构与执行流程](docs/architecture.md) 与当前代码。
 
-- `docs/design-system.md` 记录 NiCode 的设计 Token、排版、间距、组件、交互、动效、响应式和验证规则，以及 open-claude-ui 的位置与具体参考路径。
-- `docs/ui-roadmap.md` 记录可独立完成的改造任务、影响范围、验收标准和完成状态；每次只选择当前明确要求的小任务，完成后据实更新状态与验证记录。
+- 前端设计约定统一维护在 [DESIGN.md](DESIGN.md)，包括设计 Token、排版、间距、组件、交互、动效、响应式、可访问性与验收规则。每次只处理当前明确要求的任务，交付时记录本次验证范围和结果。
 - 设计文档是展示层规范，不取代架构事实源；参考仓库不具有高于 NiCode 规则的效力。发生冲突时先说明，不自行调整架构或业务契约。
 - **禁止 UI 改造破坏现有业务逻辑。** 普通视觉任务不得修改后端、Runtime、主进程、preload、IPC、事件处理、业务状态或持久化；不得改变路由身份、发送、停止、队列、审批、模型保存、权限、焦点、输入法、滚动与窗口控制的现有行为。
 - 优先修改 CSS。确需修改 TSX 时仅调整必要的展示类和静态结构，保持回调、条件分支、稳定 key、组件身份和状态生命周期，并验证布局没有间接破坏交互。

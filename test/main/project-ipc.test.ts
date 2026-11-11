@@ -1,7 +1,8 @@
 /** 目录选择、Project 创建与关联目录变更的主进程 IPC 测试。 */
 
 import assert from "node:assert/strict"
-import { mkdtemp, mkdir, readFile, readdir, rm, rmdir, stat } from "node:fs/promises"
+import { execFileSync } from "node:child_process"
+import { mkdtemp, mkdir, readFile, readdir, rm, rmdir, stat, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, parse, resolve, sep } from "node:path"
 
@@ -10,7 +11,7 @@ import type { DirectoryDialogPort } from "../../src/main/project-ipc.ts"
 import type { IpcMainHandlePort } from "../../src/main/session-ipc.ts"
 import { initializeWorkspaceDatabase, readProjectWorkspace, saveProjectWorkspace } from "../../src/main/workspace-store.ts"
 import { PROJECT_IPC_CHANNELS } from "../../src/preload/session-api.ts"
-import type { ProjectSummary } from "../../src/preload/session-api.ts"
+import type { ProjectGitBranchState, ProjectGitSwitchResult, ProjectSummary } from "../../src/preload/session-api.ts"
 
 const UNKNOWN_PROJECT_ID = "00000000-0000-4000-8000-000000000099"
 
@@ -145,6 +146,78 @@ async function main(): Promise<void> {
     await assert.rejects(ipc.invoke(PROJECT_IPC_CHANNELS.createProject, " "), /项目名称/)
     await assert.rejects(ipc.invoke(PROJECT_IPC_CHANNELS.createProject, "Invalid", ["relative"]), /绝对路径/)
     await assert.rejects(ipc.invoke(PROJECT_IPC_CHANNELS.createProject, "Duplicate", [firstDirectory, firstDirectory]), /重复/)
+
+    assert.deepEqual(
+      await ipc.invoke<ProjectGitBranchState>(PROJECT_IPC_CHANNELS.listProjectGitBranches, empty.projectId),
+      { isGitRepo: false, currentBranch: null, branches: [] },
+    )
+    assert.deepEqual(
+      await ipc.invoke<ProjectGitBranchState>(PROJECT_IPC_CHANNELS.listProjectGitBranches, project.projectId),
+      { isGitRepo: false, currentBranch: null, branches: [] },
+    )
+    assert.deepEqual(
+      await ipc.invoke<ProjectGitSwitchResult>(PROJECT_IPC_CHANNELS.switchProjectGitBranch, project.projectId, "main"),
+      { success: false, error: "当前项目目录不是 Git 仓库" },
+    )
+    const git = (...args: string[]): string => execFileSync("git", args, {
+      cwd: firstDirectory,
+      encoding: "utf8",
+      env: { ...process.env, LC_ALL: "C.UTF-8" },
+    }).trim()
+    git("init", "-b", "main")
+    git("config", "user.name", "NiCode Test")
+    git("config", "user.email", "test@nicode.local")
+    assert.deepEqual(
+      await ipc.invoke<ProjectGitBranchState>(PROJECT_IPC_CHANNELS.listProjectGitBranches, project.projectId),
+      { isGitRepo: true, currentBranch: "main", branches: ["main"] },
+    )
+    await writeFile(join(firstDirectory, "tracked.txt"), "main-line\n", "utf8")
+    git("add", "tracked.txt")
+    git("commit", "-m", "initial commit")
+    git("branch", "dev")
+    git("switch", "-c", "特性/分支")
+    await writeFile(join(firstDirectory, "tracked.txt"), "feature-line\n", "utf8")
+    git("add", "tracked.txt")
+    git("commit", "-m", "feature commit")
+    const listedBranches = await ipc.invoke<ProjectGitBranchState>(PROJECT_IPC_CHANNELS.listProjectGitBranches, project.projectId)
+    assert.equal(listedBranches.isGitRepo, true)
+    assert.equal(listedBranches.currentBranch, "特性/分支")
+    assert.equal(listedBranches.branches.includes("main"), true)
+    assert.equal(listedBranches.branches.includes("dev"), true)
+    assert.equal(listedBranches.branches.includes("特性/分支"), true)
+
+    const switchedToDev = await ipc.invoke<ProjectGitSwitchResult>(PROJECT_IPC_CHANNELS.switchProjectGitBranch, project.projectId, "dev")
+    assert.equal(switchedToDev.success, true)
+    if (switchedToDev.success) {
+      assert.equal(switchedToDev.branchState.currentBranch, "dev")
+    }
+    assert.equal(git("rev-parse", "--abbrev-ref", "HEAD"), "dev")
+
+    git("checkout", "--detach", "HEAD")
+    const detachedState = await ipc.invoke<ProjectGitBranchState>(PROJECT_IPC_CHANNELS.listProjectGitBranches, project.projectId)
+    assert.equal(detachedState.isGitRepo, true)
+    assert.equal(detachedState.currentBranch, null)
+    const reattached = await ipc.invoke<ProjectGitSwitchResult>(PROJECT_IPC_CHANNELS.switchProjectGitBranch, project.projectId, "特性/分支")
+    assert.equal(reattached.success, true)
+    assert.equal(git("rev-parse", "--abbrev-ref", "HEAD"), "特性/分支")
+
+    await writeFile(join(firstDirectory, "tracked.txt"), "uncommitted-conflict\n", "utf8")
+    const conflictSwitch = await ipc.invoke<ProjectGitSwitchResult>(PROJECT_IPC_CHANNELS.switchProjectGitBranch, project.projectId, "main")
+    assert.equal(conflictSwitch.success, false)
+    if (!conflictSwitch.success) assert.ok(conflictSwitch.error.length > 0)
+    assert.equal(git("rev-parse", "--abbrev-ref", "HEAD"), "特性/分支")
+
+    for (const [projectId, branch] of [
+      [project.projectId, "-evil"],
+      [project.projectId, "  "],
+      [project.projectId, "missing-branch"],
+      ["default", "main"],
+    ]) {
+      const invalidSwitch = await ipc.invoke<ProjectGitSwitchResult>(PROJECT_IPC_CHANNELS.switchProjectGitBranch, projectId, branch)
+      assert.equal(invalidSwitch.success, false)
+    }
+    await assert.rejects(ipc.invoke(PROJECT_IPC_CHANNELS.listProjectGitBranches, "default"))
+    await assert.rejects(ipc.invoke(PROJECT_IPC_CHANNELS.listProjectGitBranches, UNKNOWN_PROJECT_ID))
 
     const failed = new FakeIpcMain()
     registerProjectIpcHandlers(failed, dialog, {

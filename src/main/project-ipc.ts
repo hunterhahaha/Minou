@@ -7,9 +7,16 @@ import { basename, dirname, isAbsolute, join, normalize, parse, resolve } from "
 
 import { requireProjectId } from "../../runtime/session/src/project-id.ts"
 import type { ConfigFilePaths } from "./config-files.ts"
+import { inspectProjectGitBranches, NON_GIT_BRANCH_STATE, switchProjectGitBranch } from "./project-git.ts"
 import { insertProjectWorkspace, readProjectWorkspace, saveProjectWorkspace } from "./workspace-store.ts"
 import { PROJECT_IPC_CHANNELS } from "../preload/session-api.ts"
-import type { DirectorySelection, ProjectDirectoryResult, ProjectSummary } from "../preload/session-api.ts"
+import type {
+  DirectorySelection,
+  ProjectDirectoryResult,
+  ProjectGitBranchState,
+  ProjectGitSwitchResult,
+  ProjectSummary,
+} from "../preload/session-api.ts"
 
 /** Electron 目录选择窗口的最小可测试端口。 */
 export interface DirectoryDialogPort {
@@ -86,7 +93,19 @@ async function directoryResult(operation: () => Promise<void>): Promise<ProjectD
 }
 
 /**
- * 注册目录选择、项目创建、重命名和目录关联变更的 IPC。
+ * 校验非 `default` 的 Project UUID 并读取对应的工作区配置。
+ * @param databasePath 工作区数据库路径。
+ * @param projectId 外部传入的 Project 身份参数。
+ * @returns 已持久化的项目工作区记录。
+ * @throws Error 当 `projectId` 为 `"default"`、格式无效或项目不存在时抛出。
+ */
+function readNonDefaultProjectWorkspace(databasePath: string, projectId: unknown) {
+  if (projectId === "default") throw new TypeError("Project ID 不能是 default")
+  return readProjectWorkspace(databasePath, requireProjectId(projectId))
+}
+
+/**
+ * 注册目录选择、项目创建、重命名、目录关联及主目录 Git 分支操作的 IPC。
  * @param ipcMain 主进程 IPC 注册端口。
  * @param dialog 系统目录选择窗口端口。
  * @param paths 启动时已初始化的配置路径。
@@ -197,4 +216,23 @@ export function registerProjectIpcHandlers(
         updatedAt: new Date().toISOString(),
       })
     }))
+
+  ipcMain.handle(PROJECT_IPC_CHANNELS.listProjectGitBranches, async (_event, projectId: unknown): Promise<ProjectGitBranchState> => {
+    const project = readNonDefaultProjectWorkspace(paths.workspaceDatabasePath, projectId)
+    const primaryDirectory = project.directories[0]
+    return primaryDirectory ? inspectProjectGitBranches(primaryDirectory) : NON_GIT_BRANCH_STATE
+  })
+
+  ipcMain.handle(PROJECT_IPC_CHANNELS.switchProjectGitBranch, async (_event, projectId: unknown, branch: unknown): Promise<ProjectGitSwitchResult> => {
+    try {
+      const project = readNonDefaultProjectWorkspace(paths.workspaceDatabasePath, projectId)
+      const primaryDirectory = project.directories[0]
+      if (!primaryDirectory) {
+        return { success: false, error: "当前项目未关联工作目录" }
+      }
+      return switchProjectGitBranch(primaryDirectory, branch)
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  })
 }

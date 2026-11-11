@@ -82,6 +82,14 @@ async function testCallsFixedChannels(): Promise<void> {
       }
       if (channel === PROJECT_IPC_CHANNELS.addProjectDirectory) return { success: true }
       if (channel === PROJECT_IPC_CHANNELS.removeProjectDirectory) return { success: false, error: "不存在" }
+      if (channel === PROJECT_IPC_CHANNELS.listProjectGitBranches) {
+        return { isGitRepo: true, currentBranch: "main", branches: ["dev", "main"] }
+      }
+      if (channel === PROJECT_IPC_CHANNELS.switchProjectGitBranch) {
+        return args[1] === "dev"
+          ? { success: true, branchState: { isGitRepo: true, currentBranch: "dev", branches: ["dev", "main"] } }
+          : { success: false, error: "存在未提交修改" }
+      }
       if (channel === SESSION_IPC_CHANNELS.startNewSession) {
         return { sessionId: "new-session", turn: 1 }
       }
@@ -107,6 +115,16 @@ async function testCallsFixedChannels(): Promise<void> {
   assert.deepEqual(await api.addProjectDirectory(PROJECT_ID, "C:\\Work"), { success: true })
   assert.deepEqual(await api.removeProjectDirectory(PROJECT_ID, "C:\\Work"), {
     success: false, error: "不存在",
+  })
+  assert.deepEqual(await api.listProjectGitBranches(PROJECT_ID), {
+    isGitRepo: true, currentBranch: "main", branches: ["dev", "main"],
+  })
+  assert.deepEqual(await api.switchProjectGitBranch(PROJECT_ID, "dev"), {
+    success: true,
+    branchState: { isGitRepo: true, currentBranch: "dev", branches: ["dev", "main"] },
+  })
+  assert.deepEqual(await api.switchProjectGitBranch(PROJECT_ID, "dirty"), {
+    success: false, error: "存在未提交修改",
   })
   assert.deepEqual(await api.listProjects(), [{
     projectId: PROJECT_ID, name: "Project", updatedAt: "2026-09-04T00:00:00Z",
@@ -163,6 +181,9 @@ async function testCallsFixedChannels(): Promise<void> {
     { channel: PROJECT_IPC_CHANNELS.renameProject, args: ["00000000-0000-4000-8000-000000000018", "Renamed"] },
     { channel: PROJECT_IPC_CHANNELS.addProjectDirectory, args: [PROJECT_ID, "C:\\Work"] },
     { channel: PROJECT_IPC_CHANNELS.removeProjectDirectory, args: [PROJECT_ID, "C:\\Work"] },
+    { channel: PROJECT_IPC_CHANNELS.listProjectGitBranches, args: [PROJECT_ID] },
+    { channel: PROJECT_IPC_CHANNELS.switchProjectGitBranch, args: [PROJECT_ID, "dev"] },
+    { channel: PROJECT_IPC_CHANNELS.switchProjectGitBranch, args: [PROJECT_ID, "dirty"] },
     { channel: STARTUP_DATA_IPC_CHANNELS.listProjects, args: [] },
     { channel: STARTUP_DATA_IPC_CHANNELS.listDefaultSessions, args: [] },
     { channel: STARTUP_DATA_IPC_CHANNELS.listProviders, args: [] },
@@ -219,6 +240,7 @@ async function testExposesOnlyNiCodeApi(): Promise<void> {
     Object.keys(exposedApi as NiCodePreloadApi).sort(),
     ["getSessionData", "onSessionUpdate", "renameProject", "renameSession", "exportSessionMarkdown", "updateSessionSettings", "decideSessionApproval", "addProjectDirectory", "continueSession", "createModel", "createProject", "createCompatibleProvider", "createCustomProvider", "listCompatibleProviders", "deleteModel", "deleteProvider", "enqueueSessionMessage", "listDefaultSessions", "listProjects", "listProviders", "removeProjectDirectory", "selectDirectory", "setDefaultModel", "startNewSession", "stopSession", "updateApiKey", "updateModel", "updateProvider",
       "listMcpServers", "createMcpServer", "updateMcpServer", "deleteMcpServer", "reloadMcpServers", "listSkills", "setSkillEnabled",
+      "listProjectGitBranches", "switchProjectGitBranch",
       "listWebSearchProviderDefinitions", "listWebSearchProviders", "getWebSearchProvider", "createWebSearchProvider",
       "updateWebSearchProvider", "deleteWebSearchProvider", "setActiveWebSearchProvider",
       "startTeamSession", "getTeamWakeupConfig", "setTeamWakeupConfig"].sort(),
@@ -308,6 +330,18 @@ async function testRejectsInvalidMainResponse(): Promise<void> {
   await assert.rejects(
     invalidStopped.stopSession(PROJECT_ID, "session-1"),
     /无效的 Session 停止结果/,
+  )
+
+  const invalidGitState = createSessionApi({ invoke: async () => ({ isGitRepo: false, currentBranch: "main", branches: [] }) })
+  await assert.rejects(
+    invalidGitState.listProjectGitBranches(PROJECT_ID),
+    /非 Git 仓库不应包含分支状态/,
+  )
+
+  const invalidGitSwitch = createSessionApi({ invoke: async () => ({ success: false, error: "" }) })
+  await assert.rejects(
+    invalidGitSwitch.switchProjectGitBranch(PROJECT_ID, "main"),
+    /无效的 Git 分支切换结果/,
   )
 }
 
