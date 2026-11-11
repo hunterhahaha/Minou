@@ -122,8 +122,8 @@ async function main() {
   ipcMain.handle(STARTUP_DATA_IPC_CHANNELS.listProviders, () => [{ providerId: "p", name: "测试", type: "custom", protocol: "responses",
     models: [{ supportsReasoning: providerSupportsReasoning, modelId: "m", name: model.name, isDefault: true, contextWindow: 256000, maxOutputTokens: 32000,
       reasoningLevels: ["low", "medium", "high"], reasoningField: { path: ["reasoning", "effort"] } },
-      { supportsReasoning: false, modelId: alternateModel.modelId, name: alternateModel.name, isDefault: false, contextWindow: 128000, maxOutputTokens: 16000,
-        reasoningLevels: ["medium"], reasoningField: { path: ["reasoning", "effort"] } }] }])
+      { supportsReasoning: providerSupportsReasoning, modelId: alternateModel.modelId, name: alternateModel.name, isDefault: false, contextWindow: 128000, maxOutputTokens: 16000,
+        reasoningLevels: ["low", "medium"], reasoningField: { path: ["reasoning", "effort"] } }] }])
   window = new BrowserWindow({ show: false, width: 1200, height: 800, webPreferences: {
     preload: join(process.cwd(), "dist/src/preload/index.js"), contextIsolation: true, nodeIntegration: false, sandbox: false, backgroundThrottling: false,
   } })
@@ -297,19 +297,35 @@ async function main() {
   await until(() => evaluate("!document.querySelector('.composer-model-panel:popover-open')"))
   await evaluate("document.querySelector('[aria-label=\"对话模型\"]').click()")
   await until(() => evaluate("Boolean(document.querySelector('.composer-model-panel:popover-open'))"))
-  await evaluate("document.querySelector('[aria-label=\"设置推理等级\"]').click()")
-  await until(() => evaluate("Boolean(document.querySelector('.reasoning-menu'))"))
-  assert.deepEqual(await evaluate("[...document.querySelectorAll('.reasoning-menu button > span')].map(node => node.textContent)"), ["low", "medium", "high"])
+  await evaluate("document.querySelector('.model-menu [aria-checked=true]').dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))")
+  await until(() => evaluate("Boolean(document.querySelector('.model-level-flyout'))"))
+  assert.deepEqual(await evaluate("[...document.querySelectorAll('.model-level-flyout button > span')].map(node => node.textContent)"), ["low", "medium", "high"])
   const reasoningSessionId = await evaluate("document.querySelector('.chat-page').dataset.sessionId")
   assert.notEqual(readSessionMeta(paths.metaDatabasePath, "default", reasoningSessionId)?.currentModel.reasoningLevel, "high", "打开等级列表不修改对话设置")
-  await evaluate("[...document.querySelectorAll('.reasoning-menu button')].find(node => node.querySelector('span').textContent === 'high').click()")
+  await evaluate("[...document.querySelectorAll('.model-level-flyout button')].find(node => node.querySelector('span').textContent === 'high').click()")
   await until(() => readSessionMeta(paths.metaDatabasePath, "default", reasoningSessionId)?.currentModel.reasoningLevel === "high")
   await until(() => evaluate("Boolean(document.querySelector('[aria-label=对话模型]:not(:disabled)'))"))
   await evaluate("document.querySelector('[aria-label=对话模型]').click()")
   await until(() => evaluate("Boolean(document.querySelector('.composer-model-panel:popover-open'))"))
-  await evaluate("document.querySelector('[aria-label=切换模型]').click()")
   await until(() => evaluate("Boolean(document.querySelector('.model-menu'))"))
-  await evaluate("document.querySelector('.model-menu [title=\"测试 / 短上下文模型\"]').click()")
+  const alternateRow = await evaluate(`(() => {
+    const rect = document.querySelector('.model-menu [title="测试 / 短上下文模型"]').getBoundingClientRect()
+    return { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2) }
+  })()`)
+  window.webContents.sendInputEvent({ type: "mouseMove", ...alternateRow })
+  await until(() => evaluate("document.querySelector('.model-level-flyout button')?.textContent === 'low' && document.querySelector('.model-level-flyout [aria-checked=true]')?.textContent === 'medium'"))
+  assert.equal(readSessionMeta(paths.metaDatabasePath, "default", reasoningSessionId)?.currentModel.reasoningLevel, "high", "悬停预览不写入会话模型设置")
+  const alternateLevel = await evaluate(`(() => {
+    const rect = document.querySelector('.model-level-flyout button').getBoundingClientRect()
+    return { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2) }
+  })()`)
+  window.webContents.sendInputEvent({ type: "mouseMove", ...alternateLevel })
+  window.webContents.sendInputEvent({ type: "mouseDown", ...alternateLevel, button: "left", clickCount: 1 })
+  window.webContents.sendInputEvent({ type: "mouseUp", ...alternateLevel, button: "left", clickCount: 1 })
+  await until(() => {
+    const current = readSessionMeta(paths.metaDatabasePath, "default", reasoningSessionId)?.currentModel
+    return current?.modelId === alternateModel.modelId && current.reasoningLevel === "low"
+  })
   await until(async () => (await readUsage())[0] === "上下文 11,000（来自其他模型） / 128,000 Token")
   assert.deepEqual((await readUsage()).slice(1), ["缓存命中率 20%", "轮数 2", "工具调用 0"], "切换模型时保留会话统计")
   assert.equal(await evaluate("document.querySelector('[data-usage-metric=pressure]').textContent"), "8.6%", "占用比例使用当前模型上限")
@@ -510,6 +526,7 @@ async function main() {
       window.webContents.sendInputEvent({ type: "mouseMove", x: 5, y: 5 })
       await until(() => evaluate("getComputedStyle(document.querySelector('.thinking-detail > summary'), '::after').opacity === '0'"))
       await evaluate("document.querySelector('.thinking-detail > summary').focus()")
+      for (const type of ["keyDown", "keyUp"]) window.webContents.sendInputEvent({ type, keyCode: "Right" })
       await until(() => evaluate("getComputedStyle(document.querySelector('.thinking-detail > summary'), '::after').opacity === '1'"))
       for (const type of ["keyDown", "keyUp"]) window.webContents.sendInputEvent({ type, keyCode: "Space" })
       await until(() => evaluate("document.querySelector('.thinking-detail').open"))
@@ -970,7 +987,7 @@ async function main() {
   await evaluate("document.querySelector('.model-trigger').click()")
   await until(() => evaluate("Boolean(document.querySelector('.composer-model-panel:popover-open'))"))
   assert.equal(await evaluate("Boolean(document.querySelector('[aria-label=设置推理等级]'))"), false)
-  assert.equal(await evaluate("Boolean(document.querySelector('[aria-label=切换模型]'))"), true)
+  assert.equal(await evaluate("Boolean(document.querySelector('.model-menu')) && !document.querySelector('.model-menu [aria-haspopup]')"), true)
   await verifyComposerFiles(paths)
   assert.deepEqual(failures, [])
   assert.deepEqual(rendererErrors, [])

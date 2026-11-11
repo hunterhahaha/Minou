@@ -65,7 +65,7 @@ const modelMenuGeometry = `(() => {
     return {
       open: panel.matches(':popover-open'), width: rect.width, height: rect.height,
       left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom,
-      expectedLeft: Math.max(12, Math.min(anchor.right - rect.width, innerWidth - rect.width - 12)),
+      expectedLeft: Math.max(12, Math.min(anchor.left, innerWidth - rect.width - 12)),
       expectedTop: Math.max(12, Math.min(anchor.top - rect.height - 10, innerHeight - rect.height - 12)),
       viewportWidth: innerWidth, viewportHeight: innerHeight,
     }
@@ -151,32 +151,22 @@ async function screenshot(name) {
   if (["workspace-light", "workspace-dark", "workspace-conversation", "workspace-conversation-dark", "workspace-models", "workspace-settings-dark", "workspace-skills", "workspace-settings-narrow", "workspace-approval-queue"].includes(name)) await assertTypographyAtZoom(name)
 }
 
-/** 在当前菜单临时替换显示文字以检查长失效等级，不改变应用状态。 @param variant 截图名称后缀。 @returns 布局检查完成。 */
-async function assertLongInvalidLevel(variant) {
-  await evaluate(`(() => { const node = document.querySelector('[data-model-setting="reasoning"] .model-setting-value'); node.dataset.fixtureOriginal = node.textContent; node.textContent = 'very-long-custom-reasoning-level-that-must-wrap-without-hiding-the-invalid-indicator（已失效）' })()`)
-  await until(() => evaluate(`(() => { const rect = document.querySelector('.composer-model-panel').getBoundingClientRect(); return rect.left >= 12 && rect.top >= 12 && rect.right <= innerWidth - 12 && rect.bottom <= innerHeight - 12 })()`))
-  const layout = await evaluate(`(() => {
-    const node = document.querySelector('[data-model-setting="reasoning"] .model-setting-value'), style = getComputedStyle(node), rect = node.getBoundingClientRect()
-    const end = document.createRange(); end.setStart(node.firstChild, node.textContent.length - 5); end.setEnd(node.firstChild, node.textContent.length)
-    const last = end.getBoundingClientRect()
-    return { text: node.textContent, whiteSpace: style.whiteSpace, height: rect.height, lineHeight: parseFloat(style.lineHeight), scrollWidth: node.scrollWidth, clientWidth: node.clientWidth, scrollHeight: node.scrollHeight, clientHeight: node.clientHeight, lastVisible: last.left >= rect.left - 1 && last.right <= rect.right + 1 && last.top >= rect.top - 1 && last.bottom <= rect.bottom + 1 }
-  })()`)
-  assert.ok(layout.text.endsWith('（已失效）') && layout.whiteSpace !== 'nowrap' && layout.height > layout.lineHeight && layout.scrollWidth <= layout.clientWidth && layout.scrollHeight <= layout.clientHeight && layout.lastVisible, "长等级与失效提示完整换行：" + JSON.stringify(layout))
-  await screenshot("workspace-model-invalid-long-" + variant)
-  await evaluate(`(() => { const node = document.querySelector('[data-model-setting="reasoning"] .model-setting-value'); node.textContent = node.dataset.fixtureOriginal; delete node.dataset.fixtureOriginal })()`)
-}
-
 /** 在当前已选项临时替换显示文字，检查长名称和勾选标记。 @param variant 截图名称后缀。 @returns 布局检查完成。 */
 async function assertLongModelOption(variant) {
-  await evaluate(`(() => { const row = document.querySelector('.model-menu [aria-checked="true"]'), name = row.querySelector('strong'), provider = row.querySelector('small'); name.dataset.fixtureOriginal = name.textContent; provider.dataset.fixtureOriginal = provider.textContent; name.textContent = 'very-long-model-name-that-must-wrap-to-remain-readable-in-the-menu'; provider.textContent = 'very-long-provider-name-that-must-also-wrap-without-clipping' })()`)
+  await evaluate(`(() => { const row = document.querySelector('.model-menu [aria-checked="true"]'), name = row.querySelector('strong'), provider = row.querySelector('small'); name.dataset.fixtureOriginal = name.textContent; provider.dataset.fixtureOriginal = provider.textContent; name.textContent = 'very-long-model-name-that-must-stay-on-one-line-in-the-menu'; provider.textContent = 'very-long-provider-name-that-must-also-stay-on-one-line' })()`)
   await until(() => evaluate(`(() => { const rect = document.querySelector('.composer-model-panel').getBoundingClientRect(); return rect.left >= 12 && rect.top >= 12 && rect.right <= innerWidth - 12 && rect.bottom <= innerHeight - 12 })()`))
   const layout = await evaluate(`(() => {
     const row = document.querySelector('.model-menu [aria-checked="true"]'), name = row.querySelector('strong'), provider = row.querySelector('small'), icon = row.querySelector('svg')
-    const text = [name, provider].map(node => { const style = getComputedStyle(node), rect = node.getBoundingClientRect(); return { whiteSpace: style.whiteSpace, height: rect.height, lineHeight: parseFloat(style.lineHeight), scrollWidth: node.scrollWidth, clientWidth: node.clientWidth, scrollHeight: node.scrollHeight, clientHeight: node.clientHeight } })
+    const text = [name, provider].map(node => { const style = getComputedStyle(node); return { whiteSpace: style.whiteSpace, textOverflow: style.textOverflow, scrollWidth: node.scrollWidth, clientWidth: node.clientWidth } })
+    const nameRect = name.getBoundingClientRect(), providerRect = provider.getBoundingClientRect()
     const labelRect = row.querySelector('span').getBoundingClientRect(), iconRect = icon.getBoundingClientRect(), rowRect = row.getBoundingClientRect()
-    return { text, iconWidth: iconRect.width, separate: labelRect.right <= iconRect.left && iconRect.right <= rowRect.right }
+    return { text, iconWidth: iconRect.width, sameLine: nameRect.right <= providerRect.left && providerRect.top < nameRect.bottom,
+      separate: labelRect.right <= iconRect.left && iconRect.right <= rowRect.right,
+      fullNameHint: row.title === provider.dataset.fixtureOriginal + ' / ' + name.dataset.fixtureOriginal }
   })()`)
-  assert.ok(layout.text.every(item => item.whiteSpace !== 'nowrap' && item.height > item.lineHeight && item.scrollWidth <= item.clientWidth && item.scrollHeight <= item.clientHeight) && layout.iconWidth >= 14 && layout.separate, "长模型、供应商完整换行且不挤压勾选标记：" + JSON.stringify(layout))
+  assert.ok(layout.text.every(item => item.whiteSpace === 'nowrap' && item.textOverflow === 'ellipsis' && item.scrollWidth > item.clientWidth) &&
+    layout.sameLine && layout.iconWidth >= 14 && layout.separate && layout.fullNameHint,
+    "长模型和供应商同排缩略，保留完整提示和勾选标记：" + JSON.stringify(layout))
   await screenshot("workspace-model-menu-long-" + variant)
   await evaluate(`(() => { for (const node of document.querySelectorAll('.model-menu [data-fixture-original]')) { node.textContent = node.dataset.fixtureOriginal; delete node.dataset.fixtureOriginal } })()`)
 }
@@ -189,7 +179,7 @@ async function assertLongModelOption(variant) {
 async function assertModelMenuScrollCapped(variant) {
   const layout = await evaluate(`(() => {
     const panel = document.querySelector('.composer-model-panel')
-    const back = panel.querySelector('.model-panel-back')
+    const back = panel.querySelector('.model-panel-heading')
     const list = panel.querySelector('.model-option-list')
     const items = [...list.querySelectorAll('button')]
     const panelRect = panel.getBoundingClientRect()
@@ -203,7 +193,8 @@ async function assertModelMenuScrollCapped(variant) {
     list.scrollTop = 0
     return {
       panelHeight: panelRect.height,
-      maxAllowedHeight: Math.ceil(innerHeight * 0.5) + 1,
+      maxAllowedHeight: Math.min(300, Math.ceil(innerHeight * 0.5)) + 1,
+      panelWidth: panelRect.width,
       scrollHeight: list.scrollHeight,
       clientHeight: list.clientHeight,
       backStickyBefore: backBefore.top >= panelRect.top - 1 && backBefore.bottom <= listRect.top + 1,
@@ -219,25 +210,26 @@ async function assertModelMenuScrollCapped(variant) {
     layout.scrollAfter > 0 &&
     layout.backStickyBefore &&
     layout.backPinnedOnScroll &&
-    layout.firstHeight >= 40 &&
-    layout.lastHeight >= 40,
-    "模型菜单按 50% 视口高度限制，返回行固定且列表内部滚动 (" + variant + ")：" + JSON.stringify(layout)
+    layout.panelWidth <= 252 &&
+    layout.firstHeight === 28 &&
+    layout.lastHeight === 28,
+    "模型菜单保持紧凑行高、宽高上限和内部滚动 (" + variant + ")：" + JSON.stringify(layout)
   )
 }
 
 /** 检查真实键盘焦点、鼠标悬停和当前项的视觉层级。 @param variant 截图名称后缀。 @returns 状态检查完成。 */
 async function assertModelStates(variant) {
   window.webContents.focus()
-  await until(() => evaluate("document.activeElement === document.querySelector('.reasoning-menu [aria-checked=\"true\"]')"))
+  await until(() => evaluate("document.activeElement === document.querySelector('.model-level-flyout [aria-checked=\"true\"]')"))
   nativeKey("End")
-  await until(() => evaluate("document.activeElement === document.querySelector('.reasoning-menu button:last-child')"))
-  const hoverPoint = await evaluate("(() => { const rect = document.querySelector('.reasoning-menu button:first-child').getBoundingClientRect(); return { x: Math.round(rect.x + rect.width / 2), y: Math.round(rect.y + rect.height / 2) } })()")
+  await until(() => evaluate("document.activeElement === document.querySelector('.model-level-flyout button:last-child')"))
+  const hoverPoint = await evaluate("(() => { const rect = document.querySelector('.model-level-flyout button:first-child').getBoundingClientRect(); return { x: Math.round(rect.x + rect.width / 2), y: Math.round(rect.y + rect.height / 2) } })()")
   window.webContents.sendInputEvent({ type: "mouseMove", ...hoverPoint })
-  await until(() => evaluate("document.querySelector('.reasoning-menu button:first-child').matches(':hover')"))
-  const states = await evaluate(`(() => { const selected = document.querySelector('.reasoning-menu [aria-checked="true"]'), hover = document.querySelector('.reasoning-menu button:first-child'), focus = document.activeElement; return { selected: getComputedStyle(selected).backgroundColor, hover: getComputedStyle(hover).backgroundColor, focusVisible: focus.matches(':focus-visible'), focusShadow: getComputedStyle(focus).boxShadow } })()`)
+  await until(() => evaluate("document.querySelector('.model-level-flyout button:first-child').matches(':hover')"))
+  const states = await evaluate(`(() => { const selected = document.querySelector('.model-level-flyout [aria-checked="true"]'), hover = document.querySelector('.model-level-flyout button:first-child'), focus = document.activeElement; return { selected: getComputedStyle(selected).backgroundColor, hover: getComputedStyle(hover).backgroundColor, focusVisible: focus.matches(':focus-visible'), focusShadow: getComputedStyle(focus).boxShadow } })()`)
   assert.ok(states.selected !== states.hover && states.focusVisible && states.focusShadow !== 'none', "焦点、选中与悬停状态可区分：" + JSON.stringify(states))
   await screenshot("workspace-model-states-" + variant)
-  await evaluate("document.querySelector('.reasoning-menu [aria-checked=\"true\"]').focus()")
+  await evaluate("document.querySelector('.model-level-flyout [aria-checked=\"true\"]').focus()")
 }
 /**
  * 在当前真实页面核对缩放后的文字下限、代码字体、横向边界和 Composer 操作区域。
@@ -691,7 +683,7 @@ async function main() {
   })`
   const restingNewChatSelectors = await evaluate(newChatSelectorAppearance)
   assert.equal(restingNewChatSelectors.every(control => control.background === "rgba(0, 0, 0, 0)"), true, "新聊天的权限与模型没有独立底色")
-  assert.equal(await evaluate("[...document.querySelectorAll('.new-chat-composer button:not(.send-button), .composer-toolbar, .composer-controls')].every(node => { const style = getComputedStyle(node); return style.backgroundColor === 'rgba(0, 0, 0, 0)' && style.boxShadow === 'none' && style.borderTopWidth === '0px' })"), true, "输入框内的选择入口和工具栏不形成第二层框")
+  assert.equal(await evaluate("[...document.querySelectorAll('.new-chat-composer button:not(.send-button), .composer-toolbar, .composer-controls')].filter(node => node.getClientRects().length).every(node => { const style = getComputedStyle(node); return style.backgroundColor === 'rgba(0, 0, 0, 0)' && style.boxShadow === 'none' && style.borderTopWidth === '0px' })"), true, "输入框内可见的选择入口和工具栏不形成第二层框")
   assert.equal(await evaluate("document.querySelectorAll('.new-chat-composer [aria-label=\"权限\"] svg').length === 1 && document.querySelectorAll('.model-trigger > .composer-model-chevron').length === 1"), true, "模型入口保留一个展开箭头")
   const newComposerPoint = await evaluate("(() => { const rect = document.querySelector('.new-chat-composer .composer-editor').getBoundingClientRect(); return { x: Math.round(rect.x + rect.width / 2), y: Math.round(rect.y + rect.height / 2) } })()")
   window.webContents.sendInputEvent({ type: "mouseMove", ...newComposerPoint })
@@ -712,6 +704,8 @@ async function main() {
   assert.equal(focusedComposer.outlineStyle, "none", "输入外壳不显示焦点描边")
   assert.equal(focusedComposer.inputOutline, "0px", "文本域不显示焦点描边")
   assert.deepEqual([focusedComposer.radius, focusedComposer.inputRadius, focusedComposer.fontSize, focusedComposer.lineHeight], ["12px", "12px", "14px", "22px"], "外壳及输入遵循共同的圆角和字阶")
+  nativeKey("Tab")
+  await until(() => evaluate("document.activeElement?.matches('.model-trigger:focus-visible')"))
   nativeKey("Tab")
   await until(() => evaluate("document.activeElement?.getAttribute('aria-label') === '权限' && document.activeElement.matches(':focus-visible')"))
   await evaluate("Promise.all(document.activeElement.getAnimations().map(animation => animation.finished))")
@@ -763,61 +757,69 @@ async function main() {
   await openPositionedModelMenu()
   await until(() => evaluate("Boolean(document.querySelector('.composer-model-panel:popover-open'))"))
   assert.equal(await evaluate("document.querySelectorAll('.reasoning-anchor').length"), 0, "模型和推理共用一个入口")
-  assert.deepEqual(await evaluate("[...document.querySelectorAll('.model-setting-label')].map(node => node.textContent)"), ["模型", "推理等级"], "主菜单只显示模型和推理等级两行")
+  assert.equal(await evaluate("Boolean(document.querySelector('.model-menu')) && !document.querySelector('[aria-label=设置推理等级]')"), true, "模型入口直接打开列表，移除独立等级入口")
   assert.equal(await evaluate("Boolean(document.querySelector('.composer-model-panel input[type=\"range\"]'))"), false, "等级通过列表选择")
   assert.equal(await evaluate("(() => { const name = document.querySelector('.composer-model-name').getBoundingClientRect(); const level = document.querySelector('.composer-model-reasoning').getBoundingClientRect(); return Math.abs(name.top - level.top) < 2 && level.left >= name.right })()"), true, "模型名和推理等级在同一行")
   assert.equal(await evaluate("(() => { const rect = document.querySelector('.composer-model-panel').getBoundingClientRect(); return rect.left >= 12 && rect.top >= 12 && rect.right <= innerWidth - 12 && rect.bottom <= innerHeight - 12 })()"), true, "模型面板位于窗口内")
   await screenshot("workspace-model-settings")
-  await assertLongInvalidLevel("light")
   window.webContents.focus()
-  await evaluate("document.querySelector('[aria-label=\"设置推理等级\"]').focus()")
+  await evaluate("document.querySelector('.model-menu [aria-checked=true]').focus()")
   nativeKey("Right")
-  await until(() => evaluate("Boolean(document.querySelector('.reasoning-menu'))"))
+  await until(() => evaluate("Boolean(document.querySelector('.model-level-flyout'))"))
   assertModelMenuGeometry(await evaluate(modelMenuGeometry))
-  await until(() => evaluate("document.activeElement === document.querySelector('.reasoning-menu [aria-checked=\"true\"]')"))
+  await until(() => evaluate("document.activeElement === document.querySelector('.model-level-flyout [aria-checked=\"true\"]')"))
   await assertModelStates("light")
   nativeKey("End")
   await until(() => evaluate("document.activeElement?.textContent.includes('high')"))
   for (const type of ["keyDown", "char", "keyUp"]) window.webContents.sendInputEvent({ type, keyCode: type === "char" ? "\r" : "Enter" })
   await until(() => evaluate("document.querySelector('.composer-model-reasoning').textContent === 'high'"))
   await click(".model-trigger")
-  await until(() => evaluate("Boolean(document.querySelector('.model-settings-menu'))"))
-  await click('[aria-label="设置推理等级"]')
-  await until(() => evaluate("Boolean(document.querySelector('.reasoning-menu'))"))
-  await until(() => evaluate("document.activeElement === document.querySelector('.reasoning-menu [aria-checked=\"true\"]')"))
+  await until(() => evaluate("Boolean(document.querySelector('.model-menu'))"))
+  await evaluate("document.querySelector('.model-menu [aria-checked=true]').focus()")
+  nativeKey("Right")
+  await until(() => evaluate("Boolean(document.querySelector('.model-level-flyout'))"))
+  await until(() => evaluate("document.activeElement === document.querySelector('.model-level-flyout [aria-checked=\"true\"]')"))
   nativeKey("Home")
   await until(() => evaluate("document.activeElement?.textContent.includes('low')"))
   for (const type of ["keyDown", "char", "keyUp"]) window.webContents.sendInputEvent({ type, keyCode: type === "char" ? "\r" : "Enter" })
   await until(() => evaluate("document.querySelector('.composer-model-reasoning').textContent === 'low'"))
   await click(".model-trigger")
-  await until(() => evaluate("Boolean(document.querySelector('.model-settings-menu'))"))
+  await until(() => evaluate("Boolean(document.querySelector('.model-menu'))"))
   await screenshot("workspace-model-reasoning")
   window.setSize(640, 800)
   await until(() => evaluate("innerWidth === 640"))
   await fits()
   await screenshot("workspace-model-reasoning-narrow")
-  await assertLongInvalidLevel("narrow")
   const compactModelMenu = await evaluate("(() => { const node = document.querySelector('.composer-model-panel'); const rect = node.getBoundingClientRect(); return { open: node.matches(':popover-open'), left: rect.left, right: rect.right, top: rect.top, viewport: innerWidth } })()")
   assert.ok(compactModelMenu.open && compactModelMenu.left >= 12 && compactModelMenu.right <= compactModelMenu.viewport - 12 && compactModelMenu.top >= 12, "窄窗口菜单边界：" + JSON.stringify(compactModelMenu))
   await key("Escape")
   await until(() => evaluate("!document.querySelector('.composer-model-panel:popover-open')"))
   await openPositionedModelMenu()
-  await until(() => evaluate("Boolean(document.querySelector('.model-settings-menu'))"))
-  await click('[aria-label="切换模型"]')
+  await until(() => evaluate("Boolean(document.querySelector('.model-menu'))"))
   await until(() => evaluate("Boolean(document.querySelector('.model-menu'))"))
   assertModelMenuGeometry(await evaluate(modelMenuGeometry))
   await assertModelMenuScrollCapped("narrow")
   await assertLongModelOption("narrow")
-  await click('.model-panel-back')
-  await until(() => evaluate("Boolean(document.querySelector('.model-settings-menu'))"))
+  await until(() => evaluate("Boolean(document.querySelector('.model-menu'))"))
   window.setSize(1440, 1000)
   await until(() => evaluate("innerWidth === 1440"))
-  await click('[aria-label="切换模型"]')
   await until(() => evaluate("Boolean(document.querySelector('.model-menu'))"))
   await screenshot("workspace-model-menu")
   await assertModelMenuScrollCapped("light")
   await assertLongModelOption("light")
   await assertPaletteContrast("model menu")
+  await evaluate("document.querySelector('.model-menu [aria-checked=true]').focus()")
+  nativeKey("Right")
+  await until(() => evaluate("Boolean(document.activeElement?.closest('.model-level-flyout'))"))
+  assert.equal(await evaluate(`(() => {
+    const flyout = document.querySelector('.model-level-flyout').getBoundingClientRect()
+    const panel = document.querySelector('.composer-model-panel').getBoundingClientRect()
+    return (flyout.left >= panel.right - 1 || flyout.right <= panel.left + 1)
+      && flyout.left >= 12 && flyout.right <= innerWidth - 12 && flyout.top >= 12 && flyout.bottom <= innerHeight - 12
+  })()`), true, "等级子菜单并排显示且保持在窗口内")
+  await screenshot("workspace-model-level-flyout")
+  nativeKey("Left")
+  await until(() => evaluate("!document.querySelector('.model-level-flyout') && document.activeElement?.matches('.model-menu [aria-checked=true]')"))
   await key("Escape")
   await until(() => evaluate("!document.querySelector('.composer-model-panel:popover-open')"))
   assert.equal(await evaluate("document.activeElement.classList.contains('model-trigger')"), true, "Escape 恢复模型入口焦点")
@@ -844,23 +846,21 @@ async function main() {
   await screenshot("workspace-conversation-dark")
   await nativeClick('[aria-label="对话模型"]')
   await until(() => evaluate("Boolean(document.querySelector('.composer-model-panel:popover-open'))"))
-  await until(() => evaluate("document.activeElement === document.querySelector('[data-model-setting=\"models\"]')"))
+  await until(() => evaluate("document.activeElement === document.querySelector('.model-menu [aria-checked=true]')"))
   await key("Escape")
   await until(() => evaluate("!document.querySelector('.composer-model-panel:popover-open')"))
   await openPositionedModelMenu()
-  await until(() => evaluate("Boolean(document.querySelector('.model-settings-menu'))"))
+  await until(() => evaluate("Boolean(document.querySelector('.model-menu'))"))
   await screenshot("workspace-model-reasoning-dark")
-  await assertLongInvalidLevel("dark")
   /** 截取已渲染的菜单和入口，供直接对照本次参考图。 */
   const modelMenuBounds = await evaluate("(() => { const panel = document.querySelector('.composer-model-panel').getBoundingClientRect(); const trigger = document.querySelector('.model-trigger').getBoundingClientRect(); const x = Math.floor(Math.max(0, panel.left - 12)); const y = Math.floor(Math.max(0, panel.top - 12)); return { x, y, width: Math.ceil(Math.min(innerWidth, Math.max(panel.right, trigger.right) + 12)) - x, height: Math.ceil(Math.min(innerHeight, trigger.bottom + 8)) - y } })()")
   await writeFile(join(process.cwd(), "dist/workspace-model-settings-detail-dark.png"), (await window.webContents.capturePage(modelMenuBounds)).toPNG())
-  await click('[aria-label="切换模型"]')
   await until(() => evaluate("Boolean(document.querySelector('.model-menu'))"))
   await assertLongModelOption("dark")
-  await click('.model-panel-back')
-  await until(() => evaluate("Boolean(document.querySelector('.model-settings-menu'))"))
-  await click('[aria-label="设置推理等级"]')
-  await until(() => evaluate("Boolean(document.querySelector('.reasoning-menu'))"))
+  await until(() => evaluate("Boolean(document.querySelector('.model-menu'))"))
+  await evaluate("document.querySelector('.model-menu [aria-checked=true]').focus()")
+  nativeKey("Right")
+  await until(() => evaluate("Boolean(document.querySelector('.model-level-flyout'))"))
   await assertModelStates("dark")
   await key("Escape")
   await assertWorkspacePalette("rgb(24, 24, 27)", [".chat-page", ".chat-scroll", ".chat-messages", ".final-answer"])
@@ -1089,7 +1089,7 @@ async function main() {
     const project = boundsOf('.context-project-trigger')
     const mode = boundsOf('.context-mode-anchor button')
     return sidebar.right === workspace.left && Math.abs(centerY(project) - centerY(mode)) < 1
-      && Math.abs(centerY(permission) - centerY(model)) < 1 && permission.right <= model.left
+      && Math.abs(centerY(permission) - centerY(model)) < 1 && model.right <= permission.left
       && controls.every(button => {
       const bounds = button.getBoundingClientRect()
       return bounds.width > 0 && bounds.left >= workspace.left && bounds.right <= workspace.right && bounds.bottom <= workspace.bottom
@@ -1145,7 +1145,7 @@ async function main() {
     const model = boundsOf('.chat-footer .model-trigger')
     const send = boundsOf('.chat-footer .send-button')
     const centerY = bounds => (bounds.top + bounds.bottom) / 2
-    return permission.left >= workspace.left && permission.right <= model.left && model.right <= send.left
+    return model.left >= workspace.left && model.right <= permission.left && permission.right <= send.left
       && send.right <= workspace.right && send.bottom <= workspace.bottom
       && model.width > 0 && Math.abs(centerY(permission) - centerY(model)) < 1 && Math.abs(centerY(model) - centerY(send)) < 1
   })()`), true, "最小窗口打开侧栏时，已有对话的权限、模型和发送控件同排可见")

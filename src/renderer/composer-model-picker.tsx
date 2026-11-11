@@ -1,6 +1,7 @@
 /** 新聊天与已有对话共用的模型入口；只展示选项并回传选择，持久化由页面负责。 */
 import { useEffect, useId, useRef, useState } from "react"
-import { IconArrowLeft, IconCheck, IconChevronDown, IconChevronRight } from "@tabler/icons-react"
+import { IconCheck, IconChevronDown, IconChevronRight } from "@tabler/icons-react"
+import { preferredReasoningLevel } from "../../runtime/model/src/reasoning.ts"
 
 /** 模型面板消费的显示选项；身份与数据库模型引用由调用页面映射。 */
 export interface ComposerModelOption {
@@ -10,6 +11,8 @@ export interface ComposerModelOption {
   name: string
   /** 模型所属供应商的显示名称。 */
   providerName: string
+  /** 可在模型行旁选择的有效推理等级。 */
+  reasoningLevels: readonly string[]
 }
 
 /** 模型面板的展示数据与明确选择出口。 */
@@ -24,51 +27,48 @@ interface ComposerModelPickerProps {
   /** 当前模型是否支持思考，控制等级入口的可见性。 */
   supportsReasoning: boolean
   reasoningLevel: string
-  /** 当前模型支持的等级顺序；空数组禁用等级调整。 */
-  reasoningLevels: string[]
   /** 设置正在保存或控制状态尚未就绪时禁用入口。 */
   disabled: boolean
   /** 区分新聊天和已有对话入口的可访问名称。 */
   label: string
-  /** 将模型联合键交给页面保存。 */
-  onModelChange: (key: string) => void
+  /** 将模型联合键和可选的明确等级交给页面保存。 */
+  onModelChange: (key: string, level?: string) => void
   /** 将一个有效推理等级交给页面保存。 */
   onReasoningChange: (level: string) => void
 }
 
 /**
- * 用单行入口打开模型和推理等级两行菜单，再进入对应选项列表。
+ * 打开模型列表，并从支持推理的模型行查看和选择等级。
  * @param props 页面确认的模型、等级、忙碌状态和两个选择回调。
  * @returns 由浏览器锚定入口的顶层原生 popover；Escape 恢复入口焦点。
  */
-export function ComposerModelPicker({ options, selectedKey, modelName, supportsReasoning, reasoningLevel, reasoningLevels, disabled, label, onModelChange, onReasoningChange }: ComposerModelPickerProps) {
+export function ComposerModelPicker({ options, selectedKey, modelName, supportsReasoning, reasoningLevel, disabled, label, onModelChange, onReasoningChange }: ComposerModelPickerProps) {
   const id = useId()
   const trigger = useRef<HTMLButtonElement>(null)
   const panel = useRef<HTMLDivElement>(null)
   const [open, setOpen] = useState(false)
-  const [page, setPage] = useState<"menu" | "reasoning" | "models">("menu")
-  useEffect(() => {
-    if (!supportsReasoning && page === "reasoning") {
-      setPage("menu")
-      requestAnimationFrame(() => panel.current?.querySelector<HTMLElement>('[data-model-setting="models"]')?.focus())
-    }
-  }, [supportsReasoning, page])
-  const levelValid = reasoningLevels.includes(reasoningLevel)
+  const [flyout, setFlyout] = useState<{ key: string; row: HTMLButtonElement; left: number; top: number } | null>(null)
+  const flyoutModel = options.find((model) => model.key === flyout?.key)
+  const flyoutLevel = !flyoutModel?.reasoningLevels.length ? undefined : flyoutModel.key === selectedKey
+    ? reasoningLevel : preferredReasoningLevel(flyoutModel.reasoningLevels, reasoningLevel)
   useEffect(() => { if (disabled) panel.current?.hidePopover() }, [disabled])
   /** 关闭当前面板；页面负责处理保存失败并保留之前确认的选择。 */
   function close(): void { panel.current?.hidePopover() }
-  /**
-   * 切换菜单页面并聚焦当前选项；返回主菜单时恢复对应行的焦点。
-   * @param next 要展示的菜单或选项列表。
-   * @param returnTo 返回主菜单时应聚焦的入口行。
+  /** 在模型行旁展示有效等级，必要时将菜单放到行的上方或下方。
+   * @param model 当前预览的模型。
+   * @param row 对应模型行，用于定位及返回键盘焦点。
    */
-  function showPage(next: "menu" | "reasoning" | "models", returnTo?: "reasoning" | "models"): void {
-    setPage(next)
-    requestAnimationFrame(() => {
-      const target = next === "menu" ? panel.current?.querySelector<HTMLElement>(`[data-model-setting="${returnTo ?? "models"}"]`)
-        : panel.current?.querySelector<HTMLElement>('[aria-checked="true"]') ?? panel.current?.querySelector<HTMLElement>('[role="menuitemradio"]')
-      target?.focus({ preventScroll: true })
-    })
+  function previewLevels(model: ComposerModelOption, row: HTMLButtonElement): void {
+    if (!model.reasoningLevels.length || !panel.current) { setFlyout(null); return }
+    const bounds = panel.current.getBoundingClientRect()
+    const rowBounds = row.getBoundingClientRect()
+    const width = 148
+    const height = Math.min(model.reasoningLevels.length * 30 + 10, 240, window.innerHeight - 24)
+    const fitsRight = bounds.right + width <= window.innerWidth - 12
+    const fitsLeft = bounds.left - width >= 12
+    const left = fitsRight ? bounds.right : fitsLeft ? bounds.left - width : bounds.right - width
+    const requestedTop = fitsRight || fitsLeft ? rowBounds.top : rowBounds.bottom + height <= window.innerHeight - 12 ? rowBounds.bottom : rowBounds.top - height
+    setFlyout({ key: model.key, row, left: Math.max(12, left), top: Math.max(12, Math.min(requestedTop, window.innerHeight - height - 12)) })
   }
   return <div className="selector-anchor composer-model-picker">
     <button ref={trigger} className="selector-trigger model-trigger" type="button" aria-label={label} aria-haspopup="dialog"
@@ -78,22 +78,25 @@ export function ComposerModelPicker({ options, selectedKey, modelName, supportsR
     </button>
     <div ref={panel} id={id} popover="auto" role="dialog" aria-label="模型与推理设置" className="composer-model-panel"
       onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget) && event.relatedTarget !== trigger.current) close() }}
+      onPointerLeave={() => { if (!document.activeElement?.closest('.model-level-flyout')) setFlyout(null) }}
       onToggle={(event) => {
         const shown = event.newState === "open"
         setOpen(shown)
-        if (shown) {
-          showPage("menu")
-        }
+        setFlyout(null)
+        if (shown) (panel.current?.querySelector<HTMLElement>('.model-menu [aria-checked="true"]') ??
+          panel.current?.querySelector<HTMLElement>('.model-menu button'))?.focus()
       }}
       onKeyDown={(event) => {
+        const inFlyout = (event.target as HTMLElement).closest('.model-level-flyout')
         if (event.key === "Escape") { event.preventDefault(); close(); trigger.current?.focus() }
-        if (page !== "menu" && event.key === "ArrowLeft") { event.preventDefault(); showPage("menu", page) }
-        if (page === "menu" && event.key === "ArrowRight") {
-          const button = (event.target as HTMLElement).closest<HTMLButtonElement>('[role="menuitem"]')
-          if (button) { event.preventDefault(); button.click() }
+        if (inFlyout && event.key === "ArrowLeft") {
+          event.preventDefault()
+          flyout?.row.focus()
+          setFlyout(null)
         }
         if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
-          const buttons = [...panel.current!.querySelectorAll<HTMLButtonElement>('[role="menuitem"], [role="menuitemradio"]')]
+          const buttons = [...(inFlyout ?? panel.current!).querySelectorAll<HTMLButtonElement>('[role="menuitem"], [role="menuitemradio"]')]
+            .filter((button) => inFlyout || !button.closest('.model-level-flyout'))
           if (!buttons.length) return
           event.preventDefault()
           const current = buttons.indexOf(document.activeElement as HTMLButtonElement)
@@ -103,28 +106,38 @@ export function ComposerModelPicker({ options, selectedKey, modelName, supportsR
           buttons[next].focus()
         }
       }}>
-      {page === "menu" ? <div className="model-settings-menu" role="menu" aria-label="模型与推理选项">
-        <button type="button" className="model-setting-row" role="menuitem" aria-haspopup="menu" aria-label="切换模型" data-model-setting="models" onClick={() => showPage("models")}>
-          <span className="model-setting-label">模型</span><span className="model-setting-value">{modelName}</span><IconChevronRight size={13} aria-hidden="true" />
-        </button>
-        {supportsReasoning && <button type="button" className="model-setting-row" role="menuitem" aria-haspopup="menu" aria-label="设置推理等级" data-model-setting="reasoning" onClick={() => showPage("reasoning")}>
-          <span className="model-setting-label">推理等级</span><span className="model-setting-value">{reasoningLevel}{!levelValid && "（已失效）"}</span><IconChevronRight size={13} aria-hidden="true" />
-        </button>}
-      </div> : page === "reasoning" && supportsReasoning ? <>
-        <button type="button" className="model-panel-back" aria-label="返回模型与推理菜单" onClick={() => showPage("menu", "reasoning")}><IconArrowLeft size={15} aria-hidden="true" />推理等级</button>
-        <div className="model-option-list reasoning-menu" role="menu" aria-label="推理等级选项">{reasoningLevels.map((level) =>
-          <button type="button" role="menuitemradio" aria-checked={level === reasoningLevel} disabled={disabled} key={level} onClick={() => { close(); if (level !== reasoningLevel) onReasoningChange(level) }}>
-            <span>{level}</span>{level === reasoningLevel && <IconCheck size={15} aria-hidden="true" />}
-          </button>)}</div>
-        {reasoningLevels.length === 0 && <p className="model-panel-note">当前模型不可用，请切换模型。</p>}
-      </> : <>
-        <button type="button" className="model-panel-back" aria-label="返回模型与推理菜单" onClick={() => showPage("menu", "models")}><IconArrowLeft size={15} aria-hidden="true" />模型</button>
-        <div className="model-option-list model-menu" role="menu" aria-label="模型选项">{options.map((model) => <button type="button" role="menuitemradio" aria-checked={model.key === selectedKey}
-          key={model.key} title={model.providerName + " / " + model.name} disabled={disabled} onClick={() => { close(); onModelChange(model.key) }}>
-          <span><strong>{model.name}</strong><small>{model.providerName}</small></span>{model.key === selectedKey && <IconCheck size={15} aria-hidden="true" />}
+        <div className="model-panel-heading" aria-hidden="true">模型</div>
+        <div className="model-option-list model-menu" role="menu" aria-label="模型选项" onScroll={() => setFlyout(null)}>{options.map((model) => <button type="button" role="menuitemradio" aria-checked={model.key === selectedKey}
+          key={model.key} title={model.providerName + " / " + model.name} disabled={disabled}
+          aria-haspopup={model.reasoningLevels.length ? "menu" : undefined} aria-expanded={model.reasoningLevels.length ? flyout?.key === model.key : undefined}
+          onPointerEnter={(event) => { if (event.pointerType === "mouse") previewLevels(model, event.currentTarget) }}
+          onKeyDown={(event) => {
+            if (event.key !== "ArrowRight" || !model.reasoningLevels.length) return
+            event.preventDefault()
+            previewLevels(model, event.currentTarget)
+            requestAnimationFrame(() => (panel.current?.querySelector<HTMLElement>('.model-level-flyout [aria-checked="true"]') ??
+              panel.current?.querySelector<HTMLElement>('.model-level-flyout button'))?.focus({ preventScroll: true }))
+          }}
+          onClick={(event) => {
+            const pointerType = (event.nativeEvent as PointerEvent).pointerType
+            if (model.reasoningLevels.length && (pointerType === "touch" || pointerType === "pen")) {
+              previewLevels(model, event.currentTarget)
+              return
+            }
+            close()
+            onModelChange(model.key)
+          }}>
+          <span><strong>{model.name}</strong><small>{model.providerName}</small></span>{model.key === selectedKey ? <IconCheck size={15} aria-hidden="true" /> : model.reasoningLevels.length > 0 && <IconChevronRight size={13} aria-hidden="true" />}
         </button>)}</div>
+        {flyout && flyoutModel && <div className="model-level-flyout model-option-list" role="menu" aria-label={`${flyoutModel.name}推理等级`} style={{ left: flyout.left, top: flyout.top }}>
+          {flyoutModel.reasoningLevels.map((level) => <button key={level} type="button" role="menuitemradio" aria-checked={level === flyoutLevel}
+            onClick={() => {
+              close()
+              if (flyoutModel.key !== selectedKey) onModelChange(flyoutModel.key, level)
+              else if (level !== reasoningLevel) onReasoningChange(level)
+            }}><span>{level}</span>{level === flyoutLevel && <IconCheck size={15} aria-hidden="true" />}</button>)}
+        </div>}
         {options.length === 0 && <p className="model-panel-note">暂无可用模型，请在设置中添加。</p>}
-      </>}
     </div>
   </div>
 }

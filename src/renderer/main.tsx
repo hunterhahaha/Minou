@@ -969,9 +969,10 @@ function Workspace() {
   /**
    * 保存新聊天选择的全局默认模型，成功后同步本地默认标记；失败时保留原选择并显示错误。
    * @param selectionKey Provider 与模型身份组成的页面选项键。
+   * @param reasoningLevel 从该模型的等级菜单显式选择的等级。
    * @returns 本次保存尝试结束；异常已转换为页面错误状态。
    */
-  async function selectDefaultModel(selectionKey: string): Promise<void> {
+  async function selectDefaultModel(selectionKey: string, reasoningLevel?: string): Promise<void> {
     if (savingDefaultModel) return
     const model = modelOptions.find((option) => option.selectionKey === selectionKey)
     if (model === undefined) return
@@ -980,7 +981,7 @@ function Workspace() {
     setDefaultModelError(undefined)
     try {
       await window.nicode.setDefaultModel({ providerId: model.providerId, modelId: model.modelId })
-      setNewChatReasoningLevel(preferredReasoningLevel(model.reasoningLevels, newChatReasoningLevel))
+      setNewChatReasoningLevel(preferredReasoningLevel(model.reasoningLevels, reasoningLevel ?? newChatReasoningLevel))
       setProviders((current) => current.status !== "ready" ? current : {
         status: "ready",
         value: current.value.map((provider) => ({
@@ -1236,18 +1237,18 @@ function Workspace() {
                   onSend={() => void sendNewChat()} onOpenFile={(file) => browserTags.openFileReference(browserOwner, file)} />
                 <div className="composer-toolbar">
                   <div className="composer-controls">
-                    <div className="selector-anchor"><button className="selector-trigger" type="button" aria-label="权限" aria-haspopup="menu" aria-expanded={openMenu === "permission"} onClick={() => setOpenMenu((current) => current === "permission" ? null : "permission")}><IconShieldCheck size={15} aria-hidden="true" /><span>{permission === "default" ? "工作区读写" : permissionLabels[permission]}</span></button>
-                      {openMenu === "permission" && <div className="selector-menu permission-menu" role="menu" aria-label="权限选项"><p className="menu-label">允许 NiCode 做什么</p>{permissionOptions.map((option) => <button type="button" role="menuitemradio" aria-checked={permission === option || (permission === "default" && option === "workspace-read-write")} key={option} onClick={() => { setPermission(option); setOpenMenu(null) }}>{permissionLabels[option]}{(permission === option || (permission === "default" && option === "workspace-read-write")) && <span aria-hidden="true">✓</span>}</button>)}</div>}
-                    </div>
-                  </div>
-                  <div className="composer-controls composer-controls-right">
                     {providers.status === "loading" && <span className="model-status" role="status">模型加载中…</span>}
                     {providers.status === "error" && <span className="model-status" role="alert">模型加载失败 <button className="retry-button" type="button" onClick={() => { void loadProviders() }}>重试</button></span>}
                     {providers.status === "ready" && (modelOptions.length === 0 ? <button className="selector-trigger setup-model-trigger" type="button" onClick={() => openSettingsDialog()}>配置模型</button>
-                      : <ComposerModelPicker label="模型" options={modelOptions.map((model) => ({ key: model.selectionKey, name: model.name, providerName: model.providerName }))}
+                      : <ComposerModelPicker label="模型" options={modelOptions.map((model) => ({ key: model.selectionKey, name: model.name, providerName: model.providerName, reasoningLevels: model.supportsReasoning ? model.reasoningLevels : [] }))}
                           selectedKey={selectedModel?.selectionKey ?? ""} modelName={selectedModel?.name ?? "选择模型"}
-                          supportsReasoning={selectedModel?.supportsReasoning ?? false} reasoningLevel={selectedReasoningLevel ?? ""} reasoningLevels={selectedModel?.reasoningLevels ?? []}
-                          disabled={savingDefaultModel || Boolean(newChatView.busy)} onModelChange={(key) => { void selectDefaultModel(key) }} onReasoningChange={setNewChatReasoningLevel} />)}
+                          supportsReasoning={selectedModel?.supportsReasoning ?? false} reasoningLevel={selectedReasoningLevel ?? ""}
+                          disabled={savingDefaultModel || Boolean(newChatView.busy)} onModelChange={(key, level) => { void selectDefaultModel(key, level) }} onReasoningChange={setNewChatReasoningLevel} />)}
+                  </div>
+                  <div className="composer-controls composer-controls-right">
+                    <div className="selector-anchor"><button className="selector-trigger" type="button" aria-label="权限" aria-haspopup="menu" aria-expanded={openMenu === "permission"} onClick={() => setOpenMenu((current) => current === "permission" ? null : "permission")}><IconShieldCheck size={15} aria-hidden="true" /><span>{permission === "default" ? "工作区读写" : permissionLabels[permission]}</span></button>
+                      {openMenu === "permission" && <div className="selector-menu permission-menu" role="menu" aria-label="权限选项"><p className="menu-label">允许 NiCode 做什么</p>{permissionOptions.map((option) => <button type="button" role="menuitemradio" aria-checked={permission === option || (permission === "default" && option === "workspace-read-write")} key={option} onClick={() => { setPermission(option); setOpenMenu(null) }}>{permissionLabels[option]}{(permission === option || (permission === "default" && option === "workspace-read-write")) && <span aria-hidden="true">✓</span>}</button>)}</div>}
+                    </div>
                     <button className="send-button" type="button" disabled={!selectedModel || !selectedReasoningLevel || savingDefaultModel || newChatView.busy || !serializeComposerMessage(sessionsState.draftsByKey[newDraftKey]).content[0].text.trim()} onClick={() => void sendNewChat()} aria-label="发送消息"><IconArrowUp size={18} stroke={2} /></button>
                   </div>
                 </div>

@@ -148,20 +148,20 @@
   .chat-messages, .chat-footer { padding-right: 17px; padding-left: 17px; }
   .chat-selectors { flex-wrap: wrap; }
   .chat-select-label select { max-width: 140px; font-size: var(--font-size-ui); line-height: var(--line-height-ui); }
-  .chat-footer .composer-toolbar > .composer-controls { margin-left: auto; }
 }
 @container (max-width: 360px) {
   .chat-footer .composer-toolbar { flex-wrap: nowrap; gap: var(--space-1); padding-inline: var(--space-2); }
   .chat-footer .chat-selectors { flex: none; }
   .chat-footer .chat-permission-select select { max-width: 100px; text-overflow: ellipsis; }
-  .chat-footer .composer-toolbar > .composer-controls { flex: 1; justify-content: flex-end; gap: var(--space-1); }
+  .chat-footer .composer-toolbar > .composer-controls:first-child { flex: 1; }
+  .chat-footer .composer-controls-right { flex: none; gap: var(--space-1); }
   .chat-footer .composer-model-picker { min-width: 0; }
   .chat-footer .composer-model-picker .model-trigger { max-width: min(145px, 100%); }
   .chat-footer .composer-model-picker .composer-model-reasoning { display: none; }
 }
 @container (max-width: 210px) {
   .chat-footer .composer-toolbar { flex-wrap: wrap; }
-  .chat-footer .chat-selectors, .chat-footer .composer-toolbar > .composer-controls { flex: 0 0 100%; }
+  .chat-footer .composer-toolbar > .composer-controls:first-child, .chat-footer .composer-controls-right { flex: 0 0 100%; }
 }
 .turn-file-changes {
   --file-added: #207749;

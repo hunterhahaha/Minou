@@ -336,7 +336,6 @@ export function SessionPage({ projectId, sessionId, state, providers, onOpenDiff
   const contextUsage = usage.inputTokens !== undefined && contextWindow !== undefined ? usage.inputTokens / contextWindow : undefined
   const inputFromOtherModel = control && usage.model &&
     (usage.model.providerId !== control.currentModel.providerId || usage.model.modelId !== control.currentModel.modelId)
-  const reasoningOptions = currentModelOption?.reasoningLevels ?? []
   useLayoutEffect(() => {
     const composer = composerRef.current, page = pageRef.current, dialog = approvalRef.current
     if (!pendingApproval || !composer || !page || !dialog) return
@@ -428,21 +427,23 @@ export function SessionPage({ projectId, sessionId, state, providers, onOpenDiff
           value={state.draftsByKey[key]} onChange={(document) => state.setDraft(key, document)}
           onSend={() => void send()} onOpenFile={onOpenFile} />
         <div className="composer-toolbar">
-          <div className="chat-selectors">
-            <label className="chat-select-label chat-permission-select"><IconShieldCheck size={15} aria-hidden="true" /><select aria-label="对话权限" disabled={!control || view.busy} value={control?.sandboxMode ?? "sandbox-full-access"} onChange={(event) => void settings({ sandboxMode: event.target.value as SandboxMode })}>
-              {Object.entries(sandboxLabels).map(([mode, label]) => <option value={mode} key={mode}>{label}</option>)}
-            </select></label>
-          </div>
           <div className="composer-controls">
-            <ComposerModelPicker key={key} label="对话模型" options={modelOptions.map((model) => ({ key: JSON.stringify([model.providerId, model.modelId]), name: model.name, providerName: model.providerName }))}
+            <ComposerModelPicker key={key} label="对话模型" options={modelOptions.map((model) => ({ key: JSON.stringify([model.providerId, model.modelId]), name: model.name, providerName: model.providerName, reasoningLevels: model.supportsReasoning ? model.reasoningLevels : [] }))}
               selectedKey={selectedKey} modelName={control?.currentModel.name ?? "选择模型"} reasoningLevel={control?.currentModel.reasoningLevel ?? ""}
-              supportsReasoning={currentModelOption?.supportsReasoning ?? false} reasoningLevels={reasoningOptions} disabled={!control || Boolean(view.busy)}
-              onModelChange={(selection) => {
+              supportsReasoning={currentModelOption?.supportsReasoning ?? false} disabled={!control || Boolean(view.busy)}
+              onModelChange={(selection, level) => {
                 const model = modelOptions.find((item) => JSON.stringify([item.providerId, item.modelId]) === selection)
                 if (model) { const { providerName: _provider, supportsReasoning: _supportsReasoning, contextWindow: _contextWindow, reasoningLevels, ...reference } = model; void settings({ model: {
-                  ...reference, reasoningLevel: preferredReasoningLevel(reasoningLevels, control?.currentModel.reasoningLevel),
+                  ...reference, reasoningLevel: preferredReasoningLevel(reasoningLevels, level ?? control?.currentModel.reasoningLevel),
                 } }) }
               }} onReasoningChange={(reasoningLevel) => { if (control) void settings({ model: { ...control.currentModel, reasoningLevel } }) }} />
+          </div>
+          <div className="composer-controls composer-controls-right">
+            <div className="chat-selectors">
+              <label className="chat-select-label chat-permission-select"><IconShieldCheck size={15} aria-hidden="true" /><select aria-label="对话权限" disabled={!control || view.busy} value={control?.sandboxMode ?? "sandbox-full-access"} onChange={(event) => void settings({ sandboxMode: event.target.value as SandboxMode })}>
+                {Object.entries(sandboxLabels).map(([mode, label]) => <option value={mode} key={mode}>{label}</option>)}
+              </select></label>
+            </div>
             <div className="session-usage-anchor">
               <button type="button" className="session-usage-trigger" aria-label="会话用量" aria-describedby={usageTooltipId}>
                 <svg viewBox="0 0 20 20" aria-hidden="true" fill="none" strokeWidth="2.5">

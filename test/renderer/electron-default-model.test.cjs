@@ -37,7 +37,6 @@ async function until(predicate) {
 async function selectModel(name) {
   await evaluate("document.querySelector('.model-trigger').click()")
   await until(() => evaluate("Boolean(document.querySelector('.composer-model-panel:popover-open'))"))
-  await evaluate("document.querySelector('[aria-label=\"切换模型\"]').click()")
   await until(() => evaluate("Boolean(document.querySelector('.model-menu'))"))
   await evaluate(`Array.from(document.querySelectorAll('.model-menu button')).find(node => node.querySelector('strong').textContent === ${JSON.stringify(name)}).click()`)
 }
@@ -113,9 +112,9 @@ async function main() {
   assert.equal(await evaluate("document.querySelector('.composer-model-reasoning').textContent"), "max", "切换模型时回退到新模型有效等级")
   await evaluate("document.querySelector('.model-trigger').click()")
   await until(() => evaluate("Boolean(document.querySelector('.composer-model-panel:popover-open'))"))
-  await evaluate("document.querySelector('[aria-label=\"设置推理等级\"]').click()")
-  await until(() => evaluate("Boolean(document.querySelector('.reasoning-menu'))"))
-  assert.deepEqual(await evaluate("[...document.querySelectorAll('.reasoning-menu button')].map(node => [node.querySelector('span').textContent, node.getAttribute('aria-checked')])"), [["max", "true"]], "只有一个等级时展示唯一已选项")
+  await evaluate("document.querySelector('.model-menu [aria-checked=true]').dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))")
+  await until(() => evaluate("Boolean(document.querySelector('.model-level-flyout'))"))
+  assert.deepEqual(await evaluate("[...document.querySelectorAll('.model-level-flyout button')].map(node => [node.querySelector('span').textContent, node.getAttribute('aria-checked')])"), [["max", "true"]], "只有一个等级时展示唯一已选项")
   await evaluate("document.querySelector('.composer-model-panel').hidePopover()")
   assert.deepEqual(readDefaultModel(paths.providerDatabasePath), { providerId: second.providerId, modelId: second.modelId })
   assert.equal(await evaluate("document.querySelectorAll('.chat-error').length"), 0)
@@ -137,9 +136,9 @@ async function main() {
   ], "Provider 列表返回唯一已保存的默认模型")
   await evaluate("document.querySelector('.model-trigger').click()")
   await until(() => evaluate("Boolean(document.querySelector('.composer-model-panel:popover-open'))"))
-  await evaluate("document.querySelector('[aria-label=\"设置推理等级\"]').click()")
-  await until(() => evaluate("Boolean(document.querySelector('.reasoning-menu'))"))
-  await evaluate("[...document.querySelectorAll('.reasoning-menu button')].find(node => node.querySelector('span').textContent === 'high').click()")
+  await evaluate("document.querySelector('.model-menu [aria-checked=true]').dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true }))")
+  await until(() => evaluate("Boolean(document.querySelector('.model-level-flyout'))"))
+  await evaluate("[...document.querySelectorAll('.model-level-flyout button')].find(node => node.querySelector('span').textContent === 'high').click()")
   assert.equal(await evaluate("document.querySelector('.composer-model-reasoning').textContent"), "high")
   await until(() => evaluate("!document.querySelector('.composer-model-panel:popover-open')"))
   await evaluate(`(() => {
