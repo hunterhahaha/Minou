@@ -38,7 +38,7 @@ function code(result: ToolResult): string | undefined {
  * @throws Error 断言或场景执行失败时传播，由测试入口报告失败。
  */
 async function main(): Promise<void> {
-  const root = await mkdtemp(join(tmpdir(), "nicode-file-tools-"))
+  const root = await mkdtemp(join(tmpdir(), "minou-file-tools-"))
   try {
     const workspace = join(root, "workspace")
     const outside = join(root, "outside")

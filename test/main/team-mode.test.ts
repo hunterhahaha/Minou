@@ -99,7 +99,7 @@ async function testPolling(profile: string): Promise<void> {
 
 /** 验证真实主进程装配、SQLite 和 AgentLoop，模型与 Electron 宿主使用离线夹具。 */
 async function main(): Promise<void> {
-  const root = await mkdtemp(join(tmpdir(), "nicode-team-ipc-"))
+  const root = await mkdtemp(join(tmpdir(), "minou-team-ipc-"))
   const listeners = new Map<ElectronAppLifecycleEvent, (event?: { preventDefault(): void }) => void>()
   let quit = false
   try {

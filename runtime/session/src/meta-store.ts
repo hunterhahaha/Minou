@@ -74,7 +74,7 @@ export function requireMetaSessionId(sessionId: string): void {
 
 /**
  * 缺失时创建 Meta 数据库；已有数据库必须是普通文件且具有当前完整表结构。
- * @param databasePath `.nicode/meta.sqlite` 的绝对路径。
+ * @param databasePath `.minou/meta.sqlite` 的绝对路径。
  * @throws Error 当路径、SQLite 文件或表结构无效时抛出，已有文件不会被覆盖。
  */
 export function initializeSessionMetaDatabase(databasePath: string): void {

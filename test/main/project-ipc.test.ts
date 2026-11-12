@@ -35,7 +35,7 @@ class FakeIpcMain implements IpcMainHandlePort {
 
 /** 覆盖选择、创建、变更及错误路径。 */
 async function main(): Promise<void> {
-  const root = await mkdtemp(join(tmpdir(), "nicode-project-ipc-"))
+  const root = await mkdtemp(join(tmpdir(), "minou-project-ipc-"))
   try {
     const sessionsDirectory = join(root, "sessions")
     const firstDirectory = join(root, "first")
@@ -165,8 +165,8 @@ async function main(): Promise<void> {
       env: { ...process.env, LC_ALL: "C.UTF-8" },
     }).trim()
     git("init", "-b", "main")
-    git("config", "user.name", "NiCode Test")
-    git("config", "user.email", "test@nicode.local")
+    git("config", "user.name", "Minou Test")
+    git("config", "user.email", "test@minou.local")
     assert.deepEqual(
       await ipc.invoke<ProjectGitBranchState>(PROJECT_IPC_CHANNELS.listProjectGitBranches, project.projectId),
       { isGitRepo: true, currentBranch: "main", branches: ["main"] },

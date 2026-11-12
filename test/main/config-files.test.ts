@@ -16,7 +16,7 @@ import { listWebSearchProviders, WEB_SEARCH_DATABASE_FILE } from "../../runtime/
 
 /** 在独立用户目录运行断言并删除测试数据。 */
 async function withTempProfile(test: (profile: string) => Promise<void>): Promise<void> {
-  const profile = await mkdtemp(join(tmpdir(), "nicode-config-"))
+  const profile = await mkdtemp(join(tmpdir(), "minou-config-"))
   try {
     await test(profile)
   } finally {
@@ -54,11 +54,11 @@ async function main(): Promise<void> {
   await withTempProfile(async (profile) => {
     const paths: ConfigFilePaths = await initializeConfigFiles(profile)
     assert.deepEqual(paths, {
-      rootDir: join(profile, ".nicode"),
-      configPath: join(profile, ".nicode", "config.json"),
-      providerDatabasePath: join(profile, ".nicode", "providers.sqlite"),
-      workspaceDatabasePath: join(profile, ".nicode", "workspace.sqlite"),
-      metaDatabasePath: join(profile, ".nicode", "meta.sqlite"),
+      rootDir: join(profile, ".minou"),
+      configPath: join(profile, ".minou", "config.json"),
+      providerDatabasePath: join(profile, ".minou", "providers.sqlite"),
+      workspaceDatabasePath: join(profile, ".minou", "workspace.sqlite"),
+      metaDatabasePath: join(profile, ".minou", "meta.sqlite"),
     })
     for (const directory of [
       paths.rootDir,
@@ -132,7 +132,7 @@ async function main(): Promise<void> {
   await assertInvalidConfig(JSON.stringify({ ...validConfig, apiKey: "secret" }), "config.apiKey 不是 V2 字段")
 
   await withTempProfile(async (profile) => {
-    const occupiedPath = join(profile, ".nicode", "config.json")
+    const occupiedPath = join(profile, ".minou", "config.json")
     await mkdir(occupiedPath, { recursive: true })
     await assert.rejects(initializeConfigFiles(profile), (error: unknown) => {
       assert.ok(error instanceof Error)

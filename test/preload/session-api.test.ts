@@ -5,7 +5,7 @@ import { DEFAULT_TEAM_WAKEUP_CONFIG } from "../../runtime/session/src/team-wakeu
 import {
   createSessionApi,
   exposeSessionApi,
-  NICODE_PRELOAD_GLOBAL,
+  MINOU_PRELOAD_GLOBAL,
   SESSION_IPC_CHANNELS,
   START_TEAM_SESSION_CHANNEL,
   TEAM_WAKEUP_CHANNELS,
@@ -16,7 +16,7 @@ import {
 import type {
   ContextBridgePort,
   IpcRendererInvokePort,
-  NiCodePreloadApi,
+  MinouPreloadApi,
 } from "../../src/preload/session-api.ts"
 
 const MODEL: ModelRef = {
@@ -47,7 +47,7 @@ async function testCallsFixedChannels(): Promise<void> {
       calls.push({ channel, args })
       if (channel === STARTUP_DATA_IPC_CHANNELS.listProjects) {
         return [{ projectId: PROJECT_ID, name: "Project", updatedAt: "2026-09-04T00:00:00Z",
-          directories: ["G:\\code\\NiCode"], sessions: [] }]
+          directories: ["G:\\code\\Minou"], sessions: [] }]
       }
       if (channel === STARTUP_DATA_IPC_CHANNELS.listDefaultSessions) {
         return [{ sessionId: "default-1", name: "Default", updatedAt: "2026-09-03T00:00:00Z" }]
@@ -128,7 +128,7 @@ async function testCallsFixedChannels(): Promise<void> {
   })
   assert.deepEqual(await api.listProjects(), [{
     projectId: PROJECT_ID, name: "Project", updatedAt: "2026-09-04T00:00:00Z",
-    directories: ["G:\\code\\NiCode"], sessions: [],
+    directories: ["G:\\code\\Minou"], sessions: [],
   }])
   assert.deepEqual(await api.listDefaultSessions(), [
     { sessionId: "default-1", name: "Default", updatedAt: "2026-09-03T00:00:00Z" },
@@ -220,7 +220,7 @@ async function testCallsFixedChannels(): Promise<void> {
   ])
 }
 
-async function testExposesOnlyNiCodeApi(): Promise<void> {
+async function testExposesOnlyMinouApi(): Promise<void> {
   let exposedKey: string | undefined
   let exposedApi: unknown
   const contextBridge: ContextBridgePort = {
@@ -234,10 +234,10 @@ async function testExposesOnlyNiCodeApi(): Promise<void> {
   }
 
   const api = exposeSessionApi(contextBridge, ipcRenderer)
-  assert.equal(exposedKey, NICODE_PRELOAD_GLOBAL)
+  assert.equal(exposedKey, MINOU_PRELOAD_GLOBAL)
   assert.equal(exposedApi, api)
   assert.deepEqual(
-    Object.keys(exposedApi as NiCodePreloadApi).sort(),
+    Object.keys(exposedApi as MinouPreloadApi).sort(),
     ["getSessionData", "onSessionUpdate", "renameProject", "renameSession", "exportSessionMarkdown", "updateSessionSettings", "decideSessionApproval", "addProjectDirectory", "continueSession", "createModel", "createProject", "createCompatibleProvider", "createCustomProvider", "listCompatibleProviders", "deleteModel", "deleteProvider", "enqueueSessionMessage", "listDefaultSessions", "listProjects", "listProviders", "removeProjectDirectory", "selectDirectory", "setDefaultModel", "startNewSession", "stopSession", "updateApiKey", "updateModel", "updateProvider",
       "listMcpServers", "createMcpServer", "updateMcpServer", "deleteMcpServer", "reloadMcpServers", "listSkills", "setSkillEnabled",
       "listProjectGitBranches", "switchProjectGitBranch",
@@ -347,7 +347,7 @@ async function testRejectsInvalidMainResponse(): Promise<void> {
 
 async function main(): Promise<void> {
   await testCallsFixedChannels()
-  await testExposesOnlyNiCodeApi()
+  await testExposesOnlyMinouApi()
   await testTeamApi()
   await testRejectsInvalidMainResponse()
   console.log("session-api.test.ts: preload Session API 断言通过")

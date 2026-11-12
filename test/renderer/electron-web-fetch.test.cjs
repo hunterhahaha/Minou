@@ -29,7 +29,7 @@ async function until(script) {
 }
 /** @returns 真实抓取、IPC 与页面断言完成，并保存截图供检查。 */
 async function main() {
-  profile = await mkdtemp(join(tmpdir(), "nicode-fetch-ui-"))
+  profile = await mkdtemp(join(tmpdir(), "minou-fetch-ui-"))
   app.setPath("userData", join(profile, "electron"))
   const { paths } = await initializeConfigFilesSnapshot(profile)
   await app.whenReady()

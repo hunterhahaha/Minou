@@ -47,6 +47,7 @@ import { ComposerInput } from "./composer-input.tsx"
 import { serializeComposerMessage } from "./composer-message.ts"
 import { ComposerModelPicker } from "./composer-model-picker.tsx"
 import { WindowControls } from "./window-controls.tsx"
+import productLogo from "../../resources/minou.png"
 import "./workspace.css"
 
 /**
@@ -63,7 +64,7 @@ function TeamMembersDialog({ projectId, routerId, onOpen, onClose }: {
   const [members, setMembers] = useState<LoadState<string[]>>({ status: "loading" })
   useEffect(() => {
     let active = true
-    void window.nicode.listTeamMembers(projectId, routerId).then(
+    void window.minou.listTeamMembers(projectId, routerId).then(
       (value) => { if (active) setMembers({ status: "ready", value }) },
       () => { if (active) setMembers({ status: "error" }) },
     )
@@ -249,7 +250,7 @@ function Workspace() {
   const [defaultSessions, setDefaultSessions] = useState<LoadState<SessionSummary[]>>({ status: "loading" })
   const [providers, setProviders] = useState<LoadState<ProviderSummary[]>>({ status: "loading" })
   const [, setSessionVersion] = useState(0)
-  const [sessionsState] = useState(() => new WorkspaceSessionState(window.nicode, () => setSessionVersion((version) => version + 1)))
+  const [sessionsState] = useState(() => new WorkspaceSessionState(window.minou, () => setSessionVersion((version) => version + 1)))
   const groupId = workspaceRoute.group === "project" ? workspaceRoute.projectId : "default"
   const draftMode: WorkspaceMode = searchParams.get("mode") === "work" ? "work" : "chat"
   const currentKind = workspaceRoute.page === "session"
@@ -257,11 +258,11 @@ function Workspace() {
     : undefined
   const newDraftKey = sessionKey(groupId, draftMode === "work" ? "$new-work" : "$new-chat")
   const [, setBrowserVersion] = useState(0)
-  const [teamSessions] = useState(() => new TeamSessionState(window.nicode))
+  const [teamSessions] = useState(() => new TeamSessionState(window.minou))
   const [teamMembersRouter, setTeamMembersRouter] = useState<string | null>(null)
-  useEffect(() => window.nicode.onTeamSessionUpdate((update) => teamSessions.receive(update)), [teamSessions])
+  useEffect(() => window.minou.onTeamSessionUpdate((update) => teamSessions.receive(update)), [teamSessions])
   const [browserTags] = useState(() => new TagManager(() => setBrowserVersion((version) => version + 1)))
-  useEffect(() => window.nicodeBrowser?.onWebTagState((update) => browserTags.receive(update)), [browserTags])
+  useEffect(() => window.minouBrowser?.onWebTagState((update) => browserTags.receive(update)), [browserTags])
   const newChatView = sessionsState.view(newDraftKey)
   const [savingDefaultModel, setSavingDefaultModel] = useState(false)
   const [defaultModelError, setDefaultModelError] = useState<string | undefined>()
@@ -334,9 +335,20 @@ function Workspace() {
   const [focusDraftKey, setFocusDraftKey] = useState<string | null>(null)
   const [settingsDialogOpen, setSettingsDialogOpen] = useState(false)
   const [settingsSection, setSettingsSection] = useState<"models" | "mcp" | "skills">("models")
+  const [settingsPageWidth, setSettingsPageWidth] = useState(() => window.matchMedia("(max-width: 680px)").matches)
+  const settingsTitlebar = useRef<HTMLDivElement>(null)
+  const settingsOpener = useRef<HTMLElement | null>(null)
+  const settingsPageOpen = settingsDialogOpen && settingsPageWidth
+  useEffect(() => {
+    const viewport = window.matchMedia("(max-width: 680px)")
+    const update = () => setSettingsPageWidth(viewport.matches)
+    update()
+    viewport.addEventListener("change", update)
+    return () => viewport.removeEventListener("change", update)
+  }, [])
   const [searchOpen, setSearchOpen] = useState(false)
   const [theme, setTheme] = useState<"light" | "dark">(() => {
-    try { return localStorage.getItem("nicode.appearance") === "dark" ? "dark" : "light" }
+    try { return localStorage.getItem("minou.appearance") === "dark" ? "dark" : "light" }
     catch { return "light" }
   })
   const projectDialogRef = useRef<HTMLElement>(null)
@@ -352,8 +364,8 @@ function Workspace() {
    */
   async function refreshSessionSummaries(projectId: string): Promise<void> {
     try {
-      if (projectId === "default") setDefaultSessions({ status: "ready", value: await window.nicode.listDefaultSessions() })
-      else setProjects({ status: "ready", value: await window.nicode.listProjects() })
+      if (projectId === "default") setDefaultSessions({ status: "ready", value: await window.minou.listDefaultSessions() })
+      else setProjects({ status: "ready", value: await window.minou.listProjects() })
     } catch (error) { console.error("更新对话列表失败", error) }
   }
   /**
@@ -388,7 +400,7 @@ function Workspace() {
    * @throws 当 IPC 重命名失败时向上抛出错误，由调用方负责恢复与提示。
    */
   async function persistSessionRename(projectId: string, sessionId: string, name: string): Promise<SessionSummary> {
-    const summary = await window.nicode.renameSession(projectId, sessionId, name)
+    const summary = await window.minou.renameSession(projectId, sessionId, name)
     const key = sessionKey(projectId, sessionId)
     if (sessionsState.has(key)) sessionsState.setView(key, { summary })
     await refreshSessionSummaries(projectId)
@@ -407,7 +419,7 @@ function Workspace() {
     setSidebarError(null)
     try {
       if (sessionId === undefined) {
-        const project = await window.nicode.renameProject(projectId, name)
+        const project = await window.minou.renameProject(projectId, name)
         setProjects((current) => current.status === "ready"
           ? { status: "ready", value: current.value.map((item) => item.projectId === projectId ? { ...item, name: project.name, updatedAt: project.updatedAt } : item) }
           : current)
@@ -430,13 +442,13 @@ function Workspace() {
     setSidebarBusy(true)
     setSidebarError(null)
     try {
-      const path = directory ?? (await window.nicode.selectDirectory())?.path
+      const path = directory ?? (await window.minou.selectDirectory())?.path
       if (path === undefined) return
       const result = directory === undefined
-        ? await window.nicode.addProjectDirectory(projectId, path)
-        : await window.nicode.removeProjectDirectory(projectId, path)
+        ? await window.minou.addProjectDirectory(projectId, path)
+        : await window.minou.removeProjectDirectory(projectId, path)
       if (!result.success) throw new Error(result.error)
-      setProjects({ status: "ready", value: await window.nicode.listProjects() })
+      setProjects({ status: "ready", value: await window.minou.listProjects() })
     } catch (error) { setSidebarError(errorMessage(error)) }
     finally { setSidebarBusy(false) }
   }
@@ -452,7 +464,7 @@ function Workspace() {
     setSidebarMenu(null)
     setCopyStatus(null)
     try {
-      const markdown = await window.nicode.exportSessionMarkdown(projectId, sessionId)
+      const markdown = await window.minou.exportSessionMarkdown(projectId, sessionId)
       await navigator.clipboard.writeText(markdown)
       setCopyStatus({ text: "已复制对话", error: false })
     } catch (error) {
@@ -460,7 +472,7 @@ function Workspace() {
     }
   }
 
-  useEffect(() => window.nicode.onSessionUpdate((update) => {
+  useEffect(() => window.minou.onSessionUpdate((update) => {
     try { sessionsState.receive(update) }
     catch (error) { sessionsState.setView(sessionKey(update.projectId, update.sessionId), { operationError: errorMessage(error) }) }
     if ((update.kind === "event" && update.event.type === "turn/end") || (update.kind === "state" && update.summary)) void refreshSessionSummaries(update.projectId)
@@ -474,7 +486,7 @@ function Workspace() {
   async function loadProjects(): Promise<void> {
     setProjects({ status: "loading" })
     try {
-      const loaded = await window.nicode.listProjects()
+      const loaded = await window.minou.listProjects()
       const value = [...loaded]
       for (const createdProject of createdProjectsRef.current) {
         const existingIndex = value.findIndex((project) => project.projectId === createdProject.projectId)
@@ -498,7 +510,7 @@ function Workspace() {
   async function loadDefaultSessions(): Promise<void> {
     setDefaultSessions({ status: "loading" })
     try {
-      setDefaultSessions({ status: "ready", value: await window.nicode.listDefaultSessions() })
+      setDefaultSessions({ status: "ready", value: await window.minou.listDefaultSessions() })
     } catch (error) {
       console.error("加载 default 对话列表失败", error)
       setDefaultSessions({ status: "error" })
@@ -513,7 +525,7 @@ function Workspace() {
   async function loadProviders(): Promise<void> {
     setProviders({ status: "loading" })
     try {
-      setProviders({ status: "ready", value: await window.nicode.listProviders() })
+      setProviders({ status: "ready", value: await window.minou.listProviders() })
     } catch (error) {
       console.error("加载模型列表失败", error)
       setProviders({ status: "error" })
@@ -599,7 +611,7 @@ function Workspace() {
     setProjectDialogError(null)
     setSelectingProjectDirectory(true)
     try {
-      const selection = await window.nicode.selectDirectory()
+      const selection = await window.minou.selectDirectory()
       if (selection !== null) {
         setProjectDirectories((current) => current.some((directory) => directory.path === selection.path)
           ? current
@@ -633,7 +645,7 @@ function Workspace() {
     setCreatingProject(true)
     setProjectDialogError(null)
     try {
-      const createdProject = await window.nicode.createProject(
+      const createdProject = await window.minou.createProject(
         name,
         projectDirectories.length === 0 ? undefined : projectDirectories.map((directory) => directory.path),
       )
@@ -666,6 +678,7 @@ function Workspace() {
    * @returns 无返回值
    */
   function openSettingsDialog(section: "models" | "mcp" | "skills" = "models"): void {
+    settingsOpener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
     setOpenMenu(null)
     setSettingsSection(section)
     setSettingsDialogOpen(true)
@@ -677,6 +690,8 @@ function Workspace() {
    */
   function closeSettingsDialog(): void {
     setSettingsDialogOpen(false)
+    const opener = settingsOpener.current
+    requestAnimationFrame(() => { if (document.activeElement === document.body && opener?.isConnected) opener.focus() })
   }
 
   useEffect(() => {
@@ -685,7 +700,7 @@ function Workspace() {
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme
-    try { localStorage.setItem("nicode.appearance", theme) } catch { /** 存储不可用时主题仍在本次窗口内生效。 */ }
+    try { localStorage.setItem("minou.appearance", theme) } catch { /** 存储不可用时主题仍在本次窗口内生效。 */ }
   }, [theme])
 
   useEffect(() => {
@@ -695,7 +710,7 @@ function Workspace() {
      * @param event 应用快捷键仅在没有业务弹窗时处理，输入法组合期间不导航。
      */
     function workspaceShortcut(event: KeyboardEvent): void {
-      if (!(event.ctrlKey || event.metaKey) || event.isComposing || document.querySelector('[aria-modal="true"]')) return
+      if (!(event.ctrlKey || event.metaKey) || event.isComposing || settingsDialogOpen || document.querySelector('[aria-modal="true"]')) return
       if (event.key.toLowerCase() === "k") { event.preventDefault(); setOpenMenu(null); setSearchOpen(true) }
       if (event.key.toLowerCase() === "b") { event.preventDefault(); sidebar.toggle() }
       if (event.key.toLowerCase() === "o" && event.shiftKey) { event.preventDefault(); focusNewChatComposer(groupId === "default" ? undefined : groupId, "chat") }
@@ -703,7 +718,7 @@ function Workspace() {
     }
     window.addEventListener("keydown", workspaceShortcut)
     return () => window.removeEventListener("keydown", workspaceShortcut)
-  }, [groupId, sidebar.compact])
+  }, [groupId, sidebar.compact, settingsDialogOpen])
 
   useEffect(() => {
     if (focusDraftKey === null || workspaceRoute.page !== "new-chat" || newDraftKey !== focusDraftKey) return
@@ -802,7 +817,7 @@ function Workspace() {
   async function loadProjectGitBranches(projectId: string): Promise<void> {
     const requestId = ++gitBranchRequestIdRef.current
     try {
-      const state = await window.nicode.listProjectGitBranches(projectId)
+      const state = await window.minou.listProjectGitBranches(projectId)
       if (requestId === gitBranchRequestIdRef.current) setGitBranchState(state)
     } catch {
       if (requestId === gitBranchRequestIdRef.current) setGitBranchState(null)
@@ -896,7 +911,7 @@ function Workspace() {
     setSwitchingGitBranch(true)
     setGitSwitchError(undefined)
     try {
-      const result = await window.nicode.switchProjectGitBranch(targetProjectId, branch)
+      const result = await window.minou.switchProjectGitBranch(targetProjectId, branch)
       if (result.success) {
         if (requestId === gitBranchRequestIdRef.current) setGitBranchState(result.branchState)
       } else {
@@ -980,7 +995,7 @@ function Workspace() {
     setSavingDefaultModel(true)
     setDefaultModelError(undefined)
     try {
-      await window.nicode.setDefaultModel({ providerId: model.providerId, modelId: model.modelId })
+      await window.minou.setDefaultModel({ providerId: model.providerId, modelId: model.modelId })
       setNewChatReasoningLevel(preferredReasoningLevel(model.reasoningLevels, reasoningLevel ?? newChatReasoningLevel))
       setProviders((current) => current.status !== "ready" ? current : {
         status: "ready",
@@ -1011,13 +1026,13 @@ function Workspace() {
     sessionsState.setView(newDraftKey, { busy: true, operationError: undefined })
     try {
       const { providerId, protocol, modelId, name } = selectedModel
-      const input: Parameters<typeof window.nicode.startNewSession>[1] = {
+      const input: Parameters<typeof window.minou.startNewSession>[1] = {
         ...message, model: { providerId, protocol, modelId, name, reasoningLevel: selectedReasoningLevel },
         sandboxMode: permission === "workspace-read-only" ? "sandbox-read-only" : permission === "auto" || permission === "full-access" ? permission : "sandbox-full-access",
       }
       const response = draftMode === "work"
-        ? await window.nicode.startTeamSession(groupId, input)
-        : await window.nicode.startNewSession(groupId, input)
+        ? await window.minou.startTeamSession(groupId, input)
+        : await window.minou.startNewSession(groupId, input)
       sessionsState.setView(sessionKey(groupId, response.sessionId), { kind: draftMode === "work" ? "router" : "ordinary" })
       if (sessionsState.draftsByKey[newDraftKey] === draft) sessionsState.setDraft(newDraftKey)
       void refreshSessionSummaries(groupId)
@@ -1029,16 +1044,19 @@ function Workspace() {
   return <div className="app-shell">
     <header className="titlebar">
       <div className="titlebar-left">
-        <div className="titlebar-brand"><span className="brand-mark" aria-hidden="true"><IconTerminal2 size={13} stroke={1.9} /></span><span className="brand-name">NiCode</span></div>
-        <button ref={sidebar.toggleButton} type="button" className="sidebar-toggle" aria-expanded={sidebarOpen} aria-label={sidebarOpen ? "收起侧栏" : "展开侧栏"} title={sidebarOpen ? "收起侧栏 · Ctrl B" : "展开侧栏 · Ctrl B"} onClick={sidebar.toggle}><IconLayoutSidebar size={16} stroke={1.6} aria-hidden="true" /></button>
-        <button className="titlebar-search" type="button" disabled={settingsDialogOpen || projectDialogOpen || searchOpen} onClick={() => setSearchOpen(true)} aria-label="搜索工作区" title="搜索项目和对话 · Ctrl K"><IconSearch size={16} stroke={1.6} aria-hidden="true" /></button>
+        {!settingsPageOpen && <>
+          <div className="titlebar-brand"><img className="brand-mark" src={productLogo} alt="" /><span className="brand-name">Minou</span></div>
+          <button ref={sidebar.toggleButton} type="button" className="sidebar-toggle" aria-expanded={sidebarOpen} aria-label={sidebarOpen ? "收起侧栏" : "展开侧栏"} title={sidebarOpen ? "收起侧栏 · Ctrl B" : "展开侧栏 · Ctrl B"} onClick={sidebar.toggle}><IconLayoutSidebar size={16} stroke={1.6} aria-hidden="true" /></button>
+          <button className="titlebar-search" type="button" disabled={settingsDialogOpen || projectDialogOpen || searchOpen} onClick={() => setSearchOpen(true)} aria-label="搜索工作区" title="搜索项目和对话 · Ctrl K"><IconSearch size={16} stroke={1.6} aria-hidden="true" /></button>
+        </>}
+        <div ref={settingsTitlebar} className="settings-titlebar-slot" />
       </div>
       <div className="titlebar-actions">
-        {runningCount > 0 && <span className="titlebar-running" role="status"><i className="status-dot" />{runningCount} 个对话运行中</span>}
+        {!settingsPageOpen && runningCount > 0 && <span className="titlebar-running" role="status"><i className="status-dot" />{runningCount} 个对话运行中</span>}
       </div>
       <WindowControls />
     </header>
-    <div className="workspace-shell" data-sidebar-open={sidebarOpen}>
+    <div className="workspace-shell" data-sidebar-open={sidebarOpen} inert={settingsPageOpen}>
       <div ref={sidebar.slot} className="sidebar-slot" inert={!sidebarOpen}>
       {sidebar.visible && <aside className="sidebar" aria-label="工作区侧栏" style={{ minWidth: sidebar.compact ? sidebar.width : sidebar.minimumWidth }}>
         <div className="sidebar-create" aria-label="创建对话">
@@ -1149,7 +1167,7 @@ function Workspace() {
             toggle={null}>
         {workspaceRoute.page === "session" ? <Outlet context={{ state: sessionsState, browserTags, providers: providers.status === "ready" ? providers.value : [] }} /> : <div className="welcome-scroll"><div className="welcome">
           <div className="welcome-hero">
-            <div className="welcome-mark" aria-hidden="true"><IconTerminal2 size={42} stroke={1.4} /></div>
+            <img className="welcome-mark" src={productLogo} alt="" />
             <h1>{draftMode === "work" ? "我们要做什么？" : "有什么想一起完成？"}</h1>
           </div>
           <div className="welcome-dock">
@@ -1373,7 +1391,7 @@ function Workspace() {
                   onClick={() => { void selectProjectDirectory() }}
                 >
                   <IconFolderPlus size={24} stroke={1.5} aria-hidden="true" />
-                  <span>添加 NiCode 可读取和编辑的文件夹</span>
+                  <span>添加 Minou 可读取和编辑的文件夹</span>
                 </button>
               : <div className="project-directory-list" role="group" aria-labelledby="project-directory-label" aria-busy={selectingProjectDirectory || creatingProject}>
                   {projectDirectories.map((directory) => <div className="project-directory-row" key={directory.path} title={directory.path}>
@@ -1414,6 +1432,7 @@ function Workspace() {
     </div>}
     {settingsDialogOpen && <SettingsDialog
       initialSection={settingsSection}
+      titlebarTarget={settingsPageOpen ? settingsTitlebar.current : null}
       onClose={closeSettingsDialog}
       onProvidersChange={(value) => setProviders({ status: "ready", value })}
       projects={projects}

@@ -1,13 +1,13 @@
-# NiCode 配置与持久化
+# Minou 配置与持久化
 
 本文依据 2026-10-30 当前配置类型、校验器、SQL 建表语句和读写实现整理。数据库字段以对应源码为核对入口；本文不是修改格式或新增迁移的授权。
 
 ## 用户目录与启动初始化
 
-桌面入口调用 [initializeConfigFilesSnapshot](../src/main/config-files.ts)，Windows 要求 `USERPROFILE` 是绝对路径。macOS、Linux 桌面和 CLI 在未设置 `USERPROFILE` 时回退到 Node 用户主目录。所有数据集中在其下的 `.nicode`。
+桌面入口调用 [initializeConfigFilesSnapshot](../src/main/config-files.ts)，Windows 要求 `USERPROFILE` 是绝对路径。macOS、Linux 桌面和 CLI 在未设置 `USERPROFILE` 时回退到 Node 用户主目录。所有数据集中在其下的 `.minou`。
 
 ```text
-.nicode/
+.minou/
 ├─ config.json                    全局普通配置 V2
 ├─ desktop-settings.json          窗口关闭偏好，首次保存时创建
 ├─ providers.sqlite               Provider、Model、API Key 与默认模型
@@ -212,7 +212,7 @@ JMESPath 输出只检查顶层为数组，直接包装成 `{ results }`；条目
 | [Exa](../src/main/web-search-providers/exa.ts) | `https://api.exa.ai/search` | API Key 本身，写入 x-api-key | numResults，默认 5，1–100 | 请求 highlights，以换行拼接摘录；publishedDate 映射到 publishedAt |
 | [Bocha](../src/main/web-search-providers/bocha.ts) | `https://api.bocha.cn/v1/web-search` | 只填 Key，自动添加 `Bearer ` 后写入 Authorization | count，默认 5，1–50 | 请求 summary，以长摘要优先、snippet 回退；datePublished 映射到 publishedAt |
 
-上述数量参数均可留空。DeepSeek 使用独立 Search API，固定不请求网页全文，查询受服务商 1–128 个 Unicode 字符限制；NiCode 不改写或截断查询，服务商拒绝时沿用现有 HTTP 错误处理。Exa 固定 auto 搜索模式；Bocha 固定 noLimit 时间范围。所有服务商表单只填写 Key；Tavily、DeepSeek、Bocha 通过 target.prefix 自动添加 `Bearer `，Exa 不添加前缀。编辑回填仅返回纯 Key，再次保存不会重复添加前缀。
+上述数量参数均可留空。DeepSeek 使用独立 Search API，固定不请求网页全文，查询受服务商 1–128 个 Unicode 字符限制；Minou 不改写或截断查询，服务商拒绝时沿用现有 HTTP 错误处理。Exa 固定 auto 搜索模式；Bocha 固定 noLimit 时间范围。所有服务商表单只填写 Key；Tavily、DeepSeek、Bocha 通过 target.prefix 自动添加 `Bearer `，Exa 不添加前缀。编辑回填仅返回纯 Key，再次保存不会重复添加前缀。
 
 接口依据：[DeepSeek Search](https://api-docs.deepseek.com/api/search/)、[DeepSeek 鉴权](https://api-docs.deepseek.com/guides/search/)、[Exa Search](https://exa.ai/docs/reference/search)、[博查官方适配参考](https://github.com/bocha-ai/dsh-web-search-bocha)。模板及本地响应样本测试不表示已验证远端凭据、账户权限或服务可用性。
 
@@ -269,7 +269,7 @@ Meta 不等同于 Event Log：名称和运行设置有自己的写入入口，Us
 
 - `contextstate.json` 保存 `agentsmd: { hash, content }`、`skills: { id, content }` 和 `mcp` 定义数组。`agentsmd` 是系统提示中的固定基线，普通规则更新不替换它；成功 Summary 后切换到摘要基线。MCP 数组初始为空，成功 Summary 提交后才替换为该次摘要的工具定义快照。
 - `agents_md.snapshot` 保存参与增量比较的最新规则快照，普通规则更新通过 `context_update` 回放。
-- `tool_output/` 保存工具输出文件；具体输出路径由工具实现创建。`web_fetch` 的最终处理文本超过 32 KiB 时，完整 UTF-8 文本保存为 `web_fetch_<本机生成 UUID>.md`，独占创建、不覆盖已有文件；小结果不创建文件，全文不包含截断提示。桌面使用当前会话目录，CLI 使用 `.nicode/logs/cli/<内部 session-id>/tool_output/`。模型可见结果仅保存正文前缀及末尾截断说明、绝对路径；恢复历史时不重新获取或加载全文。
+- `tool_output/` 保存工具输出文件；具体输出路径由工具实现创建。`web_fetch` 的最终处理文本超过 32 KiB 时，完整 UTF-8 文本保存为 `web_fetch_<本机生成 UUID>.md`，独占创建、不覆盖已有文件；小结果不创建文件，全文不包含截断提示。桌面使用当前会话目录，CLI 使用 `.minou/logs/cli/<内部 session-id>/tool_output/`。模型可见结果仅保存正文前缀及末尾截断说明、绝对路径；恢复历史时不重新获取或加载全文。
 
 SessionState 基于已校验日志修复派生状态。成功 Summary 的 `summary/end` 带覆盖范围与完整基线。恢复时使用该记录修复基线文件，并从 Meta 的 MCP 游标之后补应用已提交的增量。缺少 Meta 时从完整日志重建载入集合。
 
@@ -290,7 +290,7 @@ MCP 的 `mcp/tools_added` 保存载入记录和当时的工具定义，`mcp/tool
   "skills": [
     {
       "name": "example",
-      "path": "C:/Users/example/.nicode/skills/example",
+      "path": "C:/Users/example/.minou/skills/example",
       "scope": "global",
       "enabled": true
     }

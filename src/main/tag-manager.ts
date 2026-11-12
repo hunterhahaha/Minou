@@ -51,7 +51,7 @@ export class TagManager {
   }
 
   /** 登记宿主并在文档销毁时释放网页实例。
-   * @param window NiCode 主窗口
+   * @param window Minou 主窗口
    */
   register(window: BrowserWindow): void {
     const id = window.webContents.id
@@ -101,7 +101,7 @@ export class TagManager {
     const existing = host.views.get(key)
     if (existing) return existing.view
     if (!this.browserSession) {
-      this.browserSession = session.fromPartition("persist:nicode-browser")
+      this.browserSession = session.fromPartition("persist:minou-browser")
       this.browserSession.setPermissionCheckHandler(() => false)
       this.browserSession.setPermissionRequestHandler((_contents, _permission, respond) => respond(false))
       this.browserSession.on("will-download", (event) => event.preventDefault())

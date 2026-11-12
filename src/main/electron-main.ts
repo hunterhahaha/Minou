@@ -1,5 +1,5 @@
 /**
- * NiCode 的真实 Electron 主进程入口。
+ * Minou 的真实 Electron 主进程入口。
  *
  * 本文件直接构造 `startElectronApp` 的完整参数。启动期只初始化配置路径、Dispatcher、
  * Project Context、全局 MCPManager、工具执行器和 BrowserWindow；Adapter 由每个 Turn 的工厂按磁盘状态创建。
@@ -34,7 +34,7 @@ import { registerFileExplorerIpc } from "./file-explorer-ipc.ts"
 import { DesktopSettings } from "./desktop-settings.ts"
 import { ElectronTray } from "./electron-tray.ts"
 
-const SYSTEM_PROMPT = "You are an AI agent powered by NiCode."
+const SYSTEM_PROMPT = "You are an AI agent powered by Minou."
 
 /**
  * 初始化进程级资源，并以真实实现逐字段调用 `startElectronApp`。
@@ -66,17 +66,19 @@ async function main(): Promise<void> {
   const sessionRuntimeGlobal = new SessionRuntimeGlobal(paths, toolRegistry, renderRegistry)
   let windows: ElectronWindowManager | undefined
   const trustedIpcMain = createTrustedIpcMain(ipcMain, (event) => windows?.isTrustedSender(event) ?? false)
+  const iconPath = join(__dirname, "../../../resources/minou.png")
   windows = createElectronWindowManager(BrowserWindow, {
     browserTags: new TagManager(trustedIpcMain),
     preloadPath: join(__dirname, "../preload/index.js"),
+    iconPath,
     rendererHtmlPath: join(__dirname, "../renderer/index.html"),
-    rendererUrl: process.env.NICODE_RENDERER_URL,
+    rendererUrl: process.env.MINOU_RENDERER_URL,
     onWindowCreated: (window) => tray.attachWindow(window),
     openExternal: (url) => {
       void shell.openExternal(url).catch((error: unknown) => console.error("无法打开外部链接。", error))
     },
     onWindowLoadFailure: (error) => {
-      console.error("NiCode 主窗口页面装载失败。", error)
+      console.error("Minou 主窗口页面装载失败。", error)
     },
   })
   const tray = new ElectronTray(windows, desktopSettings)
@@ -99,6 +101,7 @@ async function main(): Promise<void> {
       console.error(`Session ${sessionId} 的 Turn ${turn} 在后台失败。`, error)
     },
   })
+  app.dock?.setIcon(iconPath)
   // 启动装配完成后才允许第二实例触发窗口创建。
   activateMainWindow = () => tray.showMainWindow()
 }
@@ -107,7 +110,7 @@ if (!app.requestSingleInstanceLock()) {
   app.quit()
 } else {
   void main().catch((error: unknown) => {
-    console.error("NiCode 启动失败。", error)
+    console.error("Minou 启动失败。", error)
     process.exitCode = 1
     app.quit()
   })

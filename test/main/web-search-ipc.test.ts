@@ -10,7 +10,7 @@ import { buildWebSearchProviderInput } from "../../runtime/tools/src/web-search/
 
 /** @returns 管理接口与持久化验证完成。 @throws Error 任一断言失败。 */
 async function main(): Promise<void> {
-  const rootDir = await mkdtemp(join(tmpdir(), "nicode-web-ipc-"))
+  const rootDir = await mkdtemp(join(tmpdir(), "minou-web-ipc-"))
   try {
     const database = join(rootDir, WEB_SEARCH_DATABASE_FILE)
     initializeWebSearchDatabase(database)

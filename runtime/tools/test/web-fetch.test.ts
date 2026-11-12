@@ -34,7 +34,7 @@ function assertError(result: WebFetchResult | AppError, code: string): void {
 async function main(): Promise<void> {
   let respond = (_response: ServerResponse): void => {}
   let calls = 0
-  const directory = await mkdtemp(join(tmpdir(), "nicode-fetch-output-"))
+  const directory = await mkdtemp(join(tmpdir(), "minou-fetch-output-"))
   let requestPath = ""
   let method: string | undefined
   const server = createServer((request, response) => { calls++; requestPath = request.url ?? ""; method = request.method; respond(response) })

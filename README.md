@@ -1,10 +1,12 @@
-# NiCode
+# Minou
+
+<img src="resources/minou.png" width="96" height="96" alt="Minou logo">
 
 **English** | [简体中文](README.zh-CN.md)
 
-NiCode is a local coding agent with an Electron desktop app and a headless CLI. Connect your own model provider, work with a local codebase, and let the agent read and edit files, run commands, and use tools through MCP.
+Minou is a local coding agent with an Electron desktop app and a headless CLI. Connect your own model provider, work with a local codebase, and let the agent read and edit files, run commands, and use tools through MCP.
 
-The app runs locally; model requests are sent to the provider you configure. NiCode is in active V1 development and currently runs from source. A packaged desktop installer is not yet available.
+The app runs locally; model requests are sent to the provider you configure. Minou is in active V1 development and currently runs from source. A packaged desktop installer is not yet available.
 
 ## Features
 
@@ -61,16 +63,16 @@ node dist/src/cli/main.js run --request ./request.json --output ./result.json --
 
 Prompt-file input and request-file input are mutually exclusive. The defaults are 100 steps and a 1,800-second timeout. The CLI runs without an Electron window and does not resume desktop conversations.
 
-To use the shorter `nicode` command, run `npm link` after building, then use `nicode run ...`. See the [detailed CLI guide (Chinese)](docs/cli-usage.md) for request fields, permissions, isolation options, events, and exit codes.
+To use the shorter `minou` command, run `npm link` after building, then use `minou run ...`. See the [detailed CLI guide (Chinese)](docs/cli-usage.md) for request fields, permissions, isolation options, events, and exit codes.
 
 ## Settings and local data
 
 - **Models:** manage providers, credentials, models, and the default model in Settings.
 - **MCP:** add, edit, enable, delete, or refresh server connections in Settings → MCP. A connection failure is shown in the app so you can correct the configuration and retry.
 - **Skills:** manage and enable skills from global or project sources in Settings → Skills.
-- **Storage:** desktop data lives in `%USERPROFILE%\.nicode`, including configuration, provider credentials, conversations, logs, skills, and memory. The CLI uses the same user configuration, falling back to the home directory if `USERPROFILE` is unset.
+- **Storage:** desktop data lives in `%USERPROFILE%\.minou`, including configuration, provider credentials, conversations, logs, skills, and memory. The CLI uses the same user configuration, falling back to the home directory if `USERPROFILE` is unset.
 
-Permission modes govern NiCode's tool checks and approval flow; they do not create an operating-system sandbox. In headless runs, requests requiring approval are denied unless matched by the run's auto-approval settings. Keep API keys and your local `.nicode` directory private, and review tasks and permissions before running an agent on a codebase.
+Permission modes govern Minou's tool checks and approval flow; they do not create an operating-system sandbox. In headless runs, requests requiring approval are denied unless matched by the run's auto-approval settings. Keep API keys and your local `.minou` directory private, and review tasks and permissions before running an agent on a codebase.
 
 ## Project documentation
 

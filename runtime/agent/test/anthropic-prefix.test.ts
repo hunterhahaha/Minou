@@ -37,7 +37,7 @@ function signature(system: unknown, tools: unknown, messages: unknown): string {
  * @throws Error 前缀、持久化或模型请求不符合预期时拒绝。
  */
 async function testPrefix(initialRules: string): Promise<void> {
-  const root = await mkdtemp(join(tmpdir(), "nicode-anthropic-prefix-"))
+  const root = await mkdtemp(join(tmpdir(), "minou-anthropic-prefix-"))
   let mismatches = 0
   const provider = await startFakeProvider(({ body }, attempt) => {
     const messages = body.messages as Array<{ role: string; content: Array<Record<string, unknown>> }>

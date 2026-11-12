@@ -43,7 +43,7 @@ class FakeIpcMain {
 
 /** @param test Assertions to run against a fresh Provider database. @returns Completion of the isolated database scenario. */
 async function withDatabase(test: (path: string) => void): Promise<void> {
-  const directory = await mkdtemp(join(tmpdir(), "nicode-provider-ipc-"))
+  const directory = await mkdtemp(join(tmpdir(), "minou-provider-ipc-"))
   try {
     const path = join(directory, "providers.sqlite")
     initializeProviderDatabase(path)

@@ -36,7 +36,7 @@ import {
 } from "./protocol.ts"
 import type { PublicEvent, RunRequest, RunResult, StopReason, ToolGroup } from "./protocol.ts"
 
-const SYSTEM_PROMPT = "You are an AI agent powered by NiCode."
+const SYSTEM_PROMPT = "You are an AI agent powered by Minou."
 const CLEANUP_MS = 5000
 
 /**
@@ -92,7 +92,7 @@ export function resolveModel(databasePath: string, request: Pick<RunRequest, "mo
     if (model.supportsReasoning && !model.reasoningLevels.includes(reasoningLevel)) throw new CliInputError("所选推理等级不属于模型的可选等级。")
     return { providerId: provider.id, protocol: provider.protocol, modelId: model.modelId, name: model.name, reasoningLevel }
   }
-  throw new CliInputError("未找到指定模型或有效默认模型；请先配置 NiCode 模型。")
+  throw new CliInputError("未找到指定模型或有效默认模型；请先配置 Minou 模型。")
 }
 
 /**

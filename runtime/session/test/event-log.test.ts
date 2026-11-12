@@ -312,7 +312,7 @@ async function testMcpBatch(root: string): Promise<void> {
  * @throws Error 断言或临时存储操作失败时传播，由测试入口报告失败。
  */
 async function main(): Promise<void> {
-  const root = await mkdtemp(join(tmpdir(), "nicode-session-event-log-"))
+  const root = await mkdtemp(join(tmpdir(), "minou-session-event-log-"))
   try {
     await testCreateReadAppend(root)
     await testDesktopStreamWriteGuard(root)

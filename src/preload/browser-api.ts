@@ -78,7 +78,7 @@ export const FILE_EXPLORER_CHANNELS = {
 } as const
 
 /** 仅允许浏览器面板所需的命令及状态订阅。 */
-export interface NiCodeBrowserApi {
+export interface MinouBrowserApi {
   /** 搜索项目关联目录。 @param projectId 当前项目。 @param query 文件名或路径片段。 @returns 有界的已验证文件结果。 */
   searchProjectFiles(projectId: string, query: string): Promise<FileReference[]>
   /** 创建网页实例。 @param ref 标签身份 @param url 初始地址 @returns 实例创建结果。 */

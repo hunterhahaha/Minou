@@ -53,7 +53,7 @@ export function WebSearchSettings({ onBusyChange }: WebSearchSettingsProps) {
       setName(catalog[0]?.name ?? ""); setDetailReady(true)
       return
     }
-    const config = await window.nicode.getWebSearchProvider(id)
+    const config = await window.minou.getWebSearchProvider(id)
     const entry = catalog.find((item) => item.name === config.name)
     if (!entry) throw new Error("已保存的服务商不在预置目录中。")
     const parameters = readWebSearchProviderParameters(entry, config.requestJson)
@@ -71,7 +71,7 @@ export function WebSearchSettings({ onBusyChange }: WebSearchSettingsProps) {
     if (pending.current) return
     markBusy(true); setError(null)
     try {
-      const [catalog, list] = await Promise.all([window.nicode.listWebSearchProviderDefinitions(), window.nicode.listWebSearchProviders()])
+      const [catalog, list] = await Promise.all([window.minou.listWebSearchProviderDefinitions(), window.minou.listWebSearchProviders()])
       if (!alive.current) return
       setDefinitions(catalog); setProviders(list); setStale(false); setReady(true)
       await loadDetail(selectedId && list.some((entry) => entry.id === selectedId) ? selectedId : null, catalog)
@@ -111,7 +111,7 @@ export function WebSearchSettings({ onBusyChange }: WebSearchSettingsProps) {
       const id = await operation()
       committed = true
       setSelectedId(id); setValues({}); setDetailReady(false); setStale(true)
-      const list = await window.nicode.listWebSearchProviders()
+      const list = await window.minou.listWebSearchProviders()
       setProviders(list); setStale(false)
       await loadDetail(id)
     } catch {
@@ -130,8 +130,8 @@ export function WebSearchSettings({ onBusyChange }: WebSearchSettingsProps) {
     try {
       const input = buildWebSearchProviderInput(definition, values)
       void mutate(async () => {
-        if (selectedId) { await window.nicode.updateWebSearchProvider(selectedId, input); return selectedId }
-        return (await window.nicode.createWebSearchProvider(input)).id
+        if (selectedId) { await window.minou.updateWebSearchProvider(selectedId, input); return selectedId }
+        return (await window.minou.createWebSearchProvider(input)).id
       })
     } catch (failure) { setError(failure instanceof Error ? failure.message : "搜索参数无效。") }
   }
@@ -159,7 +159,7 @@ export function WebSearchSettings({ onBusyChange }: WebSearchSettingsProps) {
             <h3>{selectedId ? "编辑搜索服务商" : "新增搜索服务商"}</h3>
             {selected && <div className="web-search-status"><span>{selected.enabled ? "当前已启用" : "当前未启用"}</span>
               <button type="button" className="settings-secondary-button" disabled={disabled} onClick={() => {
-                void mutate(async () => { await window.nicode.setActiveWebSearchProvider(selected.enabled ? null : selected.id); return selected.id })
+                void mutate(async () => { await window.minou.setActiveWebSearchProvider(selected.enabled ? null : selected.id); return selected.id })
               }}>{selected.enabled ? "停用" : "启用"}</button></div>}
             <form onSubmit={submit} className="web-search-form">
               <label className="settings-field"><span>服务商</span>
@@ -184,7 +184,7 @@ export function WebSearchSettings({ onBusyChange }: WebSearchSettingsProps) {
                 <p>确认删除这条 {selected.name} 配置？{selected.enabled && "删除后将没有启用的服务商。"}</p>
                 <div className="web-search-actions"><button type="button" className="settings-secondary-button" disabled={disabled} onClick={() => setConfirmDelete(false)}>取消删除</button>
                   <button type="button" className="settings-text-button settings-danger-button" disabled={disabled} onClick={() => {
-                    void mutate(async () => { await window.nicode.deleteWebSearchProvider(selected.id); return null })
+                    void mutate(async () => { await window.minou.deleteWebSearchProvider(selected.id); return null })
                   }}>确认删除</button></div></>}
             </div>}
           </>}

@@ -144,7 +144,7 @@ async function scenario(profile: string, projectId: string): Promise<void> {
  * @throws Error 断言或场景执行失败时向上传播，测试入口记录错误并设置失败退出码。
  */
 async function main(): Promise<void> {
-  const root = await mkdtemp(join(tmpdir(), "nicode-memory-turn-"))
+  const root = await mkdtemp(join(tmpdir(), "minou-memory-turn-"))
   try {
     await scenario(join(root, "default-profile"), "default")
     await scenario(join(root, "project-profile"), PROJECT)

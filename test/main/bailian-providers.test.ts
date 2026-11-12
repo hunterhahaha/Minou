@@ -16,7 +16,7 @@ import type { ProviderSummary } from "../../src/preload/session-api.ts"
  * @throws Error 当 IPC 创建、重开或配置断言失败时向入口传播测试失败。
  */
 async function main(): Promise<void> {
-  const directory = await mkdtemp(join(tmpdir(), "nicode-bailian-"))
+  const directory = await mkdtemp(join(tmpdir(), "minou-bailian-"))
   try {
     const database = join(directory, "providers.sqlite")
     initializeProviderDatabase(database)

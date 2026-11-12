@@ -13,7 +13,7 @@ import { initializeConfigFilesSnapshot } from "../../src/main/config-files.ts"
 
 /** @returns 完成协议和配置隔离断言。 @throws AssertionError 行为偏离协议。 */
 async function main(): Promise<void> {
-  const root = await mkdtemp(join(tmpdir(), "nicode-cli-protocol-"))
+  const root = await mkdtemp(join(tmpdir(), "minou-cli-protocol-"))
   try {
     const input = { version: 1, prompt: "  Task\n", run_id: "same", workspace: root, model: "model" }
     const base = await normalizeRequest(input, root, root)

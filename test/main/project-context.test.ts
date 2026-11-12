@@ -18,11 +18,11 @@ import { initializeWorkspaceDatabase, saveProjectWorkspace } from "../../src/mai
 
 const PROJECT_ID = "00000000-0000-4000-8000-000000000017"
 
-/** 在临时 `.nicode` 根目录运行测试并安全清理。 */
+/** 在临时 `.minou` 根目录运行测试并安全清理。 */
 async function withTempRoot(test: (root: string) => Promise<void>): Promise<void> {
-  const profile = await mkdtemp(join(tmpdir(), "nicode-project-context-"))
+  const profile = await mkdtemp(join(tmpdir(), "minou-project-context-"))
   try {
-    const root = join(profile, ".nicode")
+    const root = join(profile, ".minou")
     await mkdir(join(root, "skills"), { recursive: true })
     await test(root)
   } finally {
@@ -43,7 +43,7 @@ async function createProject(
   saveProjectWorkspace(databasePath, {
     version: 1,
     id: PROJECT_ID,
-    name: "NiCode",
+    name: "Minou",
     updatedAt: "2026-09-23T00:00:00.000Z",
     directories: [...directories],
     sessions: [],
@@ -194,7 +194,7 @@ async function testRejectsInvalidProjectAndSkillConfiguration(): Promise<void> {
       rootDirectory: root,
       skillManager: new SkillManager(root, estimateLocalTokens),
     }
-    assert.ok(resolveProjectContext(options, PROJECT_ID).workspaceInfo.includes('"projectName": "NiCode"'))
+    assert.ok(resolveProjectContext(options, PROJECT_ID).workspaceInfo.includes('"projectName": "Minou"'))
     const db = new DatabaseSync(databasePath)
     try {
       db.prepare("DELETE FROM workspace_groups WHERE group_id = ?").run(String(PROJECT_ID))
@@ -211,7 +211,7 @@ async function testRejectsInvalidProjectAndSkillConfiguration(): Promise<void> {
     saveProjectWorkspace(databasePath, {
       version: 1,
       id: PROJECT_ID,
-      name: "NiCode",
+      name: "Minou",
       updatedAt: "2026-09-23T00:00:00.000Z",
       directories: [],
       sessions: [],

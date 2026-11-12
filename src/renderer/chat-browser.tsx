@@ -89,7 +89,7 @@ export class TagManager {
       const state = this.get(sessionId)
       this.set(sessionId, { ...state, tags: state.tags.map((item) => item.id === blankId ? tag : item) })
     }
-    void window.nicodeBrowser.createWebTag(ref, url).catch((cause: unknown) => this.receive({
+    void window.minouBrowser.createWebTag(ref, url).catch((cause: unknown) => this.receive({
       ref, url, title: "", status: "error", canGoBack: false, canGoForward: false,
       error: cause instanceof Error ? cause.message : String(cause),
     }))
@@ -167,7 +167,7 @@ export class TagManager {
   present(active: BrowserPresentation["active"]): void {
     if (active === null && !this.showingWeb) return
     this.showingWeb = active !== null
-    void window.nicodeBrowser?.present({ revision: ++this.revision, active }).catch(console.error)
+    void window.minouBrowser?.present({ revision: ++this.revision, active }).catch(console.error)
   }
 }
 
@@ -288,7 +288,7 @@ export function BrowserWorkspace({ manager, teamSessions, sessionId, projectId, 
   const visibleChatPercent = dragPercent ?? chatPercent
   const targetPercent = showDivider ? chatPercent : showBrowser ? 0 : 100
   const maximizeLabel = browserMaximized ? "恢复分栏" : "铺满工作区"
-  const api = window.nicodeBrowser
+  const api = window.minouBrowser
 
   const canOpenProjectFiles = Boolean(api && project?.directories.length)
   const projectFilesTitle = canOpenProjectFiles ? "打开项目文件"

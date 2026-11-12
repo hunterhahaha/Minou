@@ -2,7 +2,7 @@
 import type { JSONContent } from "@tiptap/core"
 import type { AssistantContentBlock, ModelTextBlock } from "../../runtime/model/src/types.ts"
 import type { SessionEvent, SessionLiveEvent } from "../../runtime/session/src/events.ts"
-import type { NiCodePreloadApi, SessionControl, SessionData, SessionKind, SessionSummary, SessionUpdate } from "../preload/session-api.ts"
+import type { MinouPreloadApi, SessionControl, SessionData, SessionKind, SessionSummary, SessionUpdate } from "../preload/session-api.ts"
 
 /** 联合身份使用 JSON 数组编码。 */
 export type SessionKey = string
@@ -108,7 +108,7 @@ export class WorkspaceSessionState {
   readonly pendingEventsRef = new Map<SessionKey, SessionLiveEvent[]>()
 
   /** 唯一的历史查询出口；缓存命中不会调用。 */
-  private readonly api: Pick<NiCodePreloadApi, "getSessionData">
+  private readonly api: Pick<MinouPreloadApi, "getSessionData">
   /** Workspace 的 React 更新通知。 */
   private readonly changed: (key: SessionKey) => void
   /**
@@ -116,7 +116,7 @@ export class WorkspaceSessionState {
    * @param api preload 查询能力。
    * @param changed 通知状态改变的对话键。
    */
-  constructor(api: Pick<NiCodePreloadApi, "getSessionData">, changed: (key: SessionKey) => void) { this.api = api; this.changed = changed }
+  constructor(api: Pick<MinouPreloadApi, "getSessionData">, changed: (key: SessionKey) => void) { this.api = api; this.changed = changed }
   /**
    * @param key 联合身份。
    * @returns 键是否已经完整初始化。

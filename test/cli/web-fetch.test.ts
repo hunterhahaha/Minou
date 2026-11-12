@@ -33,7 +33,7 @@ function reply(response: ServerResponse, first: boolean, url: string): void {
  * @throws Error 子进程、HTTP 或断言失败。
  */
 async function main(): Promise<void> {
-  const directory = await mkdtemp(join(tmpdir(), "nicode-cli-web-"))
+  const directory = await mkdtemp(join(tmpdir(), "minou-cli-web-"))
   let fetchCalls = 0, modelCalls = 0
   const fullText = new TurndownService().turndown("<p>CLI fetched <strong>content</strong></p><pre>" + "完整正文😀\n".repeat(4000) + "</pre>")
   let modelText = ""

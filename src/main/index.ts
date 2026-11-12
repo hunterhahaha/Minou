@@ -53,7 +53,7 @@ export interface MainWindowLifecyclePort {
   /**
    * 向存活主窗口发送当前对话更新，窗口发送失败交给宿主处理。
    *
-   * @param update 向全部存活的 NiCode 窗口发送的更新。
+   * @param update 向全部存活的 Minou 窗口发送的更新。
    */
   sendSessionUpdate?(update: SessionUpdate, recipients?: ReadonlySet<number>): void
   /** 创建并开始装载一个主窗口。 */

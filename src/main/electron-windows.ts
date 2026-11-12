@@ -1,4 +1,4 @@
-/** Electron `BrowserWindow` 到 NiCode 窗口生命周期端口的真实适配。 */
+/** Electron `BrowserWindow` 到 Minou 窗口生命周期端口的真实适配。 */
 
 import { isAbsolute } from "node:path"
 import { fileURLToPath, pathToFileURL } from "node:url"
@@ -30,6 +30,8 @@ export interface BrowserWindowConstructorPort {
 export interface ElectronWindowOptions {
   /** 编译后的 preload 入口绝对路径。 */
   preloadPath: string
+  /** 主窗口原生图标的绝对路径。 */
+  iconPath?: string
   /** 登记允许调用浏览器 IPC 的窗口。 */
   browserTags?: import("./tag-manager.ts").TagManager
   /** Vite 构建后的 Renderer HTML 绝对路径。 */
@@ -59,7 +61,7 @@ export interface ElectronWindowManager extends MainWindowLifecyclePort {
   /**
    * 检查存活主窗口、主 frame 和当前文档地址，不信任仅有同源地址的其它窗口。
    * @param event Electron IPC 请求身份。
-   * @returns 请求来自本管理器拥有的 NiCode 文档时为 true。
+   * @returns 请求来自本管理器拥有的 Minou 文档时为 true。
    */
   isTrustedSender(event: IpcMainInvokeEvent): boolean
 }
@@ -126,7 +128,7 @@ export function createElectronWindowManager(
   const retainedWindows = new Set<BrowserWindow>()
   const awaitingFirstShow = new Set<BrowserWindow>()
   /**
-   * 选择一个仍存活的 NiCode 主窗口。
+   * 选择一个仍存活的 Minou 主窗口。
    * @returns 聚焦窗口优先，否则返回最近创建的主窗口或 undefined。
    */
   function mainWindow(): BrowserWindow | undefined {
@@ -197,6 +199,7 @@ export function createElectronWindowManager(
         show: false,
         backgroundColor: "#f0f1ed",
         frame: false,
+        icon: options.iconPath,
         autoHideMenuBar: true,
         webPreferences: {
           preload: options.preloadPath,

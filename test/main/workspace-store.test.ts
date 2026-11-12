@@ -15,7 +15,7 @@ const FIRST_ID = "00000000-0000-4000-8000-000000000017"
 const SECOND_ID = "00000000-0000-4000-8000-000000000018"
 
 async function main(): Promise<void> {
-  const directory = await mkdtemp(join(tmpdir(), "nicode-workspace-store-"))
+  const directory = await mkdtemp(join(tmpdir(), "minou-workspace-store-"))
   try {
     const path = join(directory, "workspace.sqlite")
     initializeWorkspaceDatabase(path)
@@ -30,7 +30,7 @@ async function main(): Promise<void> {
     }
     const first = {
       version: 1 as const, id: FIRST_ID, name: "First", updatedAt: "2026-09-24T01:00:00Z",
-      directories: ["G:\\code\\NiCode"], sessions: [session],
+      directories: ["G:\\code\\Minou"], sessions: [session],
     }
     const second = {
       version: 1 as const, id: SECOND_ID, name: "Second", updatedAt: "2026-09-24T02:00:00Z",

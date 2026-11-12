@@ -20,7 +20,7 @@ import type { UnifiedModelRequest } from "../../runtime/model/src/types.ts"
  * @throws Error 当创建、恢复或请求构建与官方接入契约不符时传播测试失败。
  */
 async function main(): Promise<void> {
-  const directory = await mkdtemp(join(tmpdir(), "nicode-glm-"))
+  const directory = await mkdtemp(join(tmpdir(), "minou-glm-"))
   try {
     const database = join(directory, "providers.sqlite")
     initializeProviderDatabase(database)

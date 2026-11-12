@@ -26,7 +26,7 @@ import type { ProjectWorkspace } from "./workspace-store.ts"
 
 /** Project Context resolver 的固定进程级输入。 */
 export interface ProjectContextResolverOptions {
-  /** 已初始化的 `.nicode` 绝对目录。 */
+  /** 已初始化的 `.minou` 绝对目录。 */
   rootDirectory: string
   /**
    * 启动时创建、由 Project Context 复用的共享 Skill 来源管理器。
@@ -37,7 +37,7 @@ export interface ProjectContextResolverOptions {
 /**
  * 同步读取一个 Project 的身份和路径，并建立其异步 baseline 来源。
  *
- * @param options `.nicode` 根目录与共享 SkillManager。
+ * @param options `.minou` 根目录与共享 SkillManager。
  * @param projectId IPC 已校验的 UUID 或 default。
  * @returns 当前 Project 的模型可见工作区信息与 baseline 解析函数。
  * @throws Error 当根目录不是绝对路径、Project 目录或 workspace 目录不可用，或数据库中缺少对应项目配置时抛出。

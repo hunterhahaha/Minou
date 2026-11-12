@@ -1,7 +1,7 @@
-/** Electron preload 入口：只把经过约束的 NiCode API 暴露给 Renderer。 */
+/** Electron preload 入口：只把经过约束的 Minou API 暴露给 Renderer。 */
 
 import { contextBridge, ipcRenderer } from "electron"
-import { BROWSER_COMMAND, BROWSER_STATE, FILE_EXPLORER_CHANNELS, type BrowserCommand, type NiCodeBrowserApi, type WebTagState } from "./browser-api.ts"
+import { BROWSER_COMMAND, BROWSER_STATE, FILE_EXPLORER_CHANNELS, type BrowserCommand, type MinouBrowserApi, type WebTagState } from "./browser-api.ts"
 
 /** 向主进程提交浏览器命令。
  * @param command 受限浏览器命令
@@ -21,7 +21,7 @@ exposeWindowApi(contextBridge, ipcRenderer)
 
 export * from "./session-api.ts"
 
-const browserApi: NiCodeBrowserApi = {
+const browserApi: MinouBrowserApi = {
   createWebTag: (ref, url) => browserCommand({ action: "create", ref, url }),
   closeWebTag: (ref) => browserCommand({ action: "close", ref }),
   navigateWebTag: (ref, url) => browserCommand({ action: "navigate", ref, url }),
@@ -40,4 +40,4 @@ const browserApi: NiCodeBrowserApi = {
     return () => { ipcRenderer.removeListener(BROWSER_STATE, receive) }
   },
 }
-contextBridge.exposeInMainWorld("nicodeBrowser", browserApi)
+contextBridge.exposeInMainWorld("minouBrowser", browserApi)

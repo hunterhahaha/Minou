@@ -9,7 +9,7 @@ import { readDefaultWorkspace, readProjectWorkspace } from "./workspace-store.ts
 
 /**
  * 每次调用按 Project 与 Session 身份重读沙箱模式及关联目录。
- * @param paths 启动时确定的数据库与 `.nicode` 根路径。
+ * @param paths 启动时确定的数据库与 `.minou` 根路径。
  * @param projectId 当前 Project UUID 或 default。
  * @param sessionId 当前 Session 身份。
  * @returns 当前模式及 workspace 加关联目录的允许根目录。

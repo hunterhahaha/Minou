@@ -13,8 +13,8 @@ export function WindowControls() {
   useEffect(() => {
     let mounted = true
     let receivedUpdate = false
-    const unsubscribe = window.nicodeWindow.onStateChanged((next) => { receivedUpdate = true; setState(next) })
-    void window.nicodeWindow.getState().then((next) => { if (mounted && !receivedUpdate) setState(next) }).catch(() => { if (mounted) setError("无法读取窗口状态") })
+    const unsubscribe = window.minouWindow.onStateChanged((next) => { receivedUpdate = true; setState(next) })
+    void window.minouWindow.getState().then((next) => { if (mounted && !receivedUpdate) setState(next) }).catch(() => { if (mounted) setError("无法读取窗口状态") })
     return () => { mounted = false; unsubscribe() }
   }, [])
   /**
@@ -26,9 +26,9 @@ export function WindowControls() {
   async function operate(action: "minimize" | "maximize" | "close"): Promise<void> {
     setError(null)
     try {
-      if (action === "minimize") await window.nicodeWindow.minimize()
-      else if (action === "close") await window.nicodeWindow.close()
-      else setState(await window.nicodeWindow.toggleMaximize())
+      if (action === "minimize") await window.minouWindow.minimize()
+      else if (action === "close") await window.minouWindow.close()
+      else setState(await window.minouWindow.toggleMaximize())
     } catch { setError("窗口操作失败，请重试") }
   }
   return <div className="window-controls" aria-label="窗口控制">

@@ -25,7 +25,7 @@ async function add(source: string, name: string, description: string): Promise<v
 
 /** @returns 管理与持久化场景全部完成。 @throws AssertionError 行为不符，或夹具 I/O 失败。 */
 async function main(): Promise<void> {
-  const root = await mkdtemp(join(tmpdir(), "nicode-skill-management-"))
+  const root = await mkdtemp(join(tmpdir(), "minou-skill-management-"))
   try {
     const global = join(root, "skills"), local = join(root, "sessions", PROJECT, "skills")
     await mkdir(join(root, "sessions", PROJECT), { recursive: true })

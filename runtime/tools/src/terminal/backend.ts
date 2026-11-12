@@ -47,7 +47,7 @@ export class PtyMarkerParser {
    * @param nonce - 此终端内部标记使用的随机身份。
    * @param receive - 按接收顺序处理可见文本和解析后标记的回调。
    */
-  constructor(nonce: string, receive: (event: PtyEvent) => void) { this.prefix = `\x1b]633;NiCode;${nonce};`; this.receive = receive }
+  constructor(nonce: string, receive: (event: PtyEvent) => void) { this.prefix = `\x1b]633;Minou;${nonce};`; this.receive = receive }
 
   /**
    * 解析本次字符串数据，保留跨块未完整标记；仅删除符合本终端身份和结构的内部标记，无效标记仍作为业务输出交付。
@@ -110,22 +110,22 @@ export class PwshPtyBackend implements PtyBackend {
 $ErrorActionPreference = 'Stop'
 Import-Module PSReadLine
 Set-PSReadLineOption -HistorySaveStyle SaveNothing -PredictionSource None
-$global:NiCodeRun = 0
-$global:NiCodePrefix = [char]27 + ']633;NiCode;${nonce};'
+$global:MinouRun = 0
+$global:MinouPrefix = [char]27 + ']633;Minou;${nonce};'
 function global:PSConsoleHostReadLine {
   $lastRunStatus = $?
   Microsoft.PowerShell.Core\\Set-StrictMode -Off
   $line = [Microsoft.PowerShell.PSConsoleReadLine]::ReadLine($host.Runspace, $ExecutionContext, $lastRunStatus)
   if (-not [string]::IsNullOrWhiteSpace($line)) {
-    $global:NiCodeRun++
-    [Console]::Write($global:NiCodePrefix + 'S;' + $global:NiCodeRun + [char]7)
+    $global:MinouRun++
+    [Console]::Write($global:MinouPrefix + 'S;' + $global:MinouRun + [char]7)
   }
   return $line
 }
 function global:prompt {
   $path = $ExecutionContext.SessionState.Path.CurrentLocation.Path
   $encodedPath = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($path))
-  [Console]::Write($global:NiCodePrefix + 'D;' + $global:NiCodeRun + ';' + $encodedPath + [char]7)
+  [Console]::Write($global:MinouPrefix + 'D;' + $global:MinouRun + ';' + $encodedPath + [char]7)
   return 'PS> '
 }
 $ErrorActionPreference = 'Continue'

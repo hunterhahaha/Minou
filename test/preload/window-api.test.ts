@@ -38,7 +38,7 @@ async function main(): Promise<void> {
   keep()
   assert.equal(listeners.size, 0)
   let exposed: unknown
-  exposeWindowApi({ exposeInMainWorld(name, value) { assert.equal(name, "nicodeWindow"); exposed = value } }, ipc)
+  exposeWindowApi({ exposeInMainWorld(name, value) { assert.equal(name, "minouWindow"); exposed = value } }, ipc)
   assert.equal(Object.isFrozen(exposed), true)
   console.log("window-api.test.ts: 固定通道、状态校验、独立监听、取消订阅与隔离桥均通过")
 }

@@ -31,7 +31,7 @@ export interface FileSessionEventLogOptions {
   projectGroupId: string
   /** 当前 Session 目录的绝对路径。 */
   sessionDirectory: string
-  /** 共享的 .nicode/events.sqlite 绝对路径。 */
+  /** 共享的 .minou/events.sqlite 绝对路径。 */
   databasePath: string
   /** 可选时间来源。 */
   now?: () => Date
@@ -93,7 +93,7 @@ const CREATE_TEAM_EVENTS_TABLE = CREATE_EVENTS_TABLE.replace("session_events", "
 
 /**
  * 初始化 Event Log 数据库；桌面启用共享消息队列及 Team 存储。
- * @param databasePath `.nicode/events.sqlite` 的绝对路径。
+ * @param databasePath `.minou/events.sqlite` 的绝对路径。
  * @param desktop 是否初始化桌面协作表；独立 CLI 仅使用普通事件表。
  * @returns 缺失数据库创建完成，或已有普通文件确认存在后解析的 Promise。
  * @throws Error 当路径不是普通文件或缺失数据库无法创建时抛出。

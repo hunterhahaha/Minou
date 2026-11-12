@@ -217,7 +217,7 @@ async function testApproval(profile: string, decision: "approved" | "denied" | "
  * @returns 所有真实数据库接线验证完成。
  */
 async function main(): Promise<void> {
-  const root = await mkdtemp(join(tmpdir(), "nicode-session-connection-"))
+  const root = await mkdtemp(join(tmpdir(), "minou-session-connection-"))
   try {
     await testHistoryQueueSettings(root)
     for (const decision of ["approved", "denied", "cancelled"] as const) await testApproval(join(root, decision), decision)

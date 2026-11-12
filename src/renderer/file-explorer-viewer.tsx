@@ -138,9 +138,9 @@ function ProjectDirectory({ projectId, directory, onSelect }: {
     let handle: string | undefined
     /** 关闭已经发放的目录句柄。 */
     const release = () => {
-      if (handle) void window.nicodeBrowser.closeFileExplorer(handle).catch(console.error)
+      if (handle) void window.minouBrowser.closeFileExplorer(handle).catch(console.error)
     }
-    void window.nicodeBrowser.openFileExplorer({ projectId, directoryPath: directory }).then((result) => {
+    void window.minouBrowser.openFileExplorer({ projectId, directoryPath: directory }).then((result) => {
       handle = result.handle
       if (current) setRoot(result)
       else release()
@@ -201,7 +201,7 @@ function DirectoryTree({ root, directory, onSelect }: {
       next.delete(branch)
       return next
     })
-    void window.nicodeBrowser.listExplorerDirectory(root.handle, branch).then((entries) => {
+    void window.minouBrowser.listExplorerDirectory(root.handle, branch).then((entries) => {
       if (!mounted.current) return
       const additions = entries.map(({ name, kind }) => {
         const path = branch + name + (kind === "directory" ? "/" : "")

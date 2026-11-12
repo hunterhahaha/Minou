@@ -16,7 +16,7 @@ import type { WebSearchProviderInput } from "../src/web-search/types.ts"
  * @throws Error 数据库或断言失败。
  */
 async function main(): Promise<void> {
-  const directory = await mkdtemp(join(tmpdir(), "nicode-web-store-"))
+  const directory = await mkdtemp(join(tmpdir(), "minou-web-store-"))
   const path = join(directory, "web-search.sqlite")
   const input: WebSearchProviderInput = {
     id: "first", name: "Test", requestJson: '{ "url": "https://example.com", "body": "${query}" }', responseJmespath: "items",

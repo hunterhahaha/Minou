@@ -16,7 +16,7 @@ import type { SessionLoadedMCPTool } from "../../mcp/src/types.ts"
  * @throws AssertionError 状态或恢复行为偏离契约。
  */
 async function main(): Promise<void> {
-  const root = await mkdtemp(join(tmpdir(), "nicode-mcp-state-"))
+  const root = await mkdtemp(join(tmpdir(), "minou-mcp-state-"))
   try {
     const paths = await initializeConfigFiles(root)
     const sessionDirectory = join(paths.rootDir, "sessions", "default", "mcp-state")

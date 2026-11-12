@@ -15,7 +15,7 @@ import { insertProjectWorkspace } from "../../src/main/workspace-store.ts"
  * @throws AssertionError 启动来源维护不符合预期时抛出；初始化和文件系统错误也会向上传递。
  */
 async function main(): Promise<void> {
-  const profile = await mkdtemp(join(tmpdir(), "nicode-skill-startup-"))
+  const profile = await mkdtemp(join(tmpdir(), "minou-skill-startup-"))
   try {
     const paths = await initializeConfigFiles(profile)
     const projectId = "00000000-0000-4000-8000-000000000001"

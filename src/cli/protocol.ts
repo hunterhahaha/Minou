@@ -145,7 +145,7 @@ export function outputDestination(argv: readonly string[], cwd: string): { outpu
  * @throws CliInputError 参数、JSON、输入文件或工作区无效。
  */
 export async function readCliInput(argv: readonly string[], cwd: string): Promise<CliInput> {
-  if (argv[0] !== "run") throw new CliInputError("需要 run 子命令；使用 nicode run --help 查看参数。")
+  if (argv[0] !== "run") throw new CliInputError("需要 run 子命令；使用 minou run --help 查看参数。")
   const options: Record<string, string> = {}
   for (let i = 1; i < argv.length; i++) {
     const match = /^--([^=]+)(?:=(.*))?$/.exec(argv[i])
@@ -412,12 +412,12 @@ export async function writeResult(path: string, result: RunResult): Promise<void
 }
 
 /** 命令帮助不触发任何配置初始化。 */
-export const CLI_HELP = `NiCode Headless Agent Execution Protocol V1
-nicode run --prompt-file <file> --output <result.json> [options]
-nicode run --request <request.json> --output <result.json> [--format json|jsonl]
+export const CLI_HELP = `Minou Headless Agent Execution Protocol V1
+minou run --prompt-file <file> --output <result.json> [options]
+minou run --request <request.json> --output <result.json> [--format json|jsonl]
 
 Options:
-  --model <modelId>             默认使用 NiCode 有效默认模型
+  --model <modelId>             默认使用 Minou 有效默认模型
   --reasoning-level <level>     默认使用模型的第一个推理等级
   --workspace <directory>       默认使用启动目录
   --run-id <id>                 外部关联 ID

@@ -14,7 +14,7 @@ const { TerminalRouter, ShellRouter } = require('../../dist/runtime/tools/src/in
  */
 async function main() {
   await app.whenReady()
-  const directory = await mkdtemp(join(tmpdir(), 'nicode-electron-process-'))
+  const directory = await mkdtemp(join(tmpdir(), 'minou-electron-process-'))
   const terminals = new TerminalRouter(), shells = new ShellRouter()
   const signal = new AbortController().signal
   try {

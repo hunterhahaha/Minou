@@ -24,10 +24,10 @@ const INITIAL_CONFIG = `${JSON.stringify({
 /** 按文件路径串行提交配置更新，避免 Team 和 MCP 同时保存时覆盖彼此。 */
 const pendingConfigWrites = new Map<string, Promise<ValidatedStartupConfig>>()
 /**
- * 启动时确定的 NiCode 配置根目录和各共享数据库路径。
+ * 启动时确定的 Minou 配置根目录和各共享数据库路径。
  */
 export interface ConfigFilePaths {
-  /** `.nicode` 配置根目录。 */
+  /** `.minou` 配置根目录。 */
   rootDir: string
   /** 全局普通配置文件。 */
   configPath: string
@@ -250,7 +250,7 @@ export async function initializeConfigFilesSnapshot(
     throw new Error("USERPROFILE 必须是非空的绝对路径。")
   }
 
-  const rootDir = join(userProfile, ".nicode")
+  const rootDir = join(userProfile, ".minou")
   const configPath = join(rootDir, "config.json")
   const providerDatabasePath = join(rootDir, "providers.sqlite")
   const sessionsDir = join(rootDir, "sessions")

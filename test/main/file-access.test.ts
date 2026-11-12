@@ -12,15 +12,15 @@ const PROJECT_ID = "00000000-0000-4000-8000-000000000041"
 const SESSION_ID = "session-1"
 
 async function main(): Promise<void> {
-  const root = await mkdtemp(join(tmpdir(), "nicode-file-access-"))
+  const root = await mkdtemp(join(tmpdir(), "minou-file-access-"))
   try {
-    const nicode = join(root, ".nicode")
-    await mkdir(join(nicode, "sessions", PROJECT_ID, "workspace"), { recursive: true })
-    await mkdir(join(nicode, "sessions", "default", "workspace"), { recursive: true })
+    const minou = join(root, ".minou")
+    await mkdir(join(minou, "sessions", PROJECT_ID, "workspace"), { recursive: true })
+    await mkdir(join(minou, "sessions", "default", "workspace"), { recursive: true })
     const paths = {
-      rootDir: nicode,
-      metaDatabasePath: join(nicode, "meta.sqlite"),
-      workspaceDatabasePath: join(nicode, "workspace.sqlite"),
+      rootDir: minou,
+      metaDatabasePath: join(minou, "meta.sqlite"),
+      workspaceDatabasePath: join(minou, "workspace.sqlite"),
     }
     initializeSessionMetaDatabase(paths.metaDatabasePath)
     initializeWorkspaceDatabase(paths.workspaceDatabasePath)
@@ -49,7 +49,7 @@ async function main(): Promise<void> {
     } finally { db.close() }
     assert.deepEqual(loadFileAccessState(paths, PROJECT_ID, SESSION_ID), {
       sandboxMode: "sandbox-full-access",
-      roots: [join(nicode, "sessions", PROJECT_ID, "workspace"), first],
+      roots: [join(minou, "sessions", PROJECT_ID, "workspace"), first],
     })
     saveProjectWorkspace(paths.workspaceDatabasePath, {
       version: 1, id: PROJECT_ID, name: "Project", updatedAt: "2026-09-24T00:01:00Z",
@@ -62,12 +62,12 @@ async function main(): Promise<void> {
     } finally { update.close() }
     assert.deepEqual(loadFileAccessState(paths, PROJECT_ID, SESSION_ID), {
       sandboxMode: "sandbox-read-only",
-      roots: [join(nicode, "sessions", PROJECT_ID, "workspace"), second],
+      roots: [join(minou, "sessions", PROJECT_ID, "workspace"), second],
     })
     assert.throws(() => loadFileAccessState(paths, PROJECT_ID, "missing"), /Meta 缺失/)
     assert.deepEqual(loadFileAccessState(paths, "default", SESSION_ID), {
       sandboxMode: "full-access",
-      roots: [join(nicode, "sessions", "default", "workspace")],
+      roots: [join(minou, "sessions", "default", "workspace")],
     })
   } finally { await rm(root, { recursive: true, force: true }) }
 }

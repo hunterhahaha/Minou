@@ -29,7 +29,7 @@ function code(result: ToolResult): string | undefined { return result.status ===
  * @throws AssertionError 参数检查或结果整理不符合断言预期。
  */
 async function main(): Promise<void> {
-  const root = await mkdtemp(join(tmpdir(), "nicode-memory-tools-"))
+  const root = await mkdtemp(join(tmpdir(), "minou-memory-tools-"))
   try {
     await mkdir(join(root, "sessions", "default"), { recursive: true })
     const manager = new MemoryManager(root, () => new Date("2026-10-09T01:02:03.004Z"))

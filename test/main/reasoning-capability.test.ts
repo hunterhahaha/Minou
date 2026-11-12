@@ -16,7 +16,7 @@ import { COMPATIBLE_PROVIDERS } from "../../src/main/compatible-providers.ts"
  * @returns 完整数据流断言完成；临时目录始终清理。
  */
 async function main(): Promise<void> {
-  const directory = await mkdtemp(join(tmpdir(), "nicode-reasoning-"))
+  const directory = await mkdtemp(join(tmpdir(), "minou-reasoning-"))
   try {
     const database = join(directory, "providers.sqlite")
     initializeProviderDatabase(database)

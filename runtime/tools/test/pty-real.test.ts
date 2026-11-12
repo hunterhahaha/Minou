@@ -11,7 +11,7 @@ import { PwshPtyBackend } from "../src/terminal/backend.ts"
  * @throws Error - 断言、临时存储或本机后端验证失败；顶层测试出口记录异常并设置失败退出码。
  */
 async function main(): Promise<void> {
-  const directory = await mkdtemp(join(tmpdir(), "nicode-pty-real-"))
+  const directory = await mkdtemp(join(tmpdir(), "minou-pty-real-"))
   const router = new TerminalRouter()
   const signal = new AbortController().signal
   try {
@@ -34,7 +34,7 @@ async function main(): Promise<void> {
     const home = host.exec(initialOutput)?.[1]
     assert.ok(home, JSON.stringify(initialOutput))
     assert.equal(await realpath(home), await realpath("resources/powershell"))
-    assert.equal(result.output.includes("NiCode;"), false)
+    assert.equal(result.output.includes("Minou;"), false)
     const childDirectory = join(directory, "cwd-test")
     await mkdir(childDirectory)
     const moved = await router.input("default", "one", terminal.id, `Set-Location -LiteralPath '${childDirectory.replaceAll("'", "''")}'\r`, "move", signal)

@@ -65,7 +65,7 @@ async function fits() {
 }
 /** @returns 审批浮窗、结果记录、重试、停止和对话恢复验证完成。 */
 async function main() {
-  profile = await mkdtemp(join(tmpdir(), "nicode-approval-electron-"))
+  profile = await mkdtemp(join(tmpdir(), "minou-approval-electron-"))
   app.setPath("userData", join(profile, "electron"))
   const paths = await initializeConfigFiles(profile)
   await app.whenReady()
@@ -173,7 +173,7 @@ async function main() {
   await evaluate("document.querySelector('.turn-process > summary').click()")
   assert.deepEqual(await evaluate("[...document.querySelectorAll('.approval-result > summary')].map(node => node.textContent)"), ["审批已批准 · shell", "审批已拒绝 · shell"])
   assert.equal(await evaluate("document.querySelectorAll('.turn-process .approval-actions, .turn-process .approval-popover').length"), 0)
-  const data = await evaluate("window.nicode.getSessionData('default', document.querySelector('.chat-page').dataset.sessionId)")
+  const data = await evaluate("window.minou.getSessionData('default', document.querySelector('.chat-page').dataset.sessionId)")
   assert.deepEqual(data.events.filter(event => event.type === "approval/result").map(event => event.decision), ["approved", "denied"], "实际决定已经持久化")
   window.setContentSize(1200, 800)
   toolCount = 1
@@ -185,7 +185,7 @@ async function main() {
   await until(() => evaluate("!document.querySelector('.approval-popover') && document.querySelector('.session-phase').textContent === '准备就绪'"))
   await startApproval()
   holdUpdates = true
-  assert.deepEqual(await evaluate("window.nicode.decideSessionApproval('default', document.querySelector('.chat-page').dataset.sessionId, document.querySelector('.approval-popover').dataset.approvalId, 'denied')"), { accepted: true })
+  assert.deepEqual(await evaluate("window.minou.decideSessionApproval('default', document.querySelector('.chat-page').dataset.sessionId, document.querySelector('.approval-popover').dataset.approvalId, 'denied')"), { accepted: true })
   await until(() => heldUpdates.some(update => update.kind === "state" && update.control.phase === "idle"))
   await evaluate("document.querySelector('.approval-actions .settings-primary-button').click()")
   await until(() => evaluate("!document.querySelector('.approval-popover') && document.querySelector('.session-phase').textContent === '准备就绪'"))
@@ -214,7 +214,7 @@ async function main() {
   await until(() => autoReviews === 1 && evaluate("document.querySelector('.session-phase')?.textContent === '准备就绪'"))
   assert.equal(await evaluate("document.querySelector('[aria-label=\"对话权限\"]').value"), "auto")
   assert.equal(await evaluate("Boolean(document.querySelector('.approval-popover'))"), false)
-  const readSession = () => evaluate("window.nicode.getSessionData('default', document.querySelector('.chat-page').dataset.sessionId)")
+  const readSession = () => evaluate("window.minou.getSessionData('default', document.querySelector('.chat-page').dataset.sessionId)")
   const approvedData = await readSession()
   assert.equal(approvedData.events.some(event => event.type.startsWith("approval/")), false)
   assert.equal(approvedData.events.find(event => event.type === "tool/result").result.status, "success")

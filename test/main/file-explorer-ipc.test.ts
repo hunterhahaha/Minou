@@ -11,7 +11,7 @@ import { FILE_EXPLORER_CHANNELS as channels, type FileExplorerRoot } from "../..
 
 /** 使用真实临时目录及数据库，模拟两个窗口的请求与项目关联变更。 */
 async function main(): Promise<void> {
-  const temp = await mkdtemp(join(tmpdir(), "nicode-file-explorer-"))
+  const temp = await mkdtemp(join(tmpdir(), "minou-file-explorer-"))
   try {
     const workspace = join(temp, "workspace")
     const folder = join(workspace, "空 格")
@@ -23,7 +23,7 @@ async function main(): Promise<void> {
     await writeFile(join(outside, "secret.txt"), "outside")
     await symlink(outside, join(workspace, "escape"), process.platform === "win32" ? "junction" : "dir")
     await symlink(folder, join(workspace, "alias"), process.platform === "win32" ? "junction" : "dir")
-    await writeFile(join(folder, "read.txt"), "NiCode 文件")
+    await writeFile(join(folder, "read.txt"), "Minou 文件")
     await writeFile(join(workspace, "binary.dat"), new Uint8Array([0, 255]))
     await writeFile(join(workspace, "icon.PNG"), new Uint8Array([1, 2, 3]))
     const limits = [["large.txt", 1], ["large.png", 16], ["large.pdf", 32]] as const
@@ -55,7 +55,7 @@ async function main(): Promise<void> {
       ["binary.dat", "icon.PNG", "large.pdf", "large.png", "large.txt", "空 格"])
     assert.deepEqual(await invoke(channels.list, root.handle, "空 格/"), [{ name: "read.txt", kind: "file" }])
     assert.deepEqual(await invoke(channels.read, root.handle, "空 格/read.txt"),
-      { size: Buffer.byteLength("NiCode 文件"), kind: "text", text: "NiCode 文件" })
+      { size: Buffer.byteLength("Minou 文件"), kind: "text", text: "Minou 文件" })
     const [found] = await invoke(channels.search, projectId, "READ.TXT")
     assert.deepEqual(found, { projectId, directoryPath: workspace, relativePath: "空 格/read.txt", absolutePath: await realpath(join(folder, "read.txt")), name: "read.txt" })
     assert.deepEqual(await invoke(channels.search, projectId, "secret.txt"), [], "搜索不跟随越界链接")

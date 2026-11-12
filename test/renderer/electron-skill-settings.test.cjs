@@ -72,7 +72,7 @@ async function assertProtected() {
 /** @returns 所有真实页面场景及截图完成。 @throws AssertionError 页面行为不符。 */
 async function main() {
   registerWindowIpcHandlers(ipcMain, BrowserWindow)
-  profile = await mkdtemp(join(tmpdir(), "nicode-electron-skill-"))
+  profile = await mkdtemp(join(tmpdir(), "minou-electron-skill-"))
   app.setPath("userData", join(profile, "electron-user-data"))
   paths = await initializeConfigFiles(profile)
   for (const [id, name] of [[PROJECT, "测试项目"], [EMPTY, "空技能项目"]]) {
@@ -117,6 +117,27 @@ async function main() {
   await until(() => evaluate(`Boolean(document.querySelector('.settings-dialog'))`))
   assert.deepEqual(reads, {}, "打开模型设置不请求技能")
   await clickText("技能"); await idle()
+  const layout = await evaluate(`(() => {
+    const dialog = document.querySelector('.settings-dialog')
+    const nav = dialog.querySelector('.settings-dialog-nav').getBoundingClientRect()
+    const content = dialog.querySelector('.settings-dialog-content')
+    const detail = content.getBoundingClientRect()
+    const closeButton = dialog.querySelector('.settings-dialog-close')
+    const close = closeButton.getBoundingClientRect()
+    const bounds = dialog.getBoundingClientRect()
+    return {
+      navTop: nav.top - bounds.top, detailTop: detail.top - bounds.top, seam: detail.left - nav.right,
+      navTitle: dialog.querySelector('.settings-nav-label').textContent,
+      closeOverlaysDetail: getComputedStyle(closeButton).position === 'absolute' &&
+        close.left >= detail.left && close.right < bounds.right && getComputedStyle(content).paddingBlockStart === '0px',
+      rowHeights: [...dialog.querySelectorAll('.settings-nav-option')].map(button => button.offsetHeight),
+      expectedRowHeight: matchMedia('(max-width: 480px), (pointer: coarse)').matches ? 44 : 30,
+    }
+  })()`)
+  assert.ok(Math.abs(layout.navTop) <= 1 && Math.abs(layout.detailTop) <= 1 && Math.abs(layout.seam) <= 1 &&
+    layout.navTitle === "设置" && layout.closeOverlaysDetail &&
+    layout.rowHeights.length === 6 && layout.rowHeights.every(height => height === layout.expectedRowHeight),
+  `设置弹窗双栏、关闭按钮与紧凑导航：${JSON.stringify(layout)}`)
   assert.deepEqual(reads, { global: 1 })
   assert.equal(await evaluate(`document.querySelectorAll('.skill-entry').length`), 3)
   assert.equal(await evaluate(`document.querySelector('.skill-settings').textContent.includes('项目列表加载失败')`), true)
@@ -195,14 +216,59 @@ async function main() {
 
   await evaluate(`new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`)
   await writeFile(join(process.cwd(), "dist/skill-settings-wide.png"), (await window.webContents.capturePage()).toPNG())
+  for (const width of [800, 684]) {
+    window.setContentSize(width, 680)
+    await until(() => evaluate(`innerWidth === ${width}`))
+    assert.equal(await evaluate(`document.querySelector('.settings-dialog-nav').offsetWidth`), 192, "弹窗左栏保持固定宽度")
+  }
+  await evaluate(`window.settingsPanelBeforeResize = document.querySelector('.skill-settings')`)
+  window.setContentSize(680, 680)
+  await until(() => evaluate(`innerWidth === 680 && Boolean(document.querySelector('.settings-page [role="main"]'))`))
   window.setContentSize(420, 680)
   await until(() => evaluate(`innerWidth === 420`))
   await evaluate(`new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`)
+  const narrowLayout = await evaluate(`(() => {
+    const page = document.querySelector('.settings-page [role="main"]')
+    const titlebar = document.querySelector('.titlebar')
+    const trigger = titlebar.querySelector('.settings-titlebar-menu')
+    const bounds = page.getBoundingClientRect()
+    return {
+      pageNavigation: !page.querySelector('.settings-dialog-nav') && !page.hasAttribute('aria-modal') &&
+        document.querySelector('.workspace-shell').inert && trigger.getAttribute('aria-expanded') === 'false' &&
+        !titlebar.querySelector('.titlebar-brand, .sidebar-toggle, .titlebar-search, .titlebar-running'),
+      preserved: window.settingsPanelBeforeResize === page.querySelector('.skill-settings'),
+      viewportGaps: [bounds.top - titlebar.getBoundingClientRect().bottom, bounds.width - innerWidth, bounds.bottom - innerHeight],
+    }
+  })()`)
+  assert.ok(narrowLayout.pageNavigation && narrowLayout.preserved && narrowLayout.viewportGaps.every(gap => Math.abs(gap) <= 1),
+    `窄窗铺满顶栏下方并保留当前设置分区：${JSON.stringify(narrowLayout)}`)
   assert.equal(await evaluate(`(() => { const panel = document.querySelector('[aria-label="技能设置"]'); return panel.scrollWidth <= panel.clientWidth + 1 && [...document.querySelectorAll('.skill-entry')].every(node => node.scrollWidth <= node.clientWidth + 1) })()`), true, "窄窗口内容不横向溢出")
   await writeFile(join(process.cwd(), "dist/skill-settings-narrow.png"), (await window.webContents.capturePage()).toPNG())
+  await click('.settings-titlebar-menu')
+  await until(() => evaluate(`document.querySelector('.settings-drawer-layer').dataset.open === 'true' &&
+    document.querySelector('.settings-drawer [aria-current="page"]').textContent === '技能'`))
+  await until(() => evaluate(`Math.abs(document.querySelector('.settings-drawer').getBoundingClientRect().left) < 0.25`))
+  await evaluate(`new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`)
+  await writeFile(join(process.cwd(), "dist/skill-settings-drawer.png"), (await window.webContents.capturePage()).toPNG())
+  await click('[aria-label="收起设置导航"]')
+  await until(() => evaluate(`document.querySelector('.settings-drawer-layer').dataset.open === 'false'`))
+  await click('.settings-titlebar-menu')
+  await click('.settings-drawer-layer')
+  await until(() => evaluate(`document.querySelector('.settings-drawer-layer').dataset.open === 'false'`))
+  await click('.settings-titlebar-menu')
+  await evaluate(`window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))`)
+  await until(() => evaluate(`document.querySelector('.settings-drawer-layer').dataset.open === 'false'`))
+  await click('.settings-titlebar-menu')
+  await evaluate(`[...document.querySelectorAll('.settings-drawer .settings-nav-option')].find(button => button.textContent === '通用').click()`)
+  await until(() => evaluate(`Boolean(document.querySelector('[aria-label="通用设置"]'))`))
+  window.setContentSize(684, 680)
+  await until(() => evaluate(`document.querySelector('.settings-dialog-nav [aria-current="page"]')?.textContent === '通用'`))
+  window.setContentSize(420, 680)
+  await until(() => evaluate(`document.querySelector('.settings-drawer [aria-current="page"]')?.textContent === '通用' &&
+    document.querySelector('.settings-drawer-layer').dataset.open === 'false'`))
   await evaluate(`window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))`)
   await until(() => evaluate(`!document.querySelector('.settings-dialog')`))
-  assert.equal(await evaluate(`typeof require === 'undefined' && typeof window.nicode.listSkills === 'function'`), true)
+  assert.equal(await evaluate(`typeof require === 'undefined' && typeof window.minou.listSkills === 'function'`), true)
   assert.ok(rendererErrors.every((message) => message.includes("加载项目列表失败")), JSON.stringify(rendererErrors))
   console.log("electron-skill-settings: 按需请求计数、持久缓存、作用域隔离、启停确认、错误重试、忙碌保护、键盘及窄窗口通过")
 }

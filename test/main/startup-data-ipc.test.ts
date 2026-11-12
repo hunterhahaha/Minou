@@ -52,7 +52,7 @@ class FakeIpcMain implements IpcMainHandlePort {
  * @throws Error 当任一断言失败时抛出。
  */
 async function main(): Promise<void> {
-  const directory = await mkdtemp(join(tmpdir(), "nicode-startup-data-ipc-"))
+  const directory = await mkdtemp(join(tmpdir(), "minou-startup-data-ipc-"))
   try {
     const workspaceDatabasePath = join(directory, "workspace.sqlite")
     const providerDatabasePath = join(directory, "providers.sqlite")
@@ -75,7 +75,7 @@ async function main(): Promise<void> {
     }
     saveProjectWorkspace(workspaceDatabasePath, {
       version: 1, id: "00000000-0000-4000-8000-000000000007", name: "Project", updatedAt: "2026-09-04T00:00:00Z",
-      directories: ["G:\\code\\NiCode", "D:\\other"], sessions: [firstSession, secondSession],
+      directories: ["G:\\code\\Minou", "D:\\other"], sessions: [firstSession, secondSession],
     })
     saveDefaultWorkspace(workspaceDatabasePath, { version: 1, sessions: [secondSession, firstSession] })
     saveProvider(providerDatabasePath, {
@@ -95,7 +95,7 @@ async function main(): Promise<void> {
 
     assert.deepEqual(ipc.invoke(STARTUP_DATA_IPC_CHANNELS.listProjects), [{
       projectId: "00000000-0000-4000-8000-000000000007", name: "Project", updatedAt: "2026-09-04T00:00:00Z",
-      directories: ["G:\\code\\NiCode", "D:\\other"],
+      directories: ["G:\\code\\Minou", "D:\\other"],
       sessions: [
         { sessionId: "session-2", name: "Second", updatedAt: "2026-09-03T00:00:00Z" },
         { sessionId: "session-1", name: "First", updatedAt: "2026-09-02T00:00:00Z" },

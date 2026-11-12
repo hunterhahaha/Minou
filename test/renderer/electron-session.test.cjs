@@ -67,7 +67,7 @@ async function copyScreenshot(name) {
 /** @returns 真实 Renderer 操作与缓存命中验证完成。 */
 async function main() {
   registerWindowIpcHandlers(ipcMain, BrowserWindow)
-  profile = await mkdtemp(join(tmpdir(), "nicode-renderer-electron-"))
+  profile = await mkdtemp(join(tmpdir(), "minou-renderer-electron-"))
   app.setPath("userData", join(profile, "electron"))
   const paths = await initializeConfigFiles(profile)
   await app.whenReady()
@@ -797,7 +797,7 @@ async function main() {
     await until(() => views().some((view) => view.getVisible() && view.webContents.getTitle() === "本机网页/"))
     const first = views()[0]
     const contents = first.webContents
-    assert.equal(await contents.executeJavaScript("typeof window.nicodeBrowser"), "undefined")
+    assert.equal(await contents.executeJavaScript("typeof window.minouBrowser"), "undefined")
     assert.equal(await contents.executeJavaScript("window.open('file:///blocked') === null", true), true)
     assert.equal(await contents.executeJavaScript("window.open('/popup') !== null", true), true)
     await until(() => views().some((view) => view !== first && view.webContents.getTitle() === "本机网页/popup"))
@@ -806,7 +806,7 @@ async function main() {
     if (!popup.getVisible()) await evaluate("document.querySelector('.chat-browser-tab:last-child button').click()")
     await until(() => popup.getVisible())
     assert.equal(await popup.webContents.executeJavaScript("window.opener.location.pathname"), "/")
-    assert.equal(await popup.webContents.executeJavaScript("typeof window.nicodeBrowser"), "undefined")
+    assert.equal(await popup.webContents.executeJavaScript("typeof window.minouBrowser"), "undefined")
     await popup.webContents.executeJavaScript("setTimeout(() => window.close(), 100); true")
     await until(() => views().length === 1 && first.getVisible())
     await contents.executeJavaScript(`(() => {
@@ -972,7 +972,7 @@ async function main() {
   await evaluate("location.hash = " + JSON.stringify(route))
   await until(() => evaluate(`document.querySelectorAll('.turn-process').length === 3`))
   assert.equal(historyQueries, beforeReturn, "终态展示夹具与返回已有对话均应命中缓存")
-  assert.equal(await evaluate(`Boolean(window.nicode.onSessionUpdate) && typeof require === 'undefined'`), true)
+  assert.equal(await evaluate(`Boolean(window.minou.onSessionUpdate) && typeof require === 'undefined'`), true)
   await evaluate(`new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`)
   const screenshotPath = join(process.cwd(), "dist/electron-session-preview.png")
   await writeFile(screenshotPath, (await window.webContents.capturePage()).toPNG())
@@ -1056,7 +1056,7 @@ async function verifyComposerFiles(paths) {
   try { await until(() => result("main.ts")) }
   catch (error) {
     const editorState = await evaluate(`({ html: ${editor}.innerHTML, focused: document.activeElement === ${editor}, selection: window.getSelection().anchorOffset, menu: document.querySelector('.composer-file-menu')?.innerText })`)
-    const files = await evaluate(`window.nicodeBrowser.searchProjectFiles(${JSON.stringify(projectId)}, 'main')`).catch(String)
+    const files = await evaluate(`window.minouBrowser.searchProjectFiles(${JSON.stringify(projectId)}, 'main')`).catch(String)
     throw new Error(JSON.stringify({ editorState, files }), { cause: error })
   }
   await copyScreenshot("composer-files-menu-light")
@@ -1115,7 +1115,7 @@ async function verifyComposerFiles(paths) {
   await evaluate("document.querySelector('.new-chat-composer .send-button').click()")
   await until(() => evaluate("document.querySelectorAll('.user-bubble .file-reference-chip').length === 2"))
   const expected = `检查 ${mainPath} 和 ${configPath} \n普通文本 dev@example.test 和 @literal。`
-  const stored = await evaluate(`window.nicode.getSessionData(${JSON.stringify(projectId)}, document.querySelector('.chat-page').dataset.sessionId)`)
+  const stored = await evaluate(`window.minou.getSessionData(${JSON.stringify(projectId)}, document.querySelector('.chat-page').dataset.sessionId)`)
   const message = stored.events.find((event) => event.type === "user/message").message
   assert.equal(message.content[0].text, expected)
   assert.deepEqual(message.fileReferences.map(({ absolutePath, offset }) => [absolutePath, offset]),

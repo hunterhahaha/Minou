@@ -215,7 +215,7 @@ function transaction<T>(db: DatabaseSync, operation: () => T): T {
 
 /**
  * 缺失时创建空 Provider 数据库；已有数据库校验 V3 版本与必需列约束，不执行迁移。
- * @param databasePath `.nicode/providers.sqlite` 的绝对路径。
+ * @param databasePath `.minou/providers.sqlite` 的绝对路径。
  * @throws Error 当路径无效、目标不是普通文件、已有结构不兼容或数据库无法创建时抛出。
  */
 export function initializeProviderDatabase(databasePath: string): void {

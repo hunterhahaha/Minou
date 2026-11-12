@@ -11,7 +11,7 @@ import { renderShell, renderTerminalInput } from "../src/render/process.ts"
  * @throws Error - 断言、临时存储或本机后端验证失败；顶层测试出口记录异常并设置失败退出码。
  */
 async function main(): Promise<void> {
-  const directory = await mkdtemp(join(tmpdir(), "nicode-output-"))
+  const directory = await mkdtemp(join(tmpdir(), "minou-output-"))
   try {
     const empty = new ToolOutputStore(directory).finish("empty")
     assert.deepEqual(empty, { output: "", totalBytes: 0, truncated: false })

@@ -235,7 +235,7 @@ export function ComposerInput(props: ComposerInputProps) {
     if (!mention || projectId === "default") return
     let latest = true
     const timer = setTimeout(() => {
-      void window.nicodeBrowser.searchProjectFiles(projectId, mention.query).then(
+      void window.minouBrowser.searchProjectFiles(projectId, mention.query).then(
         (files) => { if (latest) setResult({ mention, files }) },
         (error: unknown) => { if (latest) setResult({ mention, files: [], error: error instanceof Error ? error.message : String(error) }) },
       )

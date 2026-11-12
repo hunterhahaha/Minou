@@ -32,13 +32,13 @@ export type { WebSearchProviderConfig, WebSearchProviderDefinition, WebSearchPro
 
 /** 搜索服务商配置管理的固定通道，不暴露任意 IPC 调用。 */
 export const WEB_SEARCH_IPC_CHANNELS = {
-  listWebSearchProviderDefinitions: "nicode:web-search:definitions",
-  listWebSearchProviders: "nicode:web-search:list",
-  getWebSearchProvider: "nicode:web-search:get",
-  createWebSearchProvider: "nicode:web-search:create",
-  updateWebSearchProvider: "nicode:web-search:update",
-  deleteWebSearchProvider: "nicode:web-search:delete",
-  setActiveWebSearchProvider: "nicode:web-search:set-active",
+  listWebSearchProviderDefinitions: "minou:web-search:definitions",
+  listWebSearchProviders: "minou:web-search:list",
+  getWebSearchProvider: "minou:web-search:get",
+  createWebSearchProvider: "minou:web-search:create",
+  updateWebSearchProvider: "minou:web-search:update",
+  deleteWebSearchProvider: "minou:web-search:delete",
+  setActiveWebSearchProvider: "minou:web-search:set-active",
 } as const
 
 /**
@@ -89,36 +89,36 @@ function requireWebSearchConfirmation(value: unknown): void {
   if (value !== undefined) throw new TypeError("搜索配置操作确认无效。")
 }
 
-export const NICODE_PRELOAD_GLOBAL = "nicode"
+export const MINOU_PRELOAD_GLOBAL = "minou"
 
 /** 团队成员查询与独立更新通道。 */
 export const TEAM_SESSION_CHANNELS = {
-  list: "nicode:team:list-members",
-  subscribe: "nicode:team:subscribe-member",
-  unsubscribe: "nicode:team:unsubscribe-member",
-  update: "nicode:team:member-update",
+  list: "minou:team:list-members",
+  subscribe: "minou:team:subscribe-member",
+  unsubscribe: "minou:team:unsubscribe-member",
+  update: "minou:team:member-update",
 } as const
 
 export const SESSION_IPC_CHANNELS = {
-  startNewSession: "nicode:session:start-new",
-  continueSession: "nicode:session:continue",
-  enqueueSessionMessage: "nicode:session:enqueue-message",
-  stopSession: "nicode:session:stop",
-  getSessionData: "nicode:session:get-data",
-  update: "nicode:session:update",
-  renameSession: "nicode:session:rename",
-  exportSessionMarkdown: "nicode:session:export-markdown",
-  updateSessionSettings: "nicode:session:update-settings",
-  decideSessionApproval: "nicode:session:decide-approval",
+  startNewSession: "minou:session:start-new",
+  continueSession: "minou:session:continue",
+  enqueueSessionMessage: "minou:session:enqueue-message",
+  stopSession: "minou:session:stop",
+  getSessionData: "minou:session:get-data",
+  update: "minou:session:update",
+  renameSession: "minou:session:rename",
+  exportSessionMarkdown: "minou:session:export-markdown",
+  updateSessionSettings: "minou:session:update-settings",
+  decideSessionApproval: "minou:session:decide-approval",
 } as const
 
 /** 首批 Router 与 Workspace 事件提交后的启动确认通道。 */
-export const START_TEAM_SESSION_CHANNEL = "nicode:session:start-team"
+export const START_TEAM_SESSION_CHANNEL = "minou:session:start-team"
 
 /** 受信任 Renderer 读取与保存全局唤醒参数的固定通道。 */
 export const TEAM_WAKEUP_CHANNELS = {
-  read: "nicode:team:get-wakeup-config",
-  update: "nicode:team:set-wakeup-config",
+  read: "minou:team:get-wakeup-config",
+  update: "minou:team:set-wakeup-config",
 } as const
 
 /** 由主进程按持久化身份识别的会话角色。 */
@@ -166,49 +166,49 @@ export type { SessionSettingsPatch, SandboxMode }
 
 /** 启动页面数据查询使用的固定 IPC channel。 */
 export const STARTUP_DATA_IPC_CHANNELS = {
-  listProjects: "nicode:data:projects",
-  listDefaultSessions: "nicode:data:default-sessions",
-  listProviders: "nicode:data:providers",
+  listProjects: "minou:data:projects",
+  listDefaultSessions: "minou:data:default-sessions",
+  listProviders: "minou:data:providers",
 } as const
 
 /** Project 创建、目录与 Git 分支操作的固定 IPC channel。 */
 export const PROJECT_IPC_CHANNELS = {
-  selectDirectory: "nicode:project:select-directory",
-  createProject: "nicode:project:create",
-  renameProject: "nicode:project:rename",
-  addProjectDirectory: "nicode:project:add-directory",
-  removeProjectDirectory: "nicode:project:remove-directory",
-  listProjectGitBranches: "nicode:project:git-branches",
-  switchProjectGitBranch: "nicode:project:git-switch",
+  selectDirectory: "minou:project:select-directory",
+  createProject: "minou:project:create",
+  renameProject: "minou:project:rename",
+  addProjectDirectory: "minou:project:add-directory",
+  removeProjectDirectory: "minou:project:remove-directory",
+  listProjectGitBranches: "minou:project:git-branches",
+  switchProjectGitBranch: "minou:project:git-switch",
 } as const
 
 /** 供应商创建和修改的固定 IPC channel。 */
 export const PROVIDER_IPC_CHANNELS = {
-  listCompatibleProviders: "nicode:provider:compatible-list",
-  createCompatibleProvider: "nicode:provider:create-compatible",
-  createCustomProvider: "nicode:provider:create-custom",
-  updateProvider: "nicode:provider:update",
-  deleteProvider: "nicode:provider:delete",
-  updateApiKey: "nicode:provider:update-api-key",
-  createModel: "nicode:provider:create-model",
-  updateModel: "nicode:provider:update-model",
-  deleteModel: "nicode:provider:delete-model",
-  setDefaultModel: "nicode:provider:set-default-model",
+  listCompatibleProviders: "minou:provider:compatible-list",
+  createCompatibleProvider: "minou:provider:create-compatible",
+  createCustomProvider: "minou:provider:create-custom",
+  updateProvider: "minou:provider:update",
+  deleteProvider: "minou:provider:delete",
+  updateApiKey: "minou:provider:update-api-key",
+  createModel: "minou:provider:create-model",
+  updateModel: "minou:provider:update-model",
+  deleteModel: "minou:provider:delete-model",
+  setDefaultModel: "minou:provider:set-default-model",
 } as const
 
 /** MCP 配置与运行状态操作的固定 channel。 */
 export const MCP_IPC_CHANNELS = {
-  listMcpServers: "nicode:mcp:list",
-  createMcpServer: "nicode:mcp:create",
-  updateMcpServer: "nicode:mcp:update",
-  deleteMcpServer: "nicode:mcp:delete",
-  reloadMcpServers: "nicode:mcp:reload",
+  listMcpServers: "minou:mcp:list",
+  createMcpServer: "minou:mcp:create",
+  updateMcpServer: "minou:mcp:update",
+  deleteMcpServer: "minou:mcp:delete",
+  reloadMcpServers: "minou:mcp:reload",
 } as const
 
 /** 单个来源的技能管理 channel；不参与启动数据预取。 */
 export const SKILL_IPC_CHANNELS = {
-  listSkills: "nicode:skill:list",
-  setSkillEnabled: "nicode:skill:set-enabled",
+  listSkills: "minou:skill:list",
+  setSkillEnabled: "minou:skill:set-enabled",
 } as const
 
 /** 设置页面可序列化快照；不包含 SDK 对象或从宿主环境读取的 Bearer Token。 */
@@ -417,8 +417,8 @@ export interface StoppedSessionResponse {
   sessionId: string
 }
 
-/** 暴露为 `window.nicode` 的 Session 命令与启动页面查询。 */
-export interface NiCodePreloadApi {
+/** 暴露为 `window.minou` 的 Session 命令与启动页面查询。 */
+export interface MinouPreloadApi {
   /** @returns 不含用户配置的预置目录。 @throws Error 查询或返回值校验失败。 */
   listWebSearchProviderDefinitions(): Promise<WebSearchProviderDefinition[]>
   /** @returns 全部无凭据摘要。 @throws Error 查询或返回值校验失败。 */
@@ -833,9 +833,9 @@ export interface ContextBridgePort {
 /**
  * 创建只调用固定 channel 并检查业务返回值的冻结 API，不暴露 ipcRenderer 本体。
  * @param ipcRenderer preload 持有的 IPC 调用与可选事件监听端口。
- * @returns Renderer 使用的 NiCode 窄接口；构造时不发起请求。
+ * @returns Renderer 使用的 Minou 窄接口；构造时不发起请求。
  */
-export function createSessionApi(ipcRenderer: IpcRendererInvokePort): NiCodePreloadApi {
+export function createSessionApi(ipcRenderer: IpcRendererInvokePort): MinouPreloadApi {
   return Object.freeze({
     /** @returns 已检查的预置目录。 @throws Error IPC 或结构无效。 */
     async listWebSearchProviderDefinitions(): Promise<WebSearchProviderDefinition[]> {
@@ -882,21 +882,21 @@ export function createSessionApi(ipcRenderer: IpcRendererInvokePort): NiCodePrel
       if (data.projectId !== projectId || data.sessionId !== sessionId) throw new TypeError("历史结果属于其他对话")
       return data
     },
-    /** @see NiCodePreloadApi.listTeamMembers */
+    /** @see MinouPreloadApi.listTeamMembers */
     async listTeamMembers(projectId: string, routerId: string) {
       const ids = await ipcRenderer.invoke(TEAM_SESSION_CHANNELS.list, projectId, routerId)
       if (!Array.isArray(ids) || !ids.every((id) => typeof id === "string" && id.length > 0)) throw new TypeError("团队成员列表无效")
       return ids
     },
-    /** @see NiCodePreloadApi.subscribeTeamSession */
+    /** @see MinouPreloadApi.subscribeTeamSession */
     async subscribeTeamSession(projectId: string, routerId: string, sessionId: string) {
       await ipcRenderer.invoke(TEAM_SESSION_CHANNELS.subscribe, projectId, routerId, sessionId)
     },
-    /** @see NiCodePreloadApi.unsubscribeTeamSession */
+    /** @see MinouPreloadApi.unsubscribeTeamSession */
     async unsubscribeTeamSession(projectId: string, routerId: string, sessionId: string) {
       await ipcRenderer.invoke(TEAM_SESSION_CHANNELS.unsubscribe, projectId, routerId, sessionId)
     },
-    /** @see NiCodePreloadApi.onTeamSessionUpdate */
+    /** @see MinouPreloadApi.onTeamSessionUpdate */
     onTeamSessionUpdate(listener: (update: SessionUpdate) => void) {
       if (!ipcRenderer.on || !ipcRenderer.removeListener) return () => {}
       const receive = (_event: unknown, value: unknown): void => { listener(requireSessionUpdate(value)) }
@@ -1347,9 +1347,9 @@ export function createSessionApi(ipcRenderer: IpcRendererInvokePort): NiCodePrel
 export function exposeSessionApi(
   contextBridge: ContextBridgePort,
   ipcRenderer: IpcRendererInvokePort,
-): NiCodePreloadApi {
+): MinouPreloadApi {
   const api = createSessionApi(ipcRenderer)
-  contextBridge.exposeInMainWorld(NICODE_PRELOAD_GLOBAL, api)
+  contextBridge.exposeInMainWorld(MINOU_PRELOAD_GLOBAL, api)
   return api
 }
 

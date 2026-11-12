@@ -35,7 +35,7 @@ function assertError(result: WebSearchResult | AppError, code: string): void {
  * @throws Error 本地服务、工具或断言失败。
  */
 async function main(): Promise<void> {
-  const directory = await mkdtemp(join(tmpdir(), "nicode-web-search-"))
+  const directory = await mkdtemp(join(tmpdir(), "minou-web-search-"))
   const database = join(directory, "web-search.sqlite")
   let route = "", method = "", body = "", header = "", attempts = 0
   let respond = (response: ServerResponse): void => { response.end(JSON.stringify({ items: [

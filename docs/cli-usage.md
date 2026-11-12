@@ -1,4 +1,4 @@
-# NiCode CLI 使用说明
+# Minou CLI 使用说明
 
 本文对应当前实现的 **Headless Agent Execution Protocol V1**。CLI 提供 `run` 命令：接收一个任务，执行现有 `runAgentLoop`，输出最终结果和可选的实时事件。它可以用于本地脚本、CI 或外部 Benchmark 调用。
 
@@ -6,24 +6,23 @@
 
 ## 1. 准备环境
 
-在 NiCode 仓库目录安装项目已有依赖并编译 CLI：
+在本地 Minou 仓库根目录安装项目已有依赖并编译 CLI：
 
 ```powershell
-Set-Location "G:\code\NiCode"
 npm ci
 npm run build:cli
 ```
 
 已有依赖时直接执行 `npm run build:cli` 即可。此命令运行 TypeScript 编译器，产物入口为 `dist/src/cli/main.js`，不启动 Electron 或 Vite。使用完整源码编译产物和项目依赖运行，不能只复制 `main.js` 一个文件。
 
-运行环境需要支持项目使用的 `node:sqlite`；本文命令以 Node.js 24 为例。Shell 和 Terminal 工具使用 NiCode 的 `resources/powershell` 中的 PowerShell 7。Windows 的入口是 `pwsh.exe`，macOS 和 Linux 的入口是 `pwsh`。
+运行环境需要支持项目使用的 `node:sqlite`；本文命令以 Node.js 24 为例。Shell 和 Terminal 工具使用 Minou 的 `resources/powershell` 中的 PowerShell 7。Windows 的入口是 `pwsh.exe`，macOS 和 Linux 的入口是 `pwsh`。
 
-CLI 复用当前用户的 NiCode 配置。启动时使用 `USERPROFILE`，未设置时使用 Node 的用户主目录，在其下初始化或检查 `.nicode`。运行任务前，先通过 NiCode 的模型配置功能保存 Provider、模型、协议参数和 API Key。首次创建的 Provider 数据库为空，CLI 不会自动添加模型或凭据，也没有配置模型的子命令。
+CLI 复用当前用户的 Minou 配置。启动时使用 `USERPROFILE`，未设置时使用 Node 的用户主目录，在其下初始化或检查 `.minou`。运行任务前，先通过 Minou 的模型配置功能保存 Provider、模型、协议参数和 API Key。首次创建的 Provider 数据库为空，CLI 不会自动添加模型或凭据，也没有配置模型的子命令。
 
 查看帮助不需要已配置模型：
 
 ```powershell
-node "G:\code\NiCode\dist\src\cli\main.js" run --help
+node ".\dist\src\cli\main.js" run --help
 ```
 
 ## 2. 快速开始：从任务文件运行
@@ -37,7 +36,7 @@ node "G:\code\NiCode\dist\src\cli\main.js" run --help
 确保任务文件、工作区和输出父目录已经存在，然后运行：
 
 ```powershell
-node "G:\code\NiCode\dist\src\cli\main.js" run `
+node ".\dist\src\cli\main.js" run `
   --prompt-file "G:\tasks\task.txt" `
   --workspace "G:\code\repo" `
   --max-steps 100 `
@@ -45,28 +44,28 @@ node "G:\code\NiCode\dist\src\cli\main.js" run `
   --output "G:\results\result.json"
 ```
 
-示例省略 `--model`，使用 NiCode 的有效默认模型。需要指定模型时，增加 `--model "configured-model-id"`；这里必须填写数据库中的稳定 `modelId`，不按展示名或 API 模型名称匹配。
+示例省略 `--model`，使用 Minou 的有效默认模型。需要指定模型时，增加 `--model "configured-model-id"`；这里必须填写数据库中的稳定 `modelId`，不按展示名或 API 模型名称匹配。
 
 以上为 PowerShell 命令，反引号用于续行，必须位于行末。也可以写成一行：
 
 ```powershell
-node "G:\code\NiCode\dist\src\cli\main.js" run --prompt-file "G:\tasks\task.txt" --workspace "G:\code\repo" --output "G:\results\result.json"
+node ".\dist\src\cli\main.js" run --prompt-file "G:\tasks\task.txt" --workspace "G:\code\repo" --output "G:\results\result.json"
 ```
 
 默认 stdout 输出一份最终 JSON，同时将结果写入 `--output` 指定的文件。诊断信息输出到 stderr。
 
-### 使用 `nicode` 命令
+### 使用 `minou` 命令
 
-`package.json` 已将 `bin.nicode` 指向同一个编译入口。需要在本机使用短命令时，可以在仓库目录编译后执行：
+`package.json` 已将 `bin.minou` 指向同一个编译入口。需要在本机使用短命令时，可以在仓库目录编译后执行：
 
 ```powershell
 npm link
-nicode run --prompt-file "G:\tasks\task.txt" --workspace "G:\code\repo" --output "G:\results\result.json"
+minou run --prompt-file "G:\tasks\task.txt" --workspace "G:\code\repo" --output "G:\results\result.json"
 ```
 
 `npm link` 会为当前环境建立命令链接；直接使用前面的 `node` 绝对路径调用无需这一步。源码更新后，需要重新编译。
 
-仓库内也可以使用 `npm run cli -- run ...` 手动启动。外部程序需要解析 stdout 时，直接执行 `node` 或已链接的 `nicode`，避免 npm 自己的脚本提示混入输出。
+仓库内也可以使用 `npm run cli -- run ...` 手动启动。外部程序需要解析 stdout 时，直接执行 `node` 或已链接的 `minou`，避免 npm 自己的脚本提示混入输出。
 
 ## 3. 使用 Request JSON
 
@@ -106,7 +105,7 @@ nicode run --prompt-file "G:\tasks\task.txt" --workspace "G:\code\repo" --output
 调用方式：
 
 ```powershell
-node "G:\code\NiCode\dist\src\cli\main.js" run `
+node ".\dist\src\cli\main.js" run `
   --request "G:\tasks\request.json" `
   --output "G:\results\result.json" `
   --format jsonl
@@ -142,7 +141,7 @@ node "G:\code\NiCode\dist\src\cli\main.js" run `
 | `--timeout <seconds>` | `limits.timeout_seconds` | 默认 `1800`，必须为正整数且不超过 `2147483` 秒。 |
 | `--output <path>` | 无 | 两种模式均必填，指定最终结果文件。父目录必须已存在。 |
 | `--format <json\|jsonl>` | 无 | 两种模式共用，默认 `json`，控制 stdout 格式。 |
-| `--help` | 无 | 使用 `nicode run --help` 或 `nicode --help` 查看帮助。 |
+| `--help` | 无 | 使用 `minou run --help` 或 `minou --help` 查看帮助。 |
 
 列表参数使用逗号分隔，不使用空格分隔或重复传参：
 
@@ -185,7 +184,7 @@ JSON 中建议使用 `G:/code/repo` 这样的正斜杠路径；使用反斜杠�
 例如只关闭 Skill 和 Memory，保留 MCP：
 
 ```powershell
-node "G:\code\NiCode\dist\src\cli\main.js" run --prompt-file "G:\tasks\task.txt" --workspace "G:\code\repo" --isolate skill,memory --output "G:\results\result.json"
+node ".\dist\src\cli\main.js" run --prompt-file "G:\tasks\task.txt" --workspace "G:\code\repo" --isolate skill,memory --output "G:\results\result.json"
 ```
 
 这些开关只禁用对应模块。即使三个模块全部关闭，CLI 仍会读取和检查用户的普通配置、模型、凭据，并初始化运行所需的配置文件。它们不代表使用一份完全空白的用户配置。
@@ -235,7 +234,7 @@ CLI 沿用现有权限规则，不等待 UI 审批。权限判断需要审批时
 
 ## 7. 单次 MCP 配置
 
-通过 `--mcp-config` 或 Request 的 `mcp_config` 指定 JSON 文件。文件必须包含 `mcpServers` 数组，数组条目沿用当前 NiCode MCP 配置结构。
+通过 `--mcp-config` 或 Request 的 `mcp_config` 指定 JSON 文件。文件必须包含 `mcpServers` 数组，数组条目沿用当前 Minou MCP 配置结构。
 
 Streamable HTTP 示例：
 
@@ -274,7 +273,7 @@ stdio 示例：
 相应调用：
 
 ```powershell
-node "G:\code\NiCode\dist\src\cli\main.js" run `
+node ".\dist\src\cli\main.js" run `
   --prompt-file "G:\tasks\task.txt" `
   --workspace "G:\code\repo" `
   --mcp-config "G:\tasks\mcp-servers.json" `
@@ -309,7 +308,7 @@ MCP 保留现有 Catalog、搜索、载入预算、Schema 校验和调用逻辑�
     "name": "api-model-name",
     "reasoningLevel": "medium"
   },
-  "record_directory": "C:\\Users\\example\\.nicode\\logs\\cli\\5e800d84-7eef-4473-a0b5-a89d8180d863",
+  "record_directory": "C:\\Users\\example\\.minou\\logs\\cli\\5e800d84-7eef-4473-a0b5-a89d8180d863",
   "metrics": {
     "steps": 2,
     "tool_calls": 1,
@@ -362,7 +361,7 @@ Usage 中，`input_tokens` 是未缓存输入；`cache_read_tokens`、`cache_wri
 使用 `--format jsonl` 时，stdout 每行输出一个 JSON 对象，最终结果仍写入 `--output`。例如将事件和诊断分别保存：
 
 ```powershell
-node "G:\code\NiCode\dist\src\cli\main.js" run `
+node ".\dist\src\cli\main.js" run `
   --request "G:\tasks\request.json" `
   --output "G:\results\result.json" `
   --format jsonl `
@@ -432,7 +431,7 @@ $runExitCode
 运行记录默认保存在当前用户主目录下：
 
 ```text
-.nicode/
+.minou/
   logs/
     cli/
       <session_id>/

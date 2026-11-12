@@ -31,12 +31,12 @@ async function until(condition, description) {
 
 /** @returns 已完成各进程及隔离用户目录的清理。 */
 async function main() {
-  const profile = await mkdtemp(join(tmpdir(), "nicode-tray-test-"))
+  const profile = await mkdtemp(join(tmpdir(), "minou-tray-test-"))
   try {
     const electron = require("electron")
     await runChild(electron, "primary", profile)
     await runChild(electron, "restart", profile)
-    await writeFile(join(profile, ".nicode", "desktop-settings.json"), JSON.stringify({ closeBehavior: "tray" }))
+    await writeFile(join(profile, ".minou", "desktop-settings.json"), JSON.stringify({ closeBehavior: "tray" }))
     await runChild(electron, "fallback", profile)
     console.log("electron-tray.test.cjs: 托盘、单实例、窗口恢复、偏好保存及退出通过")
   } finally {
@@ -49,7 +49,7 @@ async function main() {
 async function exercise(mode, profile) {
   const { app, BrowserWindow, Menu, Tray } = require("electron")
   process.env.USERPROFILE = profile
-  delete process.env.NICODE_RENDERER_URL
+  delete process.env.MINOU_RENDERER_URL
   app.setPath("userData", profile)
 
   if (mode === "secondary") {
@@ -64,7 +64,7 @@ async function exercise(mode, profile) {
   let menu
   const setToolTip = Tray.prototype.setToolTip
   Tray.prototype.setToolTip = function (label) {
-    assert.equal(label, "NiCode")
+    assert.equal(label, "Minou")
     trays.push(this)
     if (mode === "fallback") throw new Error("注入托盘初始化失败")
     return setToolTip.call(this, label)
@@ -72,7 +72,7 @@ async function exercise(mode, profile) {
   const buildMenu = Menu.buildFromTemplate
   Menu.buildFromTemplate = function (template) {
     const result = buildMenu.call(this, template)
-    if (template[0]?.label === "显示 NiCode") menu = result
+    if (template[0]?.label === "显示 Minou") menu = result
     return result
   }
   const { SessionRuntimeGlobal } = require("../../dist/src/main/session-runtime-global.js")
@@ -95,7 +95,7 @@ async function exercise(mode, profile) {
   const window = await until(() => BrowserWindow.getAllWindows().find(candidate => candidate.isVisible()), "首窗显示")
   const evaluate = (source) => window.webContents.executeJavaScript(source)
   await until(() => evaluate('Boolean(document.querySelector(".window-close"))'), "工作台渲染")
-  const closeSettings = () => evaluate("window.nicodeWindow.getCloseSettings()")
+  const closeSettings = () => evaluate("window.minouWindow.getCloseSettings()")
   const tray = trays[0]
   assert.equal(trays.length, 1)
   const keepsTaskbar = mode === "fallback" || process.platform === "linux"
@@ -115,7 +115,7 @@ async function exercise(mode, profile) {
     return
   }
 
-  assert.deepEqual(menu.items.map(item => item.label), ["显示 NiCode", "退出 NiCode"])
+  assert.deepEqual(menu.items.map(item => item.label), ["显示 Minou", "退出 Minou"])
   assert.ok(!tray.isDestroyed())
   await evaluate(`(() => {
     const composer = document.querySelector('[aria-label="任务描述"]')
@@ -167,7 +167,7 @@ async function exercise(mode, profile) {
     select.value = "quit"
     select.dispatchEvent(new Event("change", { bubbles: true }))
   })()`)
-  const preferencePath = join(profile, ".nicode", "desktop-settings.json")
+  const preferencePath = join(profile, ".minou", "desktop-settings.json")
   await mkdir(preferencePath)
   const save = () => evaluate('document.querySelector(".desktop-settings-form button[type=submit]").click()')
   await save()
@@ -177,7 +177,7 @@ async function exercise(mode, profile) {
   await rmdir(preferencePath)
   await save()
   await until(async () => (await closeSettings()).behavior === "quit", "保存重试生效")
-  const results = await evaluate('Promise.all([window.nicodeWindow.setCloseBehavior("tray"), window.nicodeWindow.setCloseBehavior("quit")])')
+  const results = await evaluate('Promise.all([window.minouWindow.setCloseBehavior("tray"), window.minouWindow.setCloseBehavior("quit")])')
   assert.deepEqual(results.map(result => result.behavior), ["tray", "quit"], "并发请求按顺序保存")
   assert.deepEqual(JSON.parse(await readFile(preferencePath, "utf8")), { closeBehavior: "quit" })
   await evaluate('document.querySelector(".settings-dialog-close").click()')

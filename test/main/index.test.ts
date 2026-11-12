@@ -153,12 +153,12 @@ class FakeWindows implements MainWindowLifecyclePort {
  * @param test 使用绝对临时用户目录的测试函数。
  */
 async function withTempProfile(test: (profile: string) => Promise<void>): Promise<void> {
-  const profile = await mkdtemp(join(tmpdir(), "nicode-electron-startup-"))
+  const profile = await mkdtemp(join(tmpdir(), "minou-electron-startup-"))
   try {
-    await mkdir(join(profile, ".nicode"))
-    initializeSessionMetaDatabase(join(profile, ".nicode", "meta.sqlite"))
-    await initializeSessionEventDatabase(join(profile, ".nicode", "events.sqlite"), true)
-    const workspacePath = join(profile, ".nicode", "workspace.sqlite")
+    await mkdir(join(profile, ".minou"))
+    initializeSessionMetaDatabase(join(profile, ".minou", "meta.sqlite"))
+    await initializeSessionEventDatabase(join(profile, ".minou", "events.sqlite"), true)
+    const workspacePath = join(profile, ".minou", "workspace.sqlite")
     initializeWorkspaceDatabase(workspacePath)
     for (const id of [PROJECT_ID, "00000000-0000-4000-8000-000000000018"]) {
       saveProjectWorkspace(workspacePath, { version: 1, id, name: "测试项目", updatedAt: new Date().toISOString(), directories: [], sessions: [] })
@@ -214,11 +214,11 @@ function startupFixture(
     windows,
     teamWakeup: DEFAULT_TEAM_WAKEUP_CONFIG,
     configPaths: {
-      rootDir: join(profile, ".nicode"),
-      configPath: join(profile, ".nicode", "config.json"),
-      providerDatabasePath: join(profile, ".nicode", "providers.sqlite"),
-      workspaceDatabasePath: join(profile, ".nicode", "workspace.sqlite"),
-      metaDatabasePath: join(profile, ".nicode", "meta.sqlite"),
+      rootDir: join(profile, ".minou"),
+      configPath: join(profile, ".minou", "config.json"),
+      providerDatabasePath: join(profile, ".minou", "providers.sqlite"),
+      workspaceDatabasePath: join(profile, ".minou", "workspace.sqlite"),
+      metaDatabasePath: join(profile, ".minou", "meta.sqlite"),
     },
     platform: "win32",
     sessionRuntime: {
@@ -375,7 +375,7 @@ async function testCreatesProjectSessionRuntime(): Promise<void> {
       },
     })
     await startElectronApp(fixture.options)
-    await mkdir(join(profile, ".nicode", "sessions", String(PROJECT_ID)), { recursive: true })
+    await mkdir(join(profile, ".minou", "sessions", String(PROJECT_ID)), { recursive: true })
 
     const response = await fixture.ipcMain.invoke<StartedSessionResponse>(
       SESSION_IPC_CHANNELS.startNewSession,
@@ -386,7 +386,7 @@ async function testCreatesProjectSessionRuntime(): Promise<void> {
     assert.equal(
       (await stat(join(
         profile,
-        ".nicode",
+        ".minou",
         "sessions",
         String(PROJECT_ID),
         response.sessionId,
@@ -475,7 +475,7 @@ async function testResolvesContextForEachProject(): Promise<void> {
     })
     await startElectronApp(fixture.options)
     for (const projectId of projectIds) {
-      await mkdir(join(profile, ".nicode", "sessions", String(projectId)), { recursive: true })
+      await mkdir(join(profile, ".minou", "sessions", String(projectId)), { recursive: true })
     }
 
     await Promise.all(projectIds.map((projectId) => fixture.ipcMain.invoke(
@@ -612,7 +612,7 @@ async function testForwardsSessionCompletionFailure(): Promise<void> {
       onSessionCompletionFailure: resolveFailure,
     })
     await startElectronApp(fixture.options)
-    await mkdir(join(profile, ".nicode", "sessions", String(PROJECT_ID)), { recursive: true })
+    await mkdir(join(profile, ".minou", "sessions", String(PROJECT_ID)), { recursive: true })
     const response = await fixture.ipcMain.invoke<StartedSessionResponse>(
       SESSION_IPC_CHANNELS.startNewSession,
       PROJECT_ID,
@@ -626,7 +626,7 @@ async function testForwardsSessionCompletionFailure(): Promise<void> {
 /** 验证 Project Context 建立失败时不会创建 Session 目录。 */
 async function testRejectsProjectContextBeforeSessionCreation(): Promise<void> {
   await withTempProfile(async (profile) => {
-    const projectDirectory = join(profile, ".nicode", "sessions", String(PROJECT_ID))
+    const projectDirectory = join(profile, ".minou", "sessions", String(PROJECT_ID))
     await mkdir(projectDirectory, { recursive: true })
     const fixture = startupFixture(profile, {
       sessionRuntime: {

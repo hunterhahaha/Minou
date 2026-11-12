@@ -26,7 +26,7 @@ const MODEL: ModelRef = {
 
 /** 在隔离配置目录运行 Turn Adapter 断言。 */
 async function withPaths(test: (paths: ConfigFilePaths) => Promise<void>): Promise<void> {
-  const profile = await mkdtemp(join(tmpdir(), "nicode-turn-adapter-"))
+  const profile = await mkdtemp(join(tmpdir(), "minou-turn-adapter-"))
   try {
     await test(await initializeConfigFiles(profile))
   } finally {

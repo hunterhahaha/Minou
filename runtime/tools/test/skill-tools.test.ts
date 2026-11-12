@@ -25,7 +25,7 @@ function code(result: ToolResult) { return result.status === "error" ? result.er
  * @throws AssertionError 工具参数、权限、结果或错误处理不符合预期时抛出；文件系统错误也会向上传递。
  */
 async function main(): Promise<void> {
-  const root = await mkdtemp(join(tmpdir(), "nicode-skill-tools-"))
+  const root = await mkdtemp(join(tmpdir(), "minou-skill-tools-"))
   try {
     await mkdir(join(root, "skills", "review"), { recursive: true })
     const full = `---\ndescription: Review\n---\n${"正文".repeat(10000)}`

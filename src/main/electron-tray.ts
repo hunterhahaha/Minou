@@ -28,16 +28,16 @@ export class ElectronTray {
   start(): void {
     if (this.quitting || this.available) return
     const platform = process.platform
-    const fileName = platform === "win32" ? "nicode.ico" : platform === "darwin" ? "nicodeTemplate.png" : "nicode.png"
+    const iconPath = join(__dirname, "../../../resources/minou.png")
     try {
-      const icon = nativeImage.createFromPath(join(__dirname, "../../../resources/tray", fileName))
-      if (icon.isEmpty()) throw new Error(`托盘图标无法读取：${fileName}`)
-      const tray = new Tray(icon)
+      const icon = nativeImage.createFromPath(iconPath)
+      if (icon.isEmpty()) throw new Error(`托盘图标无法读取：${iconPath}`)
+      const tray = new Tray(icon.resize({ width: platform === "darwin" ? 18 : 32, quality: "best" }))
       this.tray = tray
-      tray.setToolTip("NiCode")
+      tray.setToolTip("Minou")
       const menu = Menu.buildFromTemplate([
-        { label: "显示 NiCode", click: () => this.showMainWindow() },
-        { label: "退出 NiCode", click: () => app.quit() },
+        { label: "显示 Minou", click: () => this.showMainWindow() },
+        { label: "退出 Minou", click: () => app.quit() },
       ])
       if (platform === "darwin") {
         tray.on("right-click", () => tray.popUpContextMenu(menu))
@@ -50,7 +50,7 @@ export class ElectronTray {
       app.once("will-quit", () => this.destroy())
     } catch (error) {
       this.destroy()
-      console.error("无法初始化 NiCode 系统托盘。", error)
+      console.error("无法初始化 Minou 系统托盘。", error)
     }
   }
 
@@ -91,7 +91,7 @@ export class ElectronTray {
    * @throws Error 应用正在退出或保存失败。
    */
   async setCloseBehavior(behavior: CloseBehavior): Promise<CloseSettings> {
-    if (this.quitting) throw new Error("NiCode 正在退出")
+    if (this.quitting) throw new Error("Minou 正在退出")
     const saved = await this.settings.save(behavior)
     return { ...this.getCloseSettings(), behavior: saved }
   }

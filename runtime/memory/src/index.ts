@@ -115,7 +115,7 @@ export class MemoryManager {
 
   /**
    * 绑定根目录，不创建目录或记忆文件。
-   * @param rootDirectory `.nicode` 的绝对路径。
+   * @param rootDirectory `.minou` 的绝对路径。
    * @param now 每条新增记忆的时钟，默认当前时间；测试可传固定时钟。
    * @throws Error 根目录不是绝对路径。
    */

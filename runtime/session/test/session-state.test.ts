@@ -51,10 +51,10 @@ function baseline(root: string): CurrentSessionBaseline {
  * @throws Error 断言或临时存储操作失败时传播，由测试入口报告失败。
  */
 async function session(root: string, projectId: string, sessionId: string) {
-  const sessionDirectory = join(root, ".nicode", "sessions", projectId, sessionId)
+  const sessionDirectory = join(root, ".minou", "sessions", projectId, sessionId)
   await mkdir(sessionDirectory, { recursive: true })
-  const databasePath = join(root, ".nicode", "events.sqlite")
-  const metaDatabasePath = join(root, ".nicode", "meta.sqlite")
+  const databasePath = join(root, ".minou", "events.sqlite")
+  const metaDatabasePath = join(root, ".minou", "meta.sqlite")
   const log = createFileSessionEventLog({ projectGroupId: projectId, sessionId, sessionDirectory, databasePath })
   await log.appendTurnStartAndUserMessage([
     { type: "turn/start", turn: 1, model: MODEL },
@@ -232,9 +232,9 @@ async function testErrorsAndRecovery(root: string): Promise<void> {
  * @throws Error 断言或临时存储操作失败时传播，由测试入口报告失败。
  */
 async function main(): Promise<void> {
-  const root = await mkdtemp(join(tmpdir(), "nicode-session-meta-"))
+  const root = await mkdtemp(join(tmpdir(), "minou-session-meta-"))
   try {
-    const configRoot = join(root, ".nicode")
+    const configRoot = join(root, ".minou")
     await mkdir(configRoot)
     await initializeSessionEventDatabase(join(configRoot, "events.sqlite"))
     const metaDatabasePath = join(configRoot, "meta.sqlite")

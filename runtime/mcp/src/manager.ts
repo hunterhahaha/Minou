@@ -292,7 +292,7 @@ export class MCPManager {
     const timer = setTimeout(() => controller.abort(), timeout)
     let changedDuringStartup = false
     try {
-      const client = new Client({ name: "NiCode", version: "0.1.0" })
+      const client = new Client({ name: "Minou", version: "0.1.0" })
       connection.client = client
       if (config.transport === "stdio") {
         const transport = new StdioClientTransport({ command: config.command, args: config.args, cwd: config.cwd, env: config.env, stderr: "pipe" })

@@ -642,7 +642,7 @@ export function isLoadedMCPTools(value: unknown): value is SessionLoadedMCPTool[
 /**
  * 按全局持久化目录定位 Session，并在该 Session 共用的状态队列中更新模型选择。
  *
- * 该函数使用 `%USERPROFILE%/.nicode/meta.sqlite`；
+ * 该函数使用 `%USERPROFILE%/.minou/meta.sqlite`；
  * 已经持有绑定式 {@link FileSessionState} 的 Runtime 应优先调用实例方法。
  * @param projectId Session 所属 Project UUID 或 default。
  * @param sessionId Session 目录身份。
@@ -663,12 +663,12 @@ export async function writeCurrentModel(
   }
   const paths = resolveStatePaths(resolve(
     userProfile,
-    ".nicode",
+    ".minou",
     "sessions",
     projectId,
     sessionId,
-  ), resolve(userProfile, ".nicode", "events.sqlite"),
-  resolve(userProfile, ".nicode", "meta.sqlite"), projectId, sessionId)
+  ), resolve(userProfile, ".minou", "events.sqlite"),
+  resolve(userProfile, ".minou", "meta.sqlite"), projectId, sessionId)
   await writeCurrentModelAtPaths(
     paths,
     getSessionStateQueue(paths.sessionDirectory),

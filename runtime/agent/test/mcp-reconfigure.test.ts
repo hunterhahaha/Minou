@@ -26,7 +26,7 @@ import type { SessionEvent } from "../../session/src/events.ts"
  * @throws Error 断言或场景执行失败时向上传播，测试入口记录错误并设置失败退出码。
  */
 async function main(): Promise<void> {
-  const root = await mkdtemp(join(tmpdir(), "nicode-mcp-reconfigure-"))
+  const root = await mkdtemp(join(tmpdir(), "minou-mcp-reconfigure-"))
   const fixture = await createReloadableServer([testTool("sample")])
   const paths = await initializeConfigFiles(root)
   const global = new SessionRuntimeGlobal(paths, new ToolRegistry(), new RenderRegistry())

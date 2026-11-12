@@ -1,14 +1,14 @@
 # PowerShell 本地安装说明
 
-NiCode 的 Shell 和终端工具使用此目录中的 PowerShell 7。仓库只跟踪本 README；PowerShell 可执行文件、依赖和子目录由本地安装脚本准备，不提交到 Git。
+Minou 的 Shell 和终端工具使用此目录中的 PowerShell 7。仓库只跟踪本 README；PowerShell 可执行文件、依赖和子目录由本地安装脚本准备，不提交到 Git。
 
 ## 安装（Windows x64）
 
-在 Windows PowerShell 或 PowerShell 终端中，先进入 NiCode 仓库根目录，再运行安装脚本：
+在 Windows PowerShell 或 PowerShell 终端中，先进入 Minou 仓库根目录，再运行安装脚本：
 
 ```powershell
-# 替换为你本机的 NiCode 仓库路径。
-cd G:\code\NiCode
+# 替换为你本机的 Minou 仓库路径。
+cd G:\code\Minou
 
 # 从仓库根目录运行 scripts 下的安装脚本。
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\setup-pwsh.ps1

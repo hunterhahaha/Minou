@@ -1,4 +1,4 @@
-import type { NiCodePreloadApi, SessionUpdate } from "../preload/session-api.ts"
+import type { MinouPreloadApi, SessionUpdate } from "../preload/session-api.ts"
 import { errorMessage, sessionKey, WorkspaceSessionState } from "./session-state.ts"
 
 /** 内置浏览器中的成员及其所属 Router。 */
@@ -20,7 +20,7 @@ export class TeamSessionState {
   private readonly listeners = new Map<string, Set<() => void>>()
 
   /** 发起订阅变更和历史查询的 preload 端口。 */
-  private readonly api: Pick<NiCodePreloadApi, "subscribeTeamSession" | "unsubscribeTeamSession" | "getSessionData">
+  private readonly api: Pick<MinouPreloadApi, "subscribeTeamSession" | "unsubscribeTeamSession" | "getSessionData">
 
   /** 原始事件和控制快照共用普通会话的合并和补查规则。 */
   readonly history: WorkspaceSessionState

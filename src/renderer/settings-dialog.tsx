@@ -1,7 +1,8 @@
 /** 设置弹窗：维护桌面偏好、模型、搜索服务、MCP 配置与技能。 */
 
 import { type FormEvent, useEffect, useId, useRef, useState } from "react"
-import { IconChevronRight, IconCpu, IconDeviceDesktop, IconHelpCircle, IconPlugConnected, IconPlus, IconSettings, IconSparkles, IconUsers, IconX } from "@tabler/icons-react"
+import { createPortal } from "react-dom"
+import { IconChevronRight, IconCpu, IconDeviceDesktop, IconHelpCircle, IconMenu2, IconPlugConnected, IconPlus, IconSettings, IconSparkles, IconUsers, IconX } from "@tabler/icons-react"
 import { useDialogFocus } from "./dialog-focus.tsx"
 
 import type {
@@ -22,10 +23,22 @@ import type { SkillSettingsProps } from "./skill-settings.tsx"
 import { DesktopSettings } from "./desktop-settings.tsx"
 import { TeamSettings } from "./team-settings.tsx"
 
+/** 两种设置布局共用的分区顺序、标签和图标。 */
+const settingsSections = [
+  { id: "general", label: "通用", Icon: IconDeviceDesktop },
+  { id: "team", label: "团队协作", Icon: IconUsers },
+  { id: "models", label: "模型", Icon: IconCpu },
+  { id: "mcp", label: "MCP", Icon: IconPlugConnected },
+  { id: "skills", label: "技能", Icon: IconSparkles },
+  { id: "search", label: "搜索服务", Icon: IconSettings },
+] as const
+
 /** 设置弹窗的关闭出口与工作区 Provider 列表同步出口。 */
 interface SettingsDialogProps extends Omit<SkillSettingsProps, "onBusyChange"> {
   /** 由工作台入口决定的初始分区；不改变各分区的按需加载时机。 */
-  initialSection?: "models" | "mcp" | "skills" | "search" | "general" | "team"
+  initialSection?: typeof settingsSections[number]["id"]
+  /** 窄窗时接收分区选择器的窗口顶栏节点。 */
+  titlebarTarget: HTMLDivElement | null
   /** 关闭设置弹窗。 */
   onClose: () => void
   /** 将完整 Provider 列表同步到工作区模型选择器。 */
@@ -268,10 +281,26 @@ function isHttpURL(value: string): boolean {
  * @param props 关闭及同步回调，以及工作区持有的项目摘要和技能缓存。
  * @returns 设置弹窗。
  */
-export function SettingsDialog({ initialSection = "models", onClose, onProvidersChange, projects, onReloadProjects, skillsByScope, onSkillsChange }: SettingsDialogProps) {
+export function SettingsDialog({ initialSection = "models", titlebarTarget, onClose, onProvidersChange, projects, onReloadProjects, skillsByScope, onSkillsChange }: SettingsDialogProps) {
   const [section, setSection] = useState(initialSection)
   const dialogRef = useRef<HTMLElement>(null)
-  useDialogFocus(dialogRef)
+  useDialogFocus(dialogRef, titlebarTarget === null)
+  const [navigationOpen, setNavigationOpen] = useState(false)
+  const navigationVisible = titlebarTarget !== null && navigationOpen
+  const navigationTrigger = useRef<HTMLButtonElement>(null)
+  const navigationDrawer = useRef<HTMLElement>(null)
+  const navigationId = useId()
+  useDialogFocus(navigationDrawer, navigationVisible)
+  useEffect(() => {
+    if (titlebarTarget === null) {
+      setNavigationOpen(false)
+      return
+    }
+    const frame = requestAnimationFrame(() => {
+      if (document.activeElement === document.body) (navigationTrigger.current?.disabled ? dialogRef.current : navigationTrigger.current)?.focus()
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [titlebarTarget])
   const [loadState, setLoadState] = useState<"loading" | "ready" | "error">("loading")
   const [loadError, setLoadError] = useState<string | null>(null)
   const [providers, setProviders] = useState<ProviderSummary[]>([])
@@ -314,7 +343,7 @@ export function SettingsDialog({ initialSection = "models", onClose, onProviders
     setLoadState("loading")
     setLoadError(null)
     try {
-      const loaded = await window.nicode.listProviders()
+      const loaded = await window.minou.listProviders()
       const nextSelected = loaded.some((provider) => provider.providerId === selectedProviderId)
         ? selectedProviderId
         : loaded[0]?.providerId ?? null
@@ -408,40 +437,54 @@ export function SettingsDialog({ initialSection = "models", onClose, onProviders
      * @param event 键盘事件；原生下拉浮层优先处理 Escape，其余情况沿用创建期间的关闭保护。
      */
     function closeOnEscape(event: KeyboardEvent): void {
-      if (event.key === "Escape" && !document.querySelector("select:open")) requestClose()
+      if (event.key !== "Escape" || document.querySelector("select:open")) return
+      if (navigationVisible) setNavigationOpen(false)
+      else requestClose()
     }
     window.addEventListener("keydown", closeOnEscape)
     return () => window.removeEventListener("keydown", closeOnEscape)
-  }, [onClose])
+  }, [onClose, navigationVisible])
 
   const selectedProvider = providers.find((provider) => provider.providerId === selectedProviderId)
+  const navigationOptions = settingsSections.map(({ id, label, Icon }) => (
+    <button key={id} className={`settings-nav-option${section === id ? " settings-nav-option-active" : ""}`} type="button" aria-current={section === id ? "page" : undefined} disabled={creating} onClick={() => {
+      if (creatingRef.current) return
+      setSection(id)
+      setNavigationOpen(false)
+    }}><Icon size={18} stroke={1.6} aria-hidden="true" /><span>{label}</span></button>
+  ))
 
   return <div
-    className="settings-dialog-backdrop"
+    className={titlebarTarget === null ? "settings-dialog-backdrop" : "settings-page"}
     role="presentation"
-    onMouseDown={(event) => { if (event.target === event.currentTarget) requestClose() }}
+    onMouseDown={(event) => { if (titlebarTarget === null && event.target === event.currentTarget) requestClose() }}
   >
-    <section ref={dialogRef} tabIndex={-1} className="settings-dialog" role="dialog" aria-modal="true" aria-labelledby="settings-dialog-title" aria-busy={(section === "models" && loadState === "loading") || creating}>
-      <header className="settings-dialog-header">
-        <div className="settings-title"><span className="settings-title-icon"><IconSettings size={19} /></span><h2 id="settings-dialog-title">设置</h2></div>
-        <button className="settings-dialog-close" type="button" aria-label="关闭设置" disabled={creating} onClick={requestClose}>
-          <IconX size={20} stroke={1.5} aria-hidden="true" />
-        </button>
-      </header>
+    {titlebarTarget && createPortal(
+      <button ref={navigationTrigger} className="settings-titlebar-menu" type="button" aria-label="设置导航" aria-haspopup="dialog" aria-expanded={navigationVisible} aria-controls={navigationId} disabled={creating} onClick={() => setNavigationOpen((open) => !open)}>
+        <IconMenu2 size={16} aria-hidden="true" /><span>设置</span>
+      </button>,
+      titlebarTarget,
+    )}
+    {titlebarTarget && <div className="settings-drawer-layer" data-open={navigationVisible} inert={!navigationVisible} onClick={(event) => { if (event.target === event.currentTarget) setNavigationOpen(false) }}>
+      <section ref={navigationDrawer} id={navigationId} className="settings-drawer" role="dialog" aria-modal={navigationVisible || undefined} aria-label="设置导航" tabIndex={-1}>
+        <header className="settings-drawer-header">
+          <h2>设置</h2>
+          <button className="settings-icon-button" type="button" aria-label="收起设置导航" onClick={() => setNavigationOpen(false)}><IconX size={18} aria-hidden="true" /></button>
+        </header>
+        <nav aria-label="设置选项">{navigationOptions}</nav>
+      </section>
+    </div>}
+    <section ref={dialogRef} tabIndex={-1} className="settings-dialog" inert={navigationVisible} role={titlebarTarget === null ? "dialog" : "main"} aria-modal={titlebarTarget === null ? true : undefined} aria-label="设置" aria-busy={(section === "models" && loadState === "loading") || creating}>
+      <button className="settings-dialog-close" type="button" aria-label="关闭设置" disabled={creating} onClick={requestClose}>
+        <IconX size={18} stroke={1.5} aria-hidden="true" />
+      </button>
       <div className="settings-dialog-body">
-        <nav className="settings-dialog-nav" aria-label="设置选项">
-          <p className="settings-nav-label">工作空间</p>
-          <button className={`settings-nav-option${section === "general" ? " settings-nav-option-active" : ""}`} type="button" aria-current={section === "general" ? "page" : undefined} disabled={creating} onClick={() => { if (!creatingRef.current) setSection("general") }}><IconDeviceDesktop size={18} stroke={1.6} /><span>通用</span></button>
-          <button className={`settings-nav-option${section === "team" ? " settings-nav-option-active" : ""}`} type="button" aria-current={section === "team" ? "page" : undefined} disabled={creating} onClick={() => { if (!creatingRef.current) setSection("team") }}><IconUsers size={18} stroke={1.6} /><span>团队协作</span></button>
-          <button className={`settings-nav-option${section === "models" ? " settings-nav-option-active" : ""}`} type="button" aria-current={section === "models" ? "page" : undefined} disabled={creating} onClick={() => { if (!creatingRef.current) setSection("models") }}>
-            <IconCpu size={18} stroke={1.6} /><span>模型</span>
-          </button>
-          <button className={`settings-nav-option${section === "mcp" ? " settings-nav-option-active" : ""}`} type="button" aria-current={section === "mcp" ? "page" : undefined} disabled={creating} onClick={() => { if (!creatingRef.current) setSection("mcp") }}><IconPlugConnected size={18} stroke={1.6} /><span>MCP</span></button>
-          <button className={`settings-nav-option${section === "skills" ? " settings-nav-option-active" : ""}`} type="button" aria-current={section === "skills" ? "page" : undefined} disabled={creating} onClick={() => { if (!creatingRef.current) setSection("skills") }}><IconSparkles size={18} stroke={1.6} /><span>技能</span></button>
-          <button className={`settings-nav-option${section === "search" ? " settings-nav-option-active" : ""}`} type="button" aria-current={section === "search" ? "page" : undefined} disabled={creating} onClick={() => { if (!creatingRef.current) setSection("search") }}><IconSettings size={18} stroke={1.6} /><span>搜索服务</span></button>
-          <div className="settings-nav-footer"><span className="brand-name">NiCode</span></div>
-        </nav>
-        {section === "models" && <section className="settings-dialog-content" aria-label="模型设置">
+        {titlebarTarget === null && <nav className="settings-dialog-nav" aria-label="设置选项">
+          <p className="settings-nav-label">设置</p>
+          {navigationOptions}
+          <div className="settings-nav-footer"><span className="brand-name">Minou</span></div>
+        </nav>}
+        {section === "models" && <section className="settings-dialog-content model-settings-page" aria-label="模型设置">
           {loadState === "loading" && <p className="settings-state" role="status">正在加载供应商…</p>}
           {loadState === "error" && <div className="settings-state settings-state-error" role="alert">
             <span>{loadError}</span>
@@ -475,11 +518,13 @@ export function SettingsDialog({ initialSection = "models", onClose, onProviders
                       type="button"
                       className={provider.providerId === selectedProviderId ? "provider-list-item provider-list-item-active" : "provider-list-item"}
                       aria-current={provider.providerId === selectedProviderId ? "true" : undefined}
+                      aria-label={`${provider.name}，${provider.models.length} 个模型`}
+                      title={provider.name}
                       disabled={creating}
                       onClick={() => setSelectedProviderId(provider.providerId)}
                     >
                       <span className="provider-list-name">{provider.name}</span>
-                      <span className="provider-list-model-count">{provider.models.length} 个模型</span>
+                      <span className="provider-list-model-count">{provider.models.length}</span>
                     </button>
                   </li>)}</ul>}
             </aside>
@@ -546,7 +591,7 @@ function CreateProviderForm({
 
   useEffect(() => {
     let active = true
-    void window.nicode.listCompatibleProviders().then((entries) => {
+    void window.minou.listCompatibleProviders().then((entries) => {
       if (active) { setCompatibleProviders(entries); setCompatibleLoadError(false) }
     }).catch(() => { if (active) setCompatibleLoadError(true) })
     return () => { active = false }
@@ -587,8 +632,8 @@ function CreateProviderForm({
     setError(null)
     try {
       const provider = providerType === "compatible"
-        ? await window.nicode.createCompatibleProvider({ type: "compatible", name: compatibleName, protocol, apiKey })
-        : await window.nicode.createCustomProvider({
+        ? await window.minou.createCompatibleProvider({ type: "compatible", name: compatibleName, protocol, apiKey })
+        : await window.minou.createCustomProvider({
           type: "custom", name: name.trim(), protocol, apiKey, url: url.trim(), models: parsedModels as ProviderModelInput[],
         })
       onCreated(provider)
@@ -795,7 +840,7 @@ function ProviderDetail({
     setSavingProfileField(field)
     setProfileError(null)
     try {
-      await window.nicode.updateProvider(provider.providerId, snapshot.name, snapshot.url)
+      await window.minou.updateProvider(provider.providerId, snapshot.name, snapshot.url)
       lastSavedProfile.current = snapshot
       if (field === "name") setName(snapshot.name)
       else setUrl(snapshot.url)
@@ -819,7 +864,7 @@ function ProviderDetail({
 
     setApiKeyState("saving")
     try {
-      await window.nicode.updateApiKey(provider.providerId, apiKey)
+      await window.minou.updateApiKey(provider.providerId, apiKey)
       setApiKey("")
       setApiKeyState("saved")
     } catch (error) {
@@ -1016,7 +1061,7 @@ function ModelEditor({
     setSaveState("saving")
     setSavingField(field)
     try {
-      await window.nicode.updateModel({ providerId, modelId: model.modelId }, update)
+      await window.minou.updateModel({ providerId, modelId: model.modelId }, update)
       if (field === "name") { lastSaved.current.name = String(value); setName(String(value)) }
       else if (field === "contextWindow") { lastSaved.current.contextWindow = Number(value); setContextWindow(String(value)) }
       else { lastSaved.current.maxOutputTokens = Number(value); setMaxOutputTokens(String(value)) }
@@ -1039,7 +1084,7 @@ function ModelEditor({
     const update = supportsReasoning ? { supportsReasoning, ...effectiveReasoning } : { supportsReasoning }
     setSaveState("saving")
     try {
-      await window.nicode.updateModel({ providerId, modelId: model.modelId }, update)
+      await window.minou.updateModel({ providerId, modelId: model.modelId }, update)
       lastSaved.current.supportsReasoning = supportsReasoning
       if (supportsReasoning) {
         lastSaved.current.reasoningLevels = effectiveReasoning.reasoningLevels
@@ -1064,7 +1109,7 @@ function ModelEditor({
     setDeleting(true)
     try {
       const reference = { providerId, modelId: model.modelId }
-      await window.nicode.deleteModel(reference)
+      await window.minou.deleteModel(reference)
       await onDeleted()
     } catch (error) {
       console.error("删除模型失败", error)
@@ -1226,7 +1271,7 @@ function CreateModelDialog({
     onCreatingChange(true)
     setError(null)
     try {
-      const created = await window.nicode.createModel(provider.providerId, parsed)
+      const created = await window.minou.createModel(provider.providerId, parsed)
       onCreated(created)
     } catch (cause) {
       console.error("创建模型失败", cause)

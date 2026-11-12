@@ -5,7 +5,7 @@ import { DatabaseSync } from "node:sqlite"
 import { compile } from "@jmespath-community/jmespath"
 import type { WebSearchProviderConfig, WebSearchProviderInput } from "./types.ts"
 
-/** 用户 .nicode 根目录下的搜索配置数据库文件名。 */
+/** 用户 .minou 根目录下的搜索配置数据库文件名。 */
 export const WEB_SEARCH_DATABASE_FILE = "web-search.sqlite"
 
 /** SQLite 原始配置行；读取时还原 enabled 并检查配置语法。 */
@@ -73,7 +73,7 @@ function transaction(db: DatabaseSync, operation: () => void): void {
 
 /**
  * 缺失时创建 V1 空库，已有库只校验版本、表和唯一启用索引，不迁移或覆盖。
- * @param databasePath 用户 .nicode 下的数据库绝对路径；父目录由启动流程创建。
+ * @param databasePath 用户 .minou 下的数据库绝对路径；父目录由启动流程创建。
  * @throws Error 路径、数据库版本或结构不合法，或初始化失败。
  */
 export function initializeWebSearchDatabase(databasePath: string): void {

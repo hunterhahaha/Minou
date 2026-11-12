@@ -14,7 +14,7 @@ const MESSAGE: UserMessageContent = { content: [{ type: "text", text: "queued" }
 
 /** 验证真实 SQLite 的队列原子性、协作状态、黑板隔离和唤醒时间边界。 */
 async function main(): Promise<void> {
-  const root = await mkdtemp(join(tmpdir(), "nicode-team-store-"))
+  const root = await mkdtemp(join(tmpdir(), "minou-team-store-"))
   try {
     const path = join(root, "events.sqlite")
     await initializeSessionEventDatabase(path, true)

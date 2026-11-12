@@ -720,7 +720,7 @@ async function testRepairPreservesContextAndUncommittedSummary(): Promise<void> 
       turn: 2,
       source: {
         type: "agents_md",
-        path: "G:/code/NiCode/AGENTS.md",
+        path: "G:/code/Minou/AGENTS.md",
         hash: "hash-2",
         fullContent: "updated",
       },
@@ -783,7 +783,7 @@ async function testCorruptedLogIsRejectedBeforeWrites(): Promise<void> {
  * @throws Error 断言或场景执行失败时向上传播，测试入口记录错误并设置失败退出码。
  */
 async function testConcreteRuntimeBindings(): Promise<void> {
-  const root = await mkdtemp(join(tmpdir(), "nicode-runtime-bindings-"))
+  const root = await mkdtemp(join(tmpdir(), "minou-runtime-bindings-"))
   try {
     const sessionId = "session-concrete"
     const sessionDirectory = join(root, sessionId)
@@ -965,7 +965,7 @@ async function testRuntimeScopedCancellation(): Promise<void> {
  * @throws Error 当临时存储或运行失败时抛出；AssertionError 表示收尾顺序或继续行为不符合契约。
  */
 async function testInterruptedThinkingCanContinue(interruption: "stop" | "crash"): Promise<void> {
-  const root = await mkdtemp(join(tmpdir(), "nicode-interrupt-continue-"))
+  const root = await mkdtemp(join(tmpdir(), "minou-interrupt-continue-"))
   const metaDatabasePath = join(root, "meta.sqlite")
   initializeSessionMetaDatabase(metaDatabasePath)
   let active: SessionRuntime | undefined

@@ -40,7 +40,7 @@ function toolText(request: UnifiedModelRequest, id: string): string {
  * @throws Error - 断言、临时存储或本机后端验证失败；顶层测试出口记录异常并设置失败退出码。
  */
 async function main(): Promise<void> {
-  const profile = await mkdtemp(join(tmpdir(), "nicode-process-turn-"))
+  const profile = await mkdtemp(join(tmpdir(), "minou-process-turn-"))
   const paths = await initializeConfigFiles(profile)
   const global = new SessionRuntimeGlobal(paths, new ToolRegistry(), new RenderRegistry())
   const sessionId = "process-session"

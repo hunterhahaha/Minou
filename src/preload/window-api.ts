@@ -3,13 +3,13 @@ import type { ContextBridge, IpcRenderer, IpcRendererEvent } from "electron"
 
 /** 窗口专用通道，不复用或改动 Session 等业务通道。 */
 export const WINDOW_IPC_CHANNELS = {
-  minimize: "nicode:window:minimize",
-  close: "nicode:window:close",
-  getCloseSettings: "nicode:window:get-close-settings",
-  setCloseBehavior: "nicode:window:set-close-behavior",
-  toggleMaximize: "nicode:window:toggle-maximize",
-  getState: "nicode:window:get-state",
-  stateChanged: "nicode:window:state-changed",
+  minimize: "minou:window:minimize",
+  close: "minou:window:close",
+  getCloseSettings: "minou:window:get-close-settings",
+  setCloseBehavior: "minou:window:set-close-behavior",
+  toggleMaximize: "minou:window:toggle-maximize",
+  getState: "minou:window:get-state",
+  stateChanged: "minou:window:state-changed",
 } as const
 
 /** 标题栏渲染所需的当前窗口状态。 */
@@ -53,7 +53,7 @@ function requireCloseSettings(value: unknown): CloseSettings {
 }
 
 /** 提供当前窗口的控制、关闭偏好和状态订阅，不暴露 Electron 对象。 */
-export interface NiCodeWindowApi {
+export interface MinouWindowApi {
   /**
    * 请求将当前窗口最小化。
    *
@@ -108,7 +108,7 @@ function requireWindowState(value: unknown): WindowState {
  * @param ipcRenderer preload 内部使用的 Electron IPC 能力。
  * @returns 可通过 contextBridge 暴露的窗口控制 API。
  */
-export function createWindowApi(ipcRenderer: Pick<IpcRenderer, "invoke" | "on" | "removeListener">): NiCodeWindowApi {
+export function createWindowApi(ipcRenderer: Pick<IpcRenderer, "invoke" | "on" | "removeListener">): MinouWindowApi {
   return Object.freeze({
     /**
      * 请求将当前窗口最小化。
@@ -157,5 +157,5 @@ export function createWindowApi(ipcRenderer: Pick<IpcRenderer, "invoke" | "on" |
  * @returns 窗口 API 注册完成。
  */
 export function exposeWindowApi(contextBridge: Pick<ContextBridge, "exposeInMainWorld">, ipcRenderer: Pick<IpcRenderer, "invoke" | "on" | "removeListener">): void {
-  contextBridge.exposeInMainWorld("nicodeWindow", createWindowApi(ipcRenderer))
+  contextBridge.exposeInMainWorld("minouWindow", createWindowApi(ipcRenderer))
 }

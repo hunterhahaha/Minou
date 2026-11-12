@@ -233,7 +233,7 @@ export function SessionTranscript({ projectId, sessionId, state, onOpenDiff, onO
     if (item.kind === "event" && item.event.type === "approval/request") return null
     if (item.kind === "event" && pairedResultIds.has(item.id)) return null
     return <div className={"chat-entry " + (item.kind === "assistant" ? "assistant-entry" : "")} key={JSON.stringify([key, item.id])}>
-      {item.kind === "assistant" && showAssistantLabel && <div className="message-label"><span className="assistant-avatar"><IconSparkles size={13} /></span><strong>NiCode</strong><span>协作伙伴</span></div>}
+      {item.kind === "assistant" && showAssistantLabel && <div className="message-label"><span className="assistant-avatar"><IconSparkles size={13} /></span><strong>Minou</strong><span>协作伙伴</span></div>}
       {item.kind === "assistant" ? item.blocks.map((content, index) => <AssistantBlock block={content} key={index} onOpenWeb={onOpenWeb}
         toolResult={content.type === "tool_call" ? toolResults.get(toolDisplayKey(item.turn, item.step, content.toolCallId)) ?? undefined : undefined} />) : eventView(item.event)}
     </div>
@@ -253,7 +253,7 @@ export function SessionTranscript({ projectId, sessionId, state, onOpenDiff, onO
           const fileChanges = block.process.filter((item) => item.kind === "event" && item.event.type === "turn/file_changes")
           const process = block.process.filter((item) => item.kind !== "event" || (item.event.type !== "turn/end" && item.event.type !== "turn/file_changes" && item.event.type !== "approval/request" && !pairedResultIds.has(item.id)))
           return <div className="chat-entry assistant-entry" key={JSON.stringify([key, block.id])} data-turn={block.turn}>
-            <div className="message-label"><span className="assistant-avatar"><IconSparkles size={13} /></span><strong>NiCode</strong><span>协作伙伴</span></div>
+            <div className="message-label"><span className="assistant-avatar"><IconSparkles size={13} /></span><strong>Minou</strong><span>协作伙伴</span></div>
             {process.length > 0 && <details className="chat-detail turn-process"><summary><IconTool size={15} /><span className="process-title">执行过程</span><span className="process-count">{process.length} 项</span></summary>{process.map((item) => itemView(item))}</details>}
             {block.finalAnswer.length > 0 && <div className="final-answer">
               {block.finalAnswer.map((content, index) => <AssistantBlock block={content} key={index} onOpenWeb={onOpenWeb} />)}
@@ -262,7 +262,7 @@ export function SessionTranscript({ projectId, sessionId, state, onOpenDiff, onO
             {block.finalAnswer.some((content) => content.text.trim()) && <div className="message-actions"><MessageCopyButton text={block.finalAnswer.map((content) => content.text).join("\n\n")} label="复制AI回复" /></div>}
           </div>
         })}
-        {control?.phase === "running" && <div className="agent-working" role="status"><span className="working-dots"><i /><i /><i /></span>NiCode 正在处理任务</div>}
+        {control?.phase === "running" && <div className="agent-working" role="status"><span className="working-dots"><i /><i /><i /></span>Minou 正在处理任务</div>}
         <div ref={endRef} />
       </div>
     </div>
@@ -369,8 +369,8 @@ export function SessionPage({ projectId, sessionId, state, providers, onOpenDiff
     const message = retry ? { content: retry.content, ...(retry.fileReferences && { fileReferences: retry.fileReferences }) } : serializeComposerMessage(draft)
     if (!message.content.some((block) => block.text.trim()) || !control || control.phase === "stopping") return
     await operate(async () => {
-      if (control.phase === "running") await window.nicode.enqueueSessionMessage(projectId, sessionId, message)
-      else await window.nicode.continueSession(projectId, sessionId, message)
+      if (control.phase === "running") await window.minou.enqueueSessionMessage(projectId, sessionId, message)
+      else await window.minou.continueSession(projectId, sessionId, message)
       if (!retry && state.draftsByKey[key] === draft) state.setDraft(key)
     })
   }
@@ -380,7 +380,7 @@ export function SessionPage({ projectId, sessionId, state, providers, onOpenDiff
    */
   async function settings(patch: SessionSettingsPatch): Promise<void> {
     await operate(async () => {
-      const next = await window.nicode.updateSessionSettings(projectId, sessionId, patch)
+      const next = await window.minou.updateSessionSettings(projectId, sessionId, patch)
       state.receive({ kind: "state", projectId, sessionId, control: next })
     })
   }
@@ -392,7 +392,7 @@ export function SessionPage({ projectId, sessionId, state, providers, onOpenDiff
   async function decide(event: Extract<SessionEvent, { type: "approval/request" }>, decision: "approved" | "denied"): Promise<void> {
     if (pendingApproval?.approvalId !== event.approvalId || submittedApprovalId === event.approvalId) return
     await operate(async () => {
-      const result = await window.nicode.decideSessionApproval(projectId, sessionId, event.approvalId, decision)
+      const result = await window.minou.decideSessionApproval(projectId, sessionId, event.approvalId, decision)
       if (result.accepted) {
         setSubmittedApprovalId(event.approvalId)
         if (approvalRef.current?.contains(document.activeElement)) composerRef.current?.querySelector<HTMLElement>(".composer-editor")?.focus()
@@ -468,7 +468,7 @@ export function SessionPage({ projectId, sessionId, state, providers, onOpenDiff
                 </ul>
               </div>
             </div>
-            <button type="button" className="send-button" aria-label={showStop ? (control?.phase === "stopping" ? "正在停止" : "停止") : (control?.phase === "running" ? "加入队列" : "发送消息")} title={showStop ? (control?.phase === "stopping" ? "正在停止" : "停止") : (control?.phase === "running" ? "加入队列" : "发送消息")} disabled={!control || view.busy || control.phase === "stopping" || (!showStop && !hasDraft)} onClick={() => { if (showStop) void operate(() => window.nicode.stopSession(projectId, sessionId)); else void send() }}>{showStop ? <IconPlayerStop size={16} stroke={2} aria-hidden="true" /> : <IconArrowUp size={18} stroke={2} aria-hidden="true" />}</button>
+            <button type="button" className="send-button" aria-label={showStop ? (control?.phase === "stopping" ? "正在停止" : "停止") : (control?.phase === "running" ? "加入队列" : "发送消息")} title={showStop ? (control?.phase === "stopping" ? "正在停止" : "停止") : (control?.phase === "running" ? "加入队列" : "发送消息")} disabled={!control || view.busy || control.phase === "stopping" || (!showStop && !hasDraft)} onClick={() => { if (showStop) void operate(() => window.minou.stopSession(projectId, sessionId)); else void send() }}>{showStop ? <IconPlayerStop size={16} stroke={2} aria-hidden="true" /> : <IconArrowUp size={18} stroke={2} aria-hidden="true" />}</button>
           </div>
         </div>
       </div>

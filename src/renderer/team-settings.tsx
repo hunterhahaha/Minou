@@ -25,7 +25,7 @@ export function TeamSettings({ onBusyChange }: { onBusyChange: (busy: boolean) =
 
   useEffect(() => {
     let active = true
-    void window.nicode.getTeamWakeupConfig().then((value) => {
+    void window.minou.getTeamWakeupConfig().then((value) => {
       if (active) setConfig(value)
     }).catch(() => {
       if (active) setLoadError(true)
@@ -53,7 +53,7 @@ export function TeamSettings({ onBusyChange }: { onBusyChange: (busy: boolean) =
     onBusyChange(true)
     setSaveStatus("saving")
     try {
-      const saved = await window.nicode.setTeamWakeupConfig(parsed)
+      const saved = await window.minou.setTeamWakeupConfig(parsed)
       setConfig(saved)
       setDraft({})
       setSaveStatus("saved")

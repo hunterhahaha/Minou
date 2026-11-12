@@ -17,7 +17,7 @@ const MODEL: ModelRef = { providerId: "p", protocol: "responses", modelId: "m", 
 
 /** 使用真实文件、进程权限、事件日志和会话设置验证自动审核。 */
 async function main(): Promise<void> {
-  const root = await mkdtemp(join(tmpdir(), "nicode-auto-approval-"))
+  const root = await mkdtemp(join(tmpdir(), "minou-auto-approval-"))
   const paths = await initializeConfigFiles(root)
   const workspace = join(paths.rootDir, "sessions", "default", "workspace")
   const inside = join(workspace, "inside.txt"), outside = join(root, "outside.txt"), pending = join(root, "pending.txt")

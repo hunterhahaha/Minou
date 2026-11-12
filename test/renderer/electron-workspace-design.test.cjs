@@ -37,7 +37,7 @@ const sessions = [
   { sessionId: "notes", name: "下一次迭代的实现思路", updatedAt },
 ]
 const projects = [
-  { projectId: PROJECT, name: "NiCode", updatedAt, directories: ["G:\\code\\NiCode"], sessions: [{ sessionId: "project-session", name: "设计新的协作体验", updatedAt }] },
+  { projectId: PROJECT, name: "Minou", updatedAt, directories: ["G:\\code\\Minou"], sessions: [{ sessionId: "project-session", name: "设计新的协作体验", updatedAt }] },
   { projectId: "a0000000-0000-4000-8000-000000000002", name: "一个包含较长名称的项目，用来确认侧栏始终保持简洁", updatedAt, directories: [], sessions: [] },
 ]
 app.disableHardwareAcceleration()
@@ -439,9 +439,9 @@ async function main() {
   /** @param token 当前主题的颜色 Token。 @returns 浏览器解析后的颜色。 */
   const tokenColor = (token) => evaluate(`(() => { const probe = document.createElement('span'); probe.style.color = 'var(' + ${JSON.stringify(token)} + ')'; document.body.append(probe); const color = getComputedStyle(probe).color; probe.remove(); return color })()`)
   registerWindowIpcHandlers(ipcMain, BrowserWindow)
-  profile = await mkdtemp(join(tmpdir(), "nicode-workspace-design-"))
+  profile = await mkdtemp(join(tmpdir(), "minou-workspace-design-"))
   app.setPath("userData", join(profile, "electron"))
-  const gitProjectDir = join(profile, "nicode-git-repo")
+  const gitProjectDir = join(profile, "minou-git-repo")
   await mkdir(gitProjectDir)
   const runGit = (...args) => execFileSync("git", args, {
     cwd: gitProjectDir,
@@ -449,9 +449,9 @@ async function main() {
     env: { ...process.env, LC_ALL: "C.UTF-8" },
   }).trim()
   runGit("init", "-b", "main")
-  runGit("config", "user.name", "NiCode Test")
-  runGit("config", "user.email", "test@nicode.local")
-  await writeFile(join(gitProjectDir, "README.md"), "# NiCode\n", "utf8")
+  runGit("config", "user.name", "Minou Test")
+  runGit("config", "user.email", "test@minou.local")
+  await writeFile(join(gitProjectDir, "README.md"), "# Minou\n", "utf8")
   runGit("add", "README.md")
   runGit("commit", "-m", "initial")
   runGit("branch", "feature/ui")
@@ -830,7 +830,7 @@ async function main() {
   assert.equal(await evaluate("document.querySelector('.search-category').value"), "sessions", "默认搜索对话")
   assert.deepEqual(await evaluate("[...document.querySelectorAll('.search-result strong')].map(node => node.textContent).sort()"),
     [...sessions, ...projects[0].sessions].map(item => item.name).sort(), "对话分类包含独立对话与项目内对话")
-  assert.equal(await evaluate("[...document.querySelectorAll('.search-result-copy small')].some(node => node.textContent === 'NiCode' && node.querySelector('svg'))"), true, "项目来源同行显示")
+  assert.equal(await evaluate("[...document.querySelectorAll('.search-result-copy small')].some(node => node.textContent === 'Minou' && node.querySelector('svg'))"), true, "项目来源同行显示")
   assert.equal(await evaluate("document.querySelector('.search-result time').dateTime"), updatedAt, "显示摘要更新时间")
   await key("ArrowDown")
   assert.equal(await evaluate("document.activeElement.getAttribute('aria-activedescendant')"), "search-result-1", "方向键改变当前选中项")
@@ -885,7 +885,7 @@ async function main() {
   for (const [seq, event] of [
     [5, { type: "turn/start", turn: 2, model }],
     [6, { type: "user/message", turn: 2, message: { id: "user-2", role: "user", content: [{ type: "text", text: "继续检查项目目录，并整理下一步建议。" }] } }],
-    [7, { type: "approval/request", turn: 2, step: 1, approvalId: "approval-fixture", toolCallId: "tool-fixture", toolName: "shell", reason: "本次访问需要你确认后继续。", arguments: { command: "Get-ChildItem -LiteralPath G:/code/NiCode" } }],
+    [7, { type: "approval/request", turn: 2, step: 1, approvalId: "approval-fixture", toolCallId: "tool-fixture", toolName: "shell", reason: "本次访问需要你确认后继续。", arguments: { command: "Get-ChildItem -LiteralPath G:/code/Minou" } }],
   ]) window.webContents.send(session.update, { kind: "event", projectId: "default", sessionId: "review", event: { ...event, seq, eventId: "approval-" + seq, sessionId: "review", createdAt: updatedAt } })
   window.webContents.send(session.update, { kind: "state", projectId: "default", sessionId: "review", control: { revision: 2, throughSeq: 7, phase: "running", currentTurn: 2, currentModel: model, sandboxMode: "sandbox-full-access", pendingMessages: [{ messageId: "queued", status: "queued", content: [{ type: "text", text: "之后再整理一份简短的改进清单。" }] }], discardedMessages: [] } })
   await until(() => evaluate("Boolean(document.querySelector('.approval-actions button:not(:disabled)')) && Boolean(document.querySelector('.queue-list'))"))
@@ -919,7 +919,7 @@ async function main() {
   await until(() => evaluate("Boolean(document.querySelector('[aria-label=\"任务描述\"]'))"))
   await key("k", { ctrlKey: true })
   await until(() => evaluate("document.activeElement.getAttribute('aria-label') === '搜索项目或对话'"))
-  await input('[aria-label="搜索项目或对话"]', "NiCode")
+  await input('[aria-label="搜索项目或对话"]', "Minou")
   await until(() => evaluate("document.querySelector('.search-result strong')?.textContent === '设计新的协作体验'"))
   await openSelect(".search-category")
   nativeKey("Escape")
@@ -927,8 +927,8 @@ async function main() {
   await openSelect(".search-category")
   nativeKey("End")
   nativeKey("Enter")
-  await until(() => evaluate("document.querySelector('.search-category').value === 'projects' && document.querySelector('.search-result strong')?.textContent === 'NiCode'"))
-  assert.equal(await evaluate("document.querySelector('.search-input-row input').value"), "NiCode", "切换分类保留关键词")
+  await until(() => evaluate("document.querySelector('.search-category').value === 'projects' && document.querySelector('.search-result strong')?.textContent === 'Minou'"))
+  assert.equal(await evaluate("document.querySelector('.search-input-row input').value"), "Minou", "切换分类保留关键词")
   assert.equal(await evaluate("document.querySelectorAll('.search-result').length"), 1, "项目分类只返回匹配的项目")
   await screenshot("workspace-search-projects")
   await evaluate("document.querySelector('.search-input-row input').focus()")
@@ -971,7 +971,7 @@ async function main() {
   assert.equal(await evaluate("(() => { const label = document.querySelector('.context-project-trigger .context-trigger-label'); return label.scrollWidth > label.clientWidth && getComputedStyle(label).textOverflow === 'ellipsis' })()"), true, "长项目名在输入上下文栏截断且不隐藏非 Git 规则")
   await click(".context-project-trigger")
   await until(() => evaluate("Boolean(document.querySelector('.context-project-menu'))"))
-  await evaluate("[...document.querySelectorAll('.context-project-menu [role=menuitemradio]')].find(item => item.querySelector('strong')?.textContent === 'NiCode').click()")
+  await evaluate("[...document.querySelectorAll('.context-project-menu [role=menuitemradio]')].find(item => item.querySelector('strong')?.textContent === 'Minou').click()")
   await until(() => evaluate(`location.hash.includes('${PROJECT}/new-chat') && document.querySelector('.context-branch-trigger')?.textContent.trim() === 'feature/ui'`))
   await click('[aria-label="切换深色外观"]')
   await until(() => evaluate("document.documentElement.dataset.theme === 'dark'"))
@@ -997,7 +997,7 @@ async function main() {
   })()`), true, "深色输入卡片保持高于画布的悬浮质感，聚焦时显示柔和阴影且不显示描边")
   await window.reload()
   await until(() => evaluate("document.documentElement.dataset.theme === 'dark' && Boolean(document.querySelector('.welcome'))"))
-  assert.equal(await evaluate("localStorage.getItem('nicode.appearance')"), "dark", "重新载入后保留主题")
+  assert.equal(await evaluate("localStorage.getItem('minou.appearance')"), "dark", "重新载入后保留主题")
   await assertWorkspacePalette("rgb(24, 24, 27)", [".welcome-scroll", ".welcome"])
   await click(".sidebar-settings")
   await until(() => evaluate("Boolean(document.querySelector('.provider-detail'))"))
@@ -1018,7 +1018,7 @@ async function main() {
   await until(() => evaluate("Boolean(document.querySelector('.provider-detail'))"))
   await screenshot("workspace-models")
   await assertPaletteContrast("settings")
-  assert.equal(await evaluate(`['.settings-dialog', '.settings-dialog-header', '.settings-dialog-nav', '.provider-sidebar', '.settings-field input'].every(selector => {
+  assert.equal(await evaluate(`['.settings-dialog', '.settings-dialog-nav', '.provider-sidebar', '.settings-field input'].every(selector => {
     const style = getComputedStyle(document.querySelector(selector))
     return ['Top', 'Right', 'Bottom', 'Left'].every(side => style['border' + side + 'Width'] === '0px')
   })`), true, "设置弹窗、分区与字段移除描边")
@@ -1136,8 +1136,9 @@ async function main() {
   await until(async () => (await evaluate("innerHeight")) === 760 && Math.abs((await sidebarWidth()) - 212.86) < 0.05)
   await evaluate("document.querySelector('.sidebar-settings').focus()")
   await click(".sidebar-settings")
-  await until(() => evaluate("Boolean(document.querySelector('.settings-dialog'))"))
-  await evaluate("[...document.querySelectorAll('.settings-nav-option')].find(node => node.textContent === '技能').click()")
+  await until(() => evaluate("Boolean(document.querySelector('.settings-titlebar-menu'))"))
+  await click(".settings-titlebar-menu")
+  await evaluate("[...document.querySelectorAll('.settings-drawer .settings-nav-option')].find(node => node.textContent === '技能').click()")
   await until(() => evaluate("document.querySelectorAll('.skill-entry').length === 2"))
   await fits()
   await screenshot("workspace-settings-narrow")
@@ -1145,9 +1146,7 @@ async function main() {
   await screenshot("workspace-select-scope-narrow")
   nativeKey("Escape")
   await until(() => evaluate("!document.querySelector('select:open')"))
-  await evaluate("(() => { const nodes = [...document.querySelector('.settings-dialog').querySelectorAll('button, input, select')].filter(node => !node.disabled && node.getClientRects().length); nodes.at(-1).focus() })()")
-  await key("Tab")
-  assert.equal(await evaluate("document.querySelector('.settings-dialog').contains(document.activeElement)"), true, "Tab 焦点保留在弹窗内")
+  assert.equal(await evaluate("document.querySelector('.settings-page [role=main]') && document.querySelector('.workspace-shell').inert"), true, "窄窗设置使用页面语义，背景工作区不可聚焦")
   await key("Escape")
   await until(() => evaluate("document.activeElement.matches('.sidebar-settings')"))
   window.webContents.debugger.attach("1.3")
@@ -1219,10 +1218,10 @@ async function main() {
   await click(projectMore)
   await click(menu + " button:last-child")
   await until(() => evaluate("document.activeElement.id === 'sidebar-target-name'"))
-  assert.equal(await evaluate("document.querySelector('#sidebar-target-name').value"), "NiCode")
-  await input(nameField, "  NiCode Workspace  ")
+  assert.equal(await evaluate("document.querySelector('#sidebar-target-name').value"), "Minou")
+  await input(nameField, "  Minou Workspace  ")
   await click(dialog + " button[type=submit]")
-  await until(() => evaluate("document.querySelector('.breadcrumb-project').textContent === 'NiCode Workspace'"))
+  await until(() => evaluate("document.querySelector('.breadcrumb-project').textContent === 'Minou Workspace'"))
   await click(projectSessionMore)
   await click(menu + " button:first-child")
   await until(() => evaluate("document.activeElement.id === 'sidebar-target-name'"))
@@ -1392,14 +1391,14 @@ async function main() {
   await input('[aria-label="任务描述"]', "保留文本切换项目")
   await click(".context-project-trigger")
   await until(() => evaluate("Boolean(document.querySelector('.context-project-menu'))"))
-  await evaluate("[...document.querySelectorAll('.context-project-menu [role=menuitemradio]')].find(item => item.querySelector('strong')?.textContent === 'NiCode Workspace').click()")
+  await evaluate("[...document.querySelectorAll('.context-project-menu [role=menuitemradio]')].find(item => item.querySelector('strong')?.textContent === 'Minou Workspace').click()")
   await until(() => evaluate(`location.hash.includes('${PROJECT}/new-chat') && location.hash.includes('mode=work') && document.querySelector('.composer-editor')?.textContent === '保留文本切换项目' && document.activeElement?.matches('.composer-editor')`))
   await click(".new-chat")
   await until(() => evaluate("location.hash.includes('/default/new-chat') && !location.hash.includes('mode=work')"))
   await input('[aria-label="任务描述"]', "发往选定项目的新对话")
   await click(".context-project-trigger")
   await until(() => evaluate("Boolean(document.querySelector('.context-project-menu'))"))
-  await evaluate("[...document.querySelectorAll('.context-project-menu [role=menuitemradio]')].find(item => item.querySelector('strong')?.textContent === 'NiCode Workspace').click()")
+  await evaluate("[...document.querySelectorAll('.context-project-menu [role=menuitemradio]')].find(item => item.querySelector('strong')?.textContent === 'Minou Workspace').click()")
   await until(() => evaluate(`location.hash.includes('${PROJECT}/new-chat') && document.querySelector('.composer-editor')?.textContent === '发往选定项目的新对话'`))
   await until(() => evaluate("!document.querySelector('.send-button').disabled"))
   await click(".send-button")

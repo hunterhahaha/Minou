@@ -39,7 +39,7 @@ async function protectedPage() {
 }
 /** @returns 全部真实页面行为、主题和尺寸检查完成。 @throws Error 任一断言失败。 */
 async function main() {
-  profile = await mkdtemp(join(tmpdir(), "nicode-web-settings-"))
+  profile = await mkdtemp(join(tmpdir(), "minou-web-settings-"))
   app.setPath("userData", join(profile, "electron-user-data"))
   paths = await initializeConfigFiles(profile, { skipSkills: true })
   registerWindowIpcHandlers(ipcMain, BrowserWindow)

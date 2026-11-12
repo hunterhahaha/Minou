@@ -28,7 +28,7 @@ export class DesktopSettings {
       this.savedBehavior = settings.closeBehavior
     } catch (error) {
       if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) {
-        console.error("无法读取 NiCode 桌面设置，使用默认关闭偏好。", error)
+        console.error("无法读取 Minou 桌面设置，使用默认关闭偏好。", error)
       }
     }
   }

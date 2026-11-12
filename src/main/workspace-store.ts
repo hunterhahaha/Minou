@@ -139,7 +139,7 @@ function transaction<T>(db: DatabaseSync, operation: () => T): T {
 
 /**
  * 确保工作区表存在，并仅在缺失时补入 default 空分组；不检查或回填已有 Project 内容。
- * @param databasePath `.nicode/workspace.sqlite` 的绝对路径。
+ * @param databasePath `.minou/workspace.sqlite` 的绝对路径。
  * @throws Error 当数据库无法初始化时抛出，已有记录不会被覆盖。
  */
 export function initializeWorkspaceDatabase(databasePath: string): void {
@@ -190,7 +190,7 @@ function readGroup(db: DatabaseSync, groupId: string): {
 
 /**
  * 按 Project ID 读取工作区配置。
- * @param databasePath `.nicode/workspace.sqlite` 的绝对路径。
+ * @param databasePath `.minou/workspace.sqlite` 的绝对路径。
  * @param projectId 要读取的 Project ID。
  * @returns 数据库中对应项目的原有配置字段。
  * @throws Error 当项目记录不存在时报告项目损坏；数据库错误包含路径。
@@ -214,7 +214,7 @@ export function readProjectWorkspace(databasePath: string, projectId: string): P
 
 /**
  * 读取所有非 default Project 及其有序目录、对话索引。
- * @param databasePath `.nicode/workspace.sqlite` 的绝对路径。
+ * @param databasePath `.minou/workspace.sqlite` 的绝对路径。
  * @returns 按更新时间倒序排列的 Project；同一时间按 UUID 字符串升序排列。
  * @throws Error 当数据库无法读取或 Project 缺少有效更新时间时抛出。
  */
@@ -246,7 +246,7 @@ export function listProjectWorkspaces(databasePath: string): ProjectWorkspace[] 
 
 /**
  * 读取 default 分组及其对话索引。
- * @param databasePath `.nicode/workspace.sqlite` 的绝对路径。
+ * @param databasePath `.minou/workspace.sqlite` 的绝对路径。
  * @returns default 的原有配置字段。
  * @throws Error 当 default 记录不存在或数据库无法读取时抛出。
  */
@@ -260,7 +260,7 @@ export function readDefaultWorkspace(databasePath: string): DefaultWorkspace {
 
 /**
  * 事务式写入一个分组的字段和有序列表。
- * @param databasePath `.nicode/workspace.sqlite` 的绝对路径。
+ * @param databasePath `.minou/workspace.sqlite` 的绝对路径。
  * @param groupId Project ID 字符串或 default。
  * @param name Project 名称；default 为 null。
  * @param updatedAt Project 配置更新时间；default 为 null。
@@ -323,7 +323,7 @@ function toUtcTimestamp(value: string, field: string): string {
 
 /**
  * 保存 Project 的原有工作区字段，供项目管理入口调用。
- * @param databasePath `.nicode/workspace.sqlite` 的绝对路径。
+ * @param databasePath `.minou/workspace.sqlite` 的绝对路径。
  * @param workspace 要写入的 Project 配置。
  * @throws Error 当数据库写入失败时抛出，原配置保持不变。
  */
@@ -338,7 +338,7 @@ export function saveProjectWorkspace(databasePath: string, workspace: ProjectWor
 
 /**
  * 仅插入新 Project；已有相同 ID 时失败，不覆盖原有分组。
- * @param databasePath `.nicode/workspace.sqlite` 的绝对路径。
+ * @param databasePath `.minou/workspace.sqlite` 的绝对路径。
  * @param workspace 已准备好 ID、名称、目录和 UTC 时间的项目。
  * @throws Error 当 ID 已存在或数据库写入失败时抛出。
  */
@@ -353,7 +353,7 @@ export function insertProjectWorkspace(databasePath: string, workspace: ProjectW
 
 /**
  * 保存 default 分组的原有工作区字段。
- * @param databasePath `.nicode/workspace.sqlite` 的绝对路径。
+ * @param databasePath `.minou/workspace.sqlite` 的绝对路径。
  * @param workspace 要写入的 default 配置。
  * @throws Error 当数据库写入失败时抛出，原配置保持不变。
  */

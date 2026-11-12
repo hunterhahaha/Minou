@@ -70,7 +70,7 @@ async function send(projectId, kind, checkStreaming) {
   await click(".new-chat-composer .send-button")
   await until("显示离线回复", () => evaluate("document.querySelector('.chat-page')?.textContent.includes('离线回复')"))
   const sessionId = await evaluate("document.querySelector('.chat-page').dataset.sessionId")
-  const data = await evaluate(`window.nicode.getSessionData(${JSON.stringify(projectId)}, ${JSON.stringify(sessionId)})`)
+  const data = await evaluate(`window.minou.getSessionData(${JSON.stringify(projectId)}, ${JSON.stringify(sessionId)})`)
   assert.equal(data.kind, kind)
   await until("会话头部角色就绪", () => sessionKind(kind))
   await checkStreaming?.(data)
@@ -120,7 +120,7 @@ async function capture(name) {
 }
 
 async function main() {
-  profile = await mkdtemp(join(tmpdir(), "nicode-electron-team-"))
+  profile = await mkdtemp(join(tmpdir(), "minou-electron-team-"))
   app.setPath("userData", join(profile, "electron"))
   const { paths, config } = await initializeConfigFilesSnapshot(profile)
   saveProvider(paths.providerDatabasePath, { id: "offline", name: "离线", type: "custom", protocol: "responses" })
@@ -279,7 +279,7 @@ async function main() {
     ({ type, block }) => type === "assistant/block_end" && block.type === "text" && block.text === "离线回复"))
   const store = new TeamStore(databasePath)
   await until("成员执行完成", () => store.members().some((member) => member.routerId === router && store.status(member) === "idle"))
-  assert.deepEqual(new Set((await evaluate("window.nicode.listDefaultSessions()")).map((session) => session.sessionId)), new Set([chat, router]))
+  assert.deepEqual(new Set((await evaluate("window.minou.listDefaultSessions()")).map((session) => session.sessionId)), new Set([chat, router]))
 
   const member = store.members().find((item) => item.routerId === router)
   const memberUpdates = () => delivered.filter((update) => update.sessionId === member.sessionId)
@@ -298,7 +298,7 @@ async function main() {
     assert.equal(await evaluate("!!document.querySelector(" + JSON.stringify(memberPage + " .composer") + ")"), false)
   }
   const runMember = async (task) => {
-    await evaluate("window.nicode.continueSession('default'," + JSON.stringify(router) + ", { content: [{ type: 'text', text: " +
+    await evaluate("window.minou.continueSession('default'," + JSON.stringify(router) + ", { content: [{ type: 'text', text: " +
       JSON.stringify("成员续跑 " + member.sessionId + " " + task) + " }] })")
     await until("Router 已完成且成员等候流式闸门", async () => gatedMembers.has(task) &&
       await evaluate("document.querySelector('.chat-browser-chat .session-phase')?.classList.contains('phase-idle')"))
@@ -308,7 +308,7 @@ async function main() {
     await until("成员已完成", () => store.status(member) === "idle")
   }
   assert.equal(memberUpdates().length, 0, "200 个片段的首次后台执行无窗口推送")
-  const initialData = await evaluate("window.nicode.getSessionData('default'," + JSON.stringify(member.sessionId) + ")")
+  const initialData = await evaluate("window.minou.getSessionData('default'," + JSON.stringify(member.sessionId) + ")")
   assert.deepEqual(initialData.streamEvents, [])
   assert.ok(durableEvents("team_session_events", member.sessionId).some(
     ({ type, block }) => type === "assistant/block_end" && block.type === "text" && block.text === "**离线成员任务**" + "流".repeat(200)))
@@ -436,7 +436,7 @@ async function main() {
   await runMember("标签已关闭")
   await click(tab + " + button")
   await until("关闭时卸载成员页", async () => !(await hasMemberPage()))
-  await evaluate("window.nicode.listTeamMembers('default'," + JSON.stringify(router) + ")")
+  await evaluate("window.minou.listTeamMembers('default'," + JSON.stringify(router) + ")")
   const closedBefore = memberUpdates().length
   await finishMember("标签已关闭")
   assert.equal(memberUpdates().length, closedBefore)
@@ -450,7 +450,7 @@ async function main() {
   await finishMember("重载已退订")
   assert.equal(memberUpdates().length, beforeReloadedStream)
 
-  const project = await evaluate("window.nicode.createProject('协作项目')")
+  const project = await evaluate("window.minou.createProject('协作项目')")
   const projectId = project.projectId
   await evaluate(`location.hash = ${JSON.stringify("#/projects/" + projectId + "/new-chat")}`)
   await until("项目聊天草稿页", () => draftKind("chat"))
@@ -466,12 +466,12 @@ async function main() {
   await type("项目工作，创建成员")
   const projectRouter = await send(projectId, "router")
   await until("项目成员执行完成", () => store.members().some((member) => member.routerId === projectRouter && store.status(member) === "idle"))
-  await assert.rejects(evaluate("window.nicode.subscribeTeamSession(" + JSON.stringify(projectId) + "," +
+  await assert.rejects(evaluate("window.minou.subscribeTeamSession(" + JSON.stringify(projectId) + "," +
     JSON.stringify(projectRouter) + "," + JSON.stringify(member.sessionId) + ")"), /不属于/)
-  const projects = await evaluate("window.nicode.listProjects()")
+  const projects = await evaluate("window.minou.listProjects()")
   assert.deepEqual(new Set(projects.find((item) => item.projectId === projectId).sessions.map((item) => item.sessionId)),
     new Set([projectChat, projectRouter]))
-  await evaluate(`window.nicode.renameSession(${JSON.stringify(projectId)}, ${JSON.stringify(projectRouter)}, '项目 Router 历史')`)
+  await evaluate(`window.minou.renameSession(${JSON.stringify(projectId)}, ${JSON.stringify(projectRouter)}, '项目 Router 历史')`)
   await selectDefaultCreate(".new-chat", "chat")
   await click(".titlebar-search")
   await until("共用搜索结果", () => evaluate("document.querySelectorAll('.search-result').length === 5"))
@@ -499,7 +499,7 @@ async function main() {
   await click(submit)
   await until("保存失败提示", () => evaluate(`document.querySelector('[aria-label="团队协作设置"] [role=alert]')?.textContent.includes('无法保存')`))
   assert.equal(await evaluate(polling + ".value"), "45")
-  assert.equal((await evaluate("window.nicode.getTeamWakeupConfig()")).pollingInterval, 60)
+  assert.equal((await evaluate("window.minou.getTeamWakeupConfig()")).pollingInterval, 60)
   await writeFile(paths.configPath, originalConfig)
   await click(submit)
   await until("保存成功反馈", () => evaluate(`document.querySelector('[aria-label="团队协作设置"] [role=status]')?.textContent.includes('已保存')`))

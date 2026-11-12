@@ -28,12 +28,12 @@ const electronProcess = spawn(electronPath, [projectRoot], {
   cwd: projectRoot,
   env: {
     ...process.env,
-    NICODE_RENDERER_URL: rendererUrl,
+    MINOU_RENDERER_URL: rendererUrl,
   },
   stdio: "inherit",
 })
 
-console.log(`NiCode Renderer HMR 已启动：${rendererUrl}`)
+console.log(`Minou Renderer HMR 已启动：${rendererUrl}`)
 
 let receivedSignal = false
 const stopElectron = () => {

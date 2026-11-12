@@ -18,7 +18,7 @@ export function DesktopSettings({ onBusyChange }: { onBusyChange: (busy: boolean
 
   useEffect(() => {
     let active = true
-    void window.nicodeWindow.getCloseSettings().then((value) => {
+    void window.minouWindow.getCloseSettings().then((value) => {
       if (!active) return
       setSettings(value)
       setBehavior(value.behavior)
@@ -41,7 +41,7 @@ export function DesktopSettings({ onBusyChange }: { onBusyChange: (busy: boolean
     setSaving(true)
     setSaveError(false)
     try {
-      const value = await window.nicodeWindow.setCloseBehavior(behavior)
+      const value = await window.minouWindow.setCloseBehavior(behavior)
       setSettings(value)
       setBehavior(value.behavior)
     } catch {
@@ -68,10 +68,10 @@ export function DesktopSettings({ onBusyChange }: { onBusyChange: (busy: boolean
           setSaveError(false)
         }}>
           <option value="tray">关闭到托盘</option>
-          <option value="quit">退出 NiCode</option>
+          <option value="quit">退出 Minou</option>
         </select>
         <span id="desktop-close-hint" className="settings-field-hint">
-          {behavior === "quit" ? "关闭窗口时结束 NiCode 及后台任务。"
+          {behavior === "quit" ? "关闭窗口时结束 Minou 及后台任务。"
             : settings.backgroundAction === "hide" ? "关闭窗口后仍在后台运行，可从系统托盘恢复。"
               : "当前环境会最小化窗口，保留任务栏入口。"}
         </span>

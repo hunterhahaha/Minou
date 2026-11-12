@@ -33,7 +33,7 @@ export const BUILTIN_TOOL_NAMES = [
   "blackboard",
 ] as const
 
-/** NiCode 自带工具的稳定名称。 */
+/** Minou 自带工具的稳定名称。 */
 export type BuiltinToolName = (typeof BUILTIN_TOOL_NAMES)[number]
 
 /** 动态 MCP 工具在模型侧使用的名称。 */
@@ -73,7 +73,7 @@ export type ToolArgumentValidation<TArguments extends object> =
  * 两者都由同名结果整理器解释。
  */
 export interface RegisteredTool<TArguments extends object = Record<string, unknown>, TOutput = unknown> {
-  /** 工具来自 NiCode 内置实现还是真正的 MCP 工具。 */
+  /** 工具来自 Minou 内置实现还是真正的 MCP 工具。 */
   kind: ToolKind
   /** 动态 MCP 登记的来源身份；内置工具不提供。 */
   mcp?: MCPToolMetadata

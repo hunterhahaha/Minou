@@ -44,7 +44,7 @@ async function addSkill(source: string, name: string, description: string): Prom
  * @throws AssertionError 记录、通知或恢复结果不符合契约时抛出；运行时和文件系统错误也会向上传递。
  */
 async function main(): Promise<void> {
-  const profile = await mkdtemp(join(tmpdir(), "nicode-skill-turn-"))
+  const profile = await mkdtemp(join(tmpdir(), "minou-skill-turn-"))
   try {
     const paths = await initializeConfigFiles(profile)
     await mkdir(join(paths.rootDir, "sessions", PROJECT, "workspace"), { recursive: true })

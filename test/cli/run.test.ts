@@ -40,7 +40,7 @@ function reply(response: ServerResponse, calls: Array<{ name: string; args: obje
 
 /** @returns 所有集成场景完成。 @throws AssertionError 命令协议或既有 Runtime 行为不符。 */
 async function main(): Promise<void> {
-  const root = await mkdtemp(join(tmpdir(), "nicode-cli-run-"))
+  const root = await mkdtemp(join(tmpdir(), "minou-cli-run-"))
   const profile = join(root, "profile")
   const workspace = join(root, "workspace")
   await mkdir(workspace)

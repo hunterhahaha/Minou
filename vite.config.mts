@@ -5,7 +5,7 @@ export default defineConfig({
   base: "./",
   plugins: [
     {
-      name: "nicode-dev-csp-styles",
+      name: "minou-dev-csp-styles",
       apply: "serve",
       /**
        * 为 Vite 开发客户端注入的样式节点和 HMR WebSocket 开放开发专用 CSP 权限。

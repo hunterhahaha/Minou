@@ -95,7 +95,7 @@ kbd { font: var(--font-size-caption)/var(--line-height-caption) var(--font-ui); 
 .titlebar { position: relative; z-index: 60; display: flex; align-items: center; gap: var(--space-2); flex: 0 0 var(--titlebar-height); min-width: 0; padding: 0 0 0 12px; background: var(--sidebar); border: 0; app-region: drag; user-select: none; }
 .titlebar-left { display: flex; align-items: center; gap: 4px; min-width: 0; }
 .titlebar-brand { display: flex; align-items: center; gap: 7px; margin-right: 4px; min-width: 0; }
-.brand-mark { display: grid; place-items: center; width: 20px; height: 20px; border-radius: 5px; background: var(--accent); color: var(--on-accent); flex: none; }
+.brand-mark { display: block; width: 20px; height: 20px; border-radius: 5px; flex: none; }
 .brand-name { color: var(--text-strong); font-size: var(--font-size-ui); line-height: var(--line-height-ui); letter-spacing: -.01em; font-weight: 500; white-space: nowrap; }
 .sidebar-toggle, .titlebar-search { display: grid; place-items: center; flex: none; width: 28px; height: 28px; padding: 0; border: 0; border-radius: var(--radius-sm); color: var(--secondary); background: transparent; app-region: no-drag; }
 .sidebar-toggle:hover:not(:disabled), .titlebar-search:hover:not(:disabled) { color: var(--text-strong); background: var(--hover); }
@@ -205,7 +205,7 @@ kbd { font: var(--font-size-caption)/var(--line-height-caption) var(--font-ui); 
 .welcome-scroll { flex: 1; min-height: 0; overflow: auto; container-type: inline-size; }
 .welcome { display: grid; grid-template-rows: repeat(2, minmax(min-content, 1fr)); width: min(760px, calc(100% - 48px)); min-height: 100%; margin: 0 auto; padding-top: var(--space-4); }
 .welcome-hero { align-self: end; display: flex; flex-direction: column; align-items: center; gap: var(--space-4); text-align: center; }
-.welcome-mark { display: grid; place-items: center; width: 48px; height: 48px; color: var(--text-strong); opacity: .16; }
+.welcome-mark { display: block; width: 48px; height: 48px; border-radius: 12px; }
 .welcome h1 { margin: 0; color: var(--text-strong); font-size: var(--font-size-greeting); line-height: var(--line-height-greeting); font-weight: 400; }
 .welcome-dock { align-self: end; min-width: 0; padding-top: var(--space-6); }
 .composer-dock { display: flex; flex-direction: column; width: 100%; min-width: 0; padding: var(--space-1); border: 1px solid var(--border-subtle); border-radius: var(--radius-dialog); background: color-mix(in srgb, var(--field) 60%, var(--canvas)); transition: border-color .15s, background .15s; }

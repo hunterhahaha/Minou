@@ -191,7 +191,7 @@ export function McpSettings({ onBusyChange }: McpSettingsProps) {
       setLoaded(true)
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : "MCP 操作失败，请重试。")
-      try { setServers(await window.nicode.listMcpServers()); setLoaded(true) } catch { /** 读取失败时保留原快照与草稿。 */ }
+      try { setServers(await window.minou.listMcpServers()); setLoaded(true) } catch { /** 读取失败时保留原快照与草稿。 */ }
     } finally {
       pending.current = false
       setBusy(false)
@@ -199,7 +199,7 @@ export function McpSettings({ onBusyChange }: McpSettingsProps) {
     }
   }
 
-  useEffect(() => { void perform(() => window.nicode.listMcpServers(), null, null) }, [])
+  useEffect(() => { void perform(() => window.minou.listMcpServers(), null, null) }, [])
 
   /**
    * 提交 MCP 表单并等待后端保存与对应连接尝试。
@@ -211,14 +211,14 @@ export function McpSettings({ onBusyChange }: McpSettingsProps) {
     event.preventDefault()
     if (validation || pending.current) return
     const config = parseDraft(draft, servers, selected)
-    await perform(() => selected === null ? window.nicode.createMcpServer(config) : window.nicode.updateMcpServer(selected, config), config.name, "配置已保存。")
+    await perform(() => selected === null ? window.minou.createMcpServer(config) : window.minou.updateMcpServer(selected, config), config.name, "配置已保存。")
   }
 
   return <div className="mcp-settings" aria-busy={busy}>
     <div className="mcp-toolbar">
       <h3>MCP 服务器</h3>
       <div className="settings-field-actions">
-        <button type="button" className="settings-secondary-button" aria-label="刷新 MCP" disabled={busy} onClick={() => { void perform(() => window.nicode.reloadMcpServers(), selected, "已重新加载全部 MCP 连接。") }}>
+        <button type="button" className="settings-secondary-button" aria-label="刷新 MCP" disabled={busy} onClick={() => { void perform(() => window.minou.reloadMcpServers(), selected, "已重新加载全部 MCP 连接。") }}>
           <IconRefresh size={15} aria-hidden="true" />{busy ? "处理中…" : "刷新"}
         </button>
         <button type="button" className="settings-primary-button" aria-label="新增 MCP" disabled={busy} onClick={() => choose()}><IconPlus size={15} aria-hidden="true" />新增</button>
@@ -264,7 +264,7 @@ export function McpSettings({ onBusyChange }: McpSettingsProps) {
             </div>
             {validation && <p className="settings-inline-error">{validation}</p>}
             <div className="settings-form-footer">
-              {selected !== null && <button type="button" className="settings-danger-button" aria-label="删除 MCP" onClick={() => { void perform(() => window.nicode.deleteMcpServer(selected), null, "MCP 已删除。") }}>删除</button>}
+              {selected !== null && <button type="button" className="settings-danger-button" aria-label="删除 MCP" onClick={() => { void perform(() => window.minou.deleteMcpServer(selected), null, "MCP 已删除。") }}>删除</button>}
               <button type="button" className="settings-secondary-button" onClick={() => choose(current)}>取消修改</button>
               <button type="submit" className="settings-primary-button" aria-label="保存 MCP" disabled={validation !== null}>{busy ? "正在保存…" : "保存"}</button>
             </div>

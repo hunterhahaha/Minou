@@ -1,11 +1,12 @@
 {
-  "name": "nicode",
+  "name": "minou",
+  "productName": "Minou",
   "version": "0.1.0",
   "private": true,
-  "description": "NiCode V1 — 本地运行的 Coding Agent Runtime",
+  "description": "Minou V1 — 本地运行的 Coding Agent Runtime",
   "main": "dist/src/main/electron-main.js",
   "bin": {
-    "nicode": "dist/src/cli/main.js"
+    "minou": "dist/src/cli/main.js"
   },
   "scripts": {
     "dev": "tsc && node scripts/dev-electron.mjs",

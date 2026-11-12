@@ -48,7 +48,7 @@ async function selected(name) {
 
 /** @returns 页面切换、保存保护、失败重试、重载和首条消息模型传递断言完成。 */
 async function main() {
-  profile = await mkdtemp(join(tmpdir(), "nicode-default-model-"))
+  profile = await mkdtemp(join(tmpdir(), "minou-default-model-"))
   app.setPath("userData", join(profile, "electron"))
   const paths = await initializeConfigFiles(profile)
   for (const model of [first, second]) {
@@ -131,7 +131,7 @@ async function main() {
   await selected(first.name)
   assert.equal(saveCalls, 3, "失败后可重新选择并保存")
   assert.equal(await evaluate("document.querySelectorAll('.chat-error').length"), 0, "重试成功清除错误")
-  assert.deepEqual(await evaluate("window.nicode.listProviders().then(providers => providers.flatMap(provider => provider.models.filter(model => model.isDefault).map(model => ({ providerId: provider.providerId, modelId: model.modelId }))))"), [
+  assert.deepEqual(await evaluate("window.minou.listProviders().then(providers => providers.flatMap(provider => provider.models.filter(model => model.isDefault).map(model => ({ providerId: provider.providerId, modelId: model.modelId }))))"), [
     { providerId: first.providerId, modelId: first.modelId },
   ], "Provider 列表返回唯一已保存的默认模型")
   await evaluate("document.querySelector('.model-trigger').click()")
@@ -156,6 +156,22 @@ async function main() {
   await until(() => evaluate("Boolean(document.querySelector('.provider-models-section'))"))
   await evaluate("[...document.querySelectorAll('.provider-list-item')].find(node => node.textContent.includes('first-provider')).click()")
   await until(() => evaluate("document.querySelector('.provider-detail-heading h3')?.textContent === 'first-provider'"))
+  assert.equal(await evaluate(`(() => {
+    const content = document.querySelector('.model-settings-page')
+    const sidebar = content.querySelector('.provider-sidebar')
+    const rows = [...sidebar.querySelectorAll('.provider-list-item')]
+    const height = matchMedia('(pointer: coarse)').matches ? 44 : 30
+    return Math.abs(sidebar.getBoundingClientRect().top - content.getBoundingClientRect().top) <= 1 &&
+      rows.length === 2 && rows.every(row => {
+        const name = row.querySelector('.provider-list-name').getBoundingClientRect()
+        const count = row.querySelector('.provider-list-model-count')
+        const countBounds = count.getBoundingClientRect()
+        const rightInset = row.getBoundingClientRect().right - countBounds.right
+        return row.offsetHeight === height && Number.isInteger(Number(count.textContent)) &&
+          Math.abs((name.top + name.bottom) - (countBounds.top + countBounds.bottom)) <= 2 &&
+          Math.abs(rightInset - parseFloat(getComputedStyle(row).paddingRight)) <= 1
+      })
+  })()`), true, "供应商选项为紧凑单行，模型数量在行内靠右")
   await evaluate("[...document.querySelectorAll('.provider-models-section button')].find(node => node.textContent.includes('新建模型')).click()")
   await until(() => evaluate("Boolean(document.querySelector('.new-model-form'))"))
   assert.equal(await evaluate("document.querySelector('.new-model-form [aria-label=支持思考]').checked"), false)

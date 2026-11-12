@@ -41,7 +41,7 @@ function fixturePdf() {
 
 /** 打开真实构建产物，用临时数据库配置项目关联目录。 */
 async function main() {
-  const profile = await mkdtemp(join(tmpdir(), "nicode-electron-explorer-"))
+  const profile = await mkdtemp(join(tmpdir(), "minou-electron-explorer-"))
   const workspace = join(profile, "资源样例")
   const second = join(profile, "第二个目录")
   const projectId = "34a683aa-5222-4923-afaa-55e31d8182e9"
@@ -67,7 +67,7 @@ async function main() {
     await Promise.all([
       writeFile(join(directory, "示例.ts"), "export const viewer = true\n"),
       writeFile(join(directory, "慢文件.txt"), "旧预览结果"),
-      writeFile(join(workspace, "笔记.txt"), "NiCode 纯文本"),
+      writeFile(join(workspace, "笔记.txt"), "Minou 纯文本"),
       writeFile(join(workspace, "说明.md"), "# 本地 Markdown\n\n| 功能 | 状态 |\n| --- | --- |\n| 树 | **可用** |\n\n[链接](https://example.test/)\n"),
       writeFile(join(workspace, "文档.pdf"), fixturePdf()),
       writeFile(join(workspace, "损坏.pdf"), "invalid"),
@@ -182,11 +182,11 @@ async function main() {
     await click(row("子目录/慢文件.txt"))
     await until("慢读取已开始", () => reads().includes("子目录/慢文件.txt"))
     await click(row("笔记.txt"))
-    await until("纯文本预览", () => evaluate(`${preview}.querySelector('pre')?.textContent === 'NiCode 纯文本'`))
+    await until("纯文本预览", () => evaluate(`${preview}.querySelector('pre')?.textContent === 'Minou 纯文本'`))
     releaseSlowFile()
     await click(row("子目录/"))
     assert.equal(await evaluate(`Boolean(${row("子目录/示例.ts")})`), false)
-    assert.equal(await evaluate(`${preview}.querySelector('pre')?.textContent`), "NiCode 纯文本")
+    assert.equal(await evaluate(`${preview}.querySelector('pre')?.textContent`), "Minou 纯文本")
     await click(row("子目录/"))
     await until("复用已加载分支", () => evaluate(`Boolean(${row("子目录/示例.ts")})`))
     assert.deepEqual(lists(), ["", "子目录/", "子目录/"])
@@ -195,7 +195,7 @@ async function main() {
 
     await click(button("收起文件树"))
     assert.equal(await evaluate("document.querySelector('.file-explorer-sidebar').hidden"), true)
-    assert.equal(await evaluate(`${preview}.querySelector('pre')?.textContent`), "NiCode 纯文本")
+    assert.equal(await evaluate(`${preview}.querySelector('pre')?.textContent`), "Minou 纯文本")
     await click(button("展开文件树"))
     await until("恢复树展开状态", () => evaluate(`Boolean(${row("子目录/示例.ts")})`))
     const divider = "document.querySelector('.file-explorer-divider')"
@@ -316,7 +316,7 @@ async function main() {
     assert.equal(await evaluate("document.querySelectorAll('.chat-browser-tab').length"), count)
     assert.equal(await evaluate(`${preview}.innerText`), "从文件树选择要查看的文件")
     await until("切换目录释放旧句柄", () => requests.some(([channel, handle]) => channel === channels.close && handle === explorerHandle))
-    await assert.rejects(evaluate(`window.nicodeBrowser.listExplorerDirectory(${JSON.stringify(explorerHandle)}, "")`), /目录访问已失效/)
+    await assert.rejects(evaluate(`window.minouBrowser.listExplorerDirectory(${JSON.stringify(explorerHandle)}, "")`), /目录访问已失效/)
     await click(row("另一份.txt"))
     await until("预览第二个项目目录的文件", () => evaluate(`${preview}.querySelector("pre")?.textContent === "另一个项目目录的文件"`))
     const secondHandle = requests.filter(([channel]) => channel === channels.list).at(-1)[1]

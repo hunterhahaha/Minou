@@ -18,7 +18,7 @@ import { SessionRuntime } from "../src/session-runtime.ts"
  * @throws Error Session、本地 HTTP 或断言失败。
  */
 async function main(): Promise<void> {
-  const profile = await mkdtemp(join(tmpdir(), "nicode-web-turn-"))
+  const profile = await mkdtemp(join(tmpdir(), "minou-web-turn-"))
   const fullText = "Session full content 中文😀\n".repeat(3000)
   let modelText = ""
   const server = createServer((request, response) => {

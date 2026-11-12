@@ -1,4 +1,4 @@
-# NiCode 开发与验证指南
+# Minou 开发与验证指南
 
 本文依据当前 [package.json](../package.json)、TypeScript 配置、开发脚本和实际测试文件整理，供定位代码与选择验证入口。开发约定统一由 [AGENTS.md](../AGENTS.md) 管理；本文列出可执行方式，不表示每次任务都必须运行全部检查。
 
@@ -40,7 +40,7 @@
 | `npm run cli -- run ...` | 手动调用编译后的 CLI 入口 |
 | `npm run test:cli` | 先编译，再运行 CLI 协议和真实子进程集成测试 |
 
-[scripts/dev-electron.mjs](../scripts/dev-electron.mjs) 在 `127.0.0.1:5173` 启动 Vite，并通过 `NICODE_RENDERER_URL` 交给 Electron。React / CSS 变更使用 HMR；主进程和 preload 改动需要重新启动命令。
+[scripts/dev-electron.mjs](../scripts/dev-electron.mjs) 在 `127.0.0.1:5173` 启动 Vite，并通过 `MINOU_RENDERER_URL` 交给 Electron。React / CSS 变更使用 HMR；主进程和 preload 改动需要重新启动命令。
 
 构建后运行 `node test/main/electron-tray.test.cjs` 可验证桌面入口的原生托盘对象、窗口恢复、单实例、设置写入失败和重启持久化、退出清理。测试使用临时用户目录与真实 Electron 进程，通过托盘事件和菜单回调触发操作。通知区域的实体点击仍需在对应平台桌面核对。
 

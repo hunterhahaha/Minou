@@ -30,13 +30,13 @@ class FakeBackend implements PtyBackend {
  * @throws Error - 断言、临时存储或本机后端验证失败；顶层测试出口记录异常并设置失败退出码。
  */
 async function main(): Promise<void> {
-  const directory = await mkdtemp(join(tmpdir(), "nicode-terminal-"))
+  const directory = await mkdtemp(join(tmpdir(), "minou-terminal-"))
   const backend = new FakeBackend(), router = new TerminalRouter(backend, 20, 100)
   const signal = new AbortController().signal
   try {
     const events: PtyEvent[] = []
     const parser = new PtyMarkerParser("nonce", (event) => events.push(event))
-    const marker = "\x1b]633;NiCode;nonce;D;1;" + Buffer.from(directory).toString("base64") + "\x07"
+    const marker = "\x1b]633;Minou;nonce;D;1;" + Buffer.from(directory).toString("base64") + "\x07"
     parser.push("before" + marker.slice(0, 17)); parser.push(marker.slice(17) + "after")
     assert.deepEqual(events, [{ type: "data", data: "before" }, { type: "done", run: 1, cwd: directory }, { type: "data", data: "after" }])
     const first = await router.open("default", "one", directory, directory, signal)

@@ -36,7 +36,7 @@ async function skill(source: string, name: string, description: string): Promise
  * @throws AssertionError 行为与 Skill 来源或元信息契约不符时抛出；文件系统错误也会向上传递。
  */
 async function main(): Promise<void> {
-  const root = await mkdtemp(join(tmpdir(), "nicode-skill-"))
+  const root = await mkdtemp(join(tmpdir(), "minou-skill-"))
   try {
     const global = join(root, "skills"), project = join(root, "sessions", PROJECT, "skills")
     await mkdir(join(root, "sessions", PROJECT), { recursive: true })

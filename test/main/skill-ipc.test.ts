@@ -28,7 +28,7 @@ class FakeIpc implements IpcMainHandlePort {
 
 /** @returns 输入校验、隔离、实时生效和失败恢复验证完成。 @throws AssertionError 行为不符。 */
 async function main(): Promise<void> {
-  const profile = await mkdtemp(join(tmpdir(), "nicode-skill-ipc-"))
+  const profile = await mkdtemp(join(tmpdir(), "minou-skill-ipc-"))
   try {
     const paths = await initializeConfigFiles(profile)
     const manager = new SkillManager(paths.rootDir, () => 1)

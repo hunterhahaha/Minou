@@ -11,7 +11,7 @@ import type { ToolCallContext } from "../src/types.ts"
  * @throws Error - 断言、临时存储或本机后端验证失败；顶层测试出口记录异常并设置失败退出码。
  */
 async function main(): Promise<void> {
-  const directory = await mkdtemp(join(tmpdir(), "nicode-shell-"))
+  const directory = await mkdtemp(join(tmpdir(), "minou-shell-"))
   const router = new ShellRouter()
   try {
     const signal = new AbortController().signal

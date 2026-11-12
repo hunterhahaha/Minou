@@ -7,7 +7,7 @@ import { RenderRegistry, ToolRegistry } from "../../runtime/tools/src/index.ts"
 import type { ConfigFilePaths } from "../../src/main/config-files.ts"
 import { SessionRuntimeGlobal } from "../../src/main/session-runtime-global.ts"
 
-const rootDir = join(process.cwd(), ".nicode")
+const rootDir = join(process.cwd(), ".minou")
 const paths: ConfigFilePaths = {
   rootDir,
   configPath: join(rootDir, "config.json"),

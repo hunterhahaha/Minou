@@ -22,7 +22,7 @@ import {
 
 /** 在隔离目录运行数据库断言。 */
 async function withDatabase(test: (path: string) => Promise<void> | void): Promise<void> {
-  const directory = await mkdtemp(join(tmpdir(), "nicode-provider-store-"))
+  const directory = await mkdtemp(join(tmpdir(), "minou-provider-store-"))
   try {
     await test(join(directory, "providers.sqlite"))
   } finally {

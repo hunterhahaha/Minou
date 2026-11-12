@@ -14,7 +14,7 @@ import { executeWebSearch } from "../../runtime/tools/src/web-search/search.ts"
  * @throws Error 任一请求、边界或结果断言失败。
  */
 async function main(): Promise<void> {
-  const root = await mkdtemp(join(tmpdir(), "nicode-search-providers-"))
+  const root = await mkdtemp(join(tmpdir(), "minou-search-providers-"))
   const originalFetch = globalThis.fetch
   try {
     const database = join(root, "search.sqlite")

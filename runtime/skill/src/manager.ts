@@ -261,7 +261,7 @@ function readDescription(content: string, path: string): string {
  */
 export class SkillManager {
   /**
-   * 已规范化的 `.nicode` 绝对路径。
+   * 已规范化的 `.minou` 绝对路径。
    */
   private readonly rootDirectory: string
   /**
@@ -272,7 +272,7 @@ export class SkillManager {
   /**
    * 创建共享来源管理器；构造过程只保存依赖，不访问磁盘。
    *
-   * @param rootDirectory `.nicode` 根目录的绝对路径。
+   * @param rootDirectory `.minou` 根目录的绝对路径。
    * @param estimate 现有的本地 Token 估算器。
    * @throws Error 根目录不是绝对路径时抛出。
    */

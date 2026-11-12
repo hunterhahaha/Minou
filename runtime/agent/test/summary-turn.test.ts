@@ -580,7 +580,7 @@ async function testInterruptedReplay(root: string): Promise<void> {
  * @throws AssertionError 验证失败。
  */
 async function main(): Promise<void> {
-  const root = await mkdtemp(join(tmpdir(), "nicode-summary-"))
+  const root = await mkdtemp(join(tmpdir(), "minou-summary-"))
   try {
     await testImmediateUsage(root)
     await testRepeatedCompression(root)

@@ -58,7 +58,7 @@ export function SkillSettings({ projects, onReloadProjects, skillsByScope, onSki
     onSkillsChange((previous) => ({ ...previous, [scopeKey]: { ...previous[scopeKey], status: "loading", error: undefined } }))
     const request = (async () => {
       try {
-        const skills = await window.nicode.listSkills(target)
+        const skills = await window.minou.listSkills(target)
         onSkillsChange((previous) => ({ ...previous, [scopeKey]: { status: "ready", skills } }))
       } catch (error) {
         onSkillsChange((previous) => ({ ...previous, [scopeKey]: { ...previous[scopeKey], status: "error", error: error instanceof Error ? error.message : String(error) } }))
@@ -85,7 +85,7 @@ export function SkillSettings({ projects, onReloadProjects, skillsByScope, onSki
     setOperationError(null)
     const request = (async () => {
       try {
-        const saved = await window.nicode.setSkillEnabled(target, entry.name, enabled)
+        const saved = await window.minou.setSkillEnabled(target, entry.name, enabled)
         onSkillsChange((previous) => ({ ...previous, [scopeKey]: {
           ...previous[scopeKey],
           skills: previous[scopeKey].skills!.map((item) => item.name === saved.name ? { ...item, ...saved } : item),

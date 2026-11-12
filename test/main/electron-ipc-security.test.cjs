@@ -13,7 +13,7 @@ const { MCPManager } = require('../../dist/runtime/mcp/src/manager.js')
 
 /** @returns 外部导航被拦截，绕过导航的外部文档也无法启动 MCP。 */
 async function main() {
-  const root = await mkdtemp(join(tmpdir(), 'nicode-ipc-security-'))
+  const root = await mkdtemp(join(tmpdir(), 'minou-ipc-security-'))
   app.setPath('userData', root)
   await app.whenReady()
   const configPath = join(root, 'config.json')
@@ -42,7 +42,7 @@ async function main() {
     windows.createMainWindow()
     const window = BrowserWindow.getAllWindows()[0]
     await new Promise(resolve => window.webContents.once('did-finish-load', resolve))
-    assert.deepEqual(await window.webContents.executeJavaScript('window.nicode.listMcpServers()'), [])
+    assert.deepEqual(await window.webContents.executeJavaScript('window.minou.listMcpServers()'), [])
     const initialUrl = window.webContents.getURL()
     await window.webContents.executeJavaScript("document.getElementById('external').click()")
     await new Promise(resolve => setImmediate(resolve))
@@ -54,9 +54,9 @@ async function main() {
     // Main-process loadURL is outside will-navigate: IPC must reject the new document independently.
     await window.loadURL(external)
     const config = { name: 'must-not-start', enabled: true, transport: 'stdio', command: process.execPath, args: ['--version'] }
-    await assert.rejects(window.webContents.executeJavaScript(`window.nicode.createMcpServer(${JSON.stringify(config)})`), /IPC 请求来源无效/)
-    await assert.rejects(window.webContents.executeJavaScript('window.nicodeBrowser.openFileExplorer()'), /IPC 请求来源无效/)
-    await assert.rejects(window.webContents.executeJavaScript('window.nicodeBrowser.listExplorerDirectory("unknown", "")'), /IPC 请求来源无效/)
+    await assert.rejects(window.webContents.executeJavaScript(`window.minou.createMcpServer(${JSON.stringify(config)})`), /IPC 请求来源无效/)
+    await assert.rejects(window.webContents.executeJavaScript('window.minouBrowser.openFileExplorer()'), /IPC 请求来源无效/)
+    await assert.rejects(window.webContents.executeJavaScript('window.minouBrowser.listExplorerDirectory("unknown", "")'), /IPC 请求来源无效/)
     assert.equal(await readFile(configPath, 'utf8'), initial)
     assert.deepEqual(manager.getConnectionStates(), [])
     window.destroy()

@@ -14,7 +14,7 @@ export { executeWebSearch, WEB_SEARCH_TIMEOUT_MS } from "./search.ts"
  * 登记只接收 query 的内置搜索工具及其结果整理器，不读取数据库或发起请求。
  * @param tools 宿主共享工具注册表。
  * @param renders 同名结果整理器注册表。
- * @param databasePath 用户 .nicode 下的搜索配置数据库绝对路径。
+ * @param databasePath 用户 .minou 下的搜索配置数据库绝对路径。
  * @param estimateTokens 宿主现有的本地 token 粗估函数，用于限制摘要。
  * @throws Error 名称冲突或工具定义登记失败。
  */

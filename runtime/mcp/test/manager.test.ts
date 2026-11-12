@@ -147,7 +147,7 @@ async function testHTTP(): Promise<void> {
 
 /** STDIO 的真实子进程、环境边界和退出资源清理。 */
 async function testStdio(): Promise<void> {
-  const cwd = await mkdtemp(join(tmpdir(), "nicode-mcp-"))
+  const cwd = await mkdtemp(join(tmpdir(), "minou-mcp-"))
   const manager = new MCPManager((text) => Math.ceil(text.length / 4))
   process.env.MCP_INHERITED = "must-not-inherit"
   try {

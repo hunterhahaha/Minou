@@ -28,7 +28,7 @@ class TestIpc {
 
 /** @returns 两种配置的 IPC、文件错误、连接恢复和串行边界验证完成。 */
 async function main(): Promise<void> {
-  const root = await mkdtemp(join(tmpdir(), "nicode-mcp-ipc-"))
+  const root = await mkdtemp(join(tmpdir(), "minou-mcp-ipc-"))
   const configPath = join(root, "config.json")
   const initial = { version: 2, runtime: { userMessageMode: "insert" }, mcpServers: [] }
   await writeFile(configPath, JSON.stringify(initial))
@@ -77,7 +77,7 @@ async function main(): Promise<void> {
     const local = manager.listTools().find((tool) => tool.serverId === "local")!
     assert.ok(local)
     assert.deepEqual(listed[1].config, { ...stdio, enabled: true })
-    listed = await ipc.invoke(channels.updateMcpServer, "local", { ...stdio, enabled: true, command: "nicode-fixture-missing-command" })
+    listed = await ipc.invoke(channels.updateMcpServer, "local", { ...stdio, enabled: true, command: "minou-fixture-missing-command" })
     assert.equal(listed[1].status, "error", "连接失败应返回已保存的错误状态")
     assert.equal((await readConfigFile(configPath)).mcpServers[1].enabled, true)
     listed = await ipc.invoke(channels.updateMcpServer, "local", { ...stdio, enabled: true })

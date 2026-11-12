@@ -32,7 +32,7 @@ function reply(response: ServerResponse, first: boolean): void {
  * @throws Error 子进程、HTTP 或断言失败。
  */
 async function main(): Promise<void> {
-  const directory = await mkdtemp(join(tmpdir(), "nicode-cli-web-"))
+  const directory = await mkdtemp(join(tmpdir(), "minou-cli-web-"))
   let searchCalls = 0, modelCalls = 0
   let serverError: unknown
   const server = createServer((request, response) => {

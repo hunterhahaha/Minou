@@ -91,7 +91,7 @@ async function openMcp() {
 /** @returns 真实页面的配置、状态同步、恢复和回归场景完成。 */
 async function main() {
   registerWindowIpcHandlers(ipcMain, BrowserWindow)
-  profile = await mkdtemp(join(tmpdir(), "nicode-electron-mcp-"))
+  profile = await mkdtemp(join(tmpdir(), "minou-electron-mcp-"))
   app.setPath("userData", join(profile, "electron-user-data"))
   paths = await initializeConfigFiles(profile)
   await manager.initialize([])
@@ -304,7 +304,7 @@ async function main() {
   window.setSize(1200, 900)
   await click('[aria-label="新增供应商"]')
   await until(() => evaluate("Boolean(document.querySelector('.provider-create-form'))"))
-  assert.deepEqual(await evaluate("window.nicode.listCompatibleProviders()"), [
+  assert.deepEqual(await evaluate("window.minou.listCompatibleProviders()"), [
     { name: "Protocol fixture", protocol: ["responses", "chat_completions"] },
     { name: "Messages fixture", protocol: ["anthropic_messages"] },
   ], "列表中每个供应商名称只返回一项，协议使用数组")
@@ -341,7 +341,7 @@ async function main() {
   await click('[aria-label="删除 MCP"]'); await idle()
   assert.deepEqual((await readConfigFile(paths.configPath)).mcpServers, [])
   assert.deepEqual(manager.listTools(), [])
-  assert.equal(await evaluate(`typeof require === 'undefined' && typeof window.nicode.reloadMcpServers === 'function'`), true)
+  assert.equal(await evaluate(`typeof require === 'undefined' && typeof window.minou.reloadMcpServers === 'function'`), true)
   assert.deepEqual(rendererErrors, [])
   console.log("electron-mcp-settings.test.cjs: 双传输、多值、持久化、启用/改名/删除、刷新、失败恢复、忙碌保护、窄窗口及模型设置回归通过")
 }

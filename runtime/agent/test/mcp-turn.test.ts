@@ -29,7 +29,7 @@ const MESSAGE = [{ type: "text" as const, text: "测试 MCP" }]
  * @throws AssertionError 数据流、状态或调用事件偏离契约。
  */
 async function main(): Promise<void> {
-  const root = await mkdtemp(join(tmpdir(), "nicode-mcp-turn-"))
+  const root = await mkdtemp(join(tmpdir(), "minou-mcp-turn-"))
   const fixture = await createMCPTestServer([testTool("send_event", "calendar schedule event")])
   const paths = await initializeConfigFiles(root)
   const tools = new ToolRegistry(), renders = new RenderRegistry()

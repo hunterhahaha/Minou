@@ -12,7 +12,7 @@ const selection = [{ level1: "工具", level2: ["文件"] }]
 
 /** @returns 正常、错误与恢复路径验证完成。 @throws AssertionError 行为偏离存储契约。 */
 async function main(): Promise<void> {
-  const root = await mkdtemp(join(tmpdir(), "nicode-memory-"))
+  const root = await mkdtemp(join(tmpdir(), "minou-memory-"))
   const directory = join(root, "sessions", "default")
   const path = join(directory, "memory.md")
   try {

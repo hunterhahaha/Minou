@@ -32,16 +32,16 @@ export function ReferencedFilePreview({ reference, theme }: { reference: FileRef
   useEffect(() => {
     let active = true
     let handle: string | undefined
-    void window.nicodeBrowser.openFileExplorer({ projectId, directoryPath }).then(
+    void window.minouBrowser.openFileExplorer({ projectId, directoryPath }).then(
       (root) => {
-        if (!active) void window.nicodeBrowser.closeFileExplorer(root.handle).catch(console.error)
+        if (!active) void window.minouBrowser.closeFileExplorer(root.handle).catch(console.error)
         else { handle = root.handle; setResult({ handle }) }
       },
       (error: unknown) => { if (active) setResult({ error: error instanceof Error ? error.message : String(error) }) },
     )
     return () => {
       active = false
-      if (handle) void window.nicodeBrowser.closeFileExplorer(handle).catch(console.error)
+      if (handle) void window.minouBrowser.closeFileExplorer(handle).catch(console.error)
     }
   }, [projectId, directoryPath])
   return <section className="file-explorer" aria-label="文件预览">
@@ -111,7 +111,7 @@ export function FilePreview({ handle, path, absolutePath, theme }: FilePreviewPr
   const [attempt, setAttempt] = useState(0)
   useEffect(() => {
     let active = true
-    void window.nicodeBrowser.readExplorerFile(handle, path, absolutePath).then(
+    void window.minouBrowser.readExplorerFile(handle, path, absolutePath).then(
       (file) => { if (active) setResult({ file }) },
       (error: unknown) => { if (active) setResult({ error: error instanceof Error ? error.message : String(error) }) },
     )
