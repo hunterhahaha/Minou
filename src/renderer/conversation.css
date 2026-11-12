@@ -14,7 +14,8 @@
 .phase-loading .status-dot { background: var(--muted); }
 .chat-scroll { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; }
 .chat-messages, .chat-footer { width: min(820px, 100%); margin: 0 auto; padding: 20px 40px; }
-.chat-footer { position: relative; flex: none; padding-top: 12px; padding-bottom: 16px; container-type: inline-size; }
+.chat-footer { --scroll-button-size: 40px; position: relative; flex: none; padding-top: 12px; padding-bottom: 16px; container-type: inline-size; }
+@media (pointer: coarse) { .chat-footer { --scroll-button-size: 44px; } }
 .session-usage-anchor { position: relative; flex: none; }
 .session-usage-trigger { display: grid; place-items: center; width: var(--size-control); height: var(--size-control); padding: 0; border: 0; border-radius: var(--radius-control); color: var(--secondary); background: transparent; }
 .session-usage-trigger:hover { background: var(--hover); }
@@ -116,8 +117,24 @@
 .working-dots i:nth-child(2) { animation-delay: .2s; }
 .working-dots i:nth-child(3) { animation-delay: .4s; }
 @keyframes working { 0%, 70%, 100% { opacity: .3; } 35% { opacity: 1; } }
-.scroll-to-bottom { position: absolute; z-index: 2; bottom: calc(100% - 2px); left: 50%; display: flex; align-items: center; gap: 5px; transform: translateX(-50%); height: 29px; padding: 0 10px; border: 0; border-radius: 5px; color: var(--secondary); background: transparent; font-size: var(--font-size-ui); line-height: var(--line-height-ui); }
-.scroll-to-bottom:hover { background: var(--hover); }
+.scroll-to-bottom {
+  position: absolute;
+  z-index: 2;
+  bottom: calc(100% - 2px);
+  left: 50%;
+  transform: translateX(-50%);
+  display: grid;
+  place-items: center;
+  width: var(--scroll-button-size);
+  height: var(--scroll-button-size);
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  color: var(--secondary);
+  background: var(--surface);
+  box-shadow: var(--shadow-small);
+}
+.scroll-to-bottom:hover { color: var(--text-strong); background: var(--hover); }
 /* 长代码保留独立横向滚动，不撑大页面。 */
 .markdown-content { white-space: normal; }
 .markdown-content p { margin: 0 0 .85em; }
@@ -223,5 +240,5 @@
 .turn-file-changes p { margin: 0 var(--space-1); font-size: var(--font-size-note); }
 
 .transcript-footer { padding-block: 0; }
-.transcript-footer:has(.scroll-to-bottom) { padding-block-end: var(--size-control); }
+.transcript-footer:has(.scroll-to-bottom) { padding-block-end: var(--scroll-button-size); }
 .transcript-footer .scroll-to-bottom { bottom: 0; }

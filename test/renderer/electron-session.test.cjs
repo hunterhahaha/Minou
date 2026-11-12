@@ -233,6 +233,26 @@ async function main() {
     const scroll = document.querySelector('.chat-scroll')
     return scroll.scrollHeight > scroll.clientHeight && scroll.scrollHeight - scroll.clientHeight - scroll.scrollTop <= 2
   })()`))
+  assert.equal(await evaluate("Boolean(document.querySelector('.scroll-to-bottom'))"), false, "位于对话底部时隐藏按钮")
+  await evaluate("document.querySelector('.chat-scroll').scrollTop = 0")
+  await until(() => evaluate("Boolean(document.querySelector('.scroll-to-bottom'))"))
+  assert.equal(await evaluate(`(() => {
+    const button = document.querySelector('[aria-label="回到最新消息"]')
+    const rect = button.getBoundingClientRect()
+    const footer = button.parentElement.getBoundingClientRect()
+    return button.textContent.trim() === "" && Boolean(button.querySelector('svg'))
+      && rect.width === 40 && rect.height === 40 && getComputedStyle(button).borderRadius === "50%"
+      && Math.abs(rect.left + rect.width / 2 - footer.left - footer.width / 2) < 1
+  })()`), true, "上滚后显示居中的圆形下箭头")
+  await copyScreenshot("electron-scroll-to-bottom")
+  await evaluate("document.querySelector('.scroll-to-bottom').click()")
+  await until(() => evaluate(`(() => {
+    const scroll = document.querySelector('.chat-scroll')
+    const messages = scroll.querySelector('.chat-messages')
+    const bottomPadding = parseFloat(getComputedStyle(messages).paddingBottom)
+    return scroll.scrollHeight - scroll.clientHeight - scroll.scrollTop <= bottomPadding + 2
+      && !document.querySelector('.scroll-to-bottom')
+  })()`))
   assert.deepEqual(await evaluate(`Array.from(document.querySelectorAll('.assistant-entry[data-turn]')).map(node => ({
     turn: Number(node.dataset.turn), parent: node.tagName,
     process: node.querySelector(':scope > .turn-process')?.tagName,

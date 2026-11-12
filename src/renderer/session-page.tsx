@@ -267,7 +267,7 @@ export function SessionTranscript({ projectId, sessionId, state, onOpenDiff, onO
       </div>
     </div>
     <div className={footer ? "chat-footer" : "chat-footer transcript-footer"}>
-      {showScrollToBottom && <button type="button" className="scroll-to-bottom" aria-label="回到最新消息" onClick={() => { followsRef.current = true; setShowScrollToBottom(false); endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" }) }}><IconArrowDown size={15} />最新消息</button>}
+      {showScrollToBottom && <button type="button" className="scroll-to-bottom" aria-label="回到最新消息" title="回到最新消息" onClick={() => { followsRef.current = true; setShowScrollToBottom(false); endRef.current?.scrollIntoView({ behavior: "smooth", block: "end" }) }}><IconArrowDown size={16} stroke={1.6} aria-hidden="true" /></button>}
       {footer}
       {!footer && view.operationError && <p className="chat-error" role="alert">{view.operationError}</p>}
     </div>
