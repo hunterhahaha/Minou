@@ -8,6 +8,8 @@ import type { ToolCallContext } from "../src/types.ts"
 
 /** 可控终端，模拟标记、持续输出、退出和拒绝 Ctrl+C。 */
 class FakeBackend implements PtyBackend {
+  failDisposal = false
+  peak = 0
   readonly children: Array<{ receive: (event: PtyEvent) => void; input: string[]; disposed: boolean }> = []
   /**
    * 创建可控的测试终端句柄，异步报告首次就绪，并记录输入与清理调用。
@@ -19,8 +21,12 @@ class FakeBackend implements PtyBackend {
   spawn(cwd: string, _nonce: string, receive: (event: PtyEvent) => void): PtyProcess {
     const child = { receive, input: [] as string[], disposed: false }
     this.children.push(child)
+    this.peak = Math.max(this.peak, this.children.filter((entry) => !entry.disposed).length)
     queueMicrotask(() => receive({ type: "done", run: 0, cwd }))
-    return { write: (input) => { child.input.push(input) }, dispose: async () => { child.disposed = true } }
+    return { write: (input) => { child.input.push(input) }, dispose: async () => {
+      if (this.failDisposal) throw new Error("simulated cleanup failure")
+      child.disposed = true
+    } }
   }
 }
 
@@ -109,10 +115,11 @@ async function main(): Promise<void> {
     const execute = createExecuteToolCall(tools, renders)
     const context: ToolCallContext = { turn: 1, step: 1, blockId: "block", toolCallId: "tool", signal,
       processRuntime: { projectId: "default", sessionId: "two", outputDirectory: directory, requestApproval: async () => { approvals++; return "denied" } } }
-    assert.equal((await execute("terminal_list", {}, context)).status, "success")
+    assert.deepEqual(tools.listDefinitions().map(({ name }) => name), ["terminal_open", "terminal_input"])
     assert.equal(approvals, 0)
     assert.equal((await execute("terminal_input", { terminalId: other.id, input: "" }, context)).status, "error")
-    assert.equal(approvals, 1)
+    assert.equal((await execute("terminal_open", { command: "echo test" }, context)).status, "error")
+    assert.equal(approvals, 2)
     assert.equal((await execute("terminal_open", { cwd: directory }, context)).status, "error")
     assert.equal((await execute("terminal_open", { constructor: "unexpected" }, context)).status, "error")
     let startupDisposals = 0
@@ -124,10 +131,39 @@ async function main(): Promise<void> {
     const openingController = new AbortController()
     const cancelledOpen = opening.open("default", "startup", directory, directory, openingController.signal)
     const rejectedOpen = assert.rejects(() => cancelledOpen, /取消/)
+    await Promise.resolve()
     openingController.abort()
     await rejectedOpen
     assert.equal(startupDisposals, 2)
     await opening.dispose()
+
+    const capacityBackend = new FakeBackend()
+    const capacity = new TerminalRouter(capacityBackend, 20, 100)
+    try {
+      const first = await capacity.openAndRun("other", "first", directory, directory, "echo first", "open", signal)
+      assert.deepEqual(capacityBackend.children[0].input, ["echo first\r"])
+      const second = await capacity.open("default", "second", directory, directory, signal)
+
+      const collecting = capacity.input("default", "second", second.id, "long\r", "eviction", signal)
+      const evicted = assert.rejects(collecting, { code: "TERMINAL_EVICTED" })
+      capacityBackend.children[1].receive({ type: "start", run: 1 })
+      await Promise.all(Array.from({ length: 30 }, () => capacity.open("default", "rest", directory, directory, signal)))
+      await capacity.input("other", "first", first.terminalId, "", "refresh", signal)
+      capacityBackend.failDisposal = true
+      await assert.rejects(capacity.open("other", "new", directory, directory, signal), { code: "TERMINAL_CLEANUP_FAILED" })
+      await evicted
+      assert.equal(capacityBackend.children.length, 32)
+      assert.equal(capacityBackend.children[1].disposed, false)
+      await assert.rejects(capacity.input("default", "second", second.id, "", "evicted", signal), { code: "TERMINAL_NOT_FOUND" })
+      capacityBackend.failDisposal = false
+      await Promise.all(Array.from({ length: 4 }, () => capacity.open("other", "new", directory, directory, signal)))
+      assert.equal(capacityBackend.children.filter((child) => !child.disposed).length, 32)
+      assert.equal(capacityBackend.peak, 32)
+      assert.equal(capacityBackend.children[0].disposed, false)
+      assert.equal(capacityBackend.children[1].disposed, true)
+    } finally { await capacity.dispose() }
+    assert.ok(capacityBackend.children.every((child) => child.disposed))
+    await assert.rejects(capacity.open("default", "after-quit", directory, directory, signal), { code: "CANCELLED" })
   } finally { await router.dispose(); await rm(directory, { recursive: true, force: true }) }
   console.log("terminal tools tests passed")
 }

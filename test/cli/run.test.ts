@@ -286,10 +286,22 @@ async function main(): Promise<void> {
     const pid = Number((await readFile(pidPath, "utf8")).trim())
     assert.ok(pid > 0)
     assert.throws(() => process.kill(pid, 0), "取消后真实 Shell 进程必须已经释放")
-    const terminalCase = await run({ permissions: { auto_approve: { groups: ["terminal"] } } }, (_body, attempt, response) => attempt === 1
-      ? reply(response, [{ name: "terminal_open", args: {} }], "") : reply(response))
+    const terminalPidPath = join(root, "terminal-pid.txt")
+    const terminalCase = await run({ permissions: { auto_approve: { groups: ["terminal"] } } }, (body, attempt, response) => {
+      assert.deepEqual(body.tools.map((tool) => tool.function.name).filter((name) => name.startsWith("terminal_")).sort(), ["terminal_input", "terminal_open"])
+      if (attempt === 1) {
+        reply(response, [{ name: "terminal_open", args: { command: `$PID | Set-Content -LiteralPath '${terminalPidPath.replaceAll("'", "''")}'` } }], "")
+      } else if (attempt === 2) {
+        const terminalId = /Terminal ID: (term_[^\s]+)/.exec(body.messages.at(-1)!.content)?.[1]
+        assert.ok(terminalId)
+        reply(response, [{ name: "terminal_input", args: { terminalId, input: "" } }], "")
+      } else reply(response)
+    })
     assert.equal(terminalCase.code, 0, terminalCase.stderr)
-    assert.equal(terminalCase.events.find((event) => event.type === "tool.completed")?.data.status, "success", "真实 Node 必须能加载 node-pty")
+    assert.deepEqual(terminalCase.events.filter((event) => event.type === "tool.completed").map((event) => event.data.status), ["success", "success"])
+    const terminalPid = Number((await readFile(terminalPidPath, "utf8")).trim())
+    assert.ok(terminalPid > 0)
+    assert.throws(() => process.kill(terminalPid, 0), "CLI 收尾后真实 PTY 进程必须已经释放")
     const broken = await run({}, undefined, [], true)
     assert.equal(broken.code, 1)
     assert.equal(broken.result.status, "failed")

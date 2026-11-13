@@ -209,7 +209,7 @@ CLI 沿用现有权限规则，不等待 UI 审批。权限判断需要审批时
 | --- | --- |
 | `file` | `glob`、`grep`、`read`、`write`、`edit` |
 | `shell` | `shell` |
-| `terminal` | `terminal_open`、`terminal_input`、`terminal_close`、`terminal_list` |
+| `terminal` | `terminal_open`、`terminal_input` |
 | `mcp` | `mcp_list_tools`、`mcp_load_tools`、`tool_search`，以及注册元数据为 `kind=mcp` 的远端工具 |
 | `skill` | `skill_load` |
 | `memory` | `memory_list`、`memory_read`、`memory_write` |

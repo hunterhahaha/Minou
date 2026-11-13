@@ -8,8 +8,11 @@ export interface TerminalState {
   /** 仅由命令开始/完成标记更新；unknown 用于尚未就绪或已退出记录。 */
   status: "unknown" | "running" | "idle"
 }
-/** 打开终端不接受模型指定 cwd。 */
-export type TerminalOpenInput = Record<string, never>
+/** 新建终端并提交的首条命令，工作目录由 Runtime 决定。 */
+export interface TerminalOpenInput {
+  /** 非空白的 PowerShell 命令。 */
+  command: string
+}
 /** 原样发送命令、交互字符或空输入轮询。 */
 export interface TerminalInputInput {
   /** 当前 Session 的目标终端。 */
@@ -17,21 +20,8 @@ export interface TerminalInputInput {
   /** 原样写入；提交命令须包含回车，空字符串仅收集输出。 */
   input: string
 }
-/** 显式关闭当前 Session 的终端。 */
-export interface TerminalCloseInput {
-  /** 目标终端身份。 */
-  terminalId: string
-}
-/** 查询当前 Session 活动终端，不触发进程审批。 */
-export type TerminalListInput = Record<string, never>
-/** 打开成功后的终端快照。 */
-export interface TerminalOpenResult { /** 已就绪终端。 */ terminal: TerminalState }
 /** 单次收集窗口的输出与状态快照。 */
 export interface TerminalInputResult extends ProcessOutputResult {
   /** 对应终端身份。 */ terminalId: string
   /** 收集边界时的状态；后续事件不修改该结果。 */ status: TerminalState["status"]
 }
-/** 关闭确认，不附带未读输出。 */
-export interface TerminalCloseResult { /** 已关闭身份。 */ terminalId: string; /** 明确关闭成功。 */ closed: true }
-/** 当前 Session 的活动终端快照。 */
-export interface TerminalListResult { /** 已退出进程不包含在此列表。 */ terminals: TerminalState[] }

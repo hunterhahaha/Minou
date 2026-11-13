@@ -18,7 +18,6 @@ export const SHARED_READ_ONLY_TOOLS = [
   "glob",
   "grep",
   "read",
-  "terminal_list",
   "skill_load",
   "memory_list",
   "memory_read",

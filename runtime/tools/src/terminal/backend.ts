@@ -135,19 +135,24 @@ $ErrorActionPreference = 'Continue'
     const pty = require("node-pty") as { spawn(file: string, args: string[], options: object): IPty }
     const child = pty.spawn(executable, ["-NoLogo", "-NoProfile", "-NoExit", "-OutputFormat", "Text", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], { cwd, cols: 120, rows: 30, name: "xterm-256color", env: { ...process.env, TERM: "xterm-256color" } })
     let disposed = false
+    let killRequested = false
     let resolveExit!: () => void
     const exitedPromise = new Promise<void>((resolve) => { resolveExit = resolve })
     const parser = new PtyMarkerParser(nonce, (event) => { if (!disposed) receive(event) })
     const data = child.onData((text) => parser.push(text))
-    const exit = child.onExit(() => { resolveExit(); if (!disposed) { parser.end(); receive({ type: "exit" }) } })
+    const exit = child.onExit(() => { resolveExit(); if (!disposed) parser.end(); receive({ type: "exit" }) })
     return {
       write: (input) => child.write(input),
       dispose: async () => {
-        if (disposed) { await exitedPromise; return }
         disposed = true
         data.dispose()
         /** node-pty 的系统 ConPTY 路径在自然退出后仍需 kill 释放输出辅助线程。 */
-        try { child.kill(); await exitedPromise } finally { exit.dispose() }
+        if (!killRequested) {
+          child.kill()
+          killRequested = true
+        }
+        await exitedPromise
+        exit.dispose()
       },
     }
   }

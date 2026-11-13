@@ -21,15 +21,14 @@ async function main(): Promise<void> {
       await assert.rejects(() => unavailable.open("default", "missing", directory, directory, signal), (error: unknown) =>
         error instanceof Error && "code" in error && error.code === "TERMINAL_START_FAILED" && error.message.includes(missing))
     } finally { await unavailable.dispose() }
-    const terminal = await router.open("default", "one", directory, directory, signal)
-    assert.equal(terminal.status, "idle")
-    const result = await router.input("default", "one", terminal.id, "[Console]::WriteLine('PTY_OK_你好|' + $PSVersionTable.PSVersion.Major + '|' + $PSHOME + '|')\r", "first", signal)
+    const result = await router.openAndRun("default", "one", directory, directory, "[Console]::WriteLine('PTY_OK_你好|' + $PSVersionTable.PSVersion.Major + '|' + $PSHOME + '|')\r", "first", signal)
     assert.equal(result.status, "idle")
+    const terminalId = result.terminalId
     let initialOutput = result.output
     const host = /PTY_OK_你好\|7\|([^|\r\n]+)\|/
     for (let attempt = 0; attempt < 20 && !host.test(initialOutput); attempt++) {
       await new Promise((resolve) => setTimeout(resolve, 20))
-      initialOutput += (await router.input("default", "one", terminal.id, "", `initial-late-${attempt}`, signal)).output
+      initialOutput += (await router.input("default", "one", terminalId, "", `initial-late-${attempt}`, signal)).output
     }
     const home = host.exec(initialOutput)?.[1]
     assert.ok(home, JSON.stringify(initialOutput))
@@ -37,24 +36,24 @@ async function main(): Promise<void> {
     assert.equal(result.output.includes("Minou;"), false)
     const childDirectory = join(directory, "cwd-test")
     await mkdir(childDirectory)
-    const moved = await router.input("default", "one", terminal.id, `Set-Location -LiteralPath '${childDirectory.replaceAll("'", "''")}'\r`, "move", signal)
+    const moved = await router.input("default", "one", terminalId, `Set-Location -LiteralPath '${childDirectory.replaceAll("'", "''")}'\r`, "move", signal)
     assert.equal(moved.status, "idle")
     assert.equal((await realpath(router.list("default", "one")[0].cwd)).toLowerCase(), (await realpath(childDirectory)).toLowerCase())
-    const long = await router.input("default", "one", terminal.id, "Start-Sleep -Seconds 30\r", "long", signal)
+    const long = await router.input("default", "one", terminalId, "Start-Sleep -Seconds 30\r", "long", signal)
     assert.equal(long.status, "running")
     router.interrupt("default", "one")
-    const stopped = await router.input("default", "one", terminal.id, "", "stopped", signal)
+    const stopped = await router.input("default", "one", terminalId, "", "stopped", signal)
     assert.equal(stopped.status, "idle")
     assert.equal(router.list("default", "one")[0].status, "idle")
-    const reused = await router.input("default", "one", terminal.id, "[Console]::WriteLine('REUSED')\r", "reuse", signal)
+    const reused = await router.input("default", "one", terminalId, "[Console]::WriteLine('REUSED')\r", "reuse", signal)
     assert.equal(reused.status, "idle")
     let received = reused.output
     for (let attempt = 0; attempt < 20 && !received.includes("REUSED"); attempt++) {
       await new Promise((resolve) => setTimeout(resolve, 20))
-      received += (await router.input("default", "one", terminal.id, "", `late-${attempt}`, signal)).output
+      received += (await router.input("default", "one", terminalId, "", `late-${attempt}`, signal)).output
     }
     assert.ok(received.includes("REUSED"), JSON.stringify(received))
-    await router.close("default", "one", terminal.id)
+    await router.close("default", "one", terminalId)
     const exiting = await router.open("default", "natural-exit", directory, directory, signal)
     const exitResult = await router.input("default", "natural-exit", exiting.id, "exit\r", "natural-exit", signal)
     assert.equal(exitResult.status, "unknown")

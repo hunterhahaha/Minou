@@ -14,6 +14,12 @@ interface TerminalEntry {
   /** 是否已经收到首次就绪标记。 */ ready: boolean
   /** 自然退出，仍可拉取尾部输出。 */ exited: boolean
   /** 显式关闭后忽略所有迟到事件。 */ closed: boolean
+  /** 最近一次被接受的使用时间及同毫秒内的顺序。 */
+  lastUsed: number
+  useOrder: number
+  /** 正在执行的清理和通知等待调用的关闭原因。 */
+  disposal?: Promise<void>
+  closeError?: Error
   /** 输出落盘失败，后续调用返回错误直到关闭。 */ failure?: unknown
   /**
    * 将持续后端事件交给当前打开或输出收集操作；该操作结束后清除此临时出口。
@@ -27,6 +33,11 @@ export class TerminalRouter {
   private readonly backend: PtyBackend
   private readonly collectionMs: number
   private readonly startupMs: number
+  private static readonly limit = 32
+  private static readonly cleanupMs = 5000
+  private openQueue = Promise.resolve()
+  private stopping = false
+  private useOrder = 0
   private readonly sessions = new Map<string, Map<string, TerminalEntry>>()
   /**
    * 绑定 PTY 后端和收集时限；构造时不启动终端进程。
@@ -80,9 +91,34 @@ export class TerminalRouter {
    * @throws Error - 输出目录不可用、启动失败、就绪超时、取消或清理失败；工具调用方负责转换为 AppError。
    */
   async open(projectId: string, sessionId: string, cwd: string, directory: string, signal: AbortSignal): Promise<TerminalState> {
-    if (signal.aborted) throw processException("CANCELLED", "工具调用已取消")
+    const opening = this.openQueue.then(() => this.start(projectId, sessionId, cwd, directory, signal))
+    this.openQueue = opening.then(() => {}, () => {})
+    return opening
+  }
+
+  /**
+   * 在创建队列内回收容量并等待终端就绪。
+   * @param projectId - 项目身份。
+   * @param sessionId - 会话身份。
+   * @param cwd - 初始工作目录。
+   * @param directory - 工具输出目录。
+   * @param signal - 打开操作的取消信号。
+   * @returns 已就绪终端的快照。
+   * @throws Error - 取消、淘汰或启动失败。
+   */
+  private async start(projectId: string, sessionId: string, cwd: string, directory: string, signal: AbortSignal): Promise<TerminalState> {
+    if (signal.aborted || this.stopping) throw processException("CANCELLED", "终端创建已取消")
+    const active = [...this.sessions.values()].flatMap((terminals) => [...terminals.values()]
+      .filter((entry) => !entry.exited)
+      .map((entry) => ({ terminals, entry })))
+    if (active.length >= TerminalRouter.limit) {
+      active.sort((a, b) => a.entry.lastUsed - b.entry.lastUsed || a.entry.useOrder - b.entry.useOrder)
+      const oldest = active[0]
+      await this.remove(oldest.terminals, oldest.entry, processException("TERMINAL_EVICTED", "终端因达到全局数量上限已被淘汰"))
+    }
+    if (signal.aborted || this.stopping) throw processException("CANCELLED", "终端创建已取消")
     const state: TerminalState = { id: `term_${randomUUID()}`, cwd, status: "unknown" }
-    const entry: TerminalEntry = { state, directory, pending: new ToolOutputStore(directory), run: 0, ready: false, exited: false, closed: false }
+    const entry: TerminalEntry = { state, directory, pending: new ToolOutputStore(directory), run: 0, ready: false, exited: false, closed: false, lastUsed: Date.now(), useOrder: ++this.useOrder }
     const terminals = this.terminals(projectId, sessionId)
     terminals.set(state.id, entry)
     try {
@@ -92,7 +128,7 @@ export class TerminalRouter {
         const abort = () => finish(processException("CANCELLED", "工具调用已取消"))
         const timer = setTimeout(() => finish(processException("TERMINAL_START_TIMEOUT", "PTY 未在 10 秒内报告就绪")), this.startupMs)
         entry.notify = (event) => {
-          if (entry.closed) finish(processException("CANCELLED", "终端操作已关闭"))
+          if (entry.closed) finish(entry.closeError)
           else if (entry.failure) finish(entry.failure)
           else if (event.type === "done" && entry.ready) finish()
           else if (event.type === "exit") finish(processException("TERMINAL_START_FAILED", "PTY 在就绪前退出"))
@@ -104,6 +140,30 @@ export class TerminalRouter {
       })
       return { ...state }
     } catch (error) { await this.remove(terminals, entry); throw error }
+  }
+
+  /**
+   * 创建终端并提交首条命令，首次收集失败时清理尚未交付的终端。
+   * @param projectId - 项目身份。
+   * @param sessionId - 会话身份。
+   * @param cwd - 初始工作目录。
+   * @param directory - 工具输出目录。
+   * @param command - 要提交的 PowerShell 命令。
+   * @param callId - 输出日志使用的工具调用身份。
+   * @param signal - 本次调用的取消信号。
+   * @returns 首次收集结果及终端身份。
+   * @throws Error - 启动、输入、收集或清理失败。
+   */
+  async openAndRun(projectId: string, sessionId: string, cwd: string, directory: string, command: string, callId: string, signal: AbortSignal): Promise<TerminalInputResult> {
+    const { id } = await this.open(projectId, sessionId, cwd, directory, signal)
+    const terminals = this.terminals(projectId, sessionId)
+    const entry = this.entry(projectId, sessionId, id)
+    try {
+      return await this.input(projectId, sessionId, id, command.replace(/[\r\n]+$/, "") + "\r", callId, signal)
+    } catch (error) {
+      if (!entry.closed) await this.remove(terminals, entry)
+      throw error
+    }
   }
 
   /**
@@ -124,6 +184,10 @@ export class TerminalRouter {
     if (entry.failure) throw entry.failure
     if (entry.notify) throw processException("TERMINAL_BUSY", "同一终端已有正在执行的操作")
     if (entry.exited && input !== "") throw processException("TERMINAL_EXITED", "终端进程已经退出：" + id)
+    if (!entry.exited) {
+      entry.lastUsed = Date.now()
+      entry.useOrder = ++this.useOrder
+    }
     return new Promise<TerminalInputResult>((resolve, reject) => {
       let settled = false
       let timer: ReturnType<typeof setTimeout> | undefined
@@ -144,7 +208,7 @@ export class TerminalRouter {
       }
       const abort = () => finish(processException("CANCELLED", "工具调用已取消"))
       entry.notify = (event) => {
-        if (entry.closed) finish(processException("CANCELLED", "终端操作已关闭"))
+        if (entry.closed) finish(entry.closeError)
         else if (entry.failure) finish(entry.failure)
         else if (event.type === "exit") finish()
         else if (event.type === "done" && event.run === entry.run && entry.state.status === "idle") {
@@ -194,37 +258,59 @@ export class TerminalRouter {
     return errors
   }
   /**
-   * 应用退出时移除全部终端资源，等待各进程退出并清理未读临时输出；普通 Runtime 活动期关闭不调用此方法。
+   * 停止接收新建请求，并在宿主退出时清理全部终端。
    * @returns 全部清理任务完成时兑现的 Promise。
    * @throws AggregateError - 一个或多个终端清理任务失败；宿主负责报告其中的异常。
    */
   async dispose(): Promise<void> {
+    this.stopping = true
     const pending: Promise<void>[] = []
     for (const terminals of this.sessions.values()) for (const entry of [...terminals.values()]) pending.push(this.remove(terminals, entry))
     const results = await Promise.allSettled(pending)
     const errors = results.filter((result) => result.status === "rejected").map((result) => result.reason)
-    this.sessions.clear()
+    await this.openQueue
     if (errors.length) throw new AggregateError(errors, "部分终端清理失败")
   }
   /**
-   * 先将记录标记为关闭并从字典移除，通知正在等待的操作，然后释放本机进程与未读输出；迟到事件无法恢复该记录。
-   * @param terminals - 目标终端所属的对话资源字典。
-   * @param entry - 需要移除和清理的终端记录。
-   * @returns 进程退出和输出资源清理完成时兑现的 Promise。
-   * @throws Error - 本机进程或输出资源清理失败；记录仍已从活动字典移除。
+   * 关闭终端并等待释放。未确认退出的记录继续占用容量，清理失败后可重试。
+   * @param terminals - 目标终端所属的会话字典。
+   * @param entry - 需要清理的终端。
+   * @param reason - 通知正在等待的工具调用的关闭原因。
+   * @returns 进程和未读输出已清理时兑现。
+   * @throws Error - 清理失败或在时限内尚未完成。
    */
-  private async remove(terminals: Map<string, TerminalEntry>, entry: TerminalEntry): Promise<void> {
-    entry.closed = true
-    terminals.delete(entry.state.id)
-    entry.notify?.({ type: "exit" })
-    try { await entry.process?.dispose() } finally { entry.pending.discard() }
+  private async remove(terminals: Map<string, TerminalEntry>, entry: TerminalEntry, reason = processException("CANCELLED", "终端操作已关闭")): Promise<void> {
+    if (terminals.get(entry.state.id) !== entry) return
+    if (!entry.closed) {
+      entry.closed = true
+      entry.closeError = reason
+      entry.notify?.({ type: "exit" })
+    }
+    entry.disposal ??= Promise.resolve().then(async () => {
+      await entry.process?.dispose()
+      entry.exited = true
+      entry.pending.discard()
+      terminals.delete(entry.state.id)
+    }).finally(() => { entry.disposal = undefined })
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      await Promise.race([
+        entry.disposal,
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => reject(new Error("等待终端退出超时")), TerminalRouter.cleanupMs)
+        }),
+      ])
+    } catch (error) {
+      throw processException("TERMINAL_CLEANUP_FAILED", `终端清理失败：${error instanceof Error ? error.message : String(error)}`)
+    } finally { clearTimeout(timer) }
   }
   /**
-   * 处理持续到来的后端事件：追加未读输出，通过匹配的执行序号更新状态和 cwd，并通知当前打开或收集操作。已关闭记录的事件直接忽略。
+   * 记录退出以释放容量，并为未关闭的终端追加输出、更新状态和通知等待中的操作。
    * @param entry - 接收事件的终端资源记录。
    * @param event - 原始数据、命令开始、命令完成或进程退出事件。
    */
   private receive(entry: TerminalEntry, event: PtyEvent): void {
+    if (event.type === "exit") entry.exited = true
     if (entry.closed) return
     let notify = true
     if (event.type === "data") {
@@ -238,7 +324,6 @@ export class TerminalRouter {
       if (entry.ready && event.run === entry.run && (firstReady || entry.state.status === "running")) { entry.state.status = "idle"; entry.state.cwd = event.cwd }
       else notify = false
     } else if (event.type === "exit") {
-      entry.exited = true
       entry.state.status = "unknown"
     }
     if (notify) entry.notify?.(event)

@@ -56,7 +56,7 @@ async function main(): Promise<void> {
     let step = 0
     return { contextWindow: 128000, maxOutputTokens: 4096, stream: async function* (request, signal) {
       step++
-      assert.ok(["shell", "terminal_open", "terminal_input", "terminal_close", "terminal_list"].every((name) => request.tools?.some((tool) => tool.name === name)))
+      assert.deepEqual(request.tools?.map(({ name }) => name).filter((name) => name.startsWith("terminal_")).sort(), ["terminal_input", "terminal_open"])
       if (turn === 1 && step === 1) await firstGate
       if (turn === 3) {
         modelWaiting()
@@ -70,19 +70,17 @@ async function main(): Promise<void> {
       }
       const calls: Array<{ name: string; arguments: object; toolCallId: string }> = []
       if (turn === 1 && step === 1) {
-        calls.push({ name: "shell", arguments: { command: "[Console]::Write('SHELL_CONTEXT'); exit 7" }, toolCallId: "shell-1" }, { name: "terminal_open", arguments: {}, toolCallId: "open-1" })
+        calls.push({ name: "shell", arguments: { command: "[Console]::Write('SHELL_CONTEXT'); exit 7" }, toolCallId: "shell-1" }, { name: "terminal_open", arguments: { command: "Start-Sleep -Seconds 30" }, toolCallId: "open-1" })
       } else if (turn === 1 && step === 2) {
         assert.match(toolText(request, "shell-1"), /Exit code: 7/)
         assert.match(toolText(request, "shell-1"), /SHELL_CONTEXT/)
         terminalId = /ID: (term_[^\s]+)/.exec(toolText(request, "open-1"))![1]
-        calls.push({ name: "terminal_input", arguments: { terminalId, input: "Start-Sleep -Seconds 30\r" }, toolCallId: "long-1" })
-      } else if (turn === 1 && step === 3) {
-        assert.match(toolText(request, "long-1"), /Status: running/)
+        assert.match(toolText(request, "open-1"), /Status: running/)
       } else if (turn === 2 && step === 1) {
         assert.equal(global.terminalRouter.list("default", sessionId)[0].id, terminalId)
-        calls.push({ name: "terminal_list", arguments: {}, toolCallId: "list-2" })
+        calls.push({ name: "terminal_input", arguments: { terminalId, input: "" }, toolCallId: "poll-2" })
       } else if (turn === 2 && step === 2) {
-        assert.match(toolText(request, "list-2"), /Status: running/)
+        assert.match(toolText(request, "poll-2"), /Status: running/)
       } else if (turn === 4 && step === 1) {
         calls.push({ name: "terminal_input", arguments: { terminalId, input: "[Console]::WriteLine('CONTINUED')\r" }, toolCallId: "reuse-4" })
       } else if (turn === 4 && step === 2) {
@@ -139,7 +137,7 @@ async function main(): Promise<void> {
     const events = await next.readEvents() as readonly SessionEvent[]
     assert.ok(events.some((event) => event.type === "turn/end" && event.reason === "stopped"))
     const results = events.filter((event) => event.type === "tool/result")
-    assert.equal(results.length, polledLateOutput ? 6 : 5)
+    assert.equal(results.length, polledLateOutput ? 5 : 4)
     assert.ok(results.every((event) => event.type === "tool/result" && event.toolCallEventId.length > 0))
     await global.terminalRouter.close("default", sessionId, terminalId)
   } finally { await global.disposeProcessTools(); await rm(profile, { recursive: true, force: true }) }

@@ -107,7 +107,7 @@ export function toolGroup(name: string, registry: ToolRegistry): ToolGroup | und
   if (tool.kind === "mcp") return "mcp"
   if (["glob", "grep", "read", "write", "edit"].includes(name)) return "file"
   if (name === "shell") return "shell"
-  if (["terminal_open", "terminal_input", "terminal_close", "terminal_list"].includes(name)) return "terminal"
+  if (["terminal_open", "terminal_input"].includes(name)) return "terminal"
   if (["mcp_list_tools", "mcp_load_tools", "tool_search"].includes(name)) return "mcp"
   if (name === "skill_load") return "skill"
   if (["memory_list", "memory_read", "memory_write"].includes(name)) return "memory"

@@ -27,7 +27,7 @@ async function main(): Promise<void> {
     { name: "read", arguments: { path: pending } },
     { name: "write", arguments: { path: join(workspace, "write.txt"), content: "direct write" } },
     { name: "shell", arguments: { command: "Write-Output offline" } },
-    { name: "terminal_open", arguments: {} },
+    { name: "terminal_open", arguments: { command: "Write-Output offline" } },
   ]
   const tools = new ToolRegistry(), renders = new RenderRegistry()
   registerFileTools(tools, renders, { rgPath: bundledRipgrepPath(process.cwd()),

@@ -1,7 +1,7 @@
 import type { AppError } from "../../../error/src/types.ts"
 import type { ShellResult } from "../shell/types.ts"
 import type { ProcessOutputResult } from "../process/types.ts"
-import type { TerminalCloseResult, TerminalInputResult, TerminalListResult, TerminalOpenResult } from "../terminal/types.ts"
+import type { TerminalInputResult } from "../terminal/types.ts"
 import { renderCommonError } from "../tool-executor.ts"
 import type { ToolResult } from "../types.ts"
 /**
@@ -27,26 +27,8 @@ function outputText(value: ProcessOutputResult, empty: string): string {
  */
 export function renderShell(result: ShellResult | AppError): ToolResult { return "source" in result ? renderCommonError(result) : success(`Exit code: ${result.exitCode}\n\n${outputText(result, "No output.")}`) }
 /**
- * 格式化打开终端后的状态快照或启动错误，不创建或查询终端。
- * @param result - 已就绪终端的独立状态副本，或本次打开失败的 AppError。
- * @returns 包含终端身份、cwd 和实际状态的成功文本，或错误说明。
- */
-export function renderTerminalOpen(result: TerminalOpenResult | AppError): ToolResult { return "source" in result ? renderCommonError(result) : success(`Terminal opened.\n\nID: ${result.terminal.id}\nCWD: ${result.terminal.cwd}\nStatus: ${result.terminal.status}`) }
-/**
  * 格式化单次收集窗口的输出与状态快照，不根据正文推断命令状态。
  * @param result - 收集窗口成功数据，或输入、审批、取消和存储失败的 AppError。
  * @returns 包含终端身份、窗口结束时状态、输出和字节数的结果；错误时只包含错误说明。
  */
 export function renderTerminalInput(result: TerminalInputResult | AppError): ToolResult { return "source" in result ? renderCommonError(result) : success(`Terminal ID: ${result.terminalId}\nStatus: ${result.status}\n\n${outputText(result, "No new output.")}`) }
-/**
- * 格式化显式关闭确认或关闭错误，不附带被丢弃的未读输出。
- * @param result - 已完成的关闭确认或本次关闭失败的 AppError。
- * @returns 已关闭终端身份的成功文本，或错误说明。
- */
-export function renderTerminalClose(result: TerminalCloseResult | AppError): ToolResult { return "source" in result ? renderCommonError(result) : success(`Terminal closed.\nTerminal ID: ${result.terminalId}`) }
-/**
- * 格式化当前对话的活动终端状态副本；查询和权限处理由工具执行函数完成。
- * @param result - 当前 Session 活动终端数组，或查询失败的 AppError。
- * @returns 终端身份、cwd 和状态列表；空列表显示无终端，错误时显示错误说明。
- */
-export function renderTerminalList(result: TerminalListResult | AppError): ToolResult { return "source" in result ? renderCommonError(result) : success(result.terminals.length === 0 ? "No terminals found." : result.terminals.map((t) => `${t.id}\nCWD: ${t.cwd}\nStatus: ${t.status}`).join("\n\n")) }

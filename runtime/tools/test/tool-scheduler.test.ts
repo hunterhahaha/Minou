@@ -412,7 +412,6 @@ function testScheduleGroups(): void {
     "shell",
     "terminal_open",
     "terminal_input",
-    "terminal_close",
     "memory_write",
     "mcp_load_tools",
     "tool_search",
