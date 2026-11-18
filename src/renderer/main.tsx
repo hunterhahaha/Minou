@@ -1028,7 +1028,7 @@ function Workspace() {
       const { providerId, protocol, modelId, name } = selectedModel
       const input: Parameters<typeof window.minou.startNewSession>[1] = {
         ...message, model: { providerId, protocol, modelId, name, reasoningLevel: selectedReasoningLevel },
-        sandboxMode: permission === "workspace-read-only" ? "sandbox-read-only" : permission === "auto" || permission === "full-access" ? permission : "sandbox-full-access",
+        sandboxMode: permission === "workspace-read-write" ? "sandbox-full-access" : permission === "auto" || permission === "full-access" ? permission : "sandbox-read-only",
       }
       const response = draftMode === "work"
         ? await window.minou.startTeamSession(groupId, input)
@@ -1265,8 +1265,8 @@ function Workspace() {
                           disabled={savingDefaultModel || Boolean(newChatView.busy)} onModelChange={(key, level) => { void selectDefaultModel(key, level) }} onReasoningChange={setNewChatReasoningLevel} />)}
                   </div>
                   <div className="composer-controls composer-controls-right">
-                    <div className="selector-anchor"><button className="selector-trigger" type="button" aria-label="权限" aria-haspopup="menu" aria-expanded={openMenu === "permission"} onClick={() => setOpenMenu((current) => current === "permission" ? null : "permission")}><IconShieldCheck size={15} aria-hidden="true" /><span>{permission === "default" ? "工作区读写" : permissionLabels[permission]}</span></button>
-                      {openMenu === "permission" && <div className="selector-menu permission-menu" role="menu" aria-label="权限"><p className="menu-label">权限</p>{permissionOptions.map((option) => <button type="button" role="menuitemradio" aria-checked={permission === option || (permission === "default" && option === "workspace-read-write")} key={option} onClick={() => { setPermission(option); setOpenMenu(null) }}>{permissionLabels[option]}{(permission === option || (permission === "default" && option === "workspace-read-write")) && <span aria-hidden="true">✓</span>}</button>)}</div>}
+                    <div className="selector-anchor"><button className="selector-trigger" type="button" aria-label="权限" aria-haspopup="menu" aria-expanded={openMenu === "permission"} onClick={() => setOpenMenu((current) => current === "permission" ? null : "permission")}><IconShieldCheck size={15} aria-hidden="true" /><span>{permission === "default" ? "工作区只读" : permissionLabels[permission]}</span></button>
+                      {openMenu === "permission" && <div className="selector-menu permission-menu" role="menu" aria-label="权限"><p className="menu-label">权限</p>{permissionOptions.map((option) => <button type="button" role="menuitemradio" aria-checked={permission === option || (permission === "default" && option === "workspace-read-only")} key={option} onClick={() => { setPermission(option); setOpenMenu(null) }}>{permissionLabels[option]}{(permission === option || (permission === "default" && option === "workspace-read-only")) && <span aria-hidden="true">✓</span>}</button>)}</div>}
                     </div>
                     <button className="send-button" type="button" disabled={!selectedModel || !selectedReasoningLevel || savingDefaultModel || newChatView.busy || !serializeComposerMessage(sessionsState.draftsByKey[newDraftKey]).content[0].text.trim()} onClick={() => void sendNewChat()} aria-label="发送消息"><IconArrowUp size={18} stroke={2} /></button>
                   </div>

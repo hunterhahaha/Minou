@@ -6,6 +6,8 @@
  * 恢复依据已校验事件重建 Usage 和已提交上下文，不修改 Event Log。
  */
 
+import { grantPermissions, readToolPermissions, type PermissionItem, type ToolPermissions } from "../../tools/src/security/permissions.ts"
+import { isWithinRoot, canonicalPath } from "../../tools/src/filesystem/index.ts"
 import { randomUUID } from "node:crypto"
 import { lstat, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises"
 import { isAbsolute, join, resolve } from "node:path"
@@ -47,7 +49,7 @@ export interface SessionSettingsPatch {
 }
 
 /** 新 Session 创建时使用的默认沙盒模式。 */
-export const DEFAULT_SESSION_SANDBOX_MODE: SandboxMode = "sandbox-full-access"
+export const DEFAULT_SESSION_SANDBOX_MODE: SandboxMode = "sandbox-read-only"
 
 /** Session Meta usage 的 V1 派生结构。 */
 export interface RealUsage {
@@ -109,6 +111,8 @@ export interface SessionMeta {
   currentModel: ModelRef
   /** 当前 Session 的工具权限模式；不从全局或 Project 配置继承。 */
   sandboxMode: SandboxMode
+  /** 明确批准的长期路径及网络权限。 */
+  toolPermissions?: ToolPermissions
   /** 从已提交正常 Assistant 消息派生的 Session Usage。 */
   usage: RealUsage
   /** 已载入 Skill 来源及增量比较状态。 */
@@ -270,7 +274,14 @@ export interface FileSessionState {
    * @throws Error 当更新或已有 Meta 无效，或数据库写入失败时抛出。
    * @returns 当前操作完成后的结果；异步写入等待提交完成后解析。
    */
-  writeSettings(patch: SessionSettingsPatch): Promise<void>
+  writeSettings(patch: SessionSettingsPatch, workspaceRoots?: readonly string[]): Promise<void>
+  /**
+   * 在会话串行队列中保存明确批准的权限。
+   * @param items 本次新增授权。
+   * @returns Meta 提交后解析。
+   * @throws Error 权限读取或保存失败。
+   */
+  grantToolPermissions(items: readonly PermissionItem[]): Promise<void>
   /**
    * 从已校验 Event Log 全量重建 Usage，并修复已提交的 AGENTS.md / Skill 增量。
    * 该方法不修改 Event Log，也不应用未提交的 Summary。
@@ -594,7 +605,12 @@ export function createFileSessionState(options: FileSessionStateOptions): FileSe
       return structuredClone({ name: meta.name, currentModel: meta.currentModel, sandboxMode: meta.sandboxMode })
     }),
     /** @param patch 名称、模型与权限的部分更新；串行重读 Meta 后只改指定字段。 @throws Error patch 无效或 Meta 写入失败。 */
-    writeSettings: async (patch) => {
+    grantToolPermissions: (items) => runSerialized(queue, async () => {
+      const meta = readRequiredMeta(paths)
+      const toolPermissions = grantPermissions(readToolPermissions(meta.toolPermissions), items)
+      saveSessionMeta(paths.metaDatabasePath, { ...meta, toolPermissions }, paths.kind)
+    }),
+    writeSettings: async (patch, workspaceRoots = []) => {
       if ((patch.name === undefined && patch.model === undefined && patch.sandboxMode === undefined) ||
           (patch.name !== undefined && (typeof patch.name !== "string" || patch.name.trim() === "")) ||
           (patch.model !== undefined && !isModelRef(patch.model)) ||
@@ -605,8 +621,17 @@ export function createFileSessionState(options: FileSessionStateOptions): FileSe
       await runSerialized(queue, async () => {
         const meta = readRequiredMeta(paths)
         if (update.model !== undefined || update.sandboxMode !== undefined) {
+          const toolPermissions = meta.toolPermissions
+          const changesWorkspaceAccess = update.sandboxMode !== undefined &&
+            (meta.sandboxMode === "sandbox-read-only") !== (update.sandboxMode === "sandbox-read-only")
+          const roots = changesWorkspaceAccess && toolPermissions ? await Promise.all(workspaceRoots.map(canonicalPath)) : []
           saveSessionMeta(paths.metaDatabasePath, {
             ...meta,
+            ...(toolPermissions && { toolPermissions: {
+              ...toolPermissions,
+              paths: toolPermissions.paths.filter((rule) => !roots.some((root) =>
+                isWithinRoot(root, rule.path) && isWithinRoot(rule.path, root))),
+            } }),
             currentModel: update.model ?? meta.currentModel,
             sandboxMode: update.sandboxMode ?? meta.sandboxMode,
           }, paths.kind)

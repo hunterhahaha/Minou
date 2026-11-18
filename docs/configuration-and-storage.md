@@ -259,7 +259,7 @@ project_id, session_id, name, version,
 current_model_json, sandbox_mode_json, usage_json, skills_json, additional_meta_json
 ```
 
-主键为 `(project_id, session_id)`。`current_model_json` 包含 `providerId`、`protocol`、`modelId`、`name`、`reasoningLevel`。`sandbox_mode_json` 保存当前对话的权限模式，默认 `sandbox-full-access`。Usage、Skill 来源历史和其他 Meta 分开序列化；MCP 载入记录保存在 `additional_meta_json.loadedMcpTools`，`loadedMcpToolsSeq` 记录已同步的最后一条 MCP 增量序号，初始为 0。普通工具调用只更新调用统计。
+主键为 `(project_id, session_id)`。`current_model_json` 包含 `providerId`、`protocol`、`modelId`、`name`、`reasoningLevel`。`sandbox_mode_json` 保存当前对话的权限模式，默认 `sandbox-read-only`。批准的长期权限保存在 `additional_meta_json.toolPermissions`，包含绝对路径规则和进程网络开关，由会话串行写入。Usage、Skill 来源历史和其他 Meta 分开序列化；MCP 载入记录保存在 `additional_meta_json.loadedMcpTools`，`loadedMcpToolsSeq` 记录已同步的最后一条 MCP 增量序号，初始为 0。普通工具调用只更新调用统计。
 
 桌面新对话和已有对话的权限菜单均可选择「自动审核」，保存值为 `auto`。CLI 输入仍只接受原有三种沙箱模式。
 

@@ -38,7 +38,7 @@ Renderer 负责页面、路由与展示缓存，不直接打开数据库、读�
 
 ## 桌面启动
 
-[electron-main.ts](../src/main/electron-main.ts) 依次初始化配置快照、网络 Dispatcher、ToolRegistry / RenderRegistry，注册文件和记忆工具，然后创建一个 `SessionRuntimeGlobal`。该对象持有共享 SkillManager、MCPManager、ShellRouter、TerminalRouter 和统一工具执行入口；构造时登记相应工具。桌面进程内所有会话共用 32 个 PTY 名额。`terminal_open` 新建并执行首条命令，`terminal_input` 复用终端或空读输出。满额时按最近使用时间淘汰最久未使用的 PTY，包括仍在运行的终端。
+[electron-main.ts](../src/main/electron-main.ts) 依次初始化配置快照、网络 Dispatcher、ToolRegistry / RenderRegistry，探测并试启动预期的 MXC 后端，再注册文件和记忆工具并创建 `SessionRuntimeGlobal`。该对象持有共享 SkillManager、MCPManager、ShellRouter、TerminalRouter 和统一工具执行入口；构造时登记相应工具。桌面进程内所有会话共用 32 个 PTY 名额。`terminal_open` 新建并执行首条命令，`terminal_input` 复用终端或空读输出。满额时按最近使用时间淘汰最久未使用的 PTY，包括仍在运行的终端。
 
 入口在读取配置前获取单实例锁，重复启动时由主实例显示并聚焦窗口。入口登记窗口 IPC，再调用 [startElectronApp](../src/main/index.ts) 注册对话、项目、供应商、MCP、Skill 等 IPC 并按配置连接 MCP。单个 MCP 服务初始化失败会记录错误，其余启动流程继续。Electron ready 后创建原生托盘与首个窗口。
 
@@ -103,9 +103,15 @@ Router 页头的「团队成员」通过可信会话 IPC 查询同一 Workspace 
 
 抓取业务输入仍为 `WebFetchInput { url: string }`。转换后的最终文本按 UTF-8 字节计算，至多 32,768 字节时返回 `{ text }`，超过时保留不拆分字符的开头，并将完整处理文本独占写入当前 `tool_output/web_fetch_<UUID>.md`。`WebFetchResult` 此时附带 `truncated: true`、`totalBytes` 和 `fullOutputPath`。目录复用 `context.processRuntime.outputDirectory`，不调用进程审批、不改变读取权限；目录无效或写入失败返回 `WEB_FETCH_OUTPUT_WRITE_FAILED`，不交付部分正文或虚假的成功路径。后端 render 在正文末尾追加省略号、截断说明、全文绝对路径及使用 read 的提示（提示另计），再变为现有单文本块 ToolResult，错误复用 AppError。Loop 继续记录 tool/result 并回填模型。Renderer 不新增状态或 IPC：按 turn、step、toolCallId 关联工具卡片，展开后以纯文本代码块显示 Markdown 原文；失败显示现有错误说明。Assistant 后续正文仍走 Markdown 展示。30 秒覆盖网络与读取，读取完成后的同步转换不另建执行线程。
 
-文件权限由 [security/index.ts](../runtime/tools/src/security/index.ts) 和规范路径判断实现：Full Access 直接允许；Sandbox Full Access 对允许根内访问直接允许；Sandbox Read Only 对根内读取直接允许，其他文件操作需要审批。审批事件与等待结果由 SessionRuntime 持有。Shell、PTY、MCP 使用各自工具实现中的检查；不能把文件规则推定为所有工具共有的系统级限制。
+桌面内置文件和进程工具使用[会话权限表](../runtime/tools/src/security/permissions.ts)。新会话的工作区目录为只读，未覆盖的路径和进程网络默认拒绝。`READ` 允许读取，`WRITE` 同时允许读取和写入。子路径规则覆盖祖先。切换工作区只读或读写时更新关联目录对应的权限，其余长期授权保留。当前会话的工具输出可由文件工具读取。
 
-桌面「自动审核」沿用工作区读写的权限边界。进入审批时，[SessionRuntime](../runtime/agent/src/session-runtime.ts) 按原顺序分流到[独立模型审核](../runtime/agent/src/tool-approval.ts)。审核复用本轮 Adapter、模型和标题请求的低思考档位选择，只发送本轮用户消息、助手正文、已有结果的工具调用及其文本结果，以及单列的待审调用，不提供可调用工具。高风险必须拒绝。无效输出最多重试两次，模型请求失败或从取得审批槽位起 30 秒内无有效决定时拒绝，用户停止则取消。自动审核不发布人工审批事件，仍由 Loop 写入工具结果。
+模型在操作因权限不足失败时，或在执行命令前预判现有权限不足时，通过 `request_permissions` 申请长期授权。同一路径需要读写时，只需填写 `path.write`。读取路径、写入路径和网络分别产生审批项。SessionRuntime 复用现有审批事件和浮层，逐项等待决定，批准项立即写入 Session Meta。已拒绝的项由工具结果汇总。同一工具调用可对应多项先后完成的审批。
+
+[MXC 装配](../runtime/tools/src/security/mxc.ts)选择 Windows 11 24H2 及以上的 `processcontainer` 或 Linux 的 `bubblewrap`。应用启动时检查 SDK 支持并创建探测进程，失败进入受阻模式。Windows 若显式拒绝进程工作目录的上级路径，当前调用返回错误，避免 PowerShell 在系统盘根目录启动。普通 Shell、PTY 创建使用 MXC，`temporary` 在启动前逐项批准并合并本次权限，`unrestricted` 展示完整命令并等待人工确认。完全访问 Shell 使用原生 spawn，Windows 完全访问 PTY 使用 node-pty，Linux MXC 完全访问 PTY 授予当前用户主目录读写并开放网络。无法进入指定工作目录时，调用报错。受阻模式下，进程工具要求显式 `unrestricted`，经批准走原生后端；文件工具继续执行会话权限检查和显式完全访问审批，拒绝临时模式。已有 PTY 保持创建时的权限，`terminal_input` 按所属会话找到并续写，空输入仍用于读取输出。
+
+当前权限表管理内置文件工具和 MXC 进程。CLI、服务配置、MCP 及独立网络工具各自使用原有宿主边界。
+
+桌面「自动审核」沿用工作区读写的权限边界。路径及网络的显式申请进入审批时，[SessionRuntime](../runtime/agent/src/session-runtime.ts) 按原顺序分流到[独立模型审核](../runtime/agent/src/tool-approval.ts)。审核复用本轮 Adapter、模型和标题请求的低思考档位选择，只发送本轮用户消息、助手正文、已有结果的工具调用及其文本结果，以及单列的待审调用，不提供可调用工具。高风险必须拒绝。无效输出最多重试两次，模型请求失败或从取得审批槽位起 30 秒内无有效决定时拒绝，用户停止则取消。自动审核不发布人工审批事件，仍由 Loop 写入工具结果。显式 `unrestricted` 走人工审批；成员的只读记录无审批入口，因此该模式对成员返回拒绝。
 
 `read` 每行最多返回 2,000 个 UTF-16 单元，续读边界保留 Unicode 代理对。遇到超长行时结束当前页，并给出同一行的 `nextOffset` 和 `nextColumn`。模型可按提示传入 `offset` 和 `column` 继续读取。`column` 从 1 开始，仅作用于起始行，越过行尾或落在代理对内部会报错。因行数或 50 KiB 文本预算停止时，可从下一条未读取行继续。
 

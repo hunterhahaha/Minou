@@ -43,7 +43,7 @@ Minou 是本地运行的 Coding Agent 应用，提供 Electron 桌面工作区�
 1. 仓库提供源码运行和构建入口，尚无桌面安装包构建脚本；`package.json` 为 `private: true`。
 2. 模型配置初始为空，需要用户提供 Provider、模型与凭据；CLI 没有模型配置子命令。
 3. CLI 不挂接桌面 IPC、Project 对话索引、历史恢复或消息队列，也未接入桌面的 Session 级 Summary 压缩；启用记忆时使用 default 分组，技能使用 Global 来源。
-4. 权限模式由应用内工具检查与审批实现，不是操作系统沙箱。Shell 和 PTY 的初始 cwd 不能视为系统级目录隔离。
+4. 桌面 Shell 和 PTY 支持 Windows ProcessContainer 与 Linux Bubblewrap 后端。启动探测失败时，进程工具需要显式完全访问审批。内置文件工具由会话路径规则检查，CLI 的执行边界见 CLI 使用说明。
 5. 普通桌面页面运行中发送消息进入队列；全局配置校验器接受 `insert`，但这不等于已实现可用的 Insert 交互流程。
 6. `runtime/project/src/index.ts` 当前仍是目录占位；实际项目管理与上下文解析位于主进程，不能仅依据模块名称推断职责已经实现。
 7. preload 当前使用多文件 CommonJS 产物，BrowserWindow 显式配置 `sandbox: false`，同时保持 `contextIsolation: true`、`nodeIntegration: false`。

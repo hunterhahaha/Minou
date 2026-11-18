@@ -68,6 +68,7 @@ export function resolveProjectContext(
   const agentsMdPath = join(cwd, "AGENTS.md")
 
   return {
+    allowedRoots,
     workspaceInfo: formatWorkspaceInfo(
       workspace,
       projectDirectory,

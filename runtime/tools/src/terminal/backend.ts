@@ -1,5 +1,8 @@
 import { createRequire } from "node:module"
 import type { IPty } from "node-pty"
+import { finished } from "node:stream/promises"
+import { mxcRequest, type MxcProcessAccess } from "../security/mxc.ts"
+import type { MxcPtyProcess } from "@microsoft/mxc-sdk/v1"
 import { resolvePwsh } from "../process/pwsh.ts"
 
 /** 后端只报告真实输出和明确的生命周期标记。 */
@@ -8,6 +11,7 @@ export type PtyEvent =
   | { type: "start"; run: number }
   | { type: "done"; run: number; cwd: string }
   | { type: "exit" }
+  | { type: "error"; error: unknown }
 
 /** 单个本机 PTY 进程句柄。 */
 export interface PtyProcess {
@@ -31,10 +35,11 @@ export interface PtyBackend {
    * @param cwd - Runtime 解析的终端初始工作目录。
    * @param nonce - 此终端独占的随机内部标记身份。
    * @param receive - 持续接收输出、命令开始/完成标记及退出事件的回调。
+   * @param access MXC 启动权限；省略时用原生 PTY。
    * @returns 可以原样写入并显式清理的终端进程句柄。
    * @throws Error - 后端加载或本机进程创建失败；路由负责将失败交给工具边界。
    */
-  spawn(cwd: string, nonce: string, receive: (event: PtyEvent) => void): PtyProcess
+  spawn(cwd: string, nonce: string, receive: (event: PtyEvent) => void, access?: MxcProcessAccess): PtyProcess
 }
 
 /** 支持跨数据块的内部 OSC 标记解析器，只删除本终端匹配的协议。 */
@@ -98,14 +103,15 @@ export class PwshPtyBackend implements PtyBackend {
    */
   constructor(executable?: string) { this.executable = executable }
   /**
-   * 加载真实 node-pty 后端并启动持久 PowerShell，注入随机身份和执行序号标记，挂接跨块解析与退出监听。该方法返回句柄，不等待首次就绪标记。
+   * 从 MXC 或 node-pty 启动持久 PowerShell，注入随机身份和执行序号标记，挂接跨块解析与退出监听。该方法返回句柄，不等待首次就绪标记。
    * @param cwd - 本次新终端的初始工作目录。
    * @param nonce - 注入 PowerShell 并用于过滤内部协议的随机终端身份。
    * @param receive - 接收可见输出、明确命令状态标记和自然退出事件的持续回调。
+   * @param access 本次启动采用的 MXC 策略；省略时采用 node-pty。
    * @returns 已接入监听的 PTY 句柄；调用方通过 dispose 结束进程并释放监听。
    * @throws Error - PowerShell 路径解析、node-pty 加载或进程创建失败；TerminalRouter 负责处理启动失败和就绪超时。
    */
-  spawn(cwd: string, nonce: string, receive: (event: PtyEvent) => void): PtyProcess {
+  spawn(cwd: string, nonce: string, receive: (event: PtyEvent) => void, access?: MxcProcessAccess): PtyProcess {
     const script = `
 $ErrorActionPreference = 'Stop'
 Import-Module PSReadLine
@@ -131,9 +137,53 @@ function global:prompt {
 $ErrorActionPreference = 'Continue'
 `
     const executable = resolvePwsh(this.executable)
-    const require = createRequire(typeof __filename === "string" ? __filename : `${process.cwd()}/package.json`)
-    const pty = require("node-pty") as { spawn(file: string, args: string[], options: object): IPty }
-    const child = pty.spawn(executable, ["-NoLogo", "-NoProfile", "-NoExit", "-OutputFormat", "Text", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], { cwd, cols: 120, rows: 30, name: "xterm-256color", env: { ...process.env, TERM: "xterm-256color" } })
+    const args = ["-NoLogo", "-NoProfile", "-NoExit", "-OutputFormat", "Text", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")]
+    if (access) {
+      let child: MxcPtyProcess | undefined
+      let disposed = false
+      let ended = false
+      const parser = new PtyMarkerParser(nonce, (event) => { if (!disposed) receive(event) })
+      const lifecycle = (async () => {
+        const request = await mxcRequest(access, executable, args, cwd, true)
+        const sdk = await import("@microsoft/mxc-sdk/v1")
+        if (disposed) return
+        child = await sdk.spawnWithPty(request, { size: { columns: 120, rows: 30 } })
+        let waiting: ReturnType<MxcPtyProcess["wait"]> | undefined
+        try {
+          if (disposed) child.kill()
+          const stream = child.output
+          const writer = child.input
+          writer.on("error", (error) => { if (!disposed) receive({ type: "error", error }) })
+          stream.setEncoding("utf8").on("data", (text: string) => parser.push(text))
+          waiting = child.wait()
+          await Promise.all([waiting, finished(stream, { cleanup: true })])
+        } finally {
+          ended = true
+          try {
+            child.kill()
+            await waiting?.catch(() => {})
+          } finally { child.dispose() }
+        }
+      })().catch((error: unknown) => {
+        if (!disposed) receive({ type: "error", error })
+      }).finally(() => {
+        if (!disposed) { parser.end(); receive({ type: "exit" }) }
+      })
+      return {
+        write: (input) => {
+          if (disposed || ended || !child) throw new Error("MXC 终端不可写")
+          child.input.write(input)
+        },
+        dispose: async () => {
+          disposed = true
+          if (!ended) child?.kill()
+          await lifecycle
+        },
+      }
+    }
+    const requirePty = createRequire(typeof __filename === "string" ? __filename : `${process.cwd()}/package.json`)
+    const pty = requirePty("node-pty") as { spawn(file: string, args: string[], options: object): IPty }
+    const child = pty.spawn(executable, args, { cwd, cols: 120, rows: 30, name: "xterm-256color", env: { ...process.env, TERM: "xterm-256color" } })
     let disposed = false
     let killRequested = false
     let resolveExit!: () => void

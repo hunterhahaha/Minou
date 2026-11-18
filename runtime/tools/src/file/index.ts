@@ -7,6 +7,9 @@ import type { AppError } from "../../../error/src/types.ts"
 import type { SandboxMode } from "../../../session/src/session-state.ts"
 import { canonicalPath, isWithinRoot, runRipgrep } from "../filesystem/index.ts"
 import { renderEdit, renderGlob, renderGrep, renderRead, renderWrite } from "../render/index.ts"
+import type { MxcBackend } from "../security/mxc.ts"
+import { authorizeUnrestricted, executionPermissionProperties, grantPermissions, pathPermission, readExecutionPermission,
+  reviewPermissions, setPathPermission, workspacePermissions, type ExecutionPermission, type ToolPermissions } from "../security/permissions.ts"
 import { fileAccessDecision } from "../security/index.ts"
 import { isPlainRecord, registerTool, type RenderRegistry, type ToolArgumentValidation, type ToolRegistry } from "../tool-registry.ts"
 import type { ToolExecutionContext } from "../types.ts"
@@ -20,11 +23,15 @@ export interface FileAccessState {
   sandboxMode: SandboxMode
   /** workspace 与关联目录形成的允许根目录。 */
   roots: string[]
+  /** 已持久化的额外权限。 */
+  permissions?: ToolPermissions
 }
 /** 文件工具从主进程取得的应用内资源与数据库读取端口。 */
 export interface FileToolDependencies {
   /** 随应用依赖安装的 ripgrep 可执行文件。 */
   rgPath: string
+  /** 已探测的桌面沙箱；null 为受阻模式。 */
+  sandbox?: MxcBackend | null
   /**
    * 每次调用独立读取 Meta 与工作区数据库，不得缓存。
    * @param projectId Project/default 分组身份。
@@ -51,34 +58,35 @@ export function registerFileTools(
   renders: RenderRegistry,
   dependencies: FileToolDependencies,
 ): void {
+  const permissionFields = dependencies.sandbox === undefined ? {} : executionPermissionProperties
   registerTool(tools, renders, {
     kind: "builtin", definition: definition("glob", "Find files matching a glob pattern within an absolute directory.",
-      { pattern: { type: "string" }, path: { type: "string" }, limit: { type: "integer" } }, ["pattern", "path"]),
-    validateArguments: (value) => validateGlob(value),
+      { ...permissionFields, pattern: { type: "string" }, path: { type: "string" }, limit: { type: "integer" } }, ["pattern", "path"]),
+    validateArguments: (value) => validateFileExecution(value, dependencies, validateGlob),
     execute: (input, context) => executeGlob(input, context, dependencies), render: renderGlob,
   })
   registerTool(tools, renders, {
     kind: "builtin", definition: definition("grep", "Search file contents by regex or literal text within an absolute file or directory.",
-      { pattern: { type: "string" }, path: { type: "string" }, include: { type: "string" }, literal: { type: "boolean" }, ignoreCase: { type: "boolean" }, context: { type: "integer" }, limit: { type: "integer" } }, ["pattern", "path"]),
-    validateArguments: (value) => validateGrep(value),
+      { ...permissionFields, pattern: { type: "string" }, path: { type: "string" }, include: { type: "string" }, literal: { type: "boolean" }, ignoreCase: { type: "boolean" }, context: { type: "integer" }, limit: { type: "integer" } }, ["pattern", "path"]),
+    validateArguments: (value) => validateFileExecution(value, dependencies, validateGrep),
     execute: (input, context) => executeGrep(input, context, dependencies), render: renderGrep,
   })
   registerTool(tools, renders, {
     kind: "builtin", definition: definition("read", "Read a known text file by absolute path and line range. Resume a long line with the offset and column returned in the result.",
-      { path: { type: "string" }, offset: { type: "integer" }, column: { type: "integer" }, limit: { type: "integer" } }, ["path"]),
-    validateArguments: (value) => validateRead(value),
+      { ...permissionFields, path: { type: "string" }, offset: { type: "integer" }, column: { type: "integer" }, limit: { type: "integer" } }, ["path"]),
+    validateArguments: (value) => validateFileExecution(value, dependencies, validateRead),
     execute: (input, context) => executeRead(input, context, dependencies), render: renderRead,
   })
   registerTool(tools, renders, {
     kind: "builtin", definition: definition("write", "Write an entire file, creating the file and missing parent directories.",
-      { path: { type: "string" }, content: { type: "string" } }, ["path", "content"]),
-    validateArguments: (value) => validateWrite(value),
+      { ...permissionFields, path: { type: "string" }, content: { type: "string" } }, ["path", "content"]),
+    validateArguments: (value) => validateFileExecution(value, dependencies, validateWrite),
     execute: (input, context) => executeWrite(input, context, dependencies), render: renderWrite,
   })
   registerTool(tools, renders, {
     kind: "builtin", definition: definition("edit", "Read the target file first. Replace one exact, uniquely matching oldText in an existing file; expand oldText when ambiguous.",
-      { path: { type: "string" }, oldText: { type: "string" }, newText: { type: "string" } }, ["path", "oldText", "newText"]),
-    validateArguments: (value) => validateEdit(value),
+      { ...permissionFields, path: { type: "string" }, oldText: { type: "string" }, newText: { type: "string" } }, ["path", "oldText", "newText"]),
+    validateArguments: (value) => validateFileExecution(value, dependencies, validateEdit),
     execute: (input, context) => executeEdit(input, context, dependencies), render: renderEdit,
   })
 }
@@ -102,6 +110,22 @@ function definition(name: FileToolName, description: string, properties: Record<
  */
 function invalid<T extends object>(message: string): ToolArgumentValidation<T> {
   return { success: false, error: { source: "tool", code: "INVALID_TOOL_ARGUMENTS", message } }
+}
+
+/**
+ * 在业务校验后附加桌面文件工具的显式执行模式。
+ * @param value 模型参数。
+ * @param deps 宿主提供的沙箱模式。
+ * @param validate 文件工具的业务校验器。
+ * @returns 可供权限检查使用的业务参数。
+ */
+function validateFileExecution<T extends object>(
+  value: unknown, deps: FileToolDependencies, validate: (value: unknown) => ToolArgumentValidation<T>,
+): ToolArgumentValidation<T & { execution?: ExecutionPermission }> {
+  const checked = validate(value)
+  if (!checked.success || deps.sandbox === undefined) return checked
+  const execution = isPlainRecord(value) && readExecutionPermission(value)
+  return execution ? { success: true, data: { ...checked.data, execution } } : invalid("执行模式或临时权限无效")
 }
 
 /**
@@ -179,6 +203,41 @@ async function authorizedPath<T extends object>(
   const runtime = context.fileRuntime
   if (runtime === undefined) throw coded("FILE_RUNTIME_MISSING", "当前 Session 缺少文件工具运行上下文")
   const path = await canonicalPath(inputPath)
+  if (dependencies.sandbox !== undefined) {
+    const execution = (context.validatedArguments as { execution?: ExecutionPermission }).execution
+    if (!execution) throw coded("INVALID_TOOL_ARGUMENTS", "文件执行模式无效")
+    const { execution: _mode, ...operation } = context.validatedArguments as { execution?: ExecutionPermission }
+    if (execution.mode === "unrestricted") {
+      await authorizeUnrestricted(name, { ...operation, path }, context)
+    } else {
+      if (execution.mode === "temporary" && dependencies.sandbox === null) {
+        throw coded("SANDBOX_BLOCKED", "当前沙箱模式受限，无法使用该模式")
+      }
+      const approved = execution.mode === "temporary"
+        ? (await reviewPermissions(name, execution.permissions, "temporary", context, { ...operation, path })).approved : []
+      const { sandboxMode, roots, permissions } = dependencies.loadAccess(runtime.projectId, runtime.sessionId)
+      if (sandboxMode !== "full-access") {
+        const base = await workspacePermissions(sandboxMode, roots, permissions ?? { paths: [], network: false })
+        if (context.processRuntime) {
+          const output = await canonicalPath(context.processRuntime.outputDirectory)
+          if (pathPermission(base.paths, output) === "DENY" && !base.paths.some((rule) => isWithinRoot(output, rule.path))) {
+            setPathPermission(base.paths, { path: output, access: "READ" })
+          }
+        }
+        const policy = grantPermissions(base, approved)
+        const access = pathPermission(policy.paths, path)
+        const write = name === "write" || name === "edit"
+        const recursive = name === "glob" || name === "grep"
+        if (access === "DENY" || (write && access !== "WRITE") ||
+            (recursive && policy.paths.some((rule) => rule.access === "DENY" && isWithinRoot(rule.path, path)))) {
+          throw coded("FILE_PERMISSION_DENIED", "文件访问超出当前权限。可用 request_permissions 申请所需路径")
+        }
+      }
+    }
+    if (context.signal.aborted) throw coded("CANCELLED", "工具调用已取消")
+    if (await canonicalPath(inputPath) !== path) throw coded("PATH_CHANGED", "权限检查期间目标路径发生变化")
+    return path
+  }
   const state = dependencies.loadAccess(runtime.projectId, runtime.sessionId)
   const roots = await Promise.all(state.roots.map(canonicalPath))
   let approved = false
@@ -248,7 +307,7 @@ async function executeGlob(input: GlobInput, context: ToolExecutionContext<GlobI
     await requireKind(path, true)
     const limit = input.limit ?? 100
     const raw: string[] = []
-    const truncated = await runRipgrep(deps.rgPath, ["--files", "--glob", input.pattern, "--", path], context.signal, (line) => {
+    const truncated = await runRipgrep(deps.rgPath, ["--no-config", "--no-follow", "--files", "--glob", input.pattern, "--", path], context.signal, (line) => {
       raw.push(line)
       return raw.length <= limit
     })
@@ -273,7 +332,7 @@ async function executeGrep(input: GrepInput, context: ToolExecutionContext<GrepI
     const path = await authorizedPath("grep", input.path, context, deps)
     const kind = await stat(path)
     if (!kind.isDirectory() && !kind.isFile()) throw coded("INVALID_FILE_TYPE", "grep 目标必须是普通文件或目录")
-    const args = ["--json", ...(input.literal ? ["--fixed-strings"] : []), ...(input.ignoreCase ? ["--ignore-case"] : []), ...(input.include ? ["--glob", input.include] : []), "--", input.pattern, path]
+    const args = ["--no-config", "--no-follow", "--json", ...(input.literal ? ["--fixed-strings"] : []), ...(input.ignoreCase ? ["--ignore-case"] : []), ...(input.include ? ["--glob", input.include] : []), "--", input.pattern, path]
     const limit = input.limit ?? 100
     const raw: GrepMatch[] = []
     const truncated = await runRipgrep(deps.rgPath, args, context.signal, (line) => {

@@ -2,18 +2,17 @@
 
 import { SkillManager } from "../../runtime/skill/src/index.ts"
 import { registerSkillTools } from "../../runtime/tools/src/skill/index.ts"
-import { isAbsolute, join } from "node:path"
+import { isAbsolute } from "node:path"
 import type { ModelAdapter, ModelRef, UnifiedToolDefinition } from "../../runtime/model/src/types.ts"
 import type { ExecuteToolCall } from "../../runtime/agent/src/loop.ts"
 import type { ToolCallContext, ToolResult } from "../../runtime/tools/src/types.ts"
-import { createExecuteToolCall, registerShellTools, registerTerminalTools, registerMCPTools, ShellRouter, TerminalRouter, type RenderRegistry, type ToolRegistry } from "../../runtime/tools/src/index.ts"
+import { createExecuteToolCall, registerShellTools, registerTerminalTools, registerMCPTools, registerPermissionTool, ShellRouter, TerminalRouter, type MxcBackend, type RenderRegistry, type ToolRegistry } from "../../runtime/tools/src/index.ts"
 import { MCPManager } from "../../runtime/mcp/src/index.ts"
 import type { ConfigFilePaths } from "./config-files.ts"
 import { createTurnModelAdapter } from "./model-adapters.ts"
 import { resolveProjectContext } from "./project-context.ts"
 import { estimateLocalTokens } from "./token-estimator.ts"
 import { loadFileAccessState } from "./file-access.ts"
-import { readProjectWorkspace } from "./workspace-store.ts"
 import { registerTeamTools } from "../../runtime/tools/src/team/index.ts"
 
 /**
@@ -41,12 +40,14 @@ export class SessionRuntimeGlobal {
    * @param paths - 启动时初始化的配置根目录及各数据库路径。
    * @param toolRegistry - 应用共用的模型工具定义和业务执行注册表。
    * @param renderRegistry - 应用共用的工具结果整理器注册表。
+   * @param sandbox 桌面启动探测结果。
    * @throws Error - 配置根目录无效，或 Shell、PTY、MCP、Skill 工具登记失败；启动装配负责报告初始化错误。
    */
   constructor(
     paths: ConfigFilePaths,
     toolRegistry: ToolRegistry,
     renderRegistry: RenderRegistry,
+    sandbox?: MxcBackend | null,
   ) {
     if (!isAbsolute(paths.rootDir)) {
       throw new Error("Project Context 根目录必须是绝对路径：" + paths.rootDir)
@@ -55,12 +56,12 @@ export class SessionRuntimeGlobal {
     this.paths = paths
     this.toolRegistry = toolRegistry
     const loadProcessAccess = (projectId: string, sessionId: string) => {
-      const { sandboxMode } = loadFileAccessState(this.paths, projectId, sessionId)
-      const directories = projectId === "default" ? [] : readProjectWorkspace(this.paths.workspaceDatabasePath, projectId).directories
-      return { sandboxMode, cwd: directories[0] ?? join(this.paths.rootDir, "sessions", projectId, "workspace") }
+      const state = loadFileAccessState(this.paths, projectId, sessionId)
+      return { ...state, cwd: state.roots[1] ?? state.roots[0] }
     }
-    registerShellTools(toolRegistry, renderRegistry, this.shellRouter, loadProcessAccess)
-    registerTerminalTools(toolRegistry, renderRegistry, this.terminalRouter, loadProcessAccess)
+    registerShellTools(toolRegistry, renderRegistry, this.shellRouter, loadProcessAccess, sandbox)
+    registerTerminalTools(toolRegistry, renderRegistry, this.terminalRouter, loadProcessAccess, sandbox)
+    if (sandbox !== undefined) registerPermissionTool(toolRegistry, renderRegistry)
     registerMCPTools(toolRegistry, renderRegistry, this.mcpManager)
     registerSkillTools(toolRegistry, renderRegistry, this.skillManager)
     registerTeamTools(toolRegistry, renderRegistry)

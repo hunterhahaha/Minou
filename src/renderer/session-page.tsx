@@ -419,7 +419,7 @@ export function SessionPage({ projectId, sessionId, state, providers, onOpenDiff
           {pendingApproval.reason && <p>{pendingApproval.reason}</p>}
           <pre className="process-content"><code className="language-text">{printable(pendingApproval.arguments)}</code></pre>
         </div>
-        <div className="approval-actions"><span role="status">{view.busy || submittedApprovalId === pendingApproval.approvalId ? "正在确认…" : "仅本次调用"}</span><button type="button" className="settings-secondary-button" disabled={view.busy || submittedApprovalId === pendingApproval.approvalId} onClick={() => void decide(pendingApproval, "denied")}>拒绝</button><button type="button" className="settings-primary-button" disabled={view.busy || submittedApprovalId === pendingApproval.approvalId} onClick={() => void decide(pendingApproval, "approved")}><IconCheck size={14} />批准</button></div>
+        <div className="approval-actions"><span role="status">{view.busy || submittedApprovalId === pendingApproval.approvalId ? "正在确认…" : pendingApproval.permissionScope === "persistent" ? "对此对话持续有效" : pendingApproval.toolName === "terminal_open" && pendingApproval.permissionScope ? "在该终端存续期间有效" : "仅本次调用"}</span><button type="button" className="settings-secondary-button" disabled={view.busy || submittedApprovalId === pendingApproval.approvalId} onClick={() => void decide(pendingApproval, "denied")}>拒绝</button><button type="button" className="settings-primary-button" disabled={view.busy || submittedApprovalId === pendingApproval.approvalId} onClick={() => void decide(pendingApproval, "approved")}><IconCheck size={14} />批准</button></div>
         {view.operationError && <p className="chat-error" role="alert">{view.operationError}</p>}
       </section>}
       <div className="composer">
@@ -440,7 +440,7 @@ export function SessionPage({ projectId, sessionId, state, providers, onOpenDiff
           </div>
           <div className="composer-controls composer-controls-right">
             <div className="chat-selectors">
-              <label className="chat-select-label chat-permission-select"><IconShieldCheck size={15} aria-hidden="true" /><select aria-label="对话权限" disabled={!control || view.busy} value={control?.sandboxMode ?? "sandbox-full-access"} onChange={(event) => void settings({ sandboxMode: event.target.value as SandboxMode })}>
+              <label className="chat-select-label chat-permission-select"><IconShieldCheck size={15} aria-hidden="true" /><select aria-label="对话权限" disabled={!control || view.busy} value={control?.sandboxMode ?? "sandbox-read-only"} onChange={(event) => void settings({ sandboxMode: event.target.value as SandboxMode })}>
                 <optgroup label="权限">
                   {Object.entries(sandboxLabels).map(([mode, label]) => <option value={mode} key={mode}>{label}</option>)}
                 </optgroup>

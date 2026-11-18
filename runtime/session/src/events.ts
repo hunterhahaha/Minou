@@ -198,6 +198,8 @@ export interface ToolResultEvent extends EventBase {
 
 /** 工具执行前的审批请求。 */
 export interface ApprovalRequestEvent extends EventBase {
+  /** 本项显式授权的生效范围；其他审批按原有工具契约处理。 */
+  permissionScope?: import("../../tools/src/security/permissions.ts").ApprovalScope
   type: "approval/request"
   /** 运行层分配的 Turn 编号。 */
   turn: number

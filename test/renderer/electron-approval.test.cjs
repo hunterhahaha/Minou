@@ -43,6 +43,7 @@ async function screenshot(name) {
 }
 /** @returns 新对话已经到达真实 Runtime 的审批等待点。 */
 async function startApproval() {
+  await until(() => evaluate("Boolean(document.querySelector('.new-chat'))"))
   await evaluate("document.querySelector('.new-chat').click()")
   await until(() => evaluate("Boolean(document.querySelector('[aria-label=\"任务描述\"]'))"))
   await type("任务描述", "检查工具审批")
@@ -88,10 +89,12 @@ async function main() {
         }
         if (options?.timeoutMs !== undefined) return
         if (++requests === 1) {
-          for (let index = 0; index < count; index++) {
-            yield { type: "block_start", index, blockType: "tool_call" }
-            yield { type: "block_end", index, block: { type: "tool_call", toolCallId: "offline-" + index, name: "shell", arguments: { command: "检查 " + "长参数与路径/".repeat(40) } } }
-          }
+          const longPath = join(profile, "长参数与路径".repeat(40))
+          const call = count === 2
+            ? { name: "request_permissions", arguments: { path: { read: [longPath], write: [] }, network: true } }
+            : { name: "shell", arguments: { command: "检查 " + "长参数与路径/".repeat(40) } }
+          yield { type: "block_start", index: 0, blockType: "tool_call" }
+          yield { type: "block_end", index: 0, block: { type: "tool_call", toolCallId: "offline-0", ...call } }
           yield { type: "stream_end", completion: "tool_calls" }
         } else {
           yield { type: "block_start", index: 0, blockType: "text" }
@@ -101,7 +104,13 @@ async function main() {
       } }
     },
     executeTool: async (name, args, context) => {
-      const decision = await context.processRuntime.requestApproval(name, "工具将执行指定操作，请确认本次调用。", { ...context, validatedArguments: args })
+      const execution = { ...context, validatedArguments: args }
+      if (name === "request_permissions") {
+        await context.toolPermissions.approve(name, "persistent", { type: "read", path: args.path.read[0] }, execution)
+        await context.toolPermissions.approve(name, "persistent", { type: "network" }, execution)
+        return { status: "success", content: [{ type: "text", text: "逐项审批完成" }] }
+      }
+      const decision = await context.toolPermissions.approve(name, "temporary", { command: args.command }, execution)
       return decision === "approved" ? { status: "success", content: [{ type: "text", text: "离线工具完成" }] }
         : { status: "error", content: [{ type: "text", text: decision }], error: { source: "tool", code: decision, message: decision } }
     },
@@ -138,6 +147,7 @@ async function main() {
   const firstId = await evaluate("document.querySelector('.approval-popover').dataset.approvalId")
   assert.equal(await evaluate("document.querySelectorAll('.chat-messages .approval-actions, .chat-messages .approval-card').length"), 0, "请求不在执行过程内渲染")
   assert.equal(await evaluate("document.querySelectorAll('.approval-popover').length"), 1)
+  assert.equal(await evaluate("document.querySelector('.approval-actions [role=status]').textContent"), "对此对话持续有效")
   await screenshot("electron-approval-light")
   await fits()
   window.webContents.sendInputEvent({ type: "keyDown", keyCode: "Escape" })
@@ -171,9 +181,13 @@ async function main() {
   await evaluate("document.querySelector('.approval-actions .settings-secondary-button').click()")
   await until(() => evaluate("!document.querySelector('.approval-popover') && document.querySelector('.session-phase').textContent === '准备就绪'"))
   await evaluate("document.querySelector('.turn-process > summary').click()")
-  assert.deepEqual(await evaluate("[...document.querySelectorAll('.approval-result > summary')].map(node => node.textContent)"), ["审批已批准 · shell", "审批已拒绝 · shell"])
+  assert.deepEqual(await evaluate("[...document.querySelectorAll('.approval-result > summary')].map(node => node.textContent)"), ["审批已批准 · request_permissions", "审批已拒绝 · request_permissions"])
   assert.equal(await evaluate("document.querySelectorAll('.turn-process .approval-actions, .turn-process .approval-popover').length"), 0)
   const data = await evaluate("window.minou.getSessionData('default', document.querySelector('.chat-page').dataset.sessionId)")
+  const requests = data.events.filter(event => event.type === "approval/request")
+  assert.equal(requests.length, 2)
+  assert.equal(requests[0].toolCallEventId, requests[1].toolCallEventId)
+  assert.deepEqual(requests.map(event => event.arguments.type), ["read", "network"])
   assert.deepEqual(data.events.filter(event => event.type === "approval/result").map(event => event.decision), ["approved", "denied"], "实际决定已经持久化")
   window.setContentSize(1200, 800)
   toolCount = 1
