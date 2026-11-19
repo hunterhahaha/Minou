@@ -53,7 +53,7 @@ Create a UTF-8 `task.txt` containing your task, then run:
 node dist/src/cli/main.js run --prompt-file ./task.txt --workspace . --output ./result.json
 ```
 
-Each invocation starts a fresh run using the configured default model. `--output` is required and its parent directory must already exist. By default, stdout contains the final JSON result and stderr contains diagnostics. Add `--format jsonl` for a stream of public events; the final result is still saved to the output file.
+Each invocation starts a fresh run using the configured default model. With no `--output`, Minou saves the final JSON to `.minou/logs/cli/<session-id>/result.json` under the configured user profile. The CLI prints the absolute result path to stderr. Stdout contains the final JSON by default. Use `--format jsonl` to stream public events alongside the JSON result file.
 
 For structured requests:
 
@@ -72,7 +72,7 @@ To use the shorter `minou` command, run `npm link` after building, then use `min
 - **Skills:** manage and enable skills from global or project sources in Settings → Skills.
 - **Storage:** desktop data lives in `%USERPROFILE%\.minou`, including configuration, provider credentials, conversations, logs, skills, and memory. The CLI uses the same user configuration, falling back to the home directory if `USERPROFILE` is unset.
 
-Permission modes govern Minou's tool checks and approval flow; they do not create an operating-system sandbox. In headless runs, requests requiring approval are denied unless matched by the run's auto-approval settings. Keep API keys and your local `.minou` directory private, and review tasks and permissions before running an agent on a codebase.
+CLI permission modes govern Minou's tool checks and approval flow. With `--sandbox-mode auto`, the current model reviews requests that require approval. Other modes use the run's auto-approval settings when approval is required. Keep API keys and your local `.minou` directory private, and review tasks and permissions before running an agent on a codebase.
 
 ## Project documentation
 

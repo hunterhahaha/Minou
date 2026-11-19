@@ -24,7 +24,7 @@ Minou 是本地运行的 Coding Agent 应用，提供 Electron 桌面工作区�
 | Skill | Global / Project 来源同步、启停管理、描述注入及完整正文按需读取 | [SkillManager](../runtime/skill/src/manager.ts)、[skill-ipc.ts](../src/main/skill-ipc.ts) |
 | 项目记忆 | 按分类列索引、按需读正文、整批追加；同一 Project 的对话共用 | [MemoryManager](../runtime/memory/src/index.ts) |
 | 桌面上下文压缩 | Step 前检查压力，独立请求生成 Summary，按已提交事件恢复 | [summary.ts](../runtime/context/src/summary.ts)、[SessionRuntime](../runtime/agent/src/session-runtime.ts) |
-| Headless CLI | prompt 文件 / JSON 请求、JSON / JSONL 输出、限步、超时、模块隔离与自动审批 | [CLI 入口](../src/cli/main.ts)、[协议](../src/cli/protocol.ts) |
+| Headless CLI | prompt 文件 / JSON 请求、JSON 结果与可选 JSONL 事件、限步、超时、内置工具白名单、MCP 来源选择及模型审核 | [CLI 入口](../src/cli/main.ts)、[协议](../src/cli/protocol.ts) |
 
 兼容供应商目录当前已经包含 DeepSeek 的三种协议创建资料，见 [compatible-providers.ts](../src/main/compatible-providers.ts)。这是仓库内置的创建模板，不代表已验证远端服务当前支持情况；创建后的配置保存在数据库中，不依赖模板持续覆盖。
 

@@ -19,6 +19,9 @@ async function main(): Promise<void> {
     const base = await normalizeRequest(input, root, root)
     assert.equal(base.prompt, "  Task\n")
     assert.deepEqual(base.isolated, { skill: false, memory: false, mcp: false })
+    assert.equal(base.restrictSystemTools, false)
+    assert.deepEqual(base.systemTools, [])
+    assert.equal(base.useConfiguredMcp, true)
     assert.equal(base.maxSteps, 100)
     assert.equal(base.timeoutSeconds, 1800)
     await writeFile(join(root, "task.txt"), input.prompt)
@@ -26,6 +29,17 @@ async function main(): Promise<void> {
     const flags = await readCliInput(["run", "--prompt-file", "task.txt", "--output", "out.json", "--run-id", "same", "--model", "model"], root)
     const json = await readCliInput(["run", "--request", "request.json", "--output", "out.json"], root)
     assert.deepEqual(flags, json)
+    const selectedFlags = await readCliInput(["run", "--prompt-file", "task.txt", "--run-id", "same", "--model", "model",
+      "--restrict-system-tools=true", "--system-tools", "read, glob,read", "--use-configured-mcp", "false", "--sandbox-mode", "auto"], root)
+    await writeFile(join(root, "request.json"), JSON.stringify({ ...input, restrict_system_tools: true, system_tools: ["read", "glob"],
+      use_configured_mcp: false, permissions: { sandbox_mode: "auto" } }))
+    const selectedJson = await readCliInput(["run", "--request", "request.json"], root)
+    assert.deepEqual(selectedFlags, selectedJson)
+    assert.equal(selectedFlags.output, undefined)
+    assert.equal(selectedFlags.request.restrictSystemTools, true)
+    assert.deepEqual(selectedFlags.request.systemTools, ["read", "glob"])
+    assert.equal(selectedFlags.request.useConfiguredMcp, false)
+    assert.equal(selectedFlags.request.sandboxMode, "auto")
     const nested = join(root, "nested")
     await mkdir(nested)
     await writeFile(join(nested, "request.json"), JSON.stringify({ version: 1, prompt: "x", workspace: "." }))
@@ -34,18 +48,20 @@ async function main(): Promise<void> {
     for (const args of [
       ["run"], ["benchmark"], ["run", "--output", "x", "--prompt-file", "task.txt", "--bad", "x"],
       ["run", "--output", "a", "--output", "b"], ["run", "--output", "x", "--prompt-file", "task.txt", "--format", "yaml"],
+      ["run", "--prompt-file", "task.txt", "--restrict-system-tools", "yes"], ["run", "--prompt-file", "task.txt", "--use-configured-mcp", "0"],
+      ["run", "--prompt-file", "task.txt", "--system-tools", "read,,glob"],
     ]) await assert.rejects(readCliInput(args, root))
     for (const patch of [
       { version: 2 }, { prompt: " " }, { surprise: true }, { isolated: { unknown: true } },
       { isolated: { skill: "false" } }, { isolated: null }, { permissions: null }, { limits: null },
-      { permissions: { sandbox_mode: "invalid" } }, { permissions: { sandbox_mode: "auto" } },
+      { permissions: { sandbox_mode: "invalid" } }, { restrict_system_tools: "true" }, { use_configured_mcp: null }, { system_tools: [1] },
       { permissions: { auto_approve: { groups: ["mcp_*"] } } },
       { permissions: { auto_approve: { tools: [2] } } }, { permissions: { auto_approve: { groups: null } } },
       { limits: { max_steps: 0 } }, { limits: { max_steps: null } }, { limits: { timeout_seconds: 2_147_484 } },
       { limits: { max_steps: 1.5 } }, { workspace: "missing" },
     ]) await assert.rejects(normalizeRequest({ ...input, ...patch }, root, root), JSON.stringify(patch))
     await writeFile(join(root, "mcp.json"), JSON.stringify({ mcpServers: [] }))
-    const mcp = await normalizeRequest({ ...input, mcp_config: "mcp.json" }, root, root)
+    const mcp = await normalizeRequest({ ...input, mcp_config: "mcp.json", use_configured_mcp: false }, root, root)
     assert.deepEqual(mcp.mcpServers, [])
     await assert.rejects(normalizeRequest({ ...input, mcp_config: "mcp.json", isolated: { mcp: true } }, root, root), /冲突/)
 
@@ -63,11 +79,14 @@ async function main(): Promise<void> {
     const state = createStatistics()
     /** @param event 本测试的内部载荷。 @returns 带身份的事件。 */
     const event = (event: object) => ({ eventId: "e", sessionId: "s", seq: 1, createdAt: "now", turn: 1, step: 1, ...event }) as SessionEvent
+    assert.equal(state.turns, 0)
+    observeEvent(state, event({ type: "turn/start" }))
     observeEvent(state, event({ type: "step/start" }))
     observeEvent(state, event({ type: "assistant/block_end", block: { type: "tool_call" } }))
     observeEvent(state, event({ type: "assistant/message", message: { content: [{ type: "thinking", text: "private" }, { type: "text", text: "first" }] }, usage: { inputTokens: 4, outputTokens: 2, cacheReadTokens: 3 } }))
     observeEvent(state, event({ type: "assistant/message", message: { content: [{ type: "text", text: "last" }] }, usage: { inputTokens: 6, outputTokens: 5 } }))
     assert.equal(state.steps, 1)
+    assert.equal(state.turns, 1)
     assert.equal(state.toolCalls, 1)
     assert.equal(state.answer, "last")
     assert.deepEqual(mapUsage(state.usage), { input_tokens: 10, output_tokens: 7 })

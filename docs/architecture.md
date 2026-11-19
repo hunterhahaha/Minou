@@ -170,4 +170,6 @@ flowchart TD
 
 [main.ts](../src/cli/main.ts) 直接装配配置、Adapter、工具、MCP、Skill、Memory 和独立事件日志，调用相同的 `runAgentLoop()`。它不创建桌面 SessionRuntime，也不注册 Electron IPC。每次使用内部 UUID，日志位于 `logs/cli/<session-id>/`，外部 `run_id` 仅作为关联字段。
 
-CLI 默认 100 Step、1800 秒总时限，有限收尾宽限为 5 秒。公开输出通过 [protocol.ts](../src/cli/protocol.ts) 的白名单映射，排除 thinking 和工具参数/结果正文；最后一条 Assistant Message 文本成为 `answer`。完整内部日志与公开结果用途不同。请求字段、审批、隔离与退出码见 [CLI 使用说明](cli-usage.md)。
+CLI 在装配阶段按模块隔离选项与 MCP 来源选择初始化工具。启用内置工具白名单时，CLI 从本次注册的内置工具中校验名称，并同时约束模型收到的定义和实际执行入口。远端 MCP 工具继续通过 Run 内的载入事件开放。`auto` 将权限检查触发的审批交给现有 `reviewToolCall()`，并在 CLI 事件日志记录审批请求和决定。
+
+CLI 默认 100 Step、1800 秒总时限，收尾宽限为 5 秒。[protocol.ts](../src/cli/protocol.ts) 按已提交事件累计 Turn、Step、工具调用和 Agent Token 用量，取最后一条 Assistant Message 的文本作为 `answer`。最终 JSON 包含独立事件日志的绝对路径，默认写入本次运行目录的 `result.json`。stdout 默认输出最终 JSON，也可选择经白名单映射的实时 JSONL。请求字段、审批、隔离与退出码见 [CLI 使用说明](cli-usage.md)。

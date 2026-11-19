@@ -3,10 +3,11 @@
 import { randomUUID } from "node:crypto"
 import { mkdir, readFile, stat } from "node:fs/promises"
 import { homedir } from "node:os"
-import { join, resolve } from "node:path"
+import { dirname, isAbsolute, join, resolve } from "node:path"
 import type { Writable } from "node:stream"
 import { performance } from "node:perf_hooks"
 import { runAgentLoop } from "../../runtime/agent/src/loop.ts"
+import { reviewToolCall } from "../../runtime/agent/src/tool-approval.ts"
 import { createAbortError } from "../../runtime/error/src/abort.ts"
 import { MCPManager } from "../../runtime/mcp/src/index.ts"
 import type { SessionLoadedMCPTool } from "../../runtime/mcp/src/types.ts"
@@ -24,6 +25,7 @@ import {
   registerWebSearchTool, WEB_SEARCH_DATABASE_FILE,
   registerWebFetchTool,
 } from "../../runtime/tools/src/index.ts"
+import { renderCommonError, TOOL_NOT_FOUND } from "../../runtime/tools/src/tool-executor.ts"
 import type { ToolExecutionContext } from "../../runtime/tools/src/types.ts"
 import { initializeConfigFilesSnapshot } from "../main/config-files.ts"
 import { mcpToolChanges, modelHistory } from "../../runtime/agent/src/model-history.ts"
@@ -130,13 +132,15 @@ export async function runCli(argv: readonly string[]): Promise<number> {
   }
   const cwd = process.cwd()
   const sessionId = randomUUID()
+  const userProfile = process.env.USERPROFILE ?? homedir()
   const destination = outputDestination(argv, cwd)
+  const outputPath = destination.output ?? join(userProfile, ".minou", "logs", "cli", sessionId, "result.json")
   const statistics = createStatistics()
   const controller = new AbortController()
-  let request: RunRequest | undefined
   let runId: string = sessionId
   let model: ModelRef | null = null
   let recordDirectory: string | null = null
+  let eventLogPath: string | null = null
   let eventLog: FileSessionEventLog | undefined
   let fileTracker: TurnFileChangeTracker | undefined
   let reason: StopReason | undefined
@@ -245,14 +249,14 @@ export async function runCli(argv: readonly string[]): Promise<number> {
    * @throws Error 所有阶段的错误由外层映射为公共结果。
    */
   async function execute(): Promise<void> {
-    request = (await readCliInput(argv, cwd)).request
+    const { request } = await readCliInput(argv, cwd)
     runId = request.runId
     startedAt = performance.now()
     checkStopped()
     timeout = setTimeout(() => stop("timeout"), request.timeoutSeconds * 1000)
     await emit("run.started", {})
     stage = "initialization"
-    const { paths, config } = await initializeConfigFilesSnapshot(process.env.USERPROFILE ?? homedir(), { skipSkills: request.isolated.skill })
+    const { paths, config } = await initializeConfigFilesSnapshot(userProfile, { skipSkills: request.isolated.skill })
     checkStopped()
     recordDirectory = join(paths.rootDir, "logs", "cli", sessionId)
     const outputDirectory = join(recordDirectory, "tool_output")
@@ -260,11 +264,12 @@ export async function runCli(argv: readonly string[]): Promise<number> {
     checkStopped()
     const databasePath = join(recordDirectory, "events.sqlite")
     await initializeSessionEventDatabase(databasePath)
+    eventLogPath = databasePath
     checkStopped()
-    eventLog = createFileSessionEventLog({ sessionId, projectGroupId: "default", sessionDirectory: recordDirectory, databasePath })
+    const log = eventLog = createFileSessionEventLog({ sessionId, projectGroupId: "default", sessionDirectory: recordDirectory, databasePath })
     dispatcher = initNetworkDispatcher()
-    model = resolveModel(paths.providerDatabasePath, request)
-    const adapter = await createTurnModelAdapter(paths, model)
+    const selectedModel = model = resolveModel(paths.providerDatabasePath, request)
+    const adapter = await createTurnModelAdapter(paths, selectedModel)
     checkStopped()
     const tools = new ToolRegistry()
     const renders = new RenderRegistry()
@@ -295,7 +300,16 @@ export async function runCli(argv: readonly string[]): Promise<number> {
     if (!request.isolated.mcp) {
       mcp = new MCPManager(estimateLocalTokens)
       unsubscribeMcp = registerMCPTools(tools, renders, mcp)
-      await mcp.initialize(request.mcpServers ?? config.mcpServers)
+    }
+    const allowedSystemTools = request.restrictSystemTools ? new Set(request.systemTools) : undefined
+    if (allowedSystemTools) {
+      for (const name of allowedSystemTools) {
+        if (tools.get(name)?.kind !== "builtin") throw new CliInputError(`本次运行没有可用的内置工具：${name}。`)
+      }
+    }
+    const mcpServers = request.mcpServers ?? (request.useConfiguredMcp ? config.mcpServers : undefined)
+    if (mcp && mcpServers !== undefined) {
+      await mcp.initialize(mcpServers)
       checkStopped()
       for (const connection of mcp.getConnectionStates()) {
         if (connection.error) await writeOutput(process.stderr, `MCP 服务连接失败：${connection.name}\n`)
@@ -312,32 +326,50 @@ export async function runCli(argv: readonly string[]): Promise<number> {
     checkStopped()
     const workspaceInfo = `<workspace_info>\n${JSON.stringify({ cwd: workspace, directories: [workspace], allowedRoots: roots, toolOutputDirectory: outputDirectory }, null, 2)}\n</workspace_info>`
     const system = [SYSTEM_PROMPT, workspaceInfo, agents, skillContent].filter(Boolean).join("\n\n")
-    const initial = await eventLog.appendTurnStartAndUserMessage([
-      { type: "turn/start", turn: 1, model },
+    const initial = await log.appendTurnStartAndUserMessage([
+      { type: "turn/start", turn: 1, model: selectedModel },
       { type: "user/message", turn: 1, message: { id: randomUUID(), role: "user", content: [{ type: "text", text: request.prompt }] } },
     ])
     startedTurn = initial.length === 2
+    for (const event of initial) observeEvent(statistics, event)
     const executeTool = createExecuteToolCall(tools, renders)
-    /** @param name 触发审批的注册名。 @param _reason 内部说明。 @param context 原始调用身份。 @returns 立即作出的决定。 @throws Error 审批记录失败。 */
-    const approve = async (name: string, _reason: string, context: ToolExecutionContext<object>): Promise<ApprovalDecision> => {
+    /**
+     * 记录本次审批，并按沙箱模式交给模型审核或匹配现有自动批准名单。
+     * @param name 触发审批的注册名。
+     * @param reason 工具提供的审批说明。
+     * @param context 原始调用身份、已校验参数和停止信号。
+     * @returns 审核、名单匹配或取消产生的决定。
+     * @throws Error 缺少调用身份或审批记录写入失败。
+     */
+    const approve = async (name: string, reason: string, context: ToolExecutionContext<object>): Promise<ApprovalDecision> => {
       if (!context.toolCallEventId) throw new Error("审批缺少工具调用事件身份")
       const approvalId = randomUUID()
       await appendEvent({ type: "approval/request", turn: context.turn, step: context.step, approvalId,
         toolCallEventId: context.toolCallEventId, toolCallId: context.toolCallId, blockId: context.blockId,
         toolName: name, arguments: context.validatedArguments })
-      const group = toolGroup(name, tools)
-      const decision = context.signal.aborted ? "cancelled" : request!.approveTools.includes(name) || (group !== undefined && request!.approveGroups.includes(group)) ? "approved" : "denied"
+      let decision: ApprovalDecision
+      if (mode === "auto") {
+        decision = await reviewToolCall(adapter, selectedModel, context, { toolName: name, arguments: context.validatedArguments, reason },
+          async () => await log.readEvents() as SessionEvent[])
+      } else {
+        const group = toolGroup(name, tools)
+        const matched = request.approveTools.includes(name) || (group !== undefined && request.approveGroups.includes(group))
+        decision = context.signal.aborted ? "cancelled" : matched ? "approved" : "denied"
+      }
       await appendEvent({ type: "approval/result", turn: context.turn, step: context.step, approvalId, decision })
       return decision
     }
     stage = "execution"
     const result = await runAgentLoop({
-      turn: 1, model, adapter, content: [], signal: controller.signal, appendEvent,
-      tools: tools.listDefinitions().filter((definition) => tools.get(definition.name)?.kind === "builtin"),
-      prepareHistory: async () => modelHistory(system, await eventLog!.readEvents() as SessionEvent[]),
+      turn: 1, model: selectedModel, adapter, content: [], signal: controller.signal, appendEvent,
+      tools: tools.listDefinitions().filter(({ name }) => tools.get(name)?.kind === "builtin" && (!allowedSystemTools || allowedSystemTools.has(name))),
+      prepareHistory: async () => modelHistory(system, await log.readEvents() as SessionEvent[]),
       executeTool: async (name, args, context) => {
         if (finished) throw createAbortError()
         await emit("tool.started", { step: context.step, call_id: context.toolCallId, tool: name })
+        if (allowedSystemTools && tools.get(name)?.kind === "builtin" && !allowedSystemTools.has(name)) {
+          return renderCommonError({ source: "tool", code: TOOL_NOT_FOUND, message: `未找到可用工具：${name}` })
+        }
         return executeTool(name, args, {
           ...context, projectId: "default",
           fileRuntime: { projectId: "default", sessionId, tracker, requestApproval: approve },
@@ -347,7 +379,7 @@ export async function runCli(argv: readonly string[]): Promise<number> {
             readLoadedTools: async () => structuredClone(loaded),
             writeLoadedTools: async (entries, change) => {
               const inputs = change ? mcpToolChanges(change, context.turn, context.step, context.toolCallEventId) : []
-              if (inputs.length > 0) await eventLog!.appendMcpToolChanges(inputs)
+              if (inputs.length > 0) await log.appendMcpToolChanges(inputs)
               loaded = structuredClone(entries)
             },
             readSandboxMode: async () => mode, requestApproval: approve,
@@ -356,7 +388,7 @@ export async function runCli(argv: readonly string[]): Promise<number> {
       },
       beforeStep: async ({ step }) => {
         checkStopped()
-        if (step > request!.maxSteps) { stop("max_steps"); throw createAbortError() }
+        if (step > request.maxSteps) { stop("max_steps"); throw createAbortError() }
       },
     })
     if (!reason) reason = !result.stopped && result.completion === "finished" ? "finished" : "model_incomplete"
@@ -399,19 +431,23 @@ export async function runCli(argv: readonly string[]): Promise<number> {
   const finalReason = reason ?? "error"
   const result: RunResult = {
     version: 1, run_id: runId, session_id: sessionId, status: resultStatus(finalReason), stop_reason: finalReason,
-    answer: statistics.answer, answer_complete: finalReason === "finished", model, record_directory: recordDirectory,
-    metrics: { steps: statistics.steps, tool_calls: statistics.toolCalls, duration_ms: Math.round(performance.now() - startedAt),
+    answer: statistics.answer, answer_complete: finalReason === "finished", model, record_directory: recordDirectory, event_log_path: eventLogPath,
+    metrics: { turns: statistics.turns, steps: statistics.steps, tool_calls: statistics.toolCalls, duration_ms: Math.round(performance.now() - startedAt),
       usage: mapUsage(statistics.usage), usage_complete: statistics.steps > 0 && statistics.reportedUsage === statistics.steps,
       usage_reported_steps: statistics.reportedUsage, usage_scope: "reported_agent_requests" },
     ...(error ? { error } : {}),
   }
   let code = exitCode(finalReason)
+  let resultWritten = false
   try {
-    if (destination.output) await writeResult(destination.output, result)
+    if (!isAbsolute(outputPath)) throw new Error("结果路径必须为绝对路径")
+    if (!destination.output) await mkdir(dirname(outputPath), { recursive: true, mode: 0o700 })
+    await writeResult(outputPath, result)
+    resultWritten = true
   } catch {
     code = 1
     result.status = "failed"; result.stop_reason = "error"; result.answer_complete = false
-    result.error = { code: "OUTPUT_FAILED", stage: "output", message: "最终结果无法原子写入指定路径。" }
+    result.error = { code: "OUTPUT_FAILED", stage: "output", message: "最终结果无法原子写入结果路径。" }
   }
   try {
     if (destination.format === "jsonl") await emit("run.finished", { result })
@@ -421,8 +457,9 @@ export async function runCli(argv: readonly string[]): Promise<number> {
     code = 1
     result.status = "failed"; result.stop_reason = "error"; result.answer_complete = false
     result.error = { code: "OUTPUT_FAILED", stage: "output", message: "stdout 无法完成协议输出。" }
-    if (destination.output) await writeResult(destination.output, result).catch(() => undefined)
+    if (resultWritten) await writeResult(outputPath, result).catch(() => { resultWritten = false })
   }
+  if (resultWritten) await writeOutput(process.stderr, `结果文件：${outputPath}\n`).catch(() => undefined)
   if (result.error) await writeOutput(process.stderr, `${result.error.code}: ${result.error.message}\n`).catch(() => undefined)
   await outputTail
   process.stdout.off("error", outputError)

@@ -33,7 +33,7 @@ node ".\dist\src\cli\main.js" run --help
 阅读当前工作区，说明项目结构，并检查 README 中的启动命令是否与 package.json 一致。
 ```
 
-确保任务文件、工作区和输出父目录已经存在，然后运行：
+先准备任务文件和工作区。如果指定 `--output`，其父目录也需要提前创建。运行命令如下。
 
 ```powershell
 node ".\dist\src\cli\main.js" run `
@@ -52,7 +52,7 @@ node ".\dist\src\cli\main.js" run `
 node ".\dist\src\cli\main.js" run --prompt-file "G:\tasks\task.txt" --workspace "G:\code\repo" --output "G:\results\result.json"
 ```
 
-默认 stdout 输出一份最终 JSON，同时将结果写入 `--output` 指定的文件。诊断信息输出到 stderr。
+默认 stdout 输出一份最终 JSON。省略 `--output` 时，结果保存到当前用户的 `.minou/logs/cli/<session-id>/result.json`。写入成功后，stderr 会显示结果文件的绝对路径。
 
 ### 使用 `minou` 命令
 
@@ -132,14 +132,17 @@ node ".\dist\src\cli\main.js" run `
 | `--model <modelId>` | `model` | 省略时使用有效默认模型；未设置默认模型时沿用现有模型顺序选择逻辑。 |
 | `--reasoning-level <level>` | `reasoning_level` | 省略时使用所选模型配置的第一个等级。 |
 | `--workspace <directory>` | `workspace` | 省略时使用 CLI 启动目录，必须为现存目录。 |
-| `--mcp-config <path>` | `mcp_config` | 可选 JSON 文件，仅替换本次 MCP 服务配置。 |
+| `--mcp-config <path>` | `mcp_config` | 可选 JSON 文件，指定本次唯一使用的 MCP 服务列表。 |
+| `--use-configured-mcp <bool>` | `use_configured_mcp` | 默认 `true`。为 `false` 时跳过用户配置中的 MCP 服务，显式提供的 `mcp_config` 仍生效。 |
 | `--isolate <list>` | `isolated.skill`、`isolated.memory`、`isolated.mcp` | 默认全部为 `false`。列表中指定的模块设为 `true`，表示禁用。 |
+| `--restrict-system-tools <bool>` | `restrict_system_tools` | 默认 `false`。为 `true` 时启用内置工具白名单。 |
+| `--system-tools <list>` | `system_tools` | 命令行使用逗号分隔的精确工具名，Request 使用字符串数组。启用白名单且省略名单时，不开放内置工具。 |
 | `--sandbox-mode <mode>` | `permissions.sandbox_mode` | 默认 `sandbox-full-access`。 |
-| `--auto-approve-groups <list>` | `permissions.auto_approve.groups` | 默认空数组，仅处理已经触发的审批。 |
-| `--auto-approve-tools <list>` | `permissions.auto_approve.tools` | 默认空数组，精确工具注册名。 |
+| `--auto-approve-groups <list>` | `permissions.auto_approve.groups` | 默认空数组，在 `auto` 以外的模式下匹配已触发审批的工具组。 |
+| `--auto-approve-tools <list>` | `permissions.auto_approve.tools` | 默认空数组，在 `auto` 以外的模式下匹配已触发审批的精确工具名。 |
 | `--max-steps <count>` | `limits.max_steps` | 默认 `100`，必须为正的安全整数。 |
 | `--timeout <seconds>` | `limits.timeout_seconds` | 默认 `1800`，必须为正整数且不超过 `2147483` 秒。 |
-| `--output <path>` | 无 | 两种模式均必填，指定最终结果文件。父目录必须已存在。 |
+| `--output <path>` | 无 | 可选，指定最终 JSON 结果文件。显式路径的父目录必须已存在。 |
 | `--format <json\|jsonl>` | 无 | 两种模式共用，默认 `json`，控制 stdout 格式。 |
 | `--help` | 无 | 使用 `minou run --help` 或 `minou --help` 查看帮助。 |
 
@@ -150,6 +153,8 @@ node ".\dist\src\cli\main.js" run `
 ```
 
 参数支持 `--name value` 和 `--name=value`。未知参数、重复参数、额外位置参数、未知 JSON 字段、不支持的协议版本及显式 `null` 值均会被拒绝。可选字段不需要时直接省略。
+
+布尔选项在命令行取 `true` 或 `false`，Request JSON 使用布尔值。
 
 ### 路径规则
 
@@ -179,7 +184,7 @@ JSON 中建议使用 `G:/code/repo` 这样的正斜杠路径；使用反斜杠�
 | --- | --- | --- |
 | `isolated.skill` | 跳过启动阶段 Global/Project Skill 来源初始化和 registry 扫描；不创建 SkillManager、不注册 `skill_load`、不注入描述。 | 使用已启用的 Global Skill，按现有配置运行。 |
 | `isolated.memory` | 不创建 MemoryManager、不注册 Memory 工具、不访问 default Memory。 | 使用 default 分组；正文由工具按需访问，不主动加入初始上下文。 |
-| `isolated.mcp` | 不创建 MCPManager、不连接服务、不注册发现或远端工具。 | 使用本次覆盖文件或用户已有的 MCP 配置。 |
+| `isolated.mcp` | 不创建 MCPManager、不连接服务、不注册发现或远端工具。 | 保留 MCP 模块，按本次 MCP 文件和 `use_configured_mcp` 选择连接。 |
 
 例如只关闭 Skill 和 Memory，保留 MCP：
 
@@ -189,15 +194,26 @@ node ".\dist\src\cli\main.js" run --prompt-file "G:\tasks\task.txt" --workspace 
 
 这些开关只禁用对应模块。即使三个模块全部关闭，CLI 仍会读取和检查用户的普通配置、模型、凭据，并初始化运行所需的配置文件。它们不代表使用一份完全空白的用户配置。
 
+### 限制内置工具
+
+启用白名单后，模型只能看到并执行名单中的内置工具。名称区分大小写，必须是本次可用的精确注册名。未知名称或被模块隔离排除的工具会使请求失败。名单覆盖 `skill_load`、Memory 工具和 MCP 的内置发现与载入工具。远端 MCP 工具仍通过允许使用的 MCP 载入工具在后续 Step 中开放。关闭白名单时，CLI 按各模块的配置开放内置工具。
+
+例如只开放内置文件查看工具。
+
+```powershell
+minou run --prompt-file task.txt --restrict-system-tools true --system-tools glob,grep,read
+```
+
 ## 6. 权限与自动审批
 
-CLI 沿用现有权限规则，不等待 UI 审批。权限判断需要审批时，按本次自动批准名单立即作出决定：命中工具组或具体工具名则 `approved`，均未命中则 `denied`，取消后为 `cancelled`。
+CLI 沿用现有权限规则。需要审批时，`auto` 模式交由本轮模型审核，其他模式按本次自动批准名单决定。名单命中时返回 `approved`，未命中时返回 `denied`。停止运行会取消等待中的审核。
 
 | 模式 | 主要行为 |
 | --- | --- |
 | `full-access` | 文件、Shell、PTY 和实际 MCP 调用按现有规则直接允许，不因自动批准名单为空而被额外拦截。 |
 | `sandbox-full-access` | 允许根内的文件工具操作直接允许；根外访问、Shell/PTY 和实际 MCP 调用需要审批。 |
 | `sandbox-read-only` | 允许根内的 `glob`、`grep`、`read` 直接允许；其他需要审批的访问使用自动批准名单。 |
+| `auto` | 文件工具沿用 `sandbox-full-access` 的范围检查。根外文件访问、进程工具和实际 MCP 调用触发审批时，由本轮模型独立审核。审核使用提交的本轮上下文，有效批准后方可继续。 |
 
 工具自身的参数校验、路径检查和模块权限仍然执行。Skill、Memory、MCP 发现等内部状态或上下文操作沿用各自规则，不能仅凭工具组推断是否触发审批。
 
@@ -282,7 +298,7 @@ node ".\dist\src\cli\main.js" run `
   --format jsonl
 ```
 
-显式文件替换本次使用的整个 MCP 配置列表，不与全局列表合并，也不写回用户配置。省略时使用现有全局配置；`{"mcpServers":[]}` 表示本次没有配置服务。该文件不支持 TOML，不能与 `isolated.mcp=true` 同时使用。
+显式文件替换本次使用的整个 MCP 配置列表。省略该文件时，`use_configured_mcp` 为 `true` 会使用全局配置，为 `false` 则跳过全局服务的初始化。`{"mcpServers":[]}` 表示本次配置为空。以上设置只在本次运行生效。`isolated.mcp=true` 完全禁用 MCP 模块，并且与 `mcp_config` 互斥。
 
 HTTP 配置可使用现有 `bearer_token_env_var` 指定宿主环境变量名，或使用 `http_headers`。不能同时通过这两种方式重复提供 Authorization。stdio 还可通过 `env` 传入环境变量。
 
@@ -290,7 +306,7 @@ MCP 保留现有 Catalog、搜索、载入预算、Schema 校验和调用逻辑�
 
 ## 8. 最终结果 JSON
 
-无论 `--format` 选择哪种格式，`--output` 都保存最终结果 JSON。成功结果的结构示例：
+`--format` 控制 stdout 的展示方式。CLI 始终尝试将最终结果写为 JSON 文件。下面是一份成功结果。
 
 ```json
 {
@@ -309,7 +325,9 @@ MCP 保留现有 Catalog、搜索、载入预算、Schema 校验和调用逻辑�
     "reasoningLevel": "medium"
   },
   "record_directory": "C:\\Users\\example\\.minou\\logs\\cli\\5e800d84-7eef-4473-a0b5-a89d8180d863",
+  "event_log_path": "C:\\Users\\example\\.minou\\logs\\cli\\5e800d84-7eef-4473-a0b5-a89d8180d863\\events.sqlite",
   "metrics": {
+    "turns": 1,
     "steps": 2,
     "tool_calls": 1,
     "duration_ms": 8200,
@@ -337,6 +355,7 @@ MCP 保留现有 Catalog、搜索、载入预算、Schema 校验和调用逻辑�
 | `answer_complete` | 仅模型正常完成时为 `true`；达到限制或失败时保留已有回答，但为 `false`。 |
 | `model` | 本次实际模型引用；模型解析前失败时为 `null`。 |
 | `record_directory` | 本次内部记录目录；目录创建前失败时为 `null`。 |
+| `event_log_path` | 本次 `events.sqlite` 事件日志的绝对路径。日志初始化前失败时为 `null`。 |
 | `metrics` | 从已提交事件汇总的统计。 |
 | `error` | 失败时可选，包含稳定错误码 `code`、阶段 `stage` 和公开说明 `message`。 |
 
@@ -344,13 +363,14 @@ MCP 保留现有 Catalog、搜索、载入预算、Schema 校验和调用逻辑�
 
 ### 指标口径
 
+- `turns`：已提交的 `turn/start` 数量。CLI 每次最多执行一个 Turn，启动 Turn 前退出时为 `0`。
 - `steps`：已经写入 `step/start` 的 Step 数。一次 AgentLoop Step 算一步，工具调用不额外计步。
 - `tool_calls`：完整工具调用块的数量，包括后来被拒绝或失败的调用，不代表工具成功次数。
 - `duration_ms`：从请求校验通过起计时，结果构造时结算，包含初始化、执行和收尾，不包含之后的最终结果写入耗时。
 - `usage`：累计各条权威 Assistant Message 报告的 Usage，完全未报告时为 `null`。
 - `usage_complete`：至少启动一个 Step，且所有已启动 Step 均报告权威 Usage 时为 `true`。
 - `usage_reported_steps`：已报告权威 Usage 的 Step 数。
-- `usage_scope`：固定为 `reported_agent_requests`，不宣称覆盖不可观测的失败请求或 SDK 重试账单用量。
+- `usage_scope`：固定为 `reported_agent_requests`。统计范围为 Agent 请求中供应商报告的用量，独立的 `auto` 审核请求用量在此范围之外。
 
 Usage 中，`input_tokens` 是未缓存输入；`cache_read_tokens`、`cache_write_tokens` 为另外两个输入桶。`output_tokens` 包含 reasoning，`reasoning_tokens` 只是其中子集，不能再次加入总量。`total_tokens`、缓存和 reasoning 字段未报告时保持缺失，不补零。
 
@@ -358,7 +378,7 @@ Usage 中，`input_tokens` 是未缓存输入；`cache_read_tokens`、`cache_wri
 
 ## 9. 实时 JSONL 事件
 
-使用 `--format jsonl` 时，stdout 每行输出一个 JSON 对象，最终结果仍写入 `--output`。例如将事件和诊断分别保存：
+使用 `--format jsonl` 时，stdout 每行输出一个 JSON 对象，结果文件仍写入显式输出路径或本次运行目录。以下命令分别保存公共事件和诊断信息。
 
 ```powershell
 node ".\dist\src\cli\main.js" run `
@@ -436,10 +456,11 @@ $runExitCode
     cli/
       <session_id>/
         events.sqlite
+        result.json
         tool_output/
 ```
 
-最终结果的 `record_directory` 给出实际绝对路径。每次使用内部 UUID 生成目录，外部 `run_id` 不参与路径拼接；这些运行不会登记到桌面对话索引。
+最终结果的 `record_directory` 给出内部日志目录，`event_log_path` 直接指向事件日志数据库。省略 `--output` 时，结果文件位于同一运行目录。每次使用内部 UUID 生成目录，外部 `run_id` 仅用于关联。
 
 `events.sqlite` 保存现有内部事件，`tool_output` 保存工具产生的输出文件。内部记录可能包含模型思考和完整工具内容，和默认过滤的公共 JSON/JSONL 不同。
 
@@ -450,14 +471,14 @@ $runExitCode
 | 推理等级无效 | 删除 `--reasoning-level` 使用模型首个等级，或填写模型当前支持的值。 |
 | `workspace` 无效或输入文件不可读 | 检查目录/文件是否存在，并按前述路径基准核对相对路径。 |
 | 参数冲突 | Request 模式将任务配置放入 JSON，命令行仅保留 `--request`、`--output`、`--format`。 |
-| 工具被拒绝 | 检查沙箱模式、是否触发审批，以及组或精确工具名是否命中自动批准名单。 |
-| MCP 服务连接失败或没有工具 | 检查 `enabled`、传输配置、服务进程/地址和启动超时；确认未隔离 MCP；远端工具仍需发现和载入。 |
+| 工具被拒绝 | 检查内置工具白名单、沙箱模式，以及触发审批后记录的决定。 |
+| MCP 服务连接失败或没有工具 | 检查 `use_configured_mcp`、`mcp_config`、模块隔离以及服务自身的 `enabled`、传输配置和启动超时。 |
 | Shell / Terminal 无法启动 | 检查错误中的绝对路径是否指向当前平台的 PowerShell 7 可执行文件，以及本机是否允许创建进程和 PTY。Windows x64 可用 `scripts/setup-pwsh.ps1` 准备资源。 |
 | `OUTPUT_FAILED` | 检查输出父目录、文件写权限、stdout 管道状态及读取端是否持续消费。 |
 | `RUN_FAILED`、`CLEANUP_FAILED`、`EVENT_WRITE_FAILED` | 查看 `error.stage`、stderr 和本次 `record_directory` 中的记录。 |
 | 达到 Step 上限或超时 | 根据任务调整 `--max-steps`、`--timeout`，结合本地事件确认时间消耗位置。 |
 
-参数错误时，只要能识别有效的 `--output` 且路径可写，CLI 会尽力写出失败结果；缺少输出路径或输出本身失败时，不保证存在新结果文件。
+参数错误时，CLI 也会尝试写出失败结果。有可识别的 `--output` 时使用该路径，其余情况使用本次运行目录下的 `result.json`。只生成结果的运行目录可能没有事件日志和工具输出。结果写入失败时，stdout 仍会尽力输出 `OUTPUT_FAILED`。
 
 ## 12. 当前边界与开发验证
 

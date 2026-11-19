@@ -31,8 +31,14 @@ export interface RunRequest {
   reasoningLevel?: string
   /** 已验证存在的绝对工作目录。 */
   workspace: string
-  /** 显式替换本次全局 MCP 配置；undefined 表示沿用全局配置。 */
+  /** 显式提供本次 MCP 配置；省略时由 useConfiguredMcp 决定是否载入全局配置。 */
   mcpServers?: MCPConfig[]
+  /** 未提供 MCP 配置文件时是否载入全局 MCP 服务。 */
+  useConfiguredMcp: boolean
+  /** 启用时只开放 systemTools 中列出的内置工具。 */
+  restrictSystemTools: boolean
+  /** 允许使用的精确内置工具名称；空数组表示白名单为空。 */
+  systemTools: string[]
   /** true 表示完整禁用该模块。 */
   isolated: { skill: boolean; memory: boolean; mcp: boolean }
   /** 既有沙箱模式。 */
@@ -51,8 +57,8 @@ export interface RunRequest {
 export interface CliInput {
   /** 单次任务参数。 */
   request: RunRequest
-  /** 最终结果 JSON 的绝对路径，父目录必须存在。 */
-  output: string
+  /** 显式结果文件的绝对路径，父目录必须存在；省略时使用本次运行目录。 */
+  output?: string
   /** stdout 协议。 */
   format: OutputFormat
 }
@@ -85,6 +91,7 @@ export interface PublicUsage {
 
 /** 根据已提交事件累计的 Run 指标和最后一条公开回答。 */
 export interface RunStatistics {
+  /** 实际已提交的 Turn 数。 */ turns: number
   /** 实际已提交的 Step 数。 */ steps: number
   /** 已结束工具调用块数量，包含拒绝和失败调用。 */ toolCalls: number
   /** 已提交的 Assistant Message 数量。 */ messages: number
@@ -104,9 +111,10 @@ export interface RunResult {
   /** 是否由模型正常完成输出。 */ answer_complete: boolean
   /** 实际固定模型；模型解析前失败时为 null。 */ model: ModelRef | null
   /** 本次独立内部日志及工具输出目录；创建前失败时为 null。 */ record_directory: string | null
+  /** 本次事件日志数据库的绝对路径；初始化前失败时为 null。 */ event_log_path: string | null
   /** 已提交事件派生的指标。 */
   metrics: {
-    steps: number; tool_calls: number; duration_ms: number; usage: PublicUsage | null
+    turns: number; steps: number; tool_calls: number; duration_ms: number; usage: PublicUsage | null
     usage_complete: boolean; usage_reported_steps: number; usage_scope: "reported_agent_requests"
   }
   /** 仅公开稳定错误码和阶段说明。 */ error?: { code: string; stage: string; message: string }
@@ -115,6 +123,7 @@ export interface RunResult {
 const VALUE_OPTIONS = new Set([
   "request", "output", "format", "prompt-file", "model", "reasoning-level", "workspace", "run-id",
   "max-steps", "timeout", "mcp-config", "isolate", "sandbox-mode", "auto-approve-groups", "auto-approve-tools",
+  "restrict-system-tools", "system-tools", "use-configured-mcp",
 ])
 
 /**
@@ -156,7 +165,6 @@ export async function readCliInput(argv: readonly string[], cwd: string): Promis
     if (value === undefined || value.startsWith("--") || !value.trim()) throw new CliInputError(`--${name} 缺少值。`)
     options[name] = value
   }
-  if (!options.output) throw new CliInputError("必须提供 --output。")
   const format = options.format ?? "json"
   if (format !== "json" && format !== "jsonl") throw new CliInputError("--format 仅支持 json 或 jsonl。")
   let raw: unknown
@@ -175,11 +183,14 @@ export async function readCliInput(argv: readonly string[], cwd: string): Promis
       version: 1, prompt: await readText(resolve(cwd, options["prompt-file"])), run_id: options["run-id"],
       model: options.model, reasoning_level: options["reasoning-level"], workspace: options.workspace,
       mcp_config: options["mcp-config"], isolated,
+      use_configured_mcp: booleanOption(options["use-configured-mcp"], "use-configured-mcp"),
+      restrict_system_tools: booleanOption(options["restrict-system-tools"], "restrict-system-tools"),
+      system_tools: csv(options["system-tools"]),
       permissions: { sandbox_mode: options["sandbox-mode"], auto_approve: { groups: csv(options["auto-approve-groups"]), tools: csv(options["auto-approve-tools"]) } },
       limits: { max_steps: options["max-steps"] === undefined ? undefined : Number(options["max-steps"]), timeout_seconds: options.timeout === undefined ? undefined : Number(options.timeout) },
     }
   }
-  return { request: await normalizeRequest(raw, base, cwd), output: resolve(cwd, options.output), format }
+  return { request: await normalizeRequest(raw, base, cwd), output: options.output && resolve(cwd, options.output), format }
 }
 
 /**
@@ -191,8 +202,13 @@ export async function readCliInput(argv: readonly string[], cwd: string): Promis
  * @throws CliInputError 字段、模块组合、MCP 配置或路径不合法。
  */
 export async function normalizeRequest(value: unknown, base: string, cwd: string): Promise<RunRequest> {
-  const raw = object(value, "request", ["version", "run_id", "prompt", "model", "reasoning_level", "workspace", "mcp_config", "isolated", "permissions", "limits"])
+  const raw = object(value, "request", ["version", "run_id", "prompt", "model", "reasoning_level", "workspace", "mcp_config", "use_configured_mcp", "restrict_system_tools", "system_tools", "isolated", "permissions", "limits"])
   if (raw.version !== 1) throw new CliInputError("request.version 必须为 1。")
+  const useConfiguredMcp = raw.use_configured_mcp === undefined ? true : raw.use_configured_mcp
+  if (typeof useConfiguredMcp !== "boolean") throw new CliInputError("use_configured_mcp 必须为布尔值。")
+  const restrictSystemTools = raw.restrict_system_tools === undefined ? false : raw.restrict_system_tools
+  if (typeof restrictSystemTools !== "boolean") throw new CliInputError("restrict_system_tools 必须为布尔值。")
+  const systemTools = strings(raw.system_tools === undefined ? [] : raw.system_tools, "system_tools")
   const isolation = object(raw.isolated === undefined ? {} : raw.isolated, "isolated", ["skill", "memory", "mcp"])
   const isolated = { skill: false, memory: false, mcp: false }
   for (const key of ["skill", "memory", "mcp"] as const) {
@@ -201,7 +217,7 @@ export async function normalizeRequest(value: unknown, base: string, cwd: string
   }
   const permissions = object(raw.permissions === undefined ? {} : raw.permissions, "permissions", ["sandbox_mode", "auto_approve"])
   const mode = permissions.sandbox_mode === undefined ? "sandbox-full-access" : permissions.sandbox_mode
-  if (mode === "auto" || !SANDBOX_MODES.includes(mode as SandboxMode)) throw new CliInputError("permissions.sandbox_mode 无效。")
+  if (!SANDBOX_MODES.includes(mode as SandboxMode)) throw new CliInputError("permissions.sandbox_mode 无效。")
   const approval = object(permissions.auto_approve === undefined ? {} : permissions.auto_approve, "auto_approve", ["groups", "tools"])
   const groups = strings(approval.groups === undefined ? [] : approval.groups, "auto_approve.groups")
   if (groups.some((group) => !TOOL_GROUPS.includes(group as ToolGroup))) throw new CliInputError("auto_approve.groups 包含未知工具组。")
@@ -221,6 +237,7 @@ export async function normalizeRequest(value: unknown, base: string, cwd: string
     runId: raw.run_id === undefined ? randomUUID() : text(raw.run_id, "run_id"),
     prompt: text(raw.prompt, "prompt"), modelId: optionalText(raw.model, "model"),
     reasoningLevel: optionalText(raw.reasoning_level, "reasoning_level"), workspace, mcpServers, isolated,
+    useConfiguredMcp, restrictSystemTools, systemTools,
     sandboxMode: mode as SandboxMode, approveGroups: groups as ToolGroup[], approveTools: strings(approval.tools === undefined ? [] : approval.tools, "auto_approve.tools"),
     maxSteps: integer(limits.max_steps === undefined ? 100 : limits.max_steps, "max_steps", Number.MAX_SAFE_INTEGER),
     timeoutSeconds: integer(limits.timeout_seconds === undefined ? 1800 : limits.timeout_seconds, "timeout_seconds", Math.floor(2_147_483_647 / 1000)),
@@ -283,6 +300,20 @@ function strings(value: unknown, label: string): string[] {
  * @throws CliInputError 包含空条目。
  */
 function csv(value?: string): string[] { return value === undefined ? [] : value.split(",").map((entry) => text(entry.trim(), "列表参数")) }
+
+/**
+ * 读取显式的命令行布尔值并保留省略状态。
+ * @param value 命令行原始值。
+ * @param name 对应的命令行参数名称。
+ * @returns 解析后的布尔值或 undefined。
+ * @throws CliInputError 值既不是 true 也不是 false。
+ */
+function booleanOption(value: string | undefined, name: string): boolean | undefined {
+  if (value === undefined) return undefined
+  if (value === "true") return true
+  if (value === "false") return false
+  throw new CliInputError(`--${name} 仅接受 true 或 false。`)
+}
 /**
  * 检查数值为约束范围内的正整数。
  *
@@ -323,7 +354,7 @@ async function readJson(path: string): Promise<unknown> {
  *
  * @returns 本次运行的空统计状态。
  */
-export function createStatistics(): RunStatistics { return { steps: 0, toolCalls: 0, messages: 0, reportedUsage: 0, answer: "" } }
+export function createStatistics(): RunStatistics { return { turns: 0, steps: 0, toolCalls: 0, messages: 0, reportedUsage: 0, answer: "" } }
 
 /**
  * 从已经持久化的权威事件累计指标，每条事件调用一次。
@@ -331,6 +362,7 @@ export function createStatistics(): RunStatistics { return { steps: 0, toolCalls
  * @param event 已提交内部事件。
  */
 export function observeEvent(state: RunStatistics, event: SessionEvent): void {
+  if (event.type === "turn/start") state.turns++
   if (event.type === "step/start") state.steps++
   if (event.type === "assistant/block_end" && event.block.type === "tool_call") state.toolCalls++
   if (event.type === "assistant/message") {
@@ -413,8 +445,8 @@ export async function writeResult(path: string, result: RunResult): Promise<void
 
 /** 命令帮助不触发任何配置初始化。 */
 export const CLI_HELP = `Minou Headless Agent Execution Protocol V1
-minou run --prompt-file <file> --output <result.json> [options]
-minou run --request <request.json> --output <result.json> [--format json|jsonl]
+minou run --prompt-file <file> [--output <result.json>] [options]
+minou run --request <request.json> [--output <result.json>] [--format json|jsonl]
 
 Options:
   --model <modelId>             默认使用 Minou 有效默认模型
@@ -424,10 +456,14 @@ Options:
   --max-steps <count>            默认 100
   --timeout <seconds>            默认 1800
   --mcp-config <json>            仅替换本次 mcpServers
+  --use-configured-mcp <bool>    是否使用全局 MCP 配置，默认 true
   --isolate <skill,memory,mcp>   禁用指定模块
-  --sandbox-mode <mode>          full-access|sandbox-full-access|sandbox-read-only
-  --auto-approve-groups <list>   file,shell,terminal,mcp,skill,memory
-  --auto-approve-tools <list>    精确工具名；仅在触发审批时生效
+  --restrict-system-tools <bool> 是否启用内置工具白名单，默认 false
+  --system-tools <list>          白名单中的精确工具名，逗号分隔，默认空
+  --sandbox-mode <mode>          full-access|sandbox-full-access|sandbox-read-only|auto
+  --auto-approve-groups <list>   file,shell,terminal,mcp,skill,memory；auto 模式由模型审核
+  --auto-approve-tools <list>    精确工具名；auto 模式由模型审核
+  --output <path>                结果 JSON，默认写入本次运行目录的 result.json
   --format <json|jsonl>          stdout 格式，默认 json
   --help                        显示帮助
 `

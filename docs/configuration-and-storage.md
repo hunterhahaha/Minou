@@ -32,6 +32,7 @@
 └─ logs/
    └─ cli/<session-id>/
       ├─ events.sqlite            单次 CLI Run 的独立日志
+      ├─ result.json              省略 CLI --output 时的最终结果
       └─ tool_output/
 ```
 
@@ -261,7 +262,7 @@ current_model_json, sandbox_mode_json, usage_json, skills_json, additional_meta_
 
 主键为 `(project_id, session_id)`。`current_model_json` 包含 `providerId`、`protocol`、`modelId`、`name`、`reasoningLevel`。`sandbox_mode_json` 保存当前对话的权限模式，默认 `sandbox-read-only`。批准的长期权限保存在 `additional_meta_json.toolPermissions`，包含绝对路径规则和进程网络开关，由会话串行写入。Usage、Skill 来源历史和其他 Meta 分开序列化；MCP 载入记录保存在 `additional_meta_json.loadedMcpTools`，`loadedMcpToolsSeq` 记录已同步的最后一条 MCP 增量序号，初始为 0。普通工具调用只更新调用统计。
 
-桌面新对话和已有对话的权限菜单均可选择「自动审核」，保存值为 `auto`。CLI 输入仍只接受原有三种沙箱模式。
+桌面新对话和已有对话的权限菜单均可选择「自动审核」，保存值为 `auto`。CLI 也接受 `auto`，在本次运行中使用当前模型审核已触发的审批。
 
 Meta 不等同于 Event Log：名称和运行设置有自己的写入入口，Usage 与部分上下文状态由事件派生。单条 Meta 缺失或 JSON 损坏时可交恢复流程补建，数据库结构不合法则报错。详细类型与恢复逻辑见 [session-state.ts](../runtime/session/src/session-state.ts)。
 

@@ -53,7 +53,7 @@ node dist/src/cli/main.js run --help
 node dist/src/cli/main.js run --prompt-file ./task.txt --workspace . --output ./result.json
 ```
 
-每次调用创建新的运行，使用已配置的默认模型。`--output` 必填，其父目录必须已存在。默认 stdout 输出最终 JSON 结果，stderr 输出诊断信息。添加 `--format jsonl` 可以获取连续的公共事件，最终结果仍会保存到输出文件。
+每次调用创建新的运行，使用已配置的默认模型。省略 `--output` 时，最终 JSON 保存到当前用户目录下的 `.minou/logs/cli/<session-id>/result.json`，stderr 会显示结果文件的绝对路径。默认 stdout 输出最终 JSON。使用 `--format jsonl` 可以同时获取实时公共事件和最终 JSON 文件。
 
 也可以使用结构化请求：
 
@@ -72,7 +72,7 @@ node dist/src/cli/main.js run --request ./request.json --output ./result.json --
 - **技能：**在设置 → 技能中管理并启用全局或项目来源的技能。
 - **存储：**桌面端数据位于 `%USERPROFILE%\.minou`，包括配置、供应商凭据、对话、日志、技能和记忆。CLI 使用相同的用户配置；未设置 `USERPROFILE` 时使用用户主目录。
 
-权限模式控制 Minou 的工具检查与审批流程，不会创建操作系统级沙箱。无界面运行中，需要审批的请求只有命中本次运行的自动批准配置才会被批准。请妥善保管 API Key 和本地 `.minou` 目录，并在代码库中运行智能体前确认任务与权限设置。
+CLI 权限模式控制 Minou 的工具检查与审批流程。使用 `--sandbox-mode auto` 时，需要审批的调用由本轮模型审核。其他模式触发审批时使用本次运行的自动批准名单。请妥善保管 API Key 和本地 `.minou` 目录，并在代码库中运行智能体前确认任务与权限设置。
 
 ## 项目文档
 
