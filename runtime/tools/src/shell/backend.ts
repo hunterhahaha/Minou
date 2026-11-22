@@ -1,5 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process"
 import { join } from "node:path"
+import { finished } from "node:stream/promises"
+import { mxcRequest, type MxcProcessAccess } from "../security/mxc.ts"
 import { ToolOutputStore } from "../process/output-store.ts"
 import { processException } from "../process/access.ts"
 import { resolvePwsh } from "../process/pwsh.ts"
@@ -23,7 +25,7 @@ export async function terminateProcess(child: ChildProcess): Promise<void> {
 /** PowerShell 7 后端，收集一次性进程的 stdout/stderr。 */
 export class PwshShellBackend {
   private readonly executable?: string
-  private readonly processes = new Map<ChildProcess, { cancel: () => void; done: Promise<void> }>()
+  private readonly processes = new Map<object, { cancel: () => void; done: Promise<void> }>()
   /**
    * 绑定一次性 Shell 使用的可执行文件，构造时不创建进程。
    * @param executable - 可选的绝对路径，默认使用内置 PowerShell 7。
@@ -36,34 +38,71 @@ export class PwshShellBackend {
    * @param cwd - Runtime 为本次新进程解析的工作目录。
    * @param directory - 已初始化的 Session 工具输出绝对目录。
    * @param callId - 发布完整大输出日志时使用的工具调用 ID。
-   * @param signal - 本次命令的取消信号，取消后返回取消异常而不交付部分输出。
+   * @param callerSignal 本次命令的取消信号，取消后返回取消异常而不交付部分输出。
+   * @param access 存在时通过 MXC 启动，否则使用本机进程。
    * @returns 本次命令输出和实际退出码；非零退出码仍是正常命令结果。
    * @throws Error - 启动、输出初始化或保存、取消、清理失败，或没有退出码；登记的工具负责转换为 AppError。
    */
-  async execute(command: string, cwd: string, directory: string, callId: string, signal: AbortSignal): Promise<ShellResult> {
+  async execute(command: string, cwd: string, directory: string, callId: string, callerSignal: AbortSignal, access?: MxcProcessAccess): Promise<ShellResult> {
+    const controller = new AbortController()
+    const signal = AbortSignal.any([callerSignal, controller.signal])
+    const execution = this.run(command, cwd, directory, callId, signal, access)
+    this.processes.set(execution, { cancel: () => controller.abort(), done: execution.then(() => {}, () => {}) })
+    try { return await execution }
+    finally { this.processes.delete(execution) }
+  }
+
+  /**
+   * 启动一次性进程并收齐输出，直到进程退出或执行失败。
+   * @param command 本次 PowerShell 命令。
+   * @param cwd 进程工作目录。
+   * @param directory 会话工具输出目录。
+   * @param callId 本次工具调用身份。
+   * @param signal 用户停止与宿主退出的合并信号。
+   * @param access 存在时使用 MXC，否则用本机进程。
+   * @returns 命令输出和退出码。
+   * @throws Error 进程、输出或取消失败。
+   */
+  private async run(command: string, cwd: string, directory: string, callId: string, signal: AbortSignal, access?: MxcProcessAccess): Promise<ShellResult> {
     if (signal.aborted) throw processException("CANCELLED", "工具调用已取消")
     let executable: string
     try { executable = resolvePwsh(this.executable) }
     catch (error) { throw processException("SHELL_START_FAILED", String(error)) }
     const output = new ToolOutputStore(directory)
     const script = "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); $OutputEncoding = [Console]::OutputEncoding;\n" + command
-    const child = spawn(executable, ["-NoLogo", "-NoProfile", "-NonInteractive", "-OutputFormat", "Text", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], { cwd, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] })
+    const args = ["-NoLogo", "-NoProfile", "-NonInteractive", "-OutputFormat", "Text", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")]
+    const mxc = access ? await import("@microsoft/mxc-sdk/v1").then(async (sdk) => {
+      const request = await mxcRequest(access, executable, args, cwd)
+      if (signal.aborted) throw processException("CANCELLED", "工具调用已取消")
+      return sdk.spawn(request)
+    }) : undefined
+    const child = mxc ? undefined : spawn(executable, args, { cwd, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] })
+    const stdout = mxc ? mxc.standardOutput : child!.stdout
+    const stderr = mxc ? mxc.standardError : child!.stderr
     let failure: unknown
     let termination: Promise<void> | undefined
-    const kill = () => { termination ??= terminateProcess(child) }
+    const kill = () => {
+      if (termination) return
+      if (mxc) {
+        try { mxc.kill() }
+        catch (error) { failure ??= error }
+        termination = Promise.resolve()
+      } else termination = terminateProcess(child!)
+    }
     const append = (chunk: Buffer) => { try { if (failure === undefined) output.append(chunk) } catch (error) { failure = processException("OUTPUT_WRITE_FAILED", String(error)); kill() } }
-    child.stdout!.on("data", append)
-    child.stderr!.on("data", append)
+    stdout?.on("data", append)
+    stderr?.on("data", append)
     const abort = () => { failure = processException("CANCELLED", "工具调用已取消"); kill() }
-    let resolveDone!: () => void
-    const done = new Promise<void>((resolve) => { resolveDone = resolve })
-    this.processes.set(child, { cancel: abort, done })
     signal.addEventListener("abort", abort, { once: true })
     if (signal.aborted) abort()
+    const waiting = mxc?.wait()
     try {
-      const exitCode = await new Promise<number | null>((resolve) => {
-        child.once("error", (error) => { failure = processException("SHELL_START_FAILED", error.message) })
-        child.once("close", (code) => resolve(code))
+      const exitCode = waiting ? (await Promise.all([
+        waiting,
+        ...[stdout, stderr].flatMap((stream) => stream ? [finished(stream, { cleanup: true })] : []),
+      ]))[0].exitCode : await new Promise<number | null>((resolve) => {
+        child!.once("error", (error) => { failure = processException("SHELL_START_FAILED", error.message) })
+        child!.once("close", (code) => resolve(code))
       })
       await termination
       if (signal.aborted) throw processException("CANCELLED", "工具调用已取消")
@@ -72,8 +111,16 @@ export class PwshShellBackend {
       return { ...output.finish(callId), exitCode }
     } finally {
       signal.removeEventListener("abort", abort)
-      this.processes.delete(child)
-      try { output.discard() } finally { resolveDone() }
+      try {
+        if (mxc) {
+          try {
+            mxc.kill()
+            await waiting?.catch(() => {})
+          } finally { mxc.dispose() }
+        }
+      } finally {
+        output.discard()
+      }
     }
   }
   /**

@@ -13,6 +13,7 @@ import { app, BrowserWindow, dialog, ipcMain, shell } from "electron"
 import { initNetworkDispatcher } from "../../runtime/network/src/dispatcher.ts"
 import { MemoryManager } from "../../runtime/memory/src/index.ts"
 import {
+  detectMxcBackend,
   registerFileTools,
   registerMemoryTools,
   registerWebSearchTool,
@@ -55,15 +56,17 @@ async function main(): Promise<void> {
   const toolRegistry = new ToolRegistry()
   const renderRegistry = new RenderRegistry()
   const rgPath = bundledRipgrepPath(join(__dirname, "../../.."))
+  const sandbox = await detectMxcBackend()
   registerFileTools(toolRegistry, renderRegistry, {
     rgPath,
+    sandbox,
     loadAccess: (projectId, sessionId) => loadFileAccessState(paths, projectId, sessionId),
   })
   const memoryManager = new MemoryManager(paths.rootDir)
   registerMemoryTools(toolRegistry, renderRegistry, memoryManager)
   registerWebSearchTool(toolRegistry, renderRegistry, join(paths.rootDir, WEB_SEARCH_DATABASE_FILE), estimateLocalTokens)
   registerWebFetchTool(toolRegistry, renderRegistry)
-  const sessionRuntimeGlobal = new SessionRuntimeGlobal(paths, toolRegistry, renderRegistry)
+  const sessionRuntimeGlobal = new SessionRuntimeGlobal(paths, toolRegistry, renderRegistry, sandbox)
   let windows: ElectronWindowManager | undefined
   const trustedIpcMain = createTrustedIpcMain(ipcMain, (event) => windows?.isTrustedSender(event) ?? false)
   const iconPath = join(__dirname, "../../../resources/minou.png")

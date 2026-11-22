@@ -41,6 +41,8 @@ export interface ToolCallContext {
   signal: AbortSignal
   /** 由 SessionRuntime 注入的当前 Session 文件工具资源。 */
   fileRuntime?: FileToolRuntimeContext
+  /** 桌面会话的显式权限申请与持久化端口。 */
+  toolPermissions?: import("./security/permissions.ts").ToolPermissionRuntime
   /** Runtime 注入的进程工具身份、输出目录和审批出口。 */
   processRuntime?: ProcessToolRuntimeContext
   /** 当前 Session 的 MCP 持久化、模型预算和审批边界。 */

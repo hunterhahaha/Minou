@@ -3,6 +3,7 @@ import { join } from "node:path"
 import { existsSync } from "node:fs"
 import { readSessionMeta } from "../../runtime/session/src/meta-store.ts"
 import { SANDBOX_MODES } from "../../runtime/session/src/session-state.ts"
+import { readToolPermissions } from "../../runtime/tools/src/security/permissions.ts"
 import type { FileAccessState } from "../../runtime/tools/src/file/index.ts"
 import type { ConfigFilePaths } from "./config-files.ts"
 import { readDefaultWorkspace, readProjectWorkspace } from "./workspace-store.ts"
@@ -32,6 +33,7 @@ export function loadFileAccessState(
     : readProjectWorkspace(paths.workspaceDatabasePath, projectId).directories
   return {
     sandboxMode: meta.sandboxMode as typeof SANDBOX_MODES[number],
+    ...("toolPermissions" in meta && { permissions: readToolPermissions(meta.toolPermissions) }),
     roots: [join(paths.rootDir, "sessions", projectId, "workspace"), ...directories],
   }
 }

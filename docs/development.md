@@ -96,6 +96,8 @@ node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types t
 | Renderer 状态 | `test/renderer/session-state.test.ts`：缓存、历史与增量事件合并、草稿及流式投影 |
 | CLI | `test/cli/protocol.test.ts`、`test/cli/run.test.ts`：输入与公开协议、输出、隔离、限步、超时及真实 Node 子进程 |
 
+桌面权限流程的定向测试使用 `node --experimental-strip-types runtime/agent/test/sandbox-permissions.test.ts`，覆盖真实会话、逐项审批、部分批准持久化、工作区切换、受阻模式和命令拒绝。真实 MXC 进程验证需在目标系统运行。Windows 的流式执行由满足 MXC SDK 要求的 Node 运行，当前 Electron 内置 Node 24.21。
+
 模型端到端测试使用本机假服务器与真实 SDK；CLI 集成测试还使用临时用户目录、真实 PowerShell / PTY 和本机 MCP 服务。部分测试需要创建子进程、绑定本机端口或加载原生模块；运行失败时应区分环境权限与断言失败，不把未执行或被阻止表述为通过。
 
 调度行为的判断应查看实际 start/end 和结果轨迹，而不是仅凭总耗时猜测是否并发。

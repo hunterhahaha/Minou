@@ -18,6 +18,7 @@ export const BUILTIN_TOOL_NAMES = [
   "shell",
   "terminal_open",
   "terminal_input",
+  "request_permissions",
   "skill_load",
   "memory_list",
   "memory_read",

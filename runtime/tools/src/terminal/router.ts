@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto"
 import { ToolOutputStore } from "../process/output-store.ts"
 import { processException } from "../process/access.ts"
 import { PwshPtyBackend, type PtyBackend, type PtyEvent, type PtyProcess } from "./backend.ts"
+import type { MxcProcessAccess } from "../security/mxc.ts"
 import type { TerminalInputResult, TerminalState } from "./types.ts"
 
 /** 不持久化的终端资源；标记监听与单次工具调用的取消信号相互独立。 */
@@ -87,11 +88,12 @@ export class TerminalRouter {
    * @param cwd - Runtime 解析出的终端初始工作目录。
    * @param directory - Session 已初始化的 tool_output 绝对目录，用于输出缓冲和日志。
    * @param signal - 仅控制本次打开等待的取消信号；打开成功后不持续绑定终端生命周期。
+   * @param access 该终端创建时固定的 MXC 策略；省略时使用原生终端。
    * @returns 首次就绪后的 idle 状态副本；底层终端继续由路由持有。
    * @throws Error - 输出目录不可用、启动失败、就绪超时、取消或清理失败；工具调用方负责转换为 AppError。
    */
-  async open(projectId: string, sessionId: string, cwd: string, directory: string, signal: AbortSignal): Promise<TerminalState> {
-    const opening = this.openQueue.then(() => this.start(projectId, sessionId, cwd, directory, signal))
+  async open(projectId: string, sessionId: string, cwd: string, directory: string, signal: AbortSignal, access?: MxcProcessAccess): Promise<TerminalState> {
+    const opening = this.openQueue.then(() => this.start(projectId, sessionId, cwd, directory, signal, access))
     this.openQueue = opening.then(() => {}, () => {})
     return opening
   }
@@ -103,10 +105,11 @@ export class TerminalRouter {
    * @param cwd - 初始工作目录。
    * @param directory - 工具输出目录。
    * @param signal - 打开操作的取消信号。
+   * @param access 随创建请求传入后端的权限快照。
    * @returns 已就绪终端的快照。
    * @throws Error - 取消、淘汰或启动失败。
    */
-  private async start(projectId: string, sessionId: string, cwd: string, directory: string, signal: AbortSignal): Promise<TerminalState> {
+  private async start(projectId: string, sessionId: string, cwd: string, directory: string, signal: AbortSignal, access?: MxcProcessAccess): Promise<TerminalState> {
     if (signal.aborted || this.stopping) throw processException("CANCELLED", "终端创建已取消")
     const active = [...this.sessions.values()].flatMap((terminals) => [...terminals.values()]
       .filter((entry) => !entry.exited)
@@ -134,7 +137,7 @@ export class TerminalRouter {
           else if (event.type === "exit") finish(processException("TERMINAL_START_FAILED", "PTY 在就绪前退出"))
         }
         signal.addEventListener("abort", abort, { once: true })
-        try { entry.process = this.backend.spawn(cwd, randomUUID(), (event) => this.receive(entry, event)) }
+        try { entry.process = this.backend.spawn(cwd, randomUUID(), (event) => this.receive(entry, event), access) }
         catch (error) { finish(processException("TERMINAL_START_FAILED", error instanceof Error ? error.message : "PTY 启动失败")) }
         if (signal.aborted) abort()
       })
@@ -151,11 +154,12 @@ export class TerminalRouter {
    * @param command - 要提交的 PowerShell 命令。
    * @param callId - 输出日志使用的工具调用身份。
    * @param signal - 本次调用的取消信号。
+   * @param access 随创建请求传入后端的权限快照。
    * @returns 首次收集结果及终端身份。
    * @throws Error - 启动、输入、收集或清理失败。
    */
-  async openAndRun(projectId: string, sessionId: string, cwd: string, directory: string, command: string, callId: string, signal: AbortSignal): Promise<TerminalInputResult> {
-    const { id } = await this.open(projectId, sessionId, cwd, directory, signal)
+  async openAndRun(projectId: string, sessionId: string, cwd: string, directory: string, command: string, callId: string, signal: AbortSignal, access?: MxcProcessAccess): Promise<TerminalInputResult> {
+    const { id } = await this.open(projectId, sessionId, cwd, directory, signal, access)
     const terminals = this.terminals(projectId, sessionId)
     const entry = this.entry(projectId, sessionId, id)
     try {
@@ -323,6 +327,9 @@ export class TerminalRouter {
       if (firstReady) entry.ready = true
       if (entry.ready && event.run === entry.run && (firstReady || entry.state.status === "running")) { entry.state.status = "idle"; entry.state.cwd = event.cwd }
       else notify = false
+    } else if (event.type === "error") {
+      entry.failure = processException(entry.ready ? "TERMINAL_EXECUTION_FAILED" : "TERMINAL_START_FAILED",
+        event.error instanceof Error ? event.error.message : String(event.error))
     } else if (event.type === "exit") {
       entry.state.status = "unknown"
     }

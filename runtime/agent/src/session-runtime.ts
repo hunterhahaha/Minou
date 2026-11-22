@@ -704,7 +704,8 @@ export class SessionRuntime implements SessionRepairPorts {
   async updateSettings(patch: SessionSettingsPatch): Promise<void> {
     this.assertOpen()
     await this.initialization
-    await this.sessionState.writeSettings(patch)
+    const roots = patch.sandboxMode === undefined ? undefined : this.global.resolveProjectContext(this.projectGroupId).allowedRoots
+    await this.sessionState.writeSettings(patch, roots)
     this.onStateChanged?.()
   }
 
@@ -770,6 +771,16 @@ export class SessionRuntime implements SessionRepairPorts {
             },
             readSandboxMode: async () => (await this.sessionState.readSettings()).sandboxMode,
             requestApproval,
+          },
+          toolPermissions: {
+            grant: (items) => this.sessionState.grantToolPermissions(items),
+            approve: (toolName, scope, details, execution) => this.requestToolApproval(
+              toolName,
+              scope === "unrestricted" ? "允许本次操作完全访问" :
+                scope === "persistent" ? "为此对话保存这项权限" :
+                  toolName === "terminal_open" ? "为新终端增加这项权限，终端存续期间可继续使用" : "为本次工具执行增加这项权限",
+              execution, adapter, model, { scope, details },
+            ),
           },
           fileRuntime: {
             projectId: this.projectGroupId,
@@ -861,6 +872,7 @@ export class SessionRuntime implements SessionRepairPorts {
    * @param context 完整的调用身份与参数。
    * @param adapter 当前 Turn 固定的模型 Adapter。
    * @param model 当前 Turn 固定的模型引用。
+   * @param permission 显式工具申请的生效范围与本审批项的详情。
    * @returns 明确决定或取消。
    * @throws Error 缺少调用身份、读取设置失败或人工审批事件保存失败时传播，始终释放审批串行锁。
    */
@@ -870,6 +882,7 @@ export class SessionRuntime implements SessionRepairPorts {
     context: ToolExecutionContext<object>,
     adapter: ModelAdapter,
     model: ModelRef,
+    permission?: { scope: import("../../tools/src/security/permissions.ts").ApprovalScope; details: object },
   ): Promise<ApprovalDecision> {
     const previous = this.approvalTail
     let release!: () => void
@@ -881,8 +894,10 @@ export class SessionRuntime implements SessionRepairPorts {
       const { sandboxMode } = await this.sessionState.readSettings()
       if (context.signal.aborted) return "cancelled"
       const teamMember = this.team?.identity.role === "member"
-      if (teamMember || sandboxMode === "auto") {
-        return await reviewToolCall(adapter, model, context, { toolName, arguments: context.validatedArguments, reason },
+      const approvalArguments = permission?.details ?? context.validatedArguments
+      if (permission?.scope === "unrestricted" && teamMember) return "denied"
+      if (permission?.scope !== "unrestricted" && (teamMember || sandboxMode === "auto")) {
+        return await reviewToolCall(adapter, model, context, { toolName, arguments: approvalArguments, reason },
           async () => validateEventLog(this.sessionId, await this.eventLog.readEvents(), teamMember), teamMember)
       }
       const approvalId = randomUUID()
@@ -902,7 +917,8 @@ export class SessionRuntime implements SessionRepairPorts {
           type: "approval/request", turn: context.turn, step: context.step,
           approvalId, toolCallEventId: context.toolCallEventId,
           toolCallId: context.toolCallId, blockId: context.blockId,
-          toolName, arguments: context.validatedArguments,
+          toolName, arguments: approvalArguments,
+          ...(permission && { permissionScope: permission.scope }),
           reason,
         })
       } catch (error) {
@@ -1753,6 +1769,10 @@ function validateSessionEvent(sessionId: string, value: unknown, index: number):
       requireToolResult(sessionId, event.result, index)
       break
     case "approval/request":
+      if (event.permissionScope !== undefined && event.permissionScope !== "persistent" &&
+          event.permissionScope !== "temporary" && event.permissionScope !== "unrestricted") {
+        corrupted(sessionId, "审批授权范围无效")
+      }
       requireTurnAndStep(sessionId, event, index)
       requireStringField(sessionId, event, "approvalId", index)
       requireStringField(sessionId, event, "toolCallEventId", index)
@@ -2131,7 +2151,9 @@ async function repairApprovalsAndToolResults(
       ) {
         corrupted(sessionId, `approval/request 与 tool_call 不匹配：${event.approvalId}`)
       }
-      if (requestsByCall.has(event.toolCallEventId) || requestsByApproval.has(event.approvalId)) {
+      const previous = requestsByCall.get(event.toolCallEventId)
+      if (requestsByApproval.has(event.approvalId) || (previous && (!event.permissionScope || event.permissionScope === "unrestricted" ||
+          previous.permissionScope !== event.permissionScope || !decisions.has(previous.approvalId)))) {
         corrupted(sessionId, `approval/request 重复：${event.approvalId}`)
       }
       requestsByCall.set(event.toolCallEventId, event)

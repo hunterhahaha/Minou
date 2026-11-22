@@ -1,5 +1,10 @@
+import { homedir } from "node:os"
+import { canonicalPath } from "../filesystem/index.ts"
 import type { SandboxMode } from "../../../session/src/session-state.ts"
 import type { ToolExecutionContext, ProcessToolRuntimeContext } from "../types.ts"
+import type { MxcBackend, MxcProcessAccess } from "../security/mxc.ts"
+import { authorizeUnrestricted, grantPermissions, reviewPermissions, workspacePermissions,
+  type ExecutionPermission, type ToolPermissions } from "../security/permissions.ts"
 import type { AppError } from "../../../error/src/types.ts"
 
 /** 执行时从数据库重读的权限和初始 cwd。 */
@@ -8,6 +13,10 @@ export interface ProcessAccessState {
   sandboxMode: SandboxMode
   /** 第一个关联目录或分组 workspace。 */
   cwd: string
+  /** 当前工作区和关联目录。 */
+  roots?: readonly string[]
+  /** 对话保存的长期授权。 */
+  permissions?: ToolPermissions
 }
 /**
  * 读取当前对话的权限与新进程初始工作目录；实现不得跨调用缓存数据库结果。
@@ -42,6 +51,48 @@ export async function authorizeProcess(name: string, context: ToolExecutionConte
   if (context.signal.aborted) throw processException("CANCELLED", "工具调用已取消")
   return { runtime, cwd: load(runtime.projectId, runtime.sessionId).cwd }
 }
+/**
+ * 解析桌面 Shell 或 PTY 新建的启动方式。只在模型显式选择相应执行模式时发起审批。
+ * @param name 启动进程的模型工具名。
+ * @param command 此次启动将执行的完整命令。
+ * @param execution 已校验的执行模式及可选临时申请。
+ * @param context 当前工具调用和 Session 注入的资源。
+ * @param load 读取会话最新权限与工作区。
+ * @param backend 启动检测结果；null 表示受阻。
+ * @returns 启动使用的工作目录、会话资源及可选的 MXC 配置。
+ * @throws Error 权限被拒绝、调用被取消或当前模式不可用。
+ */
+export async function authorizeSandboxedProcess(
+  name: "shell" | "terminal_open", command: string, execution: ExecutionPermission, context: ToolExecutionContext<object>,
+  load: LoadProcessAccess, backend: MxcBackend | null,
+): Promise<{ runtime: ProcessToolRuntimeContext; cwd: string; access?: MxcProcessAccess }> {
+  const runtime = context.processRuntime
+  if (!runtime) throw processException("PROCESS_RUNTIME_MISSING", "当前 Session 缺少进程工具上下文")
+  const read = () => load(runtime.projectId, runtime.sessionId)
+  const unrestricted = execution.mode === "unrestricted"
+  if (unrestricted) await authorizeUnrestricted(name, { command }, context)
+  if (context.signal.aborted) throw processException("CANCELLED", "工具调用已取消")
+  if (!backend) {
+    if (!unrestricted) throw processException("SANDBOX_BLOCKED", "当前沙箱模式受限，无法使用该模式，请使用 unrestricted 模式")
+    return { runtime, cwd: read().cwd }
+  }
+  const full = unrestricted || (execution.mode === "default" && read().sandboxMode === "full-access")
+  if (full) {
+    const { cwd } = read()
+    if (name === "terminal_open" && backend === "bubblewrap") {
+      const path = await canonicalPath(homedir())
+      return { runtime, cwd, access: { backend, policy: { paths: [{ path, access: "WRITE" }], network: true } } }
+    }
+    return { runtime, cwd }
+  }
+  const approved = execution.mode === "temporary"
+    ? (await reviewPermissions(name, execution.permissions, "temporary", context, { command })).approved : []
+  const { cwd, sandboxMode, roots, permissions } = read()
+  const base = await workspacePermissions(sandboxMode, roots ?? [cwd], permissions ?? { paths: [], network: false })
+  if (context.signal.aborted) throw processException("CANCELLED", "工具调用已取消")
+  return { runtime, cwd, access: { backend, policy: grantPermissions(base, approved) } }
+}
+
 /**
  * 构造带稳定错误码的异常，供进程操作抛出并由工具边界转换。
  * @param code - Runtime 使用的稳定错误码。
