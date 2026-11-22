@@ -25,6 +25,7 @@ import type {
 import type {
   AppendSessionEvent,
   AssistantBlockEndEventInput,
+  AssistantBlockStreamInput,
   AssistantMessageEventInput,
   SessionEventInput,
   StepEndEventInput,
@@ -44,11 +45,12 @@ const MODEL: ModelRef = { providerId: "provider-1", protocol: "anthropic_message
 const SESSION_ID = "session-1"
 
 /**
- * 创建内存事件收集器，按写入顺序补充事件身份并保存待写入事件。
- * @returns 事件记录数组及补充身份的异步事件追加函数。
+ * 按发生顺序收集实时和提交事件，只为提交事件分配身份。
+ * @returns 事件记录、提交记录及 Loop 的两个事件出口。
  */
-function collector(): { events: SessionEventInput[]; appendEvent: AppendSessionEvent } {
+function collector() {
   const events: SessionEventInput[] = []
+  const committed: SessionEventInput[] = []
   /**
    * 收集待写入事件并补充确定性的身份字段，不访问磁盘。
    * @param event Loop 交出的事件输入。
@@ -56,15 +58,23 @@ function collector(): { events: SessionEventInput[]; appendEvent: AppendSessionE
    */
   const appendEvent: AppendSessionEvent = async (event) => {
     events.push(event)
+    committed.push(event)
     return {
-      eventId: `event-${events.length}`,
+      eventId: `event-${committed.length}`,
       sessionId: SESSION_ID,
-      seq: events.length,
+      seq: committed.length,
       createdAt: "2026-09-17T00:00:00.000Z",
       ...event,
     }
   }
-  return { events, appendEvent }
+  /**
+   * 记录实时片段在整体事件序列中的位置。
+   * @param event Loop 发布的块开始或增量。
+   */
+  const publishBlockStream = (event: AssistantBlockStreamInput): void => {
+    events.push(event)
+  }
+  return { events, committed, appendEvent, publishBlockStream }
 }
 
 /**
@@ -298,7 +308,7 @@ async function testCompletedStep(): Promise<void> {
   ]
   const tools: UnifiedToolDefinition[] = []
   const usage: Usage = { inputTokens: 120, outputTokens: 8, totalTokens: 128 }
-  const { events, appendEvent } = collector()
+  const { events, appendEvent, publishBlockStream } = collector()
   const { calls, executeTool } = toolSpy([])
   let seen: UnifiedModelRequest | undefined
 
@@ -323,6 +333,7 @@ async function testCompletedStep(): Promise<void> {
     executeTool,
     signal: new AbortController().signal,
     appendEvent,
+    publishBlockStream,
   })
 
   assert.deepEqual(eventTypes(events), [
@@ -419,7 +430,7 @@ async function testToolRound(): Promise<void> {
     { role: "system", content: "系统设定" },
     { role: "user", content: "读一下 a.ts，再删掉 b.ts" },
   ]
-  const { events, appendEvent } = collector()
+  const { events, committed, appendEvent, publishBlockStream } = collector()
   const notFound: AppError = { source: "tool", code: "FILE_NOT_FOUND", message: "文件不存在" }
   const { calls, executeTool } = toolSpy([
     textResult("a.ts 的内容"),
@@ -462,6 +473,7 @@ async function testToolRound(): Promise<void> {
     executeTool,
     signal: new AbortController().signal,
     appendEvent,
+    publishBlockStream,
   })
 
   /**
@@ -502,7 +514,7 @@ async function testToolRound(): Promise<void> {
 
   /**
    * tool/result 关联 toolCallEventId（指向该块 block_end 的 eventId）/ toolCallId / blockId
-   * collector 把第 N 条事件命名为 `event-N`，所以 eventId 的编号就是事件下标 + 1。
+   * collector 的 eventId 按提交顺序分配，实时片段不占用序号。
    */
   const toolResults = events.filter((event) => event.type === "tool/result")
   assert.equal(toolResults.length, 2)
@@ -517,7 +529,7 @@ async function testToolRound(): Promise<void> {
         blockId: event.blockId,
         status: event.result.status,
         toolCallEventId: event.toolCallEventId,
-        blockEndEventId: `event-${events.indexOf(blockEnd) + 1}`,
+        blockEndEventId: `event-${committed.indexOf(blockEnd) + 1}`,
         blockEndBlockId: blockEnd.blockId,
       }
     }),
@@ -526,16 +538,16 @@ async function testToolRound(): Promise<void> {
         toolCallId: "call-1",
         blockId: "b-1-1-1",
         status: "success",
-        toolCallEventId: "event-8",
-        blockEndEventId: "event-8",
+        toolCallEventId: "event-3",
+        blockEndEventId: "event-3",
         blockEndBlockId: "b-1-1-1",
       },
       {
         toolCallId: "call-2",
         blockId: "b-1-1-2",
         status: "error",
-        toolCallEventId: "event-12",
-        blockEndEventId: "event-12",
+        toolCallEventId: "event-4",
+        blockEndEventId: "event-4",
         blockEndBlockId: "b-1-1-2",
       },
     ],
@@ -709,7 +721,7 @@ async function testUnfinishedToolCall(): Promise<void> {
    * 没有 block_end 的块不进 assistant/message，也不被当作待执行调用
    */
   assert.deepEqual(only(events, "assistant/message").message.content, [])
-  assert.equal(eventTypes(events).includes("tool/result"), false)
+  assert.deepEqual(eventTypes(events), ["step/start", "assistant/message", "step/end"])
   assert.equal(calls.length, 0)
   assert.equal(result.completion, "unknown")
   assert.equal(result.steps, 1)
@@ -734,7 +746,7 @@ async function testUserStopDuringModelStream(): Promise<void> {
     { role: "system", content: "系统设定" },
     { role: "user", content: "讲个长故事" },
   ]
-  const { events, appendEvent } = collector()
+  const { events, appendEvent, publishBlockStream } = collector()
   const controller = new AbortController()
   const { calls, executeTool } = toolSpy([])
 
@@ -757,6 +769,7 @@ async function testUserStopDuringModelStream(): Promise<void> {
     executeTool,
     signal: controller.signal,
     appendEvent,
+    publishBlockStream,
   })
 
   /** 先收尾已提交文本和消息，再以 stopped 关闭 Step；取消不伪造 Usage。 */
@@ -850,17 +863,17 @@ async function testStopAfterCompletedToolBlock(): Promise<void> {
   assert.deepEqual(eventTypes(events).slice(-3), ["assistant/message", "tool/result", "step/end"])
   const toolResult = events.find((event) => event.type === "tool/result")
   assert.ok(toolResult?.type === "tool/result")
-  assert.equal(toolResult.toolCallEventId, "event-3")
+  assert.equal(toolResult.toolCallEventId, "event-2")
   assert.ok(toolResult.result.status === "error")
   assert.equal(toolResult.result.error.code, "CANCELLED")
 }
 
 /**
- * 验证尚无可提交内容时不创建空取消消息，且事件写入失败不会被当作模型流取消重新补写。
- * @returns 无输出、空文本块及取消时存储失败的边界验证完成后解析。
- * @throws AssertionError 当写入失败被重试或未提交 Delta 被纳入收尾时抛出。
+ * 验证尚无可提交内容时不创建空取消消息，且实时发布失败不会触发模型流的收尾提交。
+ * @returns 无输出、空文本块及取消时发布失败的边界验证完成后解析。
+ * @throws AssertionError 当发布失败后仍提交内容或没有正确关闭 Step 时抛出。
  */
-async function testStopBeforeContentAndDuringPersistenceFailure(): Promise<void> {
+async function testStopBeforeContentAndDuringPublishFailure(): Promise<void> {
   for (const startBlock of [false, true]) {
     const { events, appendEvent } = collector()
     const result = await runAgentLoop({
@@ -875,18 +888,18 @@ async function testStopBeforeContentAndDuringPersistenceFailure(): Promise<void>
     assert.equal(events.filter((event) => event.type === "assistant/message").length, startBlock ? 1 : 0)
     if (startBlock) assert.deepEqual(only(events, "assistant/block_end").block, { type: "thinking", text: "" })
   }
-  const { events, appendEvent } = collector()
+  const { events, appendEvent, publishBlockStream } = collector()
   const controller = new AbortController()
-  const writeError = new Error("delta write failed")
+  const publishError = new Error("delta publish failed")
   await runAgentLoop({
-    turn: 1, model: MODEL, content: [], tools: [], signal: controller.signal,
+    turn: 1, model: MODEL, content: [], tools: [], signal: controller.signal, appendEvent,
     executeTool: async () => { throw new Error("unexpected tool") },
-    appendEvent: async (event) => {
+    publishBlockStream: async (event) => {
       if (event.type === "assistant/block_delta") {
         controller.abort()
-        throw writeError
+        throw publishError
       }
-      return appendEvent(event)
+      publishBlockStream(event)
     },
     adapter: adapterFrom(async function* () {
       yield blockStart(0, "text")
@@ -906,7 +919,7 @@ async function testUserStopDuringToolRound(): Promise<void> {
     { role: "system", content: "系统设定" },
     { role: "user", content: "跑一下两个命令" },
   ]
-  const { events, appendEvent } = collector()
+  const { events, appendEvent, publishBlockStream } = collector()
   const controller = new AbortController()
   const cancelled: AppError = { source: "tool", code: "CANCELLED", message: "工具调用已取消" }
   const requests: { request: UnifiedModelRequest; roles: string[] }[] = []
@@ -943,6 +956,7 @@ async function testUserStopDuringToolRound(): Promise<void> {
     executeTool,
     signal: controller.signal,
     appendEvent,
+    publishBlockStream,
   })
 
   /**
@@ -1012,7 +1026,7 @@ async function testModelError(): Promise<void> {
    * 错误原样抛出（Turn 的收尾与 app/error 由调用方负责），Step 以 error 关闭
    */
   assert.deepEqual(thrown, modelError)
-  assert.deepEqual(eventTypes(events), ["step/start", "assistant/block_start", "assistant/block_end", "assistant/message", "step/end"])
+  assert.deepEqual(eventTypes(events), ["step/start", "assistant/block_end", "assistant/message", "step/end"])
   assert.equal(only(events, "assistant/message").finishReason, undefined)
   assert.equal(only(events, "step/end").reason, "error")
   assert.equal(calls.length, 0)
@@ -1036,7 +1050,7 @@ async function main(): Promise<void> {
   await testUserStopDuringModelStream()
   await testStopClosesOnlyTextBlocks()
   await testStopAfterCompletedToolBlock()
-  await testStopBeforeContentAndDuringPersistenceFailure()
+  await testStopBeforeContentAndDuringPublishFailure()
   await testUserStopDuringToolRound()
   await testModelError()
   console.log("loop.test.ts: AgentLoop 断言通过")

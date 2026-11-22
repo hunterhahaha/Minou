@@ -462,7 +462,7 @@ $runExitCode
 
 最终结果的 `record_directory` 给出内部日志目录，`event_log_path` 直接指向事件日志数据库。省略 `--output` 时，结果文件位于同一运行目录。每次使用内部 UUID 生成目录，外部 `run_id` 仅用于关联。
 
-`events.sqlite` 保存现有内部事件，`tool_output` 保存工具产生的输出文件。内部记录可能包含模型思考和完整工具内容，和默认过滤的公共 JSON/JSONL 不同。
+`events.sqlite` 保存已提交的内部事件，包括完整的 Assistant 内容块和消息。块开始和增量在运行时通过内存发布，JSONL 的 `message.delta` 来自该实时路径。内部记录可能包含已提交的模型思考和完整工具内容。工具产生的输出文件保存在 `tool_output`。
 
 | 现象 | 检查方式 |
 | --- | --- |

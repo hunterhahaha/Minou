@@ -108,13 +108,14 @@ export interface AgentLoopOptions {
   executeTool: ExecuteToolCall
   /** 当前 Agent Loop 的取消信号；用户 Stop 后 Adapter 会以取消错误结束流。 */
   signal: AbortSignal
-  /** 持久化事件出口；CLI 也通过该入口记录块开始和增量。 */
+  /** 提交完整内容块、消息、Step 和工具结果的持久化出口。 */
   appendEvent: AppendSessionEvent
   /**
-   * 发布桌面块开始与增量；未提供时沿用 appendEvent。
+   * 向宿主发布内存中的块开始与增量。
    * @param event 由模型流产生的块开始或增量。
+   * @returns 异步输出完成时解析；同步发布可直接返回。
    */
-  publishBlockStream?(event: AssistantBlockStreamInput): void
+  publishBlockStream?(event: AssistantBlockStreamInput): void | Promise<void>
   /** 宿主正常请求读取已提交历史，覆盖直接调用者提供的平面消息。 */
   prepareHistory?(): Promise<NonNullable<UnifiedModelRequest["context"]["history"]>>
   /** 在工具结果落库后报告宿主检测到的 Turn 级故障。 */
@@ -241,9 +242,9 @@ interface ModelStepParams {
   executeTool: ExecuteToolCall
   /** 当前 AgentLoop 的取消信号。 */
   signal: AbortSignal
-  /** 将模型流事件写入 Session Event Log 的事件出口。 */
+  /** 将完整块和消息写入 Session Event Log 的事件出口。 */
   appendEvent: AppendSessionEvent
-  /** 桌面内存流事件入口。 */
+  /** 宿主的实时块事件发布入口。 */
   publishBlockStream?: AgentLoopOptions["publishBlockStream"]
 }
 
@@ -260,18 +261,16 @@ interface ModelStepOutcome {
 }
 
 /**
- * 执行一次正常模型请求：消费 Adapter 的统一事件流，逐个写 Block 事件，
- * 最后写本 Step 的 `assistant/message`。
- * 模型流取消时先按已提交 Delta 收尾文本/思考块、消息及已结束工具调用，再传播取消错误，
+ * 执行一次正常模型请求，发布块开始与增量并持久化完整块和本 Step 的 `assistant/message`。
+ * 模型流取消时先按内存中已接收的增量收尾文本/思考块、消息及已结束工具调用，再传播取消错误，
  * 使调用方能在这些事件之后关闭 Step。未结束的工具调用不补猜参数。
  *
  * @param params 当前 Step 的模型请求参数和事件出口。
  * @returns 模型完成状态、Usage、结束原因以及已完成的工具调用。
- * @throws Adapter 流或事件持久化失败时向调用方传播原始错误。
+ * @throws Adapter 流、实时发布或事件持久化失败时向调用方传播原始错误。
  */
 async function runModelStep(params: ModelStepParams): Promise<ModelStepOutcome> {
-  const { turn, step, model, adapter, content, history, tools, executeTool, signal, appendEvent } = params
-  const publishBlockStream = params.publishBlockStream ?? appendEvent
+  const { turn, step, model, adapter, content, history, tools, executeTool, signal, appendEvent, publishBlockStream } = params
 
   const request: UnifiedModelRequest = { context: history === undefined ? { messages: content } : { history }, tools, model }
   /**
@@ -296,7 +295,7 @@ async function runModelStep(params: ModelStepParams): Promise<ModelStepOutcome> 
       handlingEvent = true
       switch (event.type) {
         case "block_start":
-          await publishBlockStream({
+          await publishBlockStream?.({
             type: "assistant/block_start",
             turn,
             step,
@@ -310,7 +309,7 @@ async function runModelStep(params: ModelStepParams): Promise<ModelStepOutcome> 
           break
 
         case "block_delta":
-          await publishBlockStream({
+          await publishBlockStream?.({
             type: "assistant/block_delta",
             turn,
             step,

@@ -134,6 +134,10 @@ async function main(): Promise<void> {
     assert.notEqual(normal.result.run_id, normal.result.session_id)
     assert.ok(normal.result.record_directory?.endsWith(normal.result.session_id))
     assert.equal(normal.result.event_log_path, join(normal.result.record_directory!, "events.sqlite"))
+    const messages = normal.events.filter((event) => event.type === "message.delta" || event.type === "message.completed")
+    assert.deepEqual(messages.map(({ type, data }) => [type, data.text]), [
+      ["message.delta", "answer"], ["message.completed", "answer"],
+    ])
     assert.ok(normal.stderr.includes(`结果文件：${join(root, "result-1.json")}\n`))
     await writeFile(join(root, "simple.txt"), "simple task")
     requests = []
@@ -221,6 +225,8 @@ async function main(): Promise<void> {
       const db = new DatabaseSync(outcome.result.event_log_path!, { readOnly: true })
       const events = db.prepare("SELECT event_json FROM session_events ORDER BY seq").all().map((row) => JSON.parse(row.event_json as string))
       db.close()
+      assert.ok(events.every((event) => event.type !== "assistant/block_start" && event.type !== "assistant/block_delta"))
+      assert.deepEqual(events.map((event) => event.seq), events.map((_event, index) => index + 1))
       const block = events.find((event) => event.type === "assistant/block_end" && event.block.type === "tool_call")
       assert.equal(events.find((event) => event.type === "tool/result").toolCallEventId, block.eventId)
       assert.equal(events.at(-1).type, "turn/end")

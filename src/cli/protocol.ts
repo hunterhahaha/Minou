@@ -5,7 +5,7 @@ import { dirname, resolve } from "node:path"
 import { accumulateUsage } from "../../runtime/model/src/types.ts"
 import type { ModelRef, Usage } from "../../runtime/model/src/types.ts"
 import type { MCPConfig } from "../../runtime/mcp/src/types.ts"
-import type { SessionEvent } from "../../runtime/session/src/events.ts"
+import type { AssistantBlockStreamInput, SessionEvent } from "../../runtime/session/src/events.ts"
 import { SANDBOX_MODES } from "../../runtime/session/src/session-state.ts"
 import type { SandboxMode } from "../../runtime/session/src/session-state.ts"
 import { checkConfig } from "../main/config-schema.ts"
@@ -374,10 +374,10 @@ export function observeEvent(state: RunStatistics, event: SessionEvent): void {
 
 /**
  * 将内部事件映射为公开白名单字段，思考和原始工具载荷不导出。
- * @param event 已提交内部事件。
+ * @param event 已提交内部事件或内存中的流式块事件。
  * @returns 公共类型与载荷，或无需输出。
  */
-export function mapEvent(event: SessionEvent): { type: string; data: Record<string, unknown> } | undefined {
+export function mapEvent(event: SessionEvent | AssistantBlockStreamInput): { type: string; data: Record<string, unknown> } | undefined {
   const step = event.step
   switch (event.type) {
     case "step/start": return { type: "step.started", data: { step } }

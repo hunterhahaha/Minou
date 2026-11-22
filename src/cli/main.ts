@@ -362,6 +362,11 @@ export async function runCli(argv: readonly string[]): Promise<number> {
     stage = "execution"
     const result = await runAgentLoop({
       turn: 1, model: selectedModel, adapter, content: [], signal: controller.signal, appendEvent,
+      publishBlockStream: async (event) => {
+        if (finished) return
+        const mapped = mapEvent(event)
+        if (mapped) await emit(mapped.type, mapped.data)
+      },
       tools: tools.listDefinitions().filter(({ name }) => tools.get(name)?.kind === "builtin" && (!allowedSystemTools || allowedSystemTools.has(name))),
       prepareHistory: async () => modelHistory(system, await log.readEvents() as SessionEvent[]),
       executeTool: async (name, args, context) => {

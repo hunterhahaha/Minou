@@ -51,7 +51,7 @@ export interface FileSessionEventLog {
    * 分配事件身份并提交一条事件。
    * @param event 尚未分配身份的事件。
    * @returns 已提交的完整事件。
-   * @throws Error 当日志缺失、seq 无效或事务失败时抛出。
+   * @throws Error 当事件是内存流片段，或日志缺失、seq 无效、事务失败时抛出。
    */
   appendEvent(event: SessionEventInput): Promise<SessionEvent>
   /**
@@ -168,8 +168,8 @@ export function createFileSessionEventLog(options: FileSessionEventLogOptions): 
         readSessionEvents(db, options.projectGroupId, options.sessionId, databasePath, options.team, "all", table))
     },
     appendEvent: async (input) => {
-      if ((options.desktop || options.team) && (input.type === "assistant/block_start" || input.type === "assistant/block_delta")) {
-        throw new Error("桌面 Assistant 流片段只能在内存中发布")
+      if (input.type === "assistant/block_start" || input.type === "assistant/block_delta") {
+        throw new Error("Assistant 流片段只能在内存中发布")
       }
       return (await append([input], "tail"))[0]
     },

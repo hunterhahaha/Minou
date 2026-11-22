@@ -71,13 +71,17 @@ async function testCreateReadAppend(root: string): Promise<void> {
 }
 
 /**
- * 验证桌面普通表与 Team 成员表的写入入口拒绝内存片段，完整块仍取得下一个序号。
+ * 验证 CLI、桌面和 Team 成员的日志拒绝内存片段，完整块仍取得下一个序号。
  * @param root 当前测试使用的隔离临时目录。
- * @returns 两种日志的写入边界断言完成。
+ * @returns 三种日志的写入边界断言完成。
  */
-async function testDesktopStreamWriteGuard(root: string): Promise<void> {
-  for (const team of [false, true]) {
-    const options = await fixture(root, team ? "stream-member" : "stream-desktop", FIRST_PROJECT_ID, { desktop: true, team })
+async function testStreamWriteGuard(root: string): Promise<void> {
+  for (const [sessionId, settings] of [
+    ["stream-cli", {}],
+    ["stream-desktop", { desktop: true }],
+    ["stream-member", { desktop: true, team: true }],
+  ] as const) {
+    const options = await fixture(root, sessionId, FIRST_PROJECT_ID, settings)
     const log = createFileSessionEventLog(options)
     await log.appendTurnStartAndUserMessage(turnBatch(1))
     await log.appendEvent({ type: "step/start", turn: 1, step: 1 })
@@ -315,7 +319,7 @@ async function main(): Promise<void> {
   const root = await mkdtemp(join(tmpdir(), "minou-session-event-log-"))
   try {
     await testCreateReadAppend(root)
-    await testDesktopStreamWriteGuard(root)
+    await testStreamWriteGuard(root)
     await testConcurrentAppend(root)
     await testIsolation(root)
     await testTurnBatch(root)
@@ -332,13 +336,13 @@ async function main(): Promise<void> {
 }
 
 /**
- * 验证流式追加读取量不随历史事件总量增长，且完整读取仍保留全部事件。
+ * 验证单条追加读取量不随历史事件总量增长，且完整读取仍保留全部事件。
  * @param root 当前测试使用的隔离临时目录。
  * @returns 追加成本与完整历史读取断言通过。
  * @throws Error 断言或临时存储操作失败时传播。
  */
 async function testAppendDoesNotReparseHistory(root: string): Promise<void> {
-  const options = await fixture(root, "long-stream")
+  const options = await fixture(root, "long-history")
   const log = createFileSessionEventLog(options)
   await log.appendTurnStartAndUserMessage(turnBatch(1))
   const db = new DatabaseSync(options.databasePath)
@@ -346,8 +350,8 @@ async function testAppendDoesNotReparseHistory(root: string): Promise<void> {
     const insert = db.prepare("INSERT INTO session_events VALUES (?, ?, ?, ?, ?, ?, ?)")
     db.exec("BEGIN")
     for (let seq = 3; seq <= 1002; seq++) {
-      const value = { sessionId: options.sessionId, seq, eventId: `delta-${seq}`, type: "assistant/block_delta", createdAt: CREATED_AT,
-        turn: 1, step: 1, blockId: "b", delta: { type: "text", text: "x".repeat(200) } }
+      const value = { sessionId: options.sessionId, seq, eventId: `block-${seq}`, type: "assistant/block_end", createdAt: CREATED_AT,
+        turn: 1, step: seq - 2, blockId: `b-${seq}`, index: 0, block: { type: "text", text: "x".repeat(200) } }
       insert.run(options.projectGroupId, options.sessionId, seq, value.eventId, value.type, CREATED_AT, JSON.stringify(value))
     }
     db.exec("COMMIT")
@@ -357,7 +361,7 @@ async function testAppendDoesNotReparseHistory(root: string): Promise<void> {
   JSON.parse = (text, reviver) => { parsedBytes += Buffer.byteLength(text); return parse(text, reviver) }
   try {
     for (let index = 0; index < 10; index++) {
-      const event = await log.appendEvent({ type: "assistant/block_delta", turn: 1, step: 1, blockId: "b", delta: { type: "text", text: "next" } })
+      const event = await log.appendEvent({ type: "step/start", turn: 1, step: 1001 + index })
       assert.equal(event.seq, 1003 + index)
     }
   } finally { JSON.parse = parse }

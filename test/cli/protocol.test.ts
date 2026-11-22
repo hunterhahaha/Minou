@@ -90,7 +90,7 @@ async function main(): Promise<void> {
     assert.equal(state.toolCalls, 1)
     assert.equal(state.answer, "last")
     assert.deepEqual(mapUsage(state.usage), { input_tokens: 10, output_tokens: 7 })
-    assert.equal(mapEvent(event({ type: "assistant/block_delta", delta: { type: "thinking", text: "private" } })), undefined)
+    assert.equal(mapEvent({ type: "assistant/block_delta", turn: 1, step: 1, blockId: "b", delta: { type: "thinking", text: "private" } }), undefined)
     assert.deepEqual(mapEvent(event({ type: "tool/result", toolCallId: "call", result: { status: "error", content: [{ type: "text", text: "private" }], error: { details: "credential" } } })), { type: "tool.completed", data: { step: 1, call_id: "call", status: "error" } })
     assert.equal(toolGroup("mcp_fake", { get: () => ({ kind: "builtin" }) } as unknown as ToolRegistry), undefined)
     assert.equal(toolGroup("mcp_remote", { get: () => ({ kind: "mcp" }) } as unknown as ToolRegistry), "mcp")
