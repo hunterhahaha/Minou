@@ -243,7 +243,8 @@ async function testExposesOnlyMinouApi(): Promise<void> {
       "listProjectGitBranches", "switchProjectGitBranch",
       "listWebSearchProviderDefinitions", "listWebSearchProviders", "getWebSearchProvider", "createWebSearchProvider",
       "updateWebSearchProvider", "deleteWebSearchProvider", "setActiveWebSearchProvider",
-      "startTeamSession", "getTeamWakeupConfig", "setTeamWakeupConfig"].sort(),
+      "startTeamSession", "getTeamWakeupConfig", "setTeamWakeupConfig",
+      "listTeamMembers", "subscribeTeamSession", "unsubscribeTeamSession", "onTeamSessionUpdate"].sort(),
   )
 }
 

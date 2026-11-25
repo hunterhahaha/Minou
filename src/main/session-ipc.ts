@@ -5,7 +5,7 @@ import { normalizeError } from "../../runtime/error/src/index.ts"
 import { requireProjectId } from "../../runtime/session/src/project-id.ts"
 import type { ProjectId } from "../../runtime/session/src/project-id.ts"
 import type { AssistantContentBlock } from "../../runtime/model/src/types.ts"
-import type { SessionEvent, UserMessageContent } from "../../runtime/session/src/events.ts"
+import type { AssistantBlockStreamEvent, SessionEvent, UserMessageContent } from "../../runtime/session/src/events.ts"
 import { DEFAULT_SESSION_SANDBOX_MODE, SANDBOX_MODES, type SandboxMode, type SessionSettingsPatch } from "../../runtime/session/src/session-state.ts"
 import { listRunnableQueues, SessionMessageQueue } from "../../runtime/session/src/message-queue.ts"
 import { insertTeamWorkspace, type TeamIdentity } from "../../runtime/session/src/team-store.ts"
@@ -19,6 +19,9 @@ import type { SessionControl, SessionData, SessionKind, SessionSummary, SessionU
 import type { ConfigFilePaths } from "./config-files.ts"
 import { reconcileWorkspaceSessions } from "./workspace-store.ts"
 import { validateMessageFileReferences } from "./file-explorer-ipc.ts"
+
+/** 首个待发片段开始的桌面推送窗口，单位为毫秒。 */
+const STREAM_BATCH_INTERVAL_MS = 50
 
 /**
  * 投影可向渲染进程公开的事件字段，保留日志序号和块索引。
@@ -76,7 +79,7 @@ export interface SessionDispatch {
   /** 停止接收新任务、取消活动 Turn，并等待日志收尾。 */
   shutdown(): Promise<void>
 }
-/** 原始事件、控制快照与宿主错误共用的窗口出口。 */
+/** 流片段批次、已提交事件、控制快照与宿主错误共用的窗口出口。 */
 export interface SessionEventForwardingPort {
   /**
    * @param update 可序列化更新。
@@ -89,6 +92,12 @@ export interface SessionEventForwardingPort {
 interface SessionIpcState {
   tail: Promise<void>
   revision: number
+}
+
+/** 一个活动对话尚未发送的片段及其一次性定时器。 */
+interface PendingSessionStream {
+  events: AssistantBlockStreamEvent[]
+  timer: ReturnType<typeof setTimeout>
 }
 
 /** IPC 形状校验后的正文与尚未验证的文件引用。 */
@@ -118,6 +127,7 @@ export function registerSessionIpcHandlers(
 ): SessionDispatch {
   const activeSessions = new Map<string, SessionRuntime>()
   const sessionIpcStates = new Map<string, SessionIpcState>()
+  const pendingStreams = new Map<string, PendingSessionStream>()
   const processing = new Set<Promise<void>>()
   const eventsPath = paths && join(paths.rootDir, "events.sqlite")
   let exiting = false
@@ -198,17 +208,33 @@ export function registerSessionIpcHandlers(
     return result
   }
   /**
-   * @param update 原始更新。
+   * 取走一个对话的待发批次，同时解除其定时器。
+   * @param key 对话联合身份。
+   * @returns 待发送的片段，或没有待发数据时的 undefined。
+   */
+  function takeStreamBatch(key: string): AssistantBlockStreamEvent[] | undefined {
+    const batch = pendingStreams.get(key)
+    if (!batch) return undefined
+    pendingStreams.delete(key)
+    clearTimeout(batch.timer)
+    return batch.events
+  }
+  /**
+   * 立即推送更新。已提交事件、控制状态和错误同时结清前面的流片段。
+   * @param update 待发送的更新。
    * @param role 热路径已知的持久化角色；其他调用按联合身份查询。
    * @returns 发送尝试完成；传输失败交给宿主。
    */
   async function send(update: SessionUpdate, role?: SessionKind): Promise<void> {
+    const key = keyOf(update.projectId, update.sessionId)
+    const streamEvents = update.kind === "stream" ? undefined : takeStreamBatch(key)
     try {
       const member = (role ?? team?.store.identity(update.projectId, update.sessionId)?.role) === "member"
-      const recipients = member ? memberSubscribers.get(keyOf(update.projectId, update.sessionId)) : undefined
+      const recipients = member ? memberSubscribers.get(key) : undefined
       if (member && !recipients?.size) return
+      const outgoing = update.kind === "event" ? { ...update, event: publicSessionEvent(update.event) } : update
       await eventForwarding.sendSessionUpdateToRenderer(
-        update.kind === "event" ? { ...update, event: publicSessionEvent(update.event) } : update, recipients,
+        streamEvents ? { ...outgoing, streamEvents } : outgoing, recipients,
       )
     }
     catch (error) { onCompletionFailure({ sessionId: update.sessionId, turn: "event" in update ? update.event.turn ?? 0 : 0, error }) }
@@ -284,14 +310,26 @@ export function registerSessionIpcHandlers(
    * @param sessionKind 当前持久化角色，用于窗口分流、首个事件标记与工作区索引筛选。
    */
   function observe(projectId: ProjectId, runtime: SessionRuntime, run: SessionRuntimeProcessing, sessionKind: SessionKind): void {
-    const key = keyOf(projectId, runtime.sessionId)
+    const { sessionId } = runtime
+    const key = keyOf(projectId, sessionId)
+    /**
+     * @returns 当前待发批次的发送结果；关键更新已结批时为 undefined。
+     */
+    function flushStream(): Promise<void> | undefined {
+      const streamEvents = takeStreamBatch(key)
+      if (streamEvents) return send({ kind: "stream", projectId, sessionId, streamEvents }, sessionKind)
+    }
     const consuming = (async () => {
       for await (const event of runtime.events) {
         if ("streamSeq" in event) {
-          await send({ kind: "stream", projectId, sessionId: runtime.sessionId, event }, sessionKind)
+          const batch = pendingStreams.get(key)
+          if (batch) batch.events.push(event)
+          else pendingStreams.set(key, {
+            events: [event], timer: setTimeout(() => { void flushStream() }, STREAM_BATCH_INTERVAL_MS),
+          })
           continue
         }
-        await send({ kind: "event", projectId, sessionId: runtime.sessionId, event, ...(event.seq === 1 && { sessionKind }) }, sessionKind)
+        await send({ kind: "event", projectId, sessionId, event, ...(event.seq === 1 && { sessionKind }) }, sessionKind)
         if (sessionKind !== "member" && (event.type === "user/message" || event.type === "turn/end")) {
           await index(projectId, runtime)
         }
@@ -301,6 +339,8 @@ export function registerSessionIpcHandlers(
     const completion = run.completion.catch((error: unknown) => report(projectId, runtime, "runtime", error))
       .then(async () => {
         await consuming
+        const finalBatch = flushStream()
+        if (finalBatch) await finalBatch
         await serial(key, async () => {
           const active = activeSessions.get(key)
           if (active && active !== runtime) return

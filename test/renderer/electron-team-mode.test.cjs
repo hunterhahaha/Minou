@@ -283,6 +283,8 @@ async function main() {
 
   const member = store.members().find((item) => item.routerId === router)
   const memberUpdates = () => delivered.filter((update) => update.sessionId === member.sessionId)
+  const deltaCount = (updates) => updates.flatMap((update) => update.streamEvents ?? [])
+    .filter((event) => event.type === "assistant/block_delta").length
   const memberPage = '.chat-browser-pane .chat-page[data-session-id="' + member.sessionId + '"]'
   const tab = '.chat-browser-tab-item button[title="' + member.sessionId + '"]'
   const hasMemberPage = () => evaluate("!!document.querySelector(" + JSON.stringify(memberPage) + ")")
@@ -326,8 +328,8 @@ async function main() {
   await until("已截取成员历史快照", () => firstHistory.release)
   const beforeActive = memberUpdates().length
   gatedMembers.get("首屏交错50")()
-  await until("历史未返回时已收到后续 50 个片段", () => gatedMembers.has("首屏交错100") && memberUpdates().slice(beforeActive).filter(
-    (update) => update.kind === "stream" && update.event.type === "assistant/block_delta").length === 50)
+  await until("历史未返回时已收到后续 50 个片段", () => gatedMembers.has("首屏交错100") &&
+    deltaCount(memberUpdates().slice(beforeActive)) === 50)
   firstHistory.release()
   await until("完整块提交前已合并历史前缀和实时片段", () => memberHas("首屏交错" + "流".repeat(100)))
   assert.equal(durableEvents("team_session_events", member.sessionId).at(-1)?.type, "step/start")
@@ -402,8 +404,8 @@ async function main() {
     }, 10)
   })()`)
   const beforeVisible = memberUpdates().length
-  const visibleDeltas = () => memberUpdates().slice(beforeVisible).filter(
-    (update) => update.kind === "stream" && update.event.type === "assistant/block_delta").length
+  const visibleUpdates = () => memberUpdates().slice(beforeVisible)
+  const visibleDeltas = () => deltaCount(visibleUpdates())
   const midpoint = "可见成员压力" + "流".repeat(300)
   gatedMembers.get("可见成员压力")()
   await until("可见成员呈现全部前半段片段", async () => gatedMembers.has("可见成员压力后半段") &&
@@ -411,13 +413,34 @@ async function main() {
       .some(node => node.textContent.trim() === ${JSON.stringify(midpoint)})`))
   const visibleCommits = await evaluate("window.visibleMemberCommits")
   const visibleGap = await evaluate("clearInterval(window.sampleTimer); Math.max(0, ...window.sampleGaps)")
-  console.log("visible member stream: first " + visibleDeltas() + " fragments, transcript/old Markdown commits=" +
+  const streamPackets = visibleUpdates().filter((update) => update.streamEvents?.some((event) => event.type === "assistant/block_delta")).length
+  console.log("visible member stream: first " + visibleDeltas() + " fragments in " + streamPackets + " IPC updates, transcript/old Markdown commits=" +
     visibleCommits.transcript + "/" + visibleCommits.markdown + ", max 10ms timer gap=" + visibleGap.toFixed(1) + "ms")
   assert.equal(visibleDeltas(), 300)
+  assert.ok(streamPackets > 0 && streamPackets < visibleDeltas(), "高频片段经过批量 IPC 推送")
   assert.equal(durableEvents("team_session_events", member.sessionId).at(-1)?.type, "step/start")
   assert.equal(visibleCommits.markdown, 0, "可见成员流未重绘已完成的 Markdown")
   assert.ok(visibleCommits.transcript > 0 && visibleCommits.transcript < visibleDeltas(), "同帧片段合并为一次记录更新")
   assert.equal(store.status(member), "running")
+  await type("成员输出中的输入验证")
+  await until("成员仍运行时 Router 输入可用", async () => await editorText() === "成员输出中的输入验证")
+  await evaluate(`(() => {
+    getSelection().selectAllChildren(document.querySelector('.composer-editor'))
+    document.execCommand('delete')
+  })()`)
+  await until("清除输入验证草稿", async () => await editorText() === "")
+  const scrollSelector = JSON.stringify(memberPage + " .chat-scroll")
+  await until("成员输出中有可滚动的记录", () => evaluate(`(() => {
+    const scroll = document.querySelector(${scrollSelector})
+    return scroll.scrollHeight > scroll.clientHeight
+  })()`))
+  assert.ok(await evaluate(`(() => {
+    const scroll = document.querySelector(${scrollSelector})
+    scroll.scrollTop = scroll.scrollHeight
+    return scroll.scrollTop
+  })()`) > 0)
+  await evaluate(`document.querySelector(${scrollSelector}).scrollTop = 0`)
+  await until("成员输出中的记录可以上滚", () => evaluate(`document.querySelector(${scrollSelector}).scrollTop === 0`))
   const otherSession = ".chats-section .session-name:not([aria-current])"
   await click(otherSession)
   await until("流式过程中切到普通会话并卸载成员页", () => evaluate(`document.querySelector(".chat-browser-chat .chat-page")
@@ -474,7 +497,12 @@ async function main() {
   await evaluate(`window.minou.renameSession(${JSON.stringify(projectId)}, ${JSON.stringify(projectRouter)}, '项目 Router 历史')`)
   await selectDefaultCreate(".new-chat", "chat")
   await click(".titlebar-search")
-  await until("共用搜索结果", () => evaluate("document.querySelectorAll('.search-result').length === 5"))
+  await until("对话搜索显示重命名后的项目 Router", () => evaluate(`Array.from(document.querySelectorAll('.search-result strong'))
+    .some((result) => result.textContent === '项目 Router 历史')`))
+  assert.equal(await evaluate("document.querySelector('.search-category').value"), "sessions", "默认搜索对话")
+  assert.deepEqual(await evaluate(`Array.from(document.querySelectorAll('.search-result'),
+    (result) => result.querySelector('.search-result-copy small > span')?.textContent ?? null).sort()`),
+    ["独立对话", "独立对话", project.name, project.name].sort(), "对话分类列出两条独立对话和两条项目对话")
   await clickText(".search-result strong", "项目 Router 历史")
   await until("搜索回到 Router", () => sessionKind("router"))
   await new Promise((done) => { window.webContents.once("did-finish-load", done); window.webContents.reload() })

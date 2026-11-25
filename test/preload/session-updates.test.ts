@@ -71,26 +71,36 @@ async function main(): Promise<void> {
     assert.throws(() => handler({}, { ...started, sessionKind: "router" }), /角色无效/)
   }
   assert.deepEqual(updates.at(-1), firstUpdate)
-  const streamUpdate = {
-    kind: "stream", projectId: "default", sessionId: "s",
-    event: { type: "assistant/block_start", eventId: "stream-1", sessionId: "s", createdAt: summary.createdAt,
-      turn: 1, step: 1, blockId: "b", index: 0, blockType: "text", streamSeq: 1, afterSeq: 3 },
-  } satisfies SessionUpdate
+  const streamStart = { type: "assistant/block_start", eventId: "stream-1", sessionId: "s", createdAt: summary.createdAt,
+    turn: 1, step: 1, blockId: "b", index: 0, blockType: "text", streamSeq: 1, afterSeq: 3 } as const
+  const streamDelta = { ...streamStart, type: "assistant/block_delta", streamSeq: 2, eventId: "stream-2",
+    delta: { type: "text", text: "正文" } } as const
+  const streamUpdate = { kind: "stream", projectId: "default", sessionId: "s",
+    streamEvents: [streamStart, streamDelta] } satisfies SessionUpdate
+  const combinedState = { ...update, streamEvents: [streamStart, streamDelta] }
+  const combinedEvent = { ...summaryUpdate, streamEvents: [streamDelta] }
+  const combinedError = { kind: "error", projectId: "default", sessionId: "s", stage: "runtime",
+    error: { source: "runtime", code: "TEST", message: "失败" }, streamEvents: [streamDelta] } satisfies SessionUpdate
   for (const handler of handlers) {
     handler({}, streamUpdate)
-    assert.throws(() => handler({}, { ...streamUpdate, event: { ...streamUpdate.event, streamSeq: 0 } }), /无效/)
-    assert.throws(() => handler({}, { ...streamUpdate, event: { ...streamUpdate.event, sessionId: "other" } }), /无效/)
+    handler({}, combinedState)
+    handler({}, combinedEvent)
+    handler({}, combinedError)
+    assert.throws(() => handler({}, { ...streamUpdate, streamEvents: [] }), /无效/)
+    assert.throws(() => handler({}, { ...streamUpdate, streamEvents: undefined, event: streamStart }), /无效/)
+    assert.throws(() => handler({}, { ...streamUpdate, streamEvents: [streamStart, { ...streamDelta, streamSeq: 0 }] }), /无效/)
+    assert.throws(() => handler({}, { ...combinedState, streamEvents: [streamStart, { ...streamDelta, sessionId: "other" }] }), /无效/)
   }
-  assert.deepEqual(updates.at(-1), streamUpdate)
+  assert.deepEqual(updates.slice(4), [streamUpdate, combinedState, combinedEvent, combinedError], "无效整包不会调用监听器")
   const activeHistory: SessionData = {
     ...withSummary,
     events: [...withSummary.events.slice(0, 2), { type: "step/start", eventId: "step-1", sessionId: "s",
       createdAt: summary.createdAt, turn: 1, step: 1, seq: 3 }],
-    streamEvents: [streamUpdate.event], latestSeq: 3, control: { ...control, throughSeq: 3 },
+    streamEvents: [streamStart], latestSeq: 3, control: { ...control, throughSeq: 3 },
   }
   assert.deepEqual(await createSessionApi({ invoke: async () => activeHistory }).getSessionData("default", "s"), activeHistory)
   const invalidAnchor = createSessionApi({ invoke: async () => ({
-    ...activeHistory, streamEvents: [{ ...streamUpdate.event, afterSeq: 4 }],
+    ...activeHistory, streamEvents: [{ ...streamStart, afterSeq: 4 }],
   }) })
   await assert.rejects(invalidAnchor.getSessionData("default", "s"), /活动流片段/)
   cancel(); cancel()

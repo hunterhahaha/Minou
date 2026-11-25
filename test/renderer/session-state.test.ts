@@ -271,11 +271,11 @@ async function testTransientStream(): Promise<void> {
   const delta: AssistantBlockStreamEvent = { ...base, type: "assistant/block_delta",
     delta: { type: "text", text: "流式正文" }, eventId: "stream-2", streamSeq: 2 }
   const activeData = { ...data([first, second, step]), streamEvents: [start, delta] }
-  let calls = 0
-  const state = new WorkspaceSessionState({ getSessionData: async () => { calls++; return activeData } }, () => {})
+  let calls = 0, notifications = 0
+  const state = new WorkspaceSessionState({ getSessionData: async () => { calls++; return activeData } }, () => { notifications++ })
   const key = sessionKey("default", "s")
   state.applyData(data([first, second, step]))
-  state.receive({ kind: "stream", projectId: "default", sessionId: "s", event: delta })
+  state.receive({ kind: "stream", projectId: "default", sessionId: "s", streamEvents: [delta] })
   await state.sessionLoadsRef.get(key)
   assert.equal(calls, 1, "缺少流式前缀时补查一次")
   assert.deepEqual(state.sessionEventsByKey[key], [first, second, step, start, delta])
@@ -283,12 +283,27 @@ async function testTransientStream(): Promise<void> {
   const live = projectSessionEvents(state.sessionEventsByKey[key]).find((item) => item.kind === "assistant")
   assert.deepEqual(live?.blocks, [{ type: "text", text: "流式正文" }])
 
-  for (const entry of [end, stepEnd]) state.receive({ kind: "event", projectId: "default", sessionId: "s", event: entry })
+  notifications = 0
+  state.receive({ kind: "state", projectId: "default", sessionId: "s", control: control(3), streamEvents: [start, delta] })
+  assert.equal(notifications, 1, "流片段和状态同包只通知一次")
+  assert.equal(state.view(key).control?.revision, 3)
+  assert.deepEqual(state.sessionEventsByKey[key], [first, second, step, start, delta])
+  state.receive({ kind: "event", projectId: "default", sessionId: "s", event: end })
+  notifications = 0
+  state.receive({ kind: "event", projectId: "default", sessionId: "s", event: stepEnd, streamEvents: [delta] })
+  assert.equal(notifications, 1, "持久化事件和流片段同包只通知一次")
   state.applyData(activeData)
-  state.receive({ kind: "stream", projectId: "default", sessionId: "s", event: delta })
+  state.receive({ kind: "stream", projectId: "default", sessionId: "s", streamEvents: [delta] })
   assert.deepEqual(state.sessionEventsByKey[key], [first, second, step, end, stepEnd], "迟到快照和片段不能恢复已结束 Step 的内存")
   assert.equal(throughSeq(state.sessionEventsByKey[key]), 5)
   assert.equal(calls, 1)
+
+  const opening = new WorkspaceSessionState({ getSessionData: async () => activeData }, () => {})
+  const loading = opening.load("default", "s")
+  opening.receive({ kind: "stream", projectId: "default", sessionId: "s", streamEvents: [start, delta] })
+  assert.equal(opening.has(key), false)
+  await loading
+  assert.deepEqual(opening.sessionEventsByKey[key], [first, second, step, start, delta], "首载快照与待合并批次重叠时去重")
 }
 
 /**

@@ -188,27 +188,31 @@ export class WorkspaceSessionState {
     this.changed(key)
   }
   /**
-   * @param update 工作区订阅到的事件、控制或后台错误。
+   * @param update 工作区订阅到的整批流片段及随包到达的事件、控制或后台错误。
    */
   receive(update: SessionUpdate): void {
     const key = sessionKey(update.projectId, update.sessionId)
-    if (update.kind === "event" || update.kind === "stream") {
+    if (update.kind === "event" || update.streamEvents !== undefined) {
+      const event = update.kind === "event" ? update.event : undefined
+      const merged = mergeSessionEvents(this.sessionEventsByKey[key] ?? [], this.pendingEventsRef.get(key) ?? [],
+        update.streamEvents ?? [], event ? [event] : [])
       if (update.kind === "event" && update.sessionKind !== undefined) this.view(key).kind = update.sessionKind
-      if (this.has(key) || (update.kind === "event" && update.event.seq === 1)) {
-        this.sessionEventsByKey[key] = mergeSessionEvents(this.sessionEventsByKey[key] ?? [], this.pendingEventsRef.get(key) ?? [], [update.event])
+      if (this.has(key) || event?.seq === 1) {
+        this.sessionEventsByKey[key] = merged
         this.pendingEventsRef.delete(key)
       } else {
-        this.pendingEventsRef.set(key, mergeSessionEvents(this.pendingEventsRef.get(key) ?? [], [update.event]))
+        this.pendingEventsRef.set(key, merged)
       }
       this.releaseControl(key)
-    } else if (update.kind === "state") {
+    }
+    if (update.kind === "state") {
       const view = this.view(key)
       if (update.summary && update.control.revision > (view.summaryRevision ?? -1)) {
         view.summary = update.summary
         view.summaryRevision = update.control.revision
       }
       this.acceptControl(key, update.control)
-    } else this.view(key).operationError = update.error.message
+    } else if (update.kind === "error") this.view(key).operationError = update.error.message
     this.changed(key)
     if (this.needsRepair(key)) void this.load(update.projectId, update.sessionId, true).catch(() => {})
   }

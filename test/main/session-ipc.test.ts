@@ -1,4 +1,5 @@
 import assert from "node:assert/strict"
+import { mock } from "node:test"
 import { fakeSessionQueue } from "../fixtures/session-queue.ts"
 
 import { createAbortError } from "../../runtime/error/src/abort.ts"
@@ -6,7 +7,7 @@ import { SessionRuntime } from "../../runtime/agent/src/session-runtime.ts"
 import type { SessionRuntimeGlobal } from "../../src/main/session-runtime-global.ts"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
-import type { ModelAdapter, ModelRef } from "../../runtime/model/src/types.ts"
+import type { ModelAdapter, ModelRef, ModelStreamEvent } from "../../runtime/model/src/types.ts"
 import type { SessionEvent, SessionEventInput } from "../../runtime/session/src/events.ts"
 import {
   registerSessionIpcHandlers,
@@ -19,7 +20,7 @@ import type {
 import {
   SESSION_IPC_CHANNELS,
 } from "../../src/preload/session-api.ts"
-import type { StartedSessionResponse } from "../../src/preload/session-api.ts"
+import type { SessionUpdate, StartedSessionResponse } from "../../src/preload/session-api.ts"
 
 const MODEL: ModelRef = {
   providerId: "provider-1",
@@ -84,7 +85,8 @@ function completedSessionEvents(sessionId: string): SessionEvent[] {
   ]
 }
 
-function runtimeHarness(options: { blockFirstLoop?: boolean; failInitialization?: boolean } = {}): {
+function runtimeHarness(options: { blockFirstLoop?: boolean; failInitialization?: boolean;
+  stream?: (sessionId: string, signal: AbortSignal) => AsyncIterable<ModelStreamEvent> } = {}): {
   createRuntime: (projectId: string, sessionId: string, onStateChanged?: () => void) => SessionRuntime
   records: Map<string, RuntimeRecord>
   loopStarted: Promise<void>
@@ -108,7 +110,7 @@ function runtimeHarness(options: { blockFirstLoop?: boolean; failInitialization?
     const events = sessionId === "existing-session" ? completedSessionEvents(sessionId) : []
     const messageQueue = fakeSessionQueue()
     const batches: RuntimeRecord["batches"] = []
-    let diskModel = structuredClone(MODEL)
+    let diskModel = structuredClone(sessionId === "existing-session" ? OTHER_MODEL : MODEL)
     let sandboxMode = "sandbox-full-access"
     const repairPorts = {
       readEvents: async () => events,
@@ -169,7 +171,8 @@ function runtimeHarness(options: { blockFirstLoop?: boolean; failInitialization?
                 ])
               }
             }
-            yield { type: "stream_end" as const, completion: "finished" as const }
+            if (options.stream) yield* options.stream(sessionId, signal)
+            else yield { type: "stream_end" as const, completion: "finished" as const }
           },
         },
         tools: [],
@@ -208,6 +211,8 @@ function runtimeHarness(options: { blockFirstLoop?: boolean; failInitialization?
       sessionState: {
         readLoadedMCPTools: async () => [],
         writeLoadedMCPTools: async () => {},
+        readAgentInputTokens: async () => 0,
+        synchronizeUsage: async () => {},
         initializeSession: () => repairPorts.initializeSession(),
         repairDerivedState: () => repairPorts.repairDerivedState(),
         readSettings: async () => ({ name: "新对话", currentModel: structuredClone(diskModel), sandboxMode }),
@@ -271,7 +276,7 @@ async function testStartsNewSessionAndProcessesQueuedMessages(): Promise<void> {
       SESSION_IPC_CHANNELS.continueSession,
       PROJECT_ID,
       response.sessionId,
-      { content: queuedContent, model: MODEL },
+      { content: queuedContent },
     ),
     /正在运行/,
   )
@@ -306,7 +311,7 @@ async function testContinuesExistingSessionExplicitly(): Promise<void> {
     SESSION_IPC_CHANNELS.continueSession,
     PROJECT_ID,
     "existing-session",
-    { content: CONTENT, model: OTHER_MODEL },
+    { content: CONTENT },
   )
   assert.deepEqual(response, { sessionId: "existing-session", turn: 2 })
   const record = harness.records.get("existing-session")
@@ -353,7 +358,7 @@ async function testStopsActiveSessionAndDropsQueuedTurns(): Promise<void> {
       response.sessionId,
       { content: CONTENT },
     ),
-    /正在停止|当前未运行/,
+    /正在停止|已关闭|当前未运行/,
   )
 
   await harness.stoppedTurnEnded
@@ -407,9 +412,9 @@ async function testRejectsInvalidRendererInput(): Promise<void> {
       SESSION_IPC_CHANNELS.continueSession,
       PROJECT_ID,
       "existing-session",
-      { content: CONTENT },
+      {},
     ),
-    /Session 输入无效/,
+    /继续对话输入无效/,
   )
   await assert.rejects(
     ipcMain.invoke(
@@ -418,7 +423,7 @@ async function testRejectsInvalidRendererInput(): Promise<void> {
       "existing-session",
       { content: CONTENT, model: { ...MODEL, protocol: "invalid" } },
     ),
-    /Session 输入无效/,
+    /继续对话输入无效/,
   )
   await assert.rejects(
     ipcMain.invoke(
@@ -472,6 +477,7 @@ async function testObservesBackgroundFailureAndCleansRuntime(): Promise<void> {
   assert.equal(failure.sessionId, response.sessionId)
   assert.equal(failure.turn, response.turn)
   assert.match(String(failure.error), /initialize failed/)
+  await new Promise<void>((resolve) => setImmediate(resolve))
   await assert.rejects(
     ipcMain.invoke(
       SESSION_IPC_CHANNELS.enqueueSessionMessage,
@@ -503,7 +509,106 @@ async function testDefaultProjectIdentity(): Promise<void> {
   await harness.stoppedTurnEnded
 }
 
+/** 验证并发会话的独立窗口、立即结批及停止和退出的定时清理。 */
+async function testStreamBatches(): Promise<void> {
+  const gates = new Map<string, () => void>()
+  const harness = runtimeHarness({ async *stream(sessionId, signal) {
+    /** 等待测试推进或 Runtime 取消此次输出。 */
+    async function waitForNextFragment(): Promise<void> {
+      await new Promise<void>((resolve, reject) => {
+        const abort = () => { gates.delete(sessionId); reject(createAbortError()) }
+        if (signal.aborted) { abort(); return }
+        signal.addEventListener("abort", abort, { once: true })
+        gates.set(sessionId, () => {
+          gates.delete(sessionId)
+          signal.removeEventListener("abort", abort)
+          resolve()
+        })
+      })
+    }
+    await waitForNextFragment()
+    yield { type: "block_start", index: 0, blockType: "text" }
+    yield { type: "block_delta", index: 0, delta: { type: "text", text: "甲" } }
+    yield { type: "block_delta", index: 0, delta: { type: "text", text: "乙" } }
+    await waitForNextFragment()
+    yield { type: "block_delta", index: 0, delta: { type: "text", text: "丙" } }
+    await waitForNextFragment()
+    yield { type: "block_end", index: 0, block: { type: "text", text: "甲乙丙" } }
+    yield { type: "stream_end", completion: "finished" }
+  } })
+  const ipc = new FakeIpcMain()
+  const updates: SessionUpdate[] = []
+  const failures: SessionCompletionFailure[] = []
+  const dispatch = registerSessionIpcHandlers(ipc, harness.createRuntime, (failure) => { failures.push(failure) }, {
+    sendSessionUpdateToRenderer: (update) => { updates.push(update) },
+  })
+  const flush = () => new Promise<void>((resolve) => setImmediate(resolve))
+  const batches = (sessionId: string) => updates.filter((update) => update.sessionId === sessionId && update.streamEvents !== undefined)
+  mock.timers.enable({ apis: ["setTimeout"] })
+  try {
+    const a = await ipc.invoke<StartedSessionResponse>(SESSION_IPC_CHANNELS.startNewSession, PROJECT_ID, { content: CONTENT, model: MODEL })
+    await flush()
+    assert.deepEqual(failures, [])
+    assert.ok(gates.has(a.sessionId))
+    gates.get(a.sessionId)!()
+    await flush()
+    assert.equal(batches(a.sessionId).length, 0)
+    mock.timers.tick(20)
+    const b = await ipc.invoke<StartedSessionResponse>(SESSION_IPC_CHANNELS.startNewSession, "default", { content: CONTENT, model: MODEL })
+    await flush()
+    assert.ok(gates.has(b.sessionId))
+    gates.get(b.sessionId)!()
+    await flush()
+    mock.timers.tick(29)
+    assert.equal(batches(a.sessionId).length + batches(b.sessionId).length, 0)
+    mock.timers.tick(1)
+    const [firstBatch] = batches(a.sessionId)
+    assert.equal(firstBatch?.kind, "stream")
+    assert.deepEqual(firstBatch.streamEvents.map((event) => event.streamSeq), [1, 2, 3])
+    assert.equal(batches(b.sessionId).length, 0, "A 的定时到期不会冲刷 B")
+
+    gates.get(b.sessionId)!()
+    await flush()
+    gates.get(b.sessionId)!()
+    await flush()
+    const [blockEnd] = batches(b.sessionId)
+    assert.ok(blockEnd?.kind === "event" && blockEnd.event.type === "assistant/block_end")
+    assert.deepEqual(blockEnd.streamEvents?.map((event) => event.streamSeq), [1, 2, 3, 4])
+    assert.ok(blockEnd.streamEvents?.every((event) => event.afterSeq < blockEnd.event.seq))
+
+    gates.get(a.sessionId)!()
+    await flush()
+    assert.equal(batches(a.sessionId).length, 1, "新片段开启自己的 50 ms 窗口")
+    await ipc.invoke(SESSION_IPC_CHANNELS.stopSession, PROJECT_ID, a.sessionId)
+    await flush()
+    const stopped = batches(a.sessionId)[1]
+    assert.ok(stopped && stopped.kind !== "stream", "停止相关的即时更新结清待发增量")
+    assert.deepEqual(stopped.streamEvents?.map((event) => event.streamSeq), [4])
+
+    const c = await ipc.invoke<StartedSessionResponse>(SESSION_IPC_CHANNELS.startNewSession, "default", { content: CONTENT, model: MODEL })
+    await flush()
+    assert.ok(gates.has(c.sessionId))
+    gates.get(c.sessionId)!()
+    await flush()
+    assert.equal(batches(c.sessionId).length, 0)
+    await dispatch.shutdown()
+    const [finalBatch] = batches(c.sessionId)
+    assert.deepEqual(finalBatch?.streamEvents?.map((event) => event.streamSeq), [1, 2, 3])
+    const idle = updates.findIndex((update) => update.sessionId === c.sessionId && update.kind === "state" && update.control.phase === "idle")
+    assert.ok(idle > updates.indexOf(finalBatch), "尾批先于最终空闲状态")
+    const delivered = updates.length
+    mock.timers.tick(100)
+    await flush()
+    assert.equal(updates.length, delivered, "提前推送的批次不会在旧定时点重复推送")
+    assert.deepEqual(failures, [])
+  } finally {
+    await dispatch.shutdown()
+    mock.timers.reset()
+  }
+}
+
 async function main(): Promise<void> {
+  await testStreamBatches()
   await testStartsNewSessionAndProcessesQueuedMessages()
   await testContinuesExistingSessionExplicitly()
   await testStopsActiveSessionAndDropsQueuedTurns()

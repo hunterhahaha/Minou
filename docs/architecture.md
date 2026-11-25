@@ -57,7 +57,7 @@ Renderer 负责页面、路由与展示缓存，不直接打开数据库、读�
 5. Runtime 组织工作区说明、AGENTS.md / Skill 基线和基础工具，再调用 `runAgentLoop()`。
 6. Loop 将 Step、完整内容块和完整消息提交到 Event Log，并通过 SessionRuntime 在内存中发布块开始与增量；若产生工具调用，就运行工具小轮并把 ToolResult 回填上下文，然后进入下一 Step。
 7. Runtime 负责 Turn 完成、失败、停止、文件变化与派生状态同步，再消费 FIFO 队列。Queue 仅保存消息内容，不提前冻结后续 Turn 的模型。
-8. 主进程通过会话更新事件推送已提交内容、流片段和控制状态。Renderer 的 [session-state.ts](../src/renderer/session-state.ts) 按持久化序号合并历史，并用 Step 内的 `streamSeq` 和最近一次已提交的 `afterSeq` 插入流片段。活动会话查询返回当前 Step 的内存片段，Step 结束后释放。
+8. 主进程按 Project + Session 独立缓冲块开始和增量，首个待发片段开启一次 50 ms 定时。定时到期发送片段数组，期间收到已提交事件、控制状态或错误时立即连同待发片段一起发送。Renderer 的 [session-state.ts](../src/renderer/session-state.ts) 每包合并一次，按持久化序号合并历史，并用 Step 内的 `streamSeq` 和最近一次已提交的 `afterSeq` 插入流片段。活动会话查询返回当前 Step 的内存片段，Step 结束后释放。
 
 Composer 的 `@` 查询调用 [文件查看器 IPC](../src/main/file-explorer-ipc.ts)，用现有 ripgrep 枚举能力搜索当前项目的关联目录。会话 IPC 在接收结构化引用时校验目录关联、真实文件与正文位置。队列与 `user/message` 事件携带引用，模型历史只读取 `content`。历史和 Composer 的文件标签共用内置浏览器标签管理器及只读预览，打开时再次检查目录授权和目标文件。
 

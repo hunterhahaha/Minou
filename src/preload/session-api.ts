@@ -154,10 +154,10 @@ export interface SessionData {
   control: SessionControl
 }
 
-/** 主进程统一推送；内存控制状态不写入 Event Log。 */
-export type SessionUpdate = { projectId: string; sessionId: string } & (
+/** 同一对话的一次推送；流片段按发布顺序排列，先于同包的事件、状态或错误。 */
+export type SessionUpdate = { projectId: string; sessionId: string; streamEvents?: AssistantBlockStreamEvent[] } & (
   | { kind: "event"; event: SessionEvent; sessionKind?: SessionKind }
-  | { kind: "stream"; event: AssistantBlockStreamEvent }
+  | { kind: "stream"; streamEvents: AssistantBlockStreamEvent[] }
   | { kind: "state"; control: SessionControl; summary?: SessionSummary }
   | { kind: "error"; stage: "runtime" | "index" | "transport"; error: AppError }
 )
@@ -1580,7 +1580,7 @@ function isSessionKind(value: unknown): value is SessionKind {
   return value === "ordinary" || value === "router" || value === "member"
 }
 /**
- * 检查主进程推送的事件、状态或错误业务更新。
+ * 检查主进程推送的流片段及同包的事件、状态或错误。
  *
  * @param value 主进程推送值。
  * @returns 已检查的业务更新。
@@ -1590,21 +1590,29 @@ function requireSessionUpdate(value: unknown): SessionUpdate {
   if (!isRecord(value) || !isProjectId(value.projectId) || typeof value.sessionId !== "string") {
     throw new TypeError("对话更新身份无效")
   }
+  const { projectId, sessionId, streamEvents } = value
+  if (streamEvents !== undefined) {
+    if (!Array.isArray(streamEvents) || streamEvents.length === 0) throw new TypeError("对话流式批次无效")
+    for (const event of streamEvents) {
+      if (!isAssistantBlockStreamEvent(event) || event.sessionId !== sessionId) throw new TypeError("对话流式片段无效")
+    }
+  }
   if (value.kind === "event" && isSessionEvent(value.event) && value.event.sessionId === value.sessionId) {
     if ("sessionKind" in value && (value.event.seq !== 1 || !isSessionKind(value.sessionKind))) {
       throw new TypeError("对话更新角色无效")
     }
     return value as unknown as SessionUpdate
   }
-  if (value.kind === "stream" && isAssistantBlockStreamEvent(value.event) && value.event.sessionId === value.sessionId) {
-    return { projectId: value.projectId, sessionId: value.sessionId, kind: "stream", event: value.event }
+  if (value.kind === "stream" && streamEvents !== undefined) {
+    return { projectId, sessionId, kind: "stream", streamEvents }
   }
   if (value.kind === "state") {
     const control = requireSessionControl(value.control)
-    if (value.summary === undefined) return { projectId: value.projectId, sessionId: value.sessionId, kind: "state", control }
+    const update = { projectId, sessionId, kind: "state" as const, control, ...(streamEvents !== undefined && { streamEvents }) }
+    if (value.summary === undefined) return update
     const [summary] = requireSessionSummaries([value.summary])
     if (summary.sessionId !== value.sessionId) throw new TypeError("对话摘要身份无效")
-    return { projectId: value.projectId, sessionId: value.sessionId, kind: "state", control, summary }
+    return { ...update, summary }
   }
   if (value.kind === "error" && ["runtime", "index", "transport"].includes(value.stage as string) &&
       isRecord(value.error) && typeof value.error.source === "string" && typeof value.error.code === "string" &&
