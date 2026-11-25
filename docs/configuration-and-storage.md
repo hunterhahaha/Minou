@@ -32,7 +32,6 @@
 └─ logs/
    └─ cli/<session-id>/
       ├─ events.sqlite            单次 CLI Run 的独立日志
-      ├─ result.json              省略 CLI --output 时的最终结果
       └─ tool_output/
 ```
 

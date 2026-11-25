@@ -4,9 +4,8 @@ import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { Writable } from "node:stream"
-import { createStatistics, mapUsage, normalizeRequest, observeEvent, readCliInput, writeResult } from "../../src/cli/protocol.ts"
+import { createStatistics, mapUsage, observeEvent, readCliInput, writeOutputFile } from "../../src/cli/protocol.ts"
 import { toolGroup, writeOutput } from "../../src/cli/main.ts"
-import type { RunResult } from "../../src/cli/protocol.ts"
 import type { SessionEvent } from "../../runtime/session/src/events.ts"
 import type { ToolRegistry } from "../../runtime/tools/src/tool-registry.ts"
 import { initializeConfigFilesSnapshot } from "../../src/main/config-files.ts"
@@ -15,55 +14,58 @@ import { initializeConfigFilesSnapshot } from "../../src/main/config-files.ts"
 async function main(): Promise<void> {
   const root = await mkdtemp(join(tmpdir(), "minou-cli-protocol-"))
   try {
-    const input = { version: 1, prompt: "  Task\n", run_id: "same", workspace: root, model: "model" }
-    const base = await normalizeRequest(input, root, root)
-    assert.equal(base.prompt, "  Task\n")
-    assert.deepEqual(base.isolated, { skill: false, memory: false, mcp: false })
-    assert.equal(base.restrictSystemTools, false)
-    assert.deepEqual(base.systemTools, [])
-    assert.equal(base.useConfiguredMcp, true)
-    assert.equal(base.maxSteps, 100)
-    assert.equal(base.timeoutSeconds, 1800)
-    await writeFile(join(root, "task.txt"), input.prompt)
-    await writeFile(join(root, "request.json"), JSON.stringify(input))
-    const flags = await readCliInput(["run", "--prompt-file", "task.txt", "--output", "out.json", "--run-id", "same", "--model", "model"], root)
-    const json = await readCliInput(["run", "--request", "request.json", "--output", "out.json"], root)
-    assert.deepEqual(flags, json)
-    const selectedFlags = await readCliInput(["run", "--prompt-file", "task.txt", "--run-id", "same", "--model", "model",
-      "--restrict-system-tools=true", "--system-tools", "read, glob,read", "--use-configured-mcp", "false", "--sandbox-mode", "auto"], root)
-    await writeFile(join(root, "request.json"), JSON.stringify({ ...input, restrict_system_tools: true, system_tools: ["read", "glob"],
-      use_configured_mcp: false, permissions: { sandbox_mode: "auto" } }))
-    const selectedJson = await readCliInput(["run", "--request", "request.json"], root)
-    assert.deepEqual(selectedFlags, selectedJson)
-    assert.equal(selectedFlags.output, undefined)
-    assert.equal(selectedFlags.request.restrictSystemTools, true)
-    assert.deepEqual(selectedFlags.request.systemTools, ["read", "glob"])
-    assert.equal(selectedFlags.request.useConfiguredMcp, false)
-    assert.equal(selectedFlags.request.sandboxMode, "auto")
+    const base = await readCliInput(["run", "--prompt", "  Task\n", "--modelid", "model"], root)
+    assert.equal(base.request.prompt, "  Task\n")
+    assert.equal(base.request.modelId, "model")
+    assert.equal(base.request.supportsReasoning, true)
+    assert.equal(base.request.workspace, root)
+    assert.equal(base.output, undefined)
+    assert.equal(base.outputJson, undefined)
+    assert.deepEqual(base.request.isolated, { skill: false, memory: false, mcp: false })
+    assert.equal(base.request.restrictSystemTools, false)
+    assert.deepEqual(base.request.systemTools, [])
+    assert.equal(base.request.useConfiguredMcp, true)
+    assert.equal(base.request.sandboxMode, "sandbox-full-access")
+    assert.equal(base.request.maxSteps, 100)
+    assert.equal(base.request.timeoutSeconds, 1800)
+
     const nested = join(root, "nested")
     await mkdir(nested)
-    await writeFile(join(nested, "request.json"), JSON.stringify({ version: 1, prompt: "x", workspace: "." }))
-    assert.equal((await readCliInput(["run", "--request", "nested/request.json", "--output", "out"], root)).request.workspace, nested)
-    await assert.rejects(readCliInput(["run", "--request", "request.json", "--output", "out", "--model", "x"], root), /互斥/)
-    for (const args of [
-      ["run"], ["benchmark"], ["run", "--output", "x", "--prompt-file", "task.txt", "--bad", "x"],
-      ["run", "--output", "a", "--output", "b"], ["run", "--prompt-file", "task.txt", "--format", "jsonl"],
-      ["run", "--prompt-file", "task.txt", "--restrict-system-tools", "yes"], ["run", "--prompt-file", "task.txt", "--use-configured-mcp", "0"],
-      ["run", "--prompt-file", "task.txt", "--system-tools", "read,,glob"],
-    ]) await assert.rejects(readCliInput(args, root))
-    for (const patch of [
-      { version: 2 }, { prompt: " " }, { surprise: true }, { isolated: { unknown: true } },
-      { isolated: { skill: "false" } }, { isolated: null }, { permissions: null }, { limits: null },
-      { permissions: { sandbox_mode: "invalid" } }, { restrict_system_tools: "true" }, { use_configured_mcp: null }, { system_tools: [1] },
-      { permissions: { auto_approve: { groups: ["mcp_*"] } } },
-      { permissions: { auto_approve: { tools: [2] } } }, { permissions: { auto_approve: { groups: null } } },
-      { limits: { max_steps: 0 } }, { limits: { max_steps: null } }, { limits: { timeout_seconds: 2_147_484 } },
-      { limits: { max_steps: 1.5 } }, { workspace: "missing" },
-    ]) await assert.rejects(normalizeRequest({ ...input, ...patch }, root, root), JSON.stringify(patch))
     await writeFile(join(root, "mcp.json"), JSON.stringify({ mcpServers: [] }))
-    const mcp = await normalizeRequest({ ...input, mcp_config: "mcp.json", use_configured_mcp: false }, root, root)
-    assert.deepEqual(mcp.mcpServers, [])
-    await assert.rejects(normalizeRequest({ ...input, mcp_config: "mcp.json", isolated: { mcp: true } }, root, root), /冲突/)
+    const selected = await readCliInput(["run", "--prompt=--literal task", "--workspace", "nested", "--output", "answer",
+      "--supportreason=false", "--restrict-system-tools=true", "--system-tools", "read, glob,read",
+      "--use-configured-mcp", "false", "--sandbox-mode", "auto", "--auto-approve-groups", "file,skill",
+      "--auto-approve-tools", "read", "--isolate", "skill,memory", "--max-steps", "5", "--timeout", "20",
+      "--reasoning-level", "high", "--mcp-config", "mcp.json", "--outputjson=summary.json"], root)
+    assert.equal(selected.output, join(root, "answer"))
+    assert.equal(selected.outputJson, join(root, "summary.json"))
+    assert.equal(selected.request.prompt, "--literal task")
+    assert.equal(selected.request.workspace, nested)
+    assert.equal(selected.request.supportsReasoning, false)
+    assert.equal(selected.request.reasoningLevel, "high")
+    assert.equal(selected.request.restrictSystemTools, true)
+    assert.deepEqual(selected.request.systemTools, ["read", "glob"])
+    assert.equal(selected.request.useConfiguredMcp, false)
+    assert.equal(selected.request.sandboxMode, "auto")
+    assert.deepEqual(selected.request.isolated, { skill: true, memory: true, mcp: false })
+    assert.deepEqual(selected.request.approveGroups, ["file", "skill"])
+    assert.deepEqual(selected.request.approveTools, ["read"])
+    assert.equal(selected.request.maxSteps, 5)
+    assert.equal(selected.request.timeoutSeconds, 20)
+    assert.deepEqual(selected.request.mcpServers, [])
+
+    for (const args of [["run"], ["benchmark"], ["run", "--prompt", " "]]) {
+      await assert.rejects(readCliInput(args, root))
+    }
+    for (const args of [
+      ["--request", "task.json"], ["--prompt-file", "task.txt"], ["--run-id", "abc"], ["--version", "1"],
+      ["--model", "model"], ["--format", "jsonl"], ["--bad", "x"], ["--output", "a", "--output", "b"],
+      ["--restrict-system-tools", "yes"], ["--use-configured-mcp", "0"], ["--supportreason", "1"],
+      ["--system-tools", "read,,glob"], ["--isolate", "unknown"], ["--sandbox-mode", "invalid"],
+      ["--auto-approve-groups", "mcp_*"], ["--max-steps", "0"], ["--max-steps", "1.5"],
+      ["--outputjson"], ["--outputjson", "a", "--outputjson", "b"], ["--output", "answer", "--outputjson", "./answer"],
+      ["--timeout", "2147484"], ["--workspace", "missing"], ["--isolate", "mcp", "--mcp-config", "mcp.json"],
+    ]) await assert.rejects(readCliInput(["run", "--prompt", "task", ...args], root), args.join(" "))
 
     const profile = join(root, "profile")
     const { paths } = await initializeConfigFilesSnapshot(profile, { skipSkills: true })
@@ -103,10 +105,11 @@ async function main(): Promise<void> {
     const stalled = new Writable({ write() { /* 消费方故意不确认写入。 */ } })
     await assert.rejects(writeOutput(stalled, "line"), /超时/)
     stalled.destroy()
-    const target = join(root, "atomic.json")
+    const target = join(root, "answer.data")
     await writeFile(target, "old-result")
-    await assert.rejects(writeResult(target, { circular: 1n } as unknown as RunResult))
-    assert.equal(await readFile(target, "utf8"), "old-result")
+    await writeOutputFile(target, "  第一行\n第二行\n")
+    assert.equal(await readFile(target, "utf8"), "  第一行\n第二行\n")
+    await assert.rejects(writeOutputFile(nested, "cannot replace directory"))
     assert.equal((await readdir(root)).some((name) => name.endsWith(".tmp")), false)
     console.log("CLI protocol: passed")
   } finally { await rm(root, { recursive: true, force: true }) }

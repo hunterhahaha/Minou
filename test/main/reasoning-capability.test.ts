@@ -34,10 +34,11 @@ async function main(): Promise<void> {
     const reference = { providerId: provider.providerId, modelId: disabled.modelId }
     const stale = { ...reference, protocol: "responses" as const, name: "plain", reasoningLevel: "obsolete" }
     assert.equal((await resolveTurnModelAdapterSpecification({ providerDatabasePath: database }, stale)).modelConfig.supportsReasoning, false)
-    assert.equal(resolveModel(database, { modelId: disabled.modelId, reasoningLevel: "obsolete" }).reasoningLevel, "obsolete")
+    assert.equal((await resolveTurnModelAdapterSpecification({ providerDatabasePath: database }, { ...stale, reasoningLevel: "low" }, true)).modelConfig.supportsReasoning, true)
+    assert.equal(resolveModel(database, { modelId: disabled.modelId, reasoningLevel: "obsolete", supportsReasoning: false }).reasoningLevel, "obsolete")
     invoke(channels.updateModel, reference, { supportsReasoning: true })
     await assert.rejects(resolveTurnModelAdapterSpecification({ providerDatabasePath: database }, stale), /推理等级/)
-    assert.throws(() => resolveModel(database, { modelId: disabled.modelId, reasoningLevel: "obsolete" }), /推理等级/)
+    assert.throws(() => resolveModel(database, { modelId: disabled.modelId, reasoningLevel: "obsolete", supportsReasoning: true }), /推理等级/)
     invoke(channels.updateModel, reference, { reasoningLevels: ["deep"], reasoningField: { path: ["custom", "effort"] } })
     invoke(channels.updateModel, reference, { supportsReasoning: false })
     let model = listProviders(database)[0].models[0]

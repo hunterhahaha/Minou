@@ -3,7 +3,7 @@
 import { randomUUID } from "node:crypto"
 import { mkdir, readFile, stat } from "node:fs/promises"
 import { homedir } from "node:os"
-import { dirname, isAbsolute, join, resolve } from "node:path"
+import { join, resolve } from "node:path"
 import type { Writable } from "node:stream"
 import { performance } from "node:perf_hooks"
 import { runAgentLoop } from "../../runtime/agent/src/loop.ts"
@@ -34,9 +34,9 @@ import { listProviders, readDefaultModel } from "../main/provider-store.ts"
 import { estimateLocalTokens } from "../main/token-estimator.ts"
 import {
   CLI_HELP, CliInputError, createStatistics, exitCode, mapUsage, observeEvent,
-  outputDestination, readCliInput, resultStatus, writeResult,
+  readCliInput, resultStatus, writeOutputFile,
 } from "./protocol.ts"
-import type { RunFinishedEvent, RunRequest, RunResult, StopReason, ToolGroup } from "./protocol.ts"
+import type { RunRequest, RunResult, StopReason, ToolGroup } from "./protocol.ts"
 
 const SYSTEM_PROMPT = "You are an AI agent powered by Minou."
 const CLEANUP_MS = 5000
@@ -84,14 +84,14 @@ async function withinGrace(operation: Promise<unknown>, milliseconds: number): P
  * @returns 唯一、完整的模型引用。
  * @throws CliInputError 默认模型为空、指定模型不存在或等级不支持。
  */
-export function resolveModel(databasePath: string, request: Pick<RunRequest, "modelId" | "reasoningLevel">): ModelRef {
+export function resolveModel(databasePath: string, request: Pick<RunRequest, "modelId" | "reasoningLevel" | "supportsReasoning">): ModelRef {
   const id = request.modelId ?? readDefaultModel(databasePath)?.modelId
   const providers = listProviders(databasePath)
   for (const provider of providers) {
     const model = provider.models.find((entry) => entry.modelId === id)
     if (!model) continue
     const reasoningLevel = request.reasoningLevel ?? model.reasoningLevels[0]
-    if (model.supportsReasoning && !model.reasoningLevels.includes(reasoningLevel)) throw new CliInputError("所选推理等级不属于模型的可选等级。")
+    if (request.supportsReasoning && !model.reasoningLevels.includes(reasoningLevel)) throw new CliInputError("所选推理等级不属于模型的可选等级。")
     return { providerId: provider.id, protocol: provider.protocol, modelId: model.modelId, name: model.name, reasoningLevel }
   }
   throw new CliInputError("未找到指定模型或有效默认模型；请先配置 Minou 模型。")
@@ -133,11 +133,10 @@ export async function runCli(argv: readonly string[]): Promise<number> {
   const cwd = process.cwd()
   const sessionId = randomUUID()
   const userProfile = process.env.USERPROFILE ?? homedir()
-  const explicitOutput = outputDestination(argv, cwd)
-  const outputPath = explicitOutput ?? join(userProfile, ".minou", "logs", "cli", sessionId, "result.json")
+  let outputPath: string | undefined
+  let outputJsonPath: string | undefined
   const statistics = createStatistics()
   const controller = new AbortController()
-  let runId: string = sessionId
   let model: ModelRef | null = null
   let recordDirectory: string | null = null
   let eventLogPath: string | null = null
@@ -148,7 +147,6 @@ export async function runCli(argv: readonly string[]): Promise<number> {
   let stage = "input"
   let startedAt = performance.now()
   let stoppedAt: number | undefined
-  let lastEventSeq = 0
   let stdoutFailed = false
   let finished = false
   let startedTurn = false
@@ -200,12 +198,12 @@ export async function runCli(argv: readonly string[]): Promise<number> {
    */
   function checkStopped(): void { if (controller.signal.aborted) throw createAbortError() }
   /**
-   * 向 stdout 按行写入已提交事件或最终结果。
+   * 向 stdout 按行写入已提交事件。
    * @param event 要原样序列化的输出对象。
    * @returns 有序写入完成。
    * @throws Error stdout 失败。
    */
-  function emit(event: SessionEvent | RunFinishedEvent): Promise<void> {
+  function emit(event: SessionEvent): Promise<void> {
     const writing = outputTail.then(async () => {
       if (stdoutFailed) throw new Error("stdout 已关闭")
       try { await writeOutput(process.stdout, `${JSON.stringify(event)}\n`) }
@@ -223,7 +221,6 @@ export async function runCli(argv: readonly string[]): Promise<number> {
   async function publishCommittedEvents(events: readonly SessionEvent[]): Promise<void> {
     await Promise.all(events.map((event) => {
       observeEvent(statistics, event)
-      lastEventSeq = event.seq
       return emit(event)
     }))
   }
@@ -256,8 +253,9 @@ export async function runCli(argv: readonly string[]): Promise<number> {
    * @throws Error 所有阶段的错误由外层映射为公共结果。
    */
   async function execute(): Promise<void> {
-    const { request } = await readCliInput(argv, cwd)
-    runId = request.runId
+    const { request, output, outputJson } = await readCliInput(argv, cwd)
+    outputPath = output
+    outputJsonPath = outputJson
     startedAt = performance.now()
     checkStopped()
     timeout = setTimeout(() => stop("timeout"), request.timeoutSeconds * 1000)
@@ -275,7 +273,7 @@ export async function runCli(argv: readonly string[]): Promise<number> {
     const log = eventLog = createFileSessionEventLog({ sessionId, projectGroupId: "default", sessionDirectory: recordDirectory, databasePath })
     dispatcher = initNetworkDispatcher()
     const selectedModel = model = resolveModel(paths.providerDatabasePath, request)
-    const adapter = await createTurnModelAdapter(paths, selectedModel)
+    const adapter = await createTurnModelAdapter(paths, selectedModel, request.supportsReasoning)
     checkStopped()
     const tools = new ToolRegistry()
     const renders = new RenderRegistry()
@@ -432,46 +430,47 @@ export async function runCli(argv: readonly string[]): Promise<number> {
         reason = "error"
         error = { code: "EVENT_WRITE_FAILED", stage: "output", message: "运行记录无法完成写入。" }
       }
-      /** stdout 失败由最终结果输出处理，日志收尾已经完成。 */
+      /** stdout 失败统一在日志收尾后处理。 */
       await publishCommittedEvents(committed).catch(() => undefined)
     }
     process.off("SIGINT", interrupt)
     process.off("SIGTERM", interrupt)
   }
-  const finalReason = reason ?? "error"
-  const result: RunResult = {
-    version: 1, run_id: runId, session_id: sessionId, status: resultStatus(finalReason), stop_reason: finalReason,
-    answer: statistics.answer, answer_complete: finalReason === "finished", model, record_directory: recordDirectory, event_log_path: eventLogPath,
-    metrics: { turns: statistics.turns, steps: statistics.steps, tool_calls: statistics.toolCalls, duration_ms: Math.round(performance.now() - startedAt),
-      usage: mapUsage(statistics.usage), usage_complete: statistics.steps > 0 && statistics.reportedUsage === statistics.steps,
-      usage_reported_steps: statistics.reportedUsage, usage_scope: "reported_agent_requests" },
-    ...(error ? { error } : {}),
-  }
-  let code = exitCode(finalReason)
-  let resultWritten = false
-  try {
-    if (!isAbsolute(outputPath)) throw new Error("结果路径必须为绝对路径")
-    if (!explicitOutput) await mkdir(dirname(outputPath), { recursive: true, mode: 0o700 })
-    await writeResult(outputPath, result)
-    resultWritten = true
-  } catch {
-    code = 1
-    result.status = "failed"; result.stop_reason = "error"; result.answer_complete = false
-    result.error = { code: "OUTPUT_FAILED", stage: "output", message: "最终结果无法原子写入结果路径。" }
-  }
-  try {
-    await emit({ version: 1, seq: lastEventSeq + 1, type: "run.finished", run_id: runId, session_id: sessionId, data: { result } })
-  } catch {
-    code = 1
-    result.status = "failed"; result.stop_reason = "error"; result.answer_complete = false
-    result.error = { code: "OUTPUT_FAILED", stage: "output", message: "stdout 无法完成协议输出。" }
-    if (resultWritten) await writeResult(outputPath, result).catch(() => { resultWritten = false })
-  }
-  if (resultWritten) await writeOutput(process.stderr, `结果文件：${outputPath}\n`).catch(() => undefined)
-  if (result.error) await writeOutput(process.stderr, `${result.error.code}: ${result.error.message}\n`).catch(() => undefined)
   await outputTail
+  if (stdoutFailed) {
+    reason = "error"
+    error = { code: "OUTPUT_FAILED", stage: "output", message: "stdout 无法完成事件输出。" }
+  }
+  if (outputPath !== undefined && startedTurn) {
+    try {
+      await writeOutputFile(outputPath, statistics.answer)
+      await writeOutput(process.stderr, `回答文件：${outputPath}\n`).catch(() => undefined)
+    } catch {
+      reason = "error"
+      error = { code: "OUTPUT_FAILED", stage: "output", message: "最终回答无法原子写入输出路径。" }
+    }
+  }
+  if (outputJsonPath !== undefined) {
+    const finalReason = reason ?? "error"
+    const result: RunResult = {
+      session_id: sessionId, status: resultStatus(finalReason), stop_reason: finalReason,
+      answer: statistics.answer, answer_complete: finalReason === "finished", model, record_directory: recordDirectory, event_log_path: eventLogPath,
+      metrics: { turns: statistics.turns, steps: statistics.steps, tool_calls: statistics.toolCalls, duration_ms: Math.round(performance.now() - startedAt),
+        usage: mapUsage(statistics.usage), usage_complete: statistics.steps > 0 && statistics.reportedUsage === statistics.steps,
+        usage_reported_steps: statistics.reportedUsage, usage_scope: "reported_agent_requests" },
+      ...(error ? { error } : {}),
+    }
+    try {
+      await writeOutputFile(outputJsonPath, `${JSON.stringify(result, null, 2)}\n`)
+      await writeOutput(process.stderr, `运行结果文件：${outputJsonPath}\n`).catch(() => undefined)
+    } catch {
+      reason = "error"
+      error = { code: "OUTPUT_FAILED", stage: "output", message: "运行结果无法原子写入 JSON 输出路径。" }
+    }
+  }
+  if (error) await writeOutput(process.stderr, `${error.code}: ${error.message}\n`).catch(() => undefined)
   process.stdout.off("error", outputError)
-  return code
+  return exitCode(reason ?? "error")
 }
 
 if (typeof require !== "undefined" && require.main === module) {

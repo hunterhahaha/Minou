@@ -3,7 +3,7 @@ import assert from "node:assert/strict"
 import { spawn } from "node:child_process"
 import { createServer } from "node:http"
 import type { ServerResponse } from "node:http"
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises"
+import { mkdtemp, mkdir, readFile, rm } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { DatabaseSync } from "node:sqlite"
@@ -76,9 +76,9 @@ async function main(): Promise<void> {
     const database = join(paths.rootDir, WEB_SEARCH_DATABASE_FILE)
     saveWebSearchProvider(database, { id: "search", name: "Test", requestJson: JSON.stringify({ url: `${endpoint}/search?q=\${query}`, headers: { "X-API-KEY": "search-secret" } }), responseJmespath: "hits" })
     setActiveWebSearchProvider(database, "search")
-    const input = join(directory, "request.json"), output = join(directory, "result.json")
-    await writeFile(input, JSON.stringify({ version: 1, prompt: "search", workspace, isolated: { skill: true, memory: true, mcp: true } }))
-    const child = spawn(process.execPath, [resolve("dist/src/cli/main.js"), "run", "--request", input, "--output", output], { env: { ...process.env, USERPROFILE: profile }, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] })
+    const output = join(directory, "answer")
+    const outputJson = join(directory, "result.json")
+    const child = spawn(process.execPath, [resolve("dist/src/cli/main.js"), "run", "--prompt", "search", "--workspace", workspace, "--isolate", "skill,memory,mcp", "--supportreason", "false", "--output", output, "--outputjson", outputJson], { env: { ...process.env, USERPROFILE: profile }, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] })
     let stdout = "", stderr = ""
     child.stdout.on("data", (chunk) => { stdout += chunk.toString() })
     child.stderr.on("data", (chunk) => { stderr += chunk.toString() })
@@ -91,7 +91,9 @@ async function main(): Promise<void> {
     assert.equal(code, 0, stderr)
     assert.equal(searchCalls, 1)
     assert.equal(modelCalls, 2)
-    const result = JSON.parse(await readFile(output, "utf8")) as RunResult
+    assert.equal(JSON.parse(stdout.trim().split("\n").at(-1)!).type, "turn/end")
+    const result = JSON.parse(await readFile(outputJson, "utf8")) as RunResult
+    assert.equal(await readFile(output, "utf8"), result.answer)
     assert.equal(result.answer, "CLI search consumed")
     assert.equal(result.metrics.steps, 2)
     assert.doesNotMatch(stdout + stderr, /search-secret|model-secret/)

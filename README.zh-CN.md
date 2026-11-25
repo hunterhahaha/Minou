@@ -16,7 +16,7 @@ Minou 是一个本地运行的编程智能体，提供 Electron 桌面应用和�
 - **权限与审批：**为每个对话选择权限模式，在需要审批时确认工具请求。
 - **MCP 连接：**在设置中管理本地 STDIO 和远程 Streamable HTTP 服务，按需发现和载入工具。
 - **技能与记忆：**管理全局和项目技能，在多次对话之间保留项目记忆。
-- **无界面执行：**从任务文件或 JSON 请求启动任务，获取 JSON 结果或 JSONL 事件流。
+- **无界面执行：**将任务直接传给 CLI，逐行接收已提交事件，可选保存运行结果。
 
 ## 快速开始
 
@@ -47,23 +47,17 @@ npm run build:cli
 node dist/src/cli/main.js run --help
 ```
 
-创建 UTF-8 编码的 `task.txt`，写入任务内容，然后执行：
+将任务正文直接传给 `--prompt`。
 
 ```powershell
-node dist/src/cli/main.js run --prompt-file ./task.txt --workspace . --output ./result.json
+node dist/src/cli/main.js run --prompt "说明当前项目结构" --workspace . --output ./answer
 ```
 
-每次调用创建新的运行，使用已配置的默认模型。省略 `--output` 时，最终 JSON 保存到当前用户目录下的 `.minou/logs/cli/<session-id>/result.json`，stderr 会显示结果文件的绝对路径。stdout 逐行输出已提交的完整事件，最后以 `run.finished` 附带最终结果。
+每次调用创建新的运行。省略 `--modelid` 时使用已配置的默认模型。传入 `--supportreason false` 可以省略模型请求中的思考控制字段。stdout 逐行输出已提交事件。`--output` 将最终回答写成 UTF-8 文本，`--outputjson` 将运行结果写成 JSON；两者均可省略。
 
-也可以使用结构化请求：
+默认最多执行 100 步，总超时为 1,800 秒。CLI 在独立 Node 进程中开始新的对话。
 
-```powershell
-node dist/src/cli/main.js run --request ./request.json --output ./result.json
-```
-
-任务文件输入和请求文件输入互斥。默认最多执行 100 步，总超时为 1,800 秒。CLI 不需要打开 Electron 窗口，也不恢复桌面端的历史对话。
-
-如需使用简短的 `minou` 命令，构建后执行 `npm link`，然后使用 `minou run ...`。请求字段、权限、隔离选项、事件和退出码详见 [CLI 使用说明](docs/cli-usage.md)。
+如需使用简短的 `minou` 命令，构建后执行 `npm link`，然后使用 `minou run ...`。启动参数、权限、隔离选项、事件和退出码详见 [CLI 使用说明](docs/cli-usage.md)。
 
 ## 设置与本地数据
 

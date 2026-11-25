@@ -61,7 +61,7 @@ Renderer 负责页面、路由与展示缓存，不直接打开数据库、读�
 
 Composer 的 `@` 查询调用 [文件查看器 IPC](../src/main/file-explorer-ipc.ts)，用现有 ripgrep 枚举能力搜索当前项目的关联目录。会话 IPC 在接收结构化引用时校验目录关联、真实文件与正文位置。队列与 `user/message` 事件携带引用，模型历史只读取 `content`。历史和 Composer 的文件标签共用内置浏览器标签管理器及只读预览，打开时再次检查目录授权和目标文件。
 
-模型配置的必填 `supportsReasoning` 从 Provider 数据库快照传入 Adapter。三个协议共用的推理请求片段仅在该字段为 true 时校验等级并拼装字段；普通请求和上下文压缩遵循相同规则。false 时忽略会话中保留的等级，不改变 ModelRef 或 Meta 的结构，CLI 也使用相同的能力判断。
+模型配置的必填 `supportsReasoning` 从 Provider 数据库快照传入 Adapter。三个协议共用的推理请求片段仅在该字段为 true 时校验等级并拼装字段；普通请求和上下文压缩遵循相同规则。false 时忽略会话中保留的等级，不改变 ModelRef 或 Meta 的结构。CLI 将本次 `--supportreason` 的值传给 Adapter 工厂，默认开启，推理字段路径与可选等级仍来自模型配置。
 
 桌面新对话提交首条消息后，SessionRuntime 用本轮 Adapter 发起独立的标题请求，主回复与队列可同时执行。标题请求只携带首条消息和命名提示词，优先使用该模型支持的关闭或最低思考档位。活动期停止会放弃命名，60 秒超时则使用消息前 30 个字符。主进程仅在 Meta 名称仍为「新对话」时原子写入，再同步工作区索引并推送会话摘要。
 
@@ -168,10 +168,10 @@ flowchart TD
 
 ## CLI 独立调用
 
-[main.ts](../src/cli/main.ts) 直接装配配置、Adapter、工具、MCP、Skill、Memory 和独立事件日志，调用相同的 `runAgentLoop()`。它不创建桌面 SessionRuntime，也不注册 Electron IPC。每次使用内部 UUID，日志位于 `logs/cli/<session-id>/`，外部 `run_id` 仅作为关联字段。
+[main.ts](../src/cli/main.ts) 直接装配配置、Adapter、工具、MCP、Skill、Memory 和独立事件日志，调用相同的 `runAgentLoop()`。它不创建桌面 SessionRuntime，也不注册 Electron IPC。每次使用内部 UUID，日志位于 `logs/cli/<session-id>/`。
 
 两个入口共用 Loop 的事件提交规则。桌面端通过实时发布回调和 IPC 推送块开始和增量。完整块、消息、Step 和工具结果通过 `appendEvent` 提交到各自的 SQLite Event Log。CLI 的 JSONL 输出在日志提交成功后逐行输出完整事件。
 
 CLI 在装配阶段按模块隔离选项与 MCP 来源选择初始化工具。启用内置工具白名单时，CLI 从本次注册的内置工具中校验名称，并同时约束模型收到的定义和实际执行入口。远端 MCP 工具继续通过 Run 内的载入事件开放。`auto` 将权限检查触发的审批交给现有 `reviewToolCall()`，并在 CLI 事件日志记录审批请求和决定。
 
-CLI 默认 100 Step、1800 秒总时限，收尾宽限为 5 秒。[protocol.ts](../src/cli/protocol.ts) 按已提交事件累计 Turn、Step、工具调用和 Agent Token 用量，取最后一条 Assistant Message 的文本作为 `answer`。最终 JSON 包含独立事件日志的绝对路径，默认写入本次运行目录的 `result.json`。stdout 以 JSONL 逐行输出已提交事件，最后以 `run.finished` 附带最终结果。请求字段、审批、隔离与退出码见 [CLI 使用说明](cli-usage.md)。
+CLI 默认 100 Step、1800 秒总时限，收尾宽限为 5 秒。[protocol.ts](../src/cli/protocol.ts) 按已提交事件累计 Turn、Step、工具调用和 Agent Token 用量，取最后一条 Assistant Message 的文本作为 `answer`。stdout 以 JSONL 逐行输出已提交事件。显式指定 `--output` 时写入 UTF-8 回答文本，指定 `--outputjson` 时写入包含运行状态、统计、回答和日志路径的 JSON 文件。启动参数、审批、隔离与退出码见 [CLI 使用说明](cli-usage.md)。

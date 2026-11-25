@@ -16,7 +16,7 @@ The app runs locally; model requests are sent to the provider you configure. Min
 - **Permissions and approvals:** choose a permission mode for each conversation and review tool requests when approval is required.
 - **MCP connections:** configure local STDIO and remote Streamable HTTP servers in Settings, with tool discovery and loading on demand.
 - **Skills and memory:** manage global and project skills, and keep project memory across conversations.
-- **Headless execution:** run a task from a prompt file or JSON request and receive a JSON result or a JSONL event stream.
+- **Headless execution:** pass a task on the command line and receive committed events as JSON Lines and optionally save a run summary.
 
 ## Getting started
 
@@ -47,23 +47,17 @@ npm run build:cli
 node dist/src/cli/main.js run --help
 ```
 
-Create a UTF-8 `task.txt` containing your task, then run:
+Pass the task directly to `--prompt`:
 
 ```powershell
-node dist/src/cli/main.js run --prompt-file ./task.txt --workspace . --output ./result.json
+node dist/src/cli/main.js run --prompt "Summarize this project" --workspace . --output ./answer
 ```
 
-Each invocation starts a fresh run using the configured default model. With no `--output`, Minou saves the final JSON to `.minou/logs/cli/<session-id>/result.json` under the configured user profile. The CLI prints the absolute result path to stderr. Stdout prints each committed event in full as JSON Lines, followed by `run.finished` with the final result.
+Each invocation starts a fresh run using the configured default model unless you pass `--modelid`. Use `--supportreason false` to omit reasoning controls. Stdout prints committed events as JSON Lines. Use `--output` to save the final answer as UTF-8 text and `--outputjson` to save the final run result as JSON.
 
-For structured requests:
+The defaults are 100 steps and a 1,800-second timeout. The CLI runs without an Electron window and starts with a fresh conversation.
 
-```powershell
-node dist/src/cli/main.js run --request ./request.json --output ./result.json
-```
-
-Prompt-file input and request-file input are mutually exclusive. The defaults are 100 steps and a 1,800-second timeout. The CLI runs without an Electron window and does not resume desktop conversations.
-
-To use the shorter `minou` command, run `npm link` after building, then use `minou run ...`. See the [detailed CLI guide (Chinese)](docs/cli-usage.md) for request fields, permissions, isolation options, events, and exit codes.
+To use the shorter `minou` command, run `npm link` after building, then use `minou run ...`. See the [detailed CLI guide (Chinese)](docs/cli-usage.md) for startup options, permissions, isolation options, events, and exit codes.
 
 ## Settings and local data
 

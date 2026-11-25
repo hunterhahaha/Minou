@@ -2,7 +2,7 @@
  * 单个 Turn 的磁盘模型选择到 Protocol Adapter 的装配链。
  *
  * 本模块不保存配置、凭据、规格、SDK Client 或 Adapter。每次调用都重新读取
- * Provider 数据库中 Session Meta 的 currentModel 指定的唯一模型，并创建新的 Adapter。
+ * Provider 数据库中当前引用指定的唯一模型，并创建新的 Adapter。
  */
 
 import { CredentialStore } from "../../runtime/credential/src/index.ts"
@@ -31,7 +31,8 @@ export interface TurnModelAdapterSpecification {
  * 数据库结构保证所有 Provider 恰好包含一个协议，读取时核对 Session Meta 中的协议。
  *
  * @param paths 启动时确定、每 Turn 重新读取的 Provider 数据库路径。
- * @param model 本 Turn 已经从 Session Meta 独立重读的模型引用。
+ * @param model 本 Turn 已选定的模型引用。
+ * @param supportsReasoning 本次调用的思考能力覆盖值，省略时采用数据库配置。
  * @returns 只属于本次调用的模型配置与客户端参数。
  * @throws Error 当数据库损坏、Provider/Model/协议不匹配或 API Key 缺失时抛出。
  * 错误包含数据库路径和模型引用，但不会包含 API Key。
@@ -39,10 +40,12 @@ export interface TurnModelAdapterSpecification {
 export async function resolveTurnModelAdapterSpecification(
   paths: Pick<ConfigFilePaths, "providerDatabasePath">,
   model: ModelRef,
+  supportsReasoning?: boolean,
 ): Promise<TurnModelAdapterSpecification> {
   const reference = formatModelRef(model)
   const snapshot = readTurnProviderSnapshot(paths.providerDatabasePath, model)
-  if (snapshot.model.supportsReasoning && !snapshot.model.reasoningLevels.includes(model.reasoningLevel)) {
+  const modelConfig = { ...snapshot.model, supportsReasoning: supportsReasoning ?? snapshot.model.supportsReasoning }
+  if (modelConfig.supportsReasoning && !modelConfig.reasoningLevels.includes(model.reasoningLevel)) {
     throw new Error(`无法为 ${reference} 创建 Adapter：推理等级 ${model.reasoningLevel} 不在模型支持列表中。`)
   }
   const credentialStore = new CredentialStore(snapshot.credential === undefined ? [] : [snapshot.credential])
@@ -63,7 +66,7 @@ export async function resolveTurnModelAdapterSpecification(
         snapshot.model.name.startsWith(definition.nativeHistory.modelNamePrefix),
       )?.nativeHistory?.policy
   return {
-    modelConfig: snapshot.model,
+    modelConfig,
     clientOptions: {
       apiKey,
       ...(nativeHistory === undefined ? {} : { nativeHistory }),
@@ -79,15 +82,17 @@ export async function resolveTurnModelAdapterSpecification(
  * 为一个 Turn 创建全新的模型 Adapter。
  *
  * @param paths 每次调用都重新读取的 Provider 数据库路径。
- * @param model 已从当前 Session Meta 重新读取的模型引用。
+ * @param model 当前 Turn 选定的模型引用。
+ * @param supportsReasoning 本次调用的思考能力覆盖值，省略时采用数据库配置。
  * @returns 当前 Turn 共用的 Adapter，附带同一配置快照的预算及思考能力。
  * @throws Error 当配置解析、凭据读取或协议 Adapter 构造失败时抛出；不返回半构建实例。
  */
 export async function createTurnModelAdapter(
   paths: Pick<ConfigFilePaths, "providerDatabasePath">,
   model: ModelRef,
+  supportsReasoning?: boolean,
 ): Promise<ModelAdapter> {
-  const specification = await resolveTurnModelAdapterSpecification(paths, model)
+  const specification = await resolveTurnModelAdapterSpecification(paths, model, supportsReasoning)
   try {
     return Object.assign(createModelAdapter(specification.modelConfig, specification.clientOptions), {
       contextWindow: specification.modelConfig.contextWindow,

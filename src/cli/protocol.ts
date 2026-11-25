@@ -1,7 +1,7 @@
 /** Headless Agent Execution Protocol V1 的输入、统计与结果。 */
 import { randomUUID } from "node:crypto"
 import { readFile, rename, stat, unlink, writeFile } from "node:fs/promises"
-import { dirname, resolve } from "node:path"
+import { resolve } from "node:path"
 import { accumulateUsage } from "../../runtime/model/src/types.ts"
 import type { ModelRef, Usage } from "../../runtime/model/src/types.ts"
 import type { MCPConfig } from "../../runtime/mcp/src/types.ts"
@@ -19,12 +19,12 @@ export type StopReason = "finished" | "invalid_request" | "max_steps" | "timeout
 
 /** 校验、路径解析和默认值补齐后的单次运行请求。 */
 export interface RunRequest {
-  /** 调用方关联身份，不用于文件路径。 */
-  runId: string
   /** 保留原文的用户任务。 */
   prompt: string
   /** 可选的稳定模型 ID；省略时读取有效默认模型。 */
   modelId?: string
+  /** 本次运行是否向模型发送思考参数。 */
+  supportsReasoning: boolean
   /** 可选等级，模型解析阶段确认其合法性。 */
   reasoningLevel?: string
   /** 已验证存在的绝对工作目录。 */
@@ -51,28 +51,20 @@ export interface RunRequest {
   timeoutSeconds: number
 }
 
-/** 两种输入方式共用的最终启动输入。 */
+/** 单次 CLI 启动输入。 */
 export interface CliInput {
   /** 单次任务参数。 */
   request: RunRequest
-  /** 显式结果文件的绝对路径，父目录必须存在；省略时使用本次运行目录。 */
+  /** 可选回答文件的绝对路径，父目录必须存在。 */
   output?: string
+  /** 可选 JSON 运行结果文件的绝对路径，父目录必须存在。 */
+  outputJson?: string
 }
 
 /** 可公开的输入错误；不携带 SDK 错误、配置正文或凭据。 */
 export class CliInputError extends Error {
   /** @param message 可供调用方修正输入的公开说明。 */
   constructor(message: string) { super(message); this.name = "CliInputError" }
-}
-
-/** JSONL 最后一行携带的最终运行结果。 */
-export interface RunFinishedEvent {
-  /** 结果格式版本。 */ version: 1
-  /** 最后一条已输出的日志事件序号加一。 */ seq: number
-  /** 最终结果标记。 */ type: "run.finished"
-  /** 调用方关联身份。 */ run_id: string
-  /** 本次内部 UUID。 */ session_id: string
-  /** 与结果文件相同的最终结果。 */ data: { result: RunResult }
 }
 
 /** 仅输出已报告的统一用量；缓存和 reasoning 缺失时不补零。 */
@@ -96,10 +88,8 @@ export interface RunStatistics {
   /** 仅已报告消息的累计 Usage。 */ usage?: Usage
 }
 
-/** 最终结果和 run.finished 使用同一份对象。 */
+/** 可选写入 JSON 文件的最终运行结果。 */
 export interface RunResult {
-  /** 公共格式版本。 */ version: 1
-  /** 外部任务关联身份。 */ run_id: string
   /** 本次内部 UUID，不对应桌面对话索引。 */ session_id: string
   /** 执行状态，不表示答案正确。 */ status: "completed" | "stopped" | "failed"
   /** 精确终止原因。 */ stop_reason: StopReason
@@ -117,32 +107,17 @@ export interface RunResult {
 }
 
 const VALUE_OPTIONS = new Set([
-  "request", "output", "prompt-file", "model", "reasoning-level", "workspace", "run-id",
+  "prompt", "output", "outputjson", "modelid", "supportreason", "reasoning-level", "workspace",
   "max-steps", "timeout", "mcp-config", "isolate", "sandbox-mode", "auto-approve-groups", "auto-approve-tools",
   "restrict-system-tools", "system-tools", "use-configured-mcp",
 ])
 
 /**
- * 提取显式结果路径，使输入校验失败时也能尝试写入结果文件。
- * @param argv 原始命令参数。
- * @param cwd CLI 启动目录。
- * @returns 唯一有效的显式结果路径，缺少路径或重复指定时返回 undefined。
- */
-export function outputDestination(argv: readonly string[], cwd: string): string | undefined {
-  const values: string[] = []
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i].startsWith("--output=")) values.push(argv[i].slice("--output=".length))
-    else if (argv[i] === "--output" && argv[i + 1] && !argv[i + 1].startsWith("--")) values.push(argv[i + 1])
-  }
-  return values.length === 1 && values[0].trim() ? resolve(cwd, values[0]) : undefined
-}
-
-/**
- * 读取两种互斥输入并补齐唯一的 RunRequest；不会初始化用户配置或启动 Runtime。
+ * 解析平铺的命令行参数并补齐运行默认值。
  * @param argv 包含 run 子命令的参数。
  * @param cwd 相对命令行路径的基准。
  * @returns 已校验的请求及输出控制。
- * @throws CliInputError 参数、JSON、输入文件或工作区无效。
+ * @throws CliInputError 参数、MCP 配置或工作区无效。
  */
 export async function readCliInput(argv: readonly string[], cwd: string): Promise<CliInput> {
   if (argv[0] !== "run") throw new CliInputError("需要 run 子命令；使用 minou run --help 查看参数。")
@@ -153,83 +128,49 @@ export async function readCliInput(argv: readonly string[], cwd: string): Promis
     const name = match[1]
     if (name in options) throw new CliInputError(`--${name} 不能重复。`)
     const value = match[2] ?? argv[++i]
-    if (value === undefined || value.startsWith("--") || !value.trim()) throw new CliInputError(`--${name} 缺少值。`)
+    if (value === undefined || (match[2] === undefined && value.startsWith("--")) || !value.trim()) throw new CliInputError(`--${name} 缺少值。`)
     options[name] = value
   }
-  let raw: unknown
-  let base = cwd
-  if (options.request) {
-    if (Object.keys(options).some((key) => key !== "request" && key !== "output")) {
-      throw new CliInputError("--request 与其他任务输入参数互斥。")
-    }
-    const path = resolve(cwd, options.request)
-    base = dirname(path)
-    raw = await readJson(path)
-  } else {
-    if (!options["prompt-file"]) throw new CliInputError("必须提供 --prompt-file 或 --request。")
-    const isolated = Object.fromEntries(csv(options.isolate).map((name) => [name, true]))
-    raw = {
-      version: 1, prompt: await readText(resolve(cwd, options["prompt-file"])), run_id: options["run-id"],
-      model: options.model, reasoning_level: options["reasoning-level"], workspace: options.workspace,
-      mcp_config: options["mcp-config"], isolated,
-      use_configured_mcp: booleanOption(options["use-configured-mcp"], "use-configured-mcp"),
-      restrict_system_tools: booleanOption(options["restrict-system-tools"], "restrict-system-tools"),
-      system_tools: csv(options["system-tools"]),
-      permissions: { sandbox_mode: options["sandbox-mode"], auto_approve: { groups: csv(options["auto-approve-groups"]), tools: csv(options["auto-approve-tools"]) } },
-      limits: { max_steps: options["max-steps"] === undefined ? undefined : Number(options["max-steps"]), timeout_seconds: options.timeout === undefined ? undefined : Number(options.timeout) },
-    }
+  const output = options.output === undefined ? undefined : resolve(cwd, options.output)
+  const outputJson = options.outputjson === undefined ? undefined : resolve(cwd, options.outputjson)
+  const caseInsensitive = process.platform === "win32"
+  if (output !== undefined && outputJson !== undefined &&
+    (caseInsensitive ? output.toLowerCase() === outputJson.toLowerCase() : output === outputJson)) {
+    throw new CliInputError("--output 和 --outputjson 必须使用不同的文件路径。")
   }
-  return { request: await normalizeRequest(raw, base, cwd), output: options.output && resolve(cwd, options.output) }
-}
-
-/**
- * 严格读取 Request V1，配置覆盖仅影响本次运行。
- * @param value 未信任的 Request JSON。
- * @param base Request 内路径的基准。
- * @param cwd 未设置 workspace 时的启动目录。
- * @returns 运行时输入。
- * @throws CliInputError 字段、模块组合、MCP 配置或路径不合法。
- */
-export async function normalizeRequest(value: unknown, base: string, cwd: string): Promise<RunRequest> {
-  const raw = object(value, "request", ["version", "run_id", "prompt", "model", "reasoning_level", "workspace", "mcp_config", "use_configured_mcp", "restrict_system_tools", "system_tools", "isolated", "permissions", "limits"])
-  if (raw.version !== 1) throw new CliInputError("request.version 必须为 1。")
-  const useConfiguredMcp = raw.use_configured_mcp === undefined ? true : raw.use_configured_mcp
-  if (typeof useConfiguredMcp !== "boolean") throw new CliInputError("use_configured_mcp 必须为布尔值。")
-  const restrictSystemTools = raw.restrict_system_tools === undefined ? false : raw.restrict_system_tools
-  if (typeof restrictSystemTools !== "boolean") throw new CliInputError("restrict_system_tools 必须为布尔值。")
-  const systemTools = strings(raw.system_tools === undefined ? [] : raw.system_tools, "system_tools")
-  const isolation = object(raw.isolated === undefined ? {} : raw.isolated, "isolated", ["skill", "memory", "mcp"])
-  const isolated = { skill: false, memory: false, mcp: false }
-  for (const key of ["skill", "memory", "mcp"] as const) {
-    if (isolation[key] !== undefined && typeof isolation[key] !== "boolean") throw new CliInputError(`isolated.${key} 必须为布尔值。`)
-    isolated[key] = isolation[key] === true
+  const prompt = text(options.prompt, "--prompt")
+  const isolatedModules = csv(options.isolate)
+  if (isolatedModules.some((name) => !["skill", "memory", "mcp"].includes(name))) {
+    throw new CliInputError("--isolate 仅接受 skill、memory 和 mcp。")
   }
-  const permissions = object(raw.permissions === undefined ? {} : raw.permissions, "permissions", ["sandbox_mode", "auto_approve"])
-  const mode = permissions.sandbox_mode === undefined ? "sandbox-full-access" : permissions.sandbox_mode
-  if (!SANDBOX_MODES.includes(mode as SandboxMode)) throw new CliInputError("permissions.sandbox_mode 无效。")
-  const approval = object(permissions.auto_approve === undefined ? {} : permissions.auto_approve, "auto_approve", ["groups", "tools"])
-  const groups = strings(approval.groups === undefined ? [] : approval.groups, "auto_approve.groups")
-  if (groups.some((group) => !TOOL_GROUPS.includes(group as ToolGroup))) throw new CliInputError("auto_approve.groups 包含未知工具组。")
-  const limits = object(raw.limits === undefined ? {} : raw.limits, "limits", ["max_steps", "timeout_seconds"])
-  const workspace = raw.workspace === undefined ? resolve(cwd) : resolve(base, text(raw.workspace, "workspace"))
+  const isolated = { skill: isolatedModules.includes("skill"), memory: isolatedModules.includes("memory"), mcp: isolatedModules.includes("mcp") }
+  const mode = options["sandbox-mode"] ?? "sandbox-full-access"
+  if (!SANDBOX_MODES.includes(mode as SandboxMode)) throw new CliInputError("--sandbox-mode 无效。")
+  const groups = csv(options["auto-approve-groups"])
+  if (groups.some((group) => !TOOL_GROUPS.includes(group as ToolGroup))) throw new CliInputError("--auto-approve-groups 包含未知工具组。")
+  const workspace = resolve(cwd, options.workspace ?? ".")
   try { if (!(await stat(workspace)).isDirectory()) throw new Error() }
-  catch { throw new CliInputError("workspace 必须为现存目录。") }
+  catch { throw new CliInputError("--workspace 必须为现存目录。") }
   let mcpServers: MCPConfig[] | undefined
-  if (raw.mcp_config !== undefined) {
-    if (isolated.mcp) throw new CliInputError("isolated.mcp=true 与 mcp_config 冲突。")
-    const config = object(await readJson(resolve(base, text(raw.mcp_config, "mcp_config"))), "mcp_config", ["mcpServers"])
+  if (options["mcp-config"] !== undefined) {
+    if (isolated.mcp) throw new CliInputError("--isolate mcp 与 --mcp-config 冲突。")
+    const config = object(await readJson(resolve(cwd, options["mcp-config"])), "--mcp-config", ["mcpServers"])
     try { checkConfig({ version: 2, mcpServers: config.mcpServers, runtime: { userMessageMode: "queue" } }) }
-    catch { throw new CliInputError("mcp_config 必须包含符合现有结构的 mcpServers 数组。") }
+    catch { throw new CliInputError("--mcp-config 必须包含符合现有结构的 mcpServers 数组。") }
     mcpServers = config.mcpServers as MCPConfig[]
   }
   return {
-    runId: raw.run_id === undefined ? randomUUID() : text(raw.run_id, "run_id"),
-    prompt: text(raw.prompt, "prompt"), modelId: optionalText(raw.model, "model"),
-    reasoningLevel: optionalText(raw.reasoning_level, "reasoning_level"), workspace, mcpServers, isolated,
-    useConfiguredMcp, restrictSystemTools, systemTools,
-    sandboxMode: mode as SandboxMode, approveGroups: groups as ToolGroup[], approveTools: strings(approval.tools === undefined ? [] : approval.tools, "auto_approve.tools"),
-    maxSteps: integer(limits.max_steps === undefined ? 100 : limits.max_steps, "max_steps", Number.MAX_SAFE_INTEGER),
-    timeoutSeconds: integer(limits.timeout_seconds === undefined ? 1800 : limits.timeout_seconds, "timeout_seconds", Math.floor(2_147_483_647 / 1000)),
+    request: {
+      prompt, modelId: options.modelid, supportsReasoning: booleanOption(options.supportreason, "supportreason") ?? true,
+      reasoningLevel: options["reasoning-level"], workspace, mcpServers, isolated,
+      useConfiguredMcp: booleanOption(options["use-configured-mcp"], "use-configured-mcp") ?? true,
+      restrictSystemTools: booleanOption(options["restrict-system-tools"], "restrict-system-tools") ?? false,
+      systemTools: csv(options["system-tools"]), sandboxMode: mode as SandboxMode,
+      approveGroups: groups as ToolGroup[], approveTools: csv(options["auto-approve-tools"]),
+      maxSteps: integer(Number(options["max-steps"] ?? 100), "--max-steps", Number.MAX_SAFE_INTEGER),
+      timeoutSeconds: integer(Number(options.timeout ?? 1800), "--timeout", Math.floor(2_147_483_647 / 1000)),
+    },
+    output, outputJson,
   }
 }
 
@@ -261,34 +202,13 @@ function text(value: unknown, label: string): string {
   return value
 }
 /**
- * 允许字段省略，存在时复用必需文本检查。
- *
- * @param value 可省略字段。
- * @param label 字段职责。
- * @returns 合法文本或 undefined。
- * @throws CliInputError 非空文本约束失败。
- */
-function optionalText(value: unknown, label: string): string | undefined { return value === undefined ? undefined : text(value, label) }
-/**
- * 检查字符串列表并去重，保留首次出现顺序。
- *
- * @param value 未信任数组。
- * @param label 字段职责。
- * @returns 去重文本列表。
- * @throws CliInputError 数组或条目无效。
- */
-function strings(value: unknown, label: string): string[] {
-  if (!Array.isArray(value)) throw new CliInputError(`${label} 必须为字符串数组。`)
-  return [...new Set(value.map((entry) => text(entry, label)))]
-}
-/**
  * 将逗号分隔的命令行值拆为名称列表。
  *
  * @param value 命令行列表。
- * @returns 拆分后的名称；省略时为空。
+ * @returns 按首次出现顺序去重后的名称；省略时为空。
  * @throws CliInputError 包含空条目。
  */
-function csv(value?: string): string[] { return value === undefined ? [] : value.split(",").map((entry) => text(entry.trim(), "列表参数")) }
+function csv(value?: string): string[] { return value === undefined ? [] : [...new Set(value.split(",").map((entry) => text(entry.trim(), "列表参数")))] }
 
 /**
  * 读取显式的命令行布尔值并保留省略状态。
@@ -401,31 +321,30 @@ export function exitCode(reason: StopReason): number {
 /**
  * 同目录临时文件完成后重命名，失败时保留原结果并删除临时文件。
  * @param path 输出绝对路径，父目录必须存在。
- * @param result 已脱离凭据和内部事件的公共结果。
+ * @param content 已序列化的 UTF-8 文件内容。
  * @returns 原子替换完成。
  * @throws Error 写入或重命名失败，由 CLI 映射为输出错误。
  */
-export async function writeResult(path: string, result: RunResult): Promise<void> {
+export async function writeOutputFile(path: string, content: string): Promise<void> {
   const temporary = `${path}.${randomUUID()}.tmp`
   try {
-    await writeFile(temporary, `${JSON.stringify(result, null, 2)}\n`, { encoding: "utf8", flag: "wx", mode: 0o600 })
+    await writeFile(temporary, content, { encoding: "utf8", flag: "wx", mode: 0o600 })
     await rename(temporary, path)
   } finally { await unlink(temporary).catch(() => undefined) }
 }
 
 /** 命令帮助不触发任何配置初始化。 */
 export const CLI_HELP = `Minou Headless Agent Execution Protocol V1
-minou run --prompt-file <file> [--output <result.json>] [options]
-minou run --request <request.json> [--output <result.json>]
+minou run --prompt <text> [options]
 
 Options:
-  --model <modelId>             默认使用 Minou 有效默认模型
+  --modelid <id>                默认使用 Minou 有效默认模型
+  --supportreason <true|false>   本次运行是否发送思考参数，默认 true
   --reasoning-level <level>     默认使用模型的第一个推理等级
   --workspace <directory>       默认使用启动目录
-  --run-id <id>                 外部关联 ID
   --max-steps <count>            默认 100
   --timeout <seconds>            默认 1800
-  --mcp-config <json>            仅替换本次 mcpServers
+  --mcp-config <path>            仅替换本次 mcpServers
   --use-configured-mcp <bool>    是否使用全局 MCP 配置，默认 true
   --isolate <skill,memory,mcp>   禁用指定模块
   --restrict-system-tools <bool> 是否启用内置工具白名单，默认 false
@@ -433,6 +352,7 @@ Options:
   --sandbox-mode <mode>          full-access|sandbox-full-access|sandbox-read-only|auto
   --auto-approve-groups <list>   file,shell,terminal,mcp,skill,memory；auto 模式由模型审核
   --auto-approve-tools <list>    精确工具名；auto 模式由模型审核
-  --output <path>                结果 JSON，默认写入本次运行目录的 result.json
+  --output <path>                可选回答文件，写入 UTF-8 纯文本
+  --outputjson <path>            可选最终运行结果，写入 JSON 文件
   --help                        显示帮助
 `

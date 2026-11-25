@@ -10,11 +10,11 @@ import { DatabaseSync } from "node:sqlite"
 import { initializeConfigFilesSnapshot, writeMcpServers } from "../../src/main/config-files.ts"
 import { saveModel, saveProvider, setProviderApiKey } from "../../src/main/provider-store.ts"
 import { createMCPTestServer, testTool } from "../../runtime/mcp/test/helpers.ts"
-import type { RunFinishedEvent, RunResult } from "../../src/cli/protocol.ts"
+import type { RunResult } from "../../src/cli/protocol.ts"
 import type { SessionEvent } from "../../runtime/session/src/events.ts"
 
 /** 可检查的 Chat Completions 请求。 */
-interface RequestBody { messages: Array<{ role: string; content: string }>; tools: Array<{ function: { name: string; description?: string; parameters: { properties?: Record<string, unknown> } } }>; model: string; reasoning_effort: string; tool_choice?: string }
+interface RequestBody { messages: Array<{ role: string; content: string }>; tools: Array<{ function: { name: string; description?: string; parameters: { properties?: Record<string, unknown> } } }>; model: string; reasoning_effort?: string; tool_choice?: string }
 /** 每个本地模型请求的脚本，挂起场景可保留 response 不结束。 */
 type Respond = (body: RequestBody, attempt: number, response: ServerResponse) => void
 /** 一次真实 CLI 子进程的输出。 */
@@ -71,14 +71,15 @@ async function main(): Promise<void> {
   saveProvider(paths.providerDatabasePath, { id: "fixture", name: "fixture", type: "custom", protocol: "chat_completions", baseURL: `http://127.0.0.1:${address.port}/v1` })
   saveModel(paths.providerDatabasePath, { supportsReasoning: true, providerId: "fixture", modelId: "fixture-model", name: "fake-api-model", contextWindow: 128000, maxOutputTokens: 4096, reasoningLevels: ["low", "high"], reasoningField: { path: ["reasoning_effort"] } })
   setProviderApiKey(paths.providerDatabasePath, "fixture", "top-secret-key")
+  saveModel(paths.providerDatabasePath, { supportsReasoning: false, providerId: "fixture", modelId: "plain-model", name: "plain-api-model", contextWindow: 128000, maxOutputTokens: 4096 })
   let serial = 0
   const cli = resolve("dist/src/cli/main.js")
-  /** @param args 编译入口参数。 @returns 原始 stdout、stderr 和退出码，用于非 Request 路径。 */
-  async function raw(args: string[]) {
+  /** @param args 编译入口参数。 @param breakPipe 是否主动关闭 stdout。 @returns 原始 stdout、stderr 和退出码。 */
+  async function raw(args: string[], breakPipe = false) {
     const child = spawn(process.execPath, [cli, ...args], { env: { ...process.env, USERPROFILE: profile }, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] })
     let stdout = "", stderr = ""
     child.stdout.setEncoding("utf8"); child.stderr.setEncoding("utf8")
-    child.stdout.on("data", (chunk: string) => { stdout += chunk })
+    child.stdout.on("data", (chunk: string) => { stdout += chunk; if (breakPipe) child.stdout.destroy() })
     child.stderr.on("data", (chunk: string) => { stderr += chunk })
     const code = await new Promise<number | null>((done, reject) => {
       const timer = setTimeout(() => { child.kill(); reject(new Error("原始 CLI 超时")) }, 15000)
@@ -87,43 +88,41 @@ async function main(): Promise<void> {
     })
     return { code, stdout, stderr }
   }
-  /** @param patch Request 覆盖。 @param script 本次模型脚本。 @param extra 额外 Node 参数。 @param breakPipe 是否主动关闭 stdout。 @returns 命令结果和模型请求。 */
-  async function run(patch: object = {}, script?: Respond, extra: string[] = [], breakPipe = false): Promise<Outcome> {
+  /** @param args 本次启动选项。 @param script 本次模型脚本。 @param extra 额外 Node 参数。 @param isolateByDefault 是否默认关闭 Skill、Memory 和 MCP。 @returns 命令结果和模型请求。 */
+  async function run(args: string[] = [], script?: Respond, extra: string[] = [], isolateByDefault = true): Promise<Outcome> {
     const id = ++serial
-    const input = join(root, `request-${id}.json`), output = join(root, `result-${id}.json`)
-    await writeFile(input, JSON.stringify({ version: 1, run_id: `external/${id}`, prompt: "fixture task", workspace, isolated: { skill: true, memory: true, mcp: true }, ...patch }))
+    const output = join(root, `answer-${id}`)
+    const outputJson = join(root, `result-${id}.json`)
+    const isolated = !isolateByDefault || args.includes("--isolate") ? [] : ["--isolate", "skill,memory,mcp"]
     requests = []
     serverFailure = undefined
     respond = script ?? ((_body, _attempt, response) => reply(response))
-    const child = spawn(process.execPath, [...extra, cli, "run", "--request", input, "--output", output], { env: { ...process.env, USERPROFILE: profile }, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] })
+    const child = spawn(process.execPath, [...extra, cli, "run", "--prompt", "fixture task", "--workspace", workspace, "--output", output, "--outputjson", outputJson, ...isolated, ...args], { env: { ...process.env, USERPROFILE: profile }, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] })
     let stdout = "", stderr = ""
     child.stdout.setEncoding("utf8"); child.stderr.setEncoding("utf8")
-    child.stdout.on("data", (chunk: string) => { stdout += chunk; if (breakPipe) child.stdout.destroy() })
+    child.stdout.on("data", (chunk: string) => { stdout += chunk })
     child.stderr.on("data", (chunk: string) => { stderr += chunk })
     const code = await new Promise<number | null>((done, reject) => {
       const timer = setTimeout(() => { child.kill(); reject(new Error(`CLI 场景超时: ${id}\n${stderr}`)) }, 18000)
       child.once("error", (error) => { clearTimeout(timer); reject(error) })
       child.once("close", (value) => { clearTimeout(timer); done(value) })
     })
-    const result = JSON.parse(await readFile(output, "utf8")) as RunResult
     if (serverFailure) throw serverFailure
-    const lines = stdout.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as SessionEvent | RunFinishedEvent)
-    const events = lines.filter((event) => event.type !== "run.finished")
-    if (!breakPipe) {
-      const finished = lines.at(-1)
-      assert.equal(finished?.type, "run.finished")
-      assert.equal(lines.filter((event) => event.type === "run.finished").length, 1)
-      assert.equal(finished.seq, events.length + 1)
-      assert.equal(stdout.includes("top-secret-key"), false)
-      assert.deepEqual(finished.data.result, result)
-      if (result.event_log_path) {
-        const db = new DatabaseSync(result.event_log_path, { readOnly: true })
-        try {
-          const recorded = db.prepare("SELECT event_json FROM session_events ORDER BY seq").all()
-          assert.deepEqual(events, recorded.map((row) => JSON.parse(row.event_json as string)))
-        } finally { db.close() }
-      } else assert.deepEqual(events, [])
-    }
+    const events = stdout.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as SessionEvent)
+    const result = JSON.parse(await readFile(outputJson, "utf8")) as RunResult
+    assert.doesNotMatch(stdout, /top-secret-key/)
+    assert.equal(Object.hasOwn(result, "version"), false)
+    assert.equal(Object.hasOwn(result, "run_id"), false)
+    assert.equal(Object.hasOwn(result, "runid"), false)
+    if (events.some((event) => event.type === "turn/start")) assert.equal(await readFile(output, "utf8"), result.answer)
+    else await assert.rejects(readFile(output, "utf8"), /ENOENT/)
+    if (result.event_log_path) {
+      const db = new DatabaseSync(result.event_log_path, { readOnly: true })
+      try {
+        const recorded = db.prepare("SELECT event_json FROM session_events ORDER BY seq").all()
+        assert.deepEqual(events, recorded.map((row) => JSON.parse(row.event_json as string)))
+      } finally { db.close() }
+    } else assert.deepEqual(events, [])
     return { code, result, events, stdout, stderr, requests: [...requests] }
   }
   try {
@@ -142,8 +141,6 @@ async function main(): Promise<void> {
     assert.equal(normal.requests[0].reasoning_effort, "low")
     assert.match(normal.requests[0].messages[0].content, /Workspace rule from CLI fixture/)
     assert.equal(normal.requests[0].tools.some((tool) => ["skill_load", "memory_list", "tool_search"].includes(tool.function.name)), false)
-    assert.equal(normal.result.run_id, "external/1")
-    assert.notEqual(normal.result.run_id, normal.result.session_id)
     assert.ok(normal.result.record_directory?.endsWith(normal.result.session_id))
     assert.equal(normal.result.event_log_path, join(normal.result.record_directory!, "events.sqlite"))
     const messages = normal.events.filter((event) => event.type === "assistant/message")
@@ -152,52 +149,63 @@ async function main(): Promise<void> {
     assert.ok(normal.stdout.includes("top-secret-thinking"))
     assert.deepEqual(normal.events.slice(0, 2).map((event) => event.type), ["turn/start", "user/message"])
     assert.equal(normal.events.at(-1)?.type, "turn/end")
-    assert.ok(normal.stderr.includes(`结果文件：${join(root, "result-1.json")}\n`))
-    await writeFile(join(root, "simple.txt"), "simple task")
+    assert.ok(normal.stderr.includes(`回答文件：${join(root, "answer-1")}\n`))
+    const enabledByDefault = await run(["--modelid", "plain-model"])
+    assert.equal(enabledByDefault.code, 0, enabledByDefault.stderr)
+    assert.equal(enabledByDefault.requests[0].model, "plain-api-model")
+    assert.equal(enabledByDefault.requests[0].reasoning_effort, "low")
+    const disabled = await run(["--modelid", "fixture-model", "--supportreason", "false", "--reasoning-level", "unused"])
+    assert.equal(disabled.code, 0, disabled.stderr)
+    assert.equal(disabled.requests[0].reasoning_effort, undefined)
+    const invalidLevel = await run(["--supportreason", "true", "--reasoning-level", "unused"])
+    assert.equal(invalidLevel.code, 2)
+    assert.equal(invalidLevel.requests.length, 0)
     requests = []
-    const simpleOutput = join(root, "simple-result.json")
-    const simple = await raw(["run", "--prompt-file", join(root, "simple.txt"), "--workspace", workspace,
+    const simpleOutput = join(root, "simple-answer")
+    const simple = await raw(["run", "--prompt", "simple task", "--workspace", workspace,
       "--output", simpleOutput, "--isolate", "skill,memory,mcp"])
     assert.equal(simple.code, 0, simple.stderr)
-    const simpleEvents = simple.stdout.trim().split("\n").map((line) => JSON.parse(line) as SessionEvent | RunFinishedEvent)
+    const simpleEvents = simple.stdout.trim().split("\n").map((line) => JSON.parse(line) as SessionEvent)
     assert.deepEqual(simpleEvents.slice(0, 2).map((event) => event.type), ["turn/start", "user/message"])
-    const simpleFinished = simpleEvents.at(-1)
-    assert.equal(simpleFinished?.type, "run.finished")
-    assert.deepEqual(simpleFinished.data.result, JSON.parse(await readFile(simpleOutput, "utf8")))
-    const defaultOutput = await raw(["run", "--prompt-file", join(root, "simple.txt"), "--workspace", workspace,
+    assert.equal(simpleEvents.at(-1)?.type, "turn/end")
+    assert.equal(await readFile(simpleOutput, "utf8"), "answer")
+    assert.doesNotMatch(simple.stderr, /运行结果文件：/)
+    const defaultOutput = await raw(["run", "--prompt", "simple task", "--workspace", workspace,
       "--isolate", "skill,memory,mcp", "--restrict-system-tools", "true", "--system-tools", "read,glob"])
     assert.equal(defaultOutput.code, 0, defaultOutput.stderr)
     assert.deepEqual(requests.at(-1)?.tools.map((tool) => tool.function.name), ["glob", "read"])
-    const defaultFinished = JSON.parse(defaultOutput.stdout.trim().split("\n").at(-1)!) as RunFinishedEvent
-    assert.equal(defaultFinished.type, "run.finished")
-    const defaultResult = defaultFinished.data.result
-    const defaultPath = join(paths.rootDir, "logs", "cli", defaultResult.session_id, "result.json")
-    assert.deepEqual(defaultResult, JSON.parse(await readFile(defaultPath, "utf8")))
-    assert.ok(defaultOutput.stderr.includes(`结果文件：${defaultPath}\n`))
-    const outputFailure = await raw(["run", "--prompt-file", join(root, "simple.txt"), "--workspace", workspace,
-      "--output", root, "--isolate", "skill,memory,mcp"])
+    const defaultEvents = defaultOutput.stdout.trim().split("\n").map((line) => JSON.parse(line) as SessionEvent)
+    assert.equal(defaultEvents.at(-1)?.type, "turn/end")
+    const defaultPath = join(paths.rootDir, "logs", "cli", defaultEvents[0].sessionId, "result.json")
+    await assert.rejects(readFile(defaultPath, "utf8"), /ENOENT/)
+    assert.doesNotMatch(defaultOutput.stderr, /回答文件：|运行结果文件：/)
+    const failedAnswerJson = join(root, "failed-answer.json")
+    const outputFailure = await raw(["run", "--prompt", "simple task", "--workspace", workspace,
+      "--output", root, "--outputjson", failedAnswerJson, "--isolate", "skill,memory,mcp"])
     assert.equal(outputFailure.code, 1)
-    const outputFailureEvents = outputFailure.stdout.trim().split("\n").map((line) => JSON.parse(line) as SessionEvent | RunFinishedEvent)
-    assert.equal(outputFailureEvents.at(-2)?.type, "turn/end")
-    const outputFailureFinished = outputFailureEvents.at(-1)
-    assert.equal(outputFailureFinished?.type, "run.finished")
-    assert.equal(outputFailureFinished.data.result.error?.code, "OUTPUT_FAILED")
-    assert.doesNotMatch(outputFailure.stderr, /结果文件：/)
-    assert.equal((await raw(["run", "--bad", "x", "--output", join(root, "invalid.json")])).code, 2)
-    assert.equal(JSON.parse(await readFile(join(root, "invalid.json"), "utf8")).stop_reason, "invalid_request")
+    const outputFailureEvents = outputFailure.stdout.trim().split("\n").map((line) => JSON.parse(line) as SessionEvent)
+    assert.equal(outputFailureEvents.at(-1)?.type, "turn/end")
+    const failedAnswerResult = JSON.parse(await readFile(failedAnswerJson, "utf8")) as RunResult
+    assert.equal(failedAnswerResult.error?.code, "OUTPUT_FAILED")
+    assert.equal(failedAnswerResult.answer, "answer")
+    assert.doesNotMatch(outputFailure.stderr, /回答文件：/)
+    const jsonFailure = await raw(["run", "--prompt", "JSON write failure", "--workspace", workspace,
+      "--outputjson", root, "--isolate", "skill,memory,mcp"])
+    assert.equal(jsonFailure.code, 1)
+    assert.match(jsonFailure.stderr, /OUTPUT_FAILED/)
+    assert.equal((JSON.parse(jsonFailure.stdout.trim().split("\n").at(-1)!) as SessionEvent).type, "turn/end")
+    const invalidPath = join(root, "existing-answer")
+    await writeFile(invalidPath, "existing")
+    assert.equal((await raw(["run", "--bad", "x", "--output", invalidPath])).code, 2)
+    assert.equal(await readFile(invalidPath, "utf8"), "existing")
     const invalidDefaultOutput = await raw(["run", "--bad", "x"])
     assert.equal(invalidDefaultOutput.code, 2)
-    const invalidEvent = JSON.parse(invalidDefaultOutput.stdout) as RunFinishedEvent
-    assert.equal(invalidEvent.type, "run.finished")
-    const invalidResult = invalidEvent.data.result as RunResult
-    assert.equal(invalidResult.event_log_path, null)
-    assert.equal(invalidResult.metrics.turns, 0)
-    const invalidPath = join(paths.rootDir, "logs", "cli", invalidResult.session_id, "result.json")
-    assert.deepEqual(invalidResult, JSON.parse(await readFile(invalidPath, "utf8")))
-    assert.ok(invalidDefaultOutput.stderr.includes(`结果文件：${invalidPath}\n`))
+    assert.equal(invalidDefaultOutput.stdout, "")
+    assert.match(invalidDefaultOutput.stderr, /INVALID_REQUEST/)
+    assert.doesNotMatch(invalidDefaultOutput.stderr, /回答文件：|运行结果文件：/)
 
     const deniedPath = join(workspace, "excluded-tool.txt")
-    const restricted = await run({ restrict_system_tools: true, system_tools: ["read"], permissions: { sandbox_mode: "full-access" } },
+    const restricted = await run(["--restrict-system-tools", "true", "--system-tools", "read", "--sandbox-mode", "full-access"],
       (body, attempt, response) => {
         assert.deepEqual(body.tools.map((tool) => tool.function.name), ["read"])
         if (attempt === 1) reply(response, [{ name: "read", args: { path: join(workspace, "AGENTS.md") } },
@@ -208,14 +216,14 @@ async function main(): Promise<void> {
     assert.equal(restricted.result.metrics.tool_calls, 2)
     assert.match(restricted.requests[1].messages.at(-1)!.content, /TOOL_NOT_FOUND/)
     await assert.rejects(readFile(deniedPath), /ENOENT/)
-    const emptyAllowlist = await run({ restrict_system_tools: true })
+    const emptyAllowlist = await run(["--restrict-system-tools", "true"])
     assert.equal(emptyAllowlist.code, 0, emptyAllowlist.stderr)
     assert.equal(emptyAllowlist.requests[0].tools.length, 0)
-    const inactiveAllowlist = await run({ system_tools: ["read"] })
+    const inactiveAllowlist = await run(["--system-tools", "read"])
     assert.equal(inactiveAllowlist.code, 0, inactiveAllowlist.stderr)
     assert.ok(inactiveAllowlist.requests[0].tools.some((tool) => tool.function.name === "write"))
     for (const unavailable of ["missing_tool", "skill_load", "mcp_list_tools"]) {
-      const invalid = await run({ restrict_system_tools: true, system_tools: [unavailable] })
+      const invalid = await run(["--restrict-system-tools", "true", "--system-tools", unavailable])
       assert.equal(invalid.code, 2)
       assert.ok(invalid.result.error?.message.includes(unavailable))
       assert.equal(invalid.result.metrics.turns, 0)
@@ -234,7 +242,8 @@ async function main(): Promise<void> {
     ]
     for (const item of cases) {
       await rm(item.path, { force: true })
-      const outcome = await run({ permissions: { sandbox_mode: item.mode, auto_approve: { groups: item.groups, tools: item.tools } } }, (_body, attempt, response) => {
+      const outcome = await run(["--sandbox-mode", item.mode, ...(item.groups.length ? ["--auto-approve-groups", item.groups.join(",")] : []),
+        ...(item.tools.length ? ["--auto-approve-tools", item.tools.join(",")] : [])], (_body, attempt, response) => {
         if (attempt === 1) reply(response, [{ name: "write", args: { path: item.path, content: "private-tool-payload" } }], "")
         else reply(response)
       })
@@ -257,8 +266,7 @@ async function main(): Promise<void> {
     }
     for (const approved of [true, false]) {
       await rm(outside, { force: true })
-      const auto = await run({ reasoning_level: "high", permissions: { sandbox_mode: "auto",
-        auto_approve: { groups: approved ? [] : ["file"] } } }, (body, attempt, response) => {
+      const auto = await run(["--reasoning-level", "high", "--sandbox-mode", "auto", ...(approved ? [] : ["--auto-approve-groups", "file"])], (body, attempt, response) => {
         if (attempt === 1) reply(response, [{ name: "write", args: { path: outside, content: "reviewed write" } }], "")
         else if (attempt === 2) {
           assert.equal(body.model, "fake-api-model")
@@ -282,25 +290,25 @@ async function main(): Promise<void> {
       assert.equal(auto.result.metrics.usage?.total_tokens, 24)
       assert.equal(auto.result.metrics.usage_complete, true)
     }
-    const limited = await run({ limits: { max_steps: 1 } }, (_body, _attempt, response) => reply(response, [{ name: "read", args: { path: inside } }], ""))
+    const limited = await run(["--max-steps", "1"], (_body, _attempt, response) => reply(response, [{ name: "read", args: { path: inside } }], ""))
     assert.equal(limited.code, 10)
     assert.equal(limited.result.stop_reason, "max_steps")
     assert.equal(limited.result.metrics.steps, 1)
     assert.equal(limited.requests.length, 1)
-    const incomplete = await run({}, (_body, _attempt, response) => reply(response, [], "partial", "length"))
+    const incomplete = await run([], (_body, _attempt, response) => reply(response, [], "partial", "length"))
     assert.equal(incomplete.code, 1)
     assert.equal(incomplete.result.stop_reason, "model_incomplete")
     assert.equal(incomplete.result.answer_complete, false)
-    const missing = await run({ model: "does-not-exist" })
+    const missing = await run(["--modelid", "does-not-exist"])
     assert.equal(missing.code, 2)
     assert.equal(missing.requests.length, 0)
     assert.equal(missing.result.metrics.turns, 0)
     assert.ok(missing.result.event_log_path)
-    const failed = await run({}, (_body, _attempt, response) => { response.writeHead(400); response.end(JSON.stringify({ error: { message: "private-sdk-error-with-secret", type: "invalid_request_error" } })) })
+    const failed = await run([], (_body, _attempt, response) => { response.writeHead(400); response.end(JSON.stringify({ error: { message: "private-sdk-error-with-secret", type: "invalid_request_error" } })) })
     assert.equal(failed.code, 1)
     assert.equal(failed.result.stop_reason, "error")
     assert.equal(failed.stdout.includes("private-sdk-error"), false)
-    const failedAfterWrite = await run({}, (_body, attempt, response) => {
+    const failedAfterWrite = await run([], (_body, attempt, response) => {
       if (attempt === 1) reply(response, [{ name: "write", args: { path: inside, content: "persist-before-model-error" } }], "")
       else { response.writeHead(400); response.end(JSON.stringify({ error: { message: "failed after write" } })) }
     })
@@ -310,7 +318,7 @@ async function main(): Promise<void> {
     const recordedTypes = failedLog.prepare("SELECT type FROM session_events ORDER BY seq").all().map((row) => row.type)
     failedLog.close()
     assert.ok(recordedTypes.includes("turn/file_changes"), "模型失败也必须保存已执行的文件变化记录")
-    const mixedUsage = await run({}, (_body, attempt, response) => attempt === 1
+    const mixedUsage = await run([], (_body, attempt, response) => attempt === 1
       ? reply(response, [{ name: "read", args: { path: inside } }], "", "tool_calls", false) : reply(response))
     assert.equal(mixedUsage.result.metrics.usage_complete, false)
     assert.equal(mixedUsage.result.metrics.usage_reported_steps, 1)
@@ -318,7 +326,7 @@ async function main(): Promise<void> {
     const skill = join(paths.rootDir, "skills", "fixture-skill")
     await mkdir(skill, { recursive: true })
     await writeFile(join(skill, "SKILL.md"), "---\ndescription: global fixture skill description\n---\nprivate skill body")
-    const enabled = await run({ isolated: { skill: false, memory: false, mcp: false }, reasoning_level: "high" })
+    const enabled = await run(["--reasoning-level", "high"], undefined, [], false)
     assert.equal(enabled.code, 0, enabled.stderr)
     assert.match(enabled.requests[0].messages[0].content, /global fixture skill description/)
     assert.doesNotMatch(enabled.requests[0].messages[0].content, /private skill body/)
@@ -328,7 +336,7 @@ async function main(): Promise<void> {
     await run()
     assert.equal(await readFile(registryPath, "utf8"), "do-not-touch")
     await writeFile(join(paths.rootDir, "sessions", "default", "memory.md"), "# MemoryFixturePrivate\n## Detail\n")
-    const memory = await run({ isolated: { skill: true, memory: false, mcp: true } }, (_body, attempt, response) => attempt === 1
+    const memory = await run(["--isolate", "skill,mcp"], (_body, attempt, response) => attempt === 1
       ? reply(response, [{ name: "memory_list", args: {} }], "") : reply(response))
     assert.equal(memory.code, 0)
     assert.doesNotMatch(memory.requests[0].messages[0].content, /MemoryFixturePrivate/)
@@ -339,17 +347,16 @@ async function main(): Promise<void> {
     try {
       const configuredServers = [{ name: "configured", enabled: true, transport: "streamable-http" as const, url: configuredMcp.url }]
       await writeMcpServers(paths.configPath, configuredServers)
-      const mcpEnabled = { skill: true, memory: true, mcp: false }
-      const skipped = await run({ isolated: mcpEnabled, use_configured_mcp: false })
+      const skipped = await run(["--isolate", "skill,memory", "--use-configured-mcp", "false"])
       assert.equal(skipped.code, 0, skipped.stderr)
       assert.ok(skipped.requests[0].tools.some((tool) => tool.function.name === "mcp_list_tools"))
       assert.equal(configuredMcp.state.headers.length, 0)
       const emptyConfig = join(root, "empty-mcp.json")
       await writeFile(emptyConfig, JSON.stringify({ mcpServers: [] }))
-      const override = await run({ isolated: mcpEnabled, mcp_config: emptyConfig })
+      const override = await run(["--isolate", "skill,memory", "--mcp-config", emptyConfig])
       assert.equal(override.code, 0, override.stderr)
       assert.equal(configuredMcp.state.headers.length, 0)
-      const connected = await run({ isolated: mcpEnabled })
+      const connected = await run(["--isolate", "skill,memory"])
       assert.equal(connected.code, 0, connected.stderr)
       assert.ok(configuredMcp.state.headers.length > 0)
       assert.deepEqual(JSON.parse(await readFile(paths.configPath, "utf8")).mcpServers, configuredServers)
@@ -378,8 +385,8 @@ async function main(): Promise<void> {
           reply(response, [{ name: remote.function.name, args: { value: "remote-private-value" } }], "")
         } else reply(response)
       }
-      const mcpAllowed = await run({ isolated: { skill: true, memory: true, mcp: false }, mcp_config: mcpFile, use_configured_mcp: false,
-        restrict_system_tools: true, system_tools: ["mcp_list_tools", "mcp_load_tools"], permissions: { auto_approve: { groups: allow ? ["mcp"] : [] } } }, mcpScript)
+      const mcpAllowed = await run(["--isolate", "skill,memory", "--mcp-config", mcpFile, "--use-configured-mcp", "false",
+        "--restrict-system-tools", "true", "--system-tools", "mcp_list_tools,mcp_load_tools", ...(allow ? ["--auto-approve-groups", "mcp"] : [])], mcpScript)
       assert.equal(mcpAllowed.code, 0, mcpAllowed.stderr)
       assert.equal(fixture.state.calls.length, allow ? 1 : 0)
       assert.ok(mcpAllowed.stdout.includes("remote-private-value"))
@@ -391,37 +398,37 @@ async function main(): Promise<void> {
       fixture.state.listDelay = 10000
       const mcpFile = join(root, "mcp-timeout.json")
       await writeFile(mcpFile, JSON.stringify({ mcpServers: [{ name: "fixture", enabled: true, transport: "streamable-http", url: fixture.url }] }))
-      const startupTimeout = await run({ isolated: { skill: true, memory: true, mcp: false }, mcp_config: mcpFile, limits: { timeout_seconds: 1 } })
+      const startupTimeout = await run(["--isolate", "skill,memory", "--mcp-config", mcpFile, "--timeout", "1"])
       assert.equal(startupTimeout.code, 124)
       assert.equal(startupTimeout.requests.length, 0)
     } finally { await fixture.close() }
 
     const hanging: Respond = (_body, _attempt, response) => { response.writeHead(200, { "content-type": "text/event-stream" }); response.flushHeaders() }
-    const timed = await run({ limits: { timeout_seconds: 1 } }, hanging)
+    const timed = await run(["--timeout", "1"], hanging)
     assert.equal(timed.code, 124)
     assert.equal(timed.result.stop_reason, "timeout")
     assert.equal(timed.result.metrics.usage, null)
     const preload = join(root, "signal.cjs")
     // Windows 的 child.kill 会直接终止进程；用真实 CLI 进程中的信号事件验证监听和收尾路径。
     await writeFile(preload, "const write=process.stdout.write; let sent=false; process.stdout.write=function(chunk,...args){ const result=write.call(this,chunk,...args); if(!sent && String(chunk).includes('step/start')){sent=true;setTimeout(()=>process.emit('SIGTERM'),100);} return result; };")
-    const interrupted = await run({}, hanging, ["--require", preload])
+    const interrupted = await run([], hanging, ["--require", preload])
     assert.equal(interrupted.code, 130)
     assert.equal(interrupted.result.stop_reason, "interrupted")
 
-    const shellCase = await run({ permissions: { auto_approve: { groups: ["shell"] } } }, (_body, attempt, response) => attempt === 1
+    const shellCase = await run(["--auto-approve-groups", "shell"], (_body, attempt, response) => attempt === 1
       ? reply(response, [{ name: "shell", args: { command: "[Console]::Write('cli-shell-ok')" } }], "") : reply(response))
     assert.equal(shellCase.code, 0)
     assert.equal(shellCase.events.find((event) => event.type === "tool/result")?.result.status, "success")
     assert.match(shellCase.requests[1].messages.at(-1)!.content, /cli-shell-ok/)
     const pidPath = join(root, "shell-pid.txt")
-    const shellTimeout = await run({ limits: { timeout_seconds: 2 }, permissions: { auto_approve: { groups: ["shell"] } } }, (_body, _attempt, response) =>
+    const shellTimeout = await run(["--timeout", "2", "--auto-approve-groups", "shell"], (_body, _attempt, response) =>
       reply(response, [{ name: "shell", args: { command: `$PID | Set-Content -LiteralPath '${pidPath.replaceAll("'", "''")}'; Start-Sleep -Seconds 30` } }], ""))
     assert.equal(shellTimeout.code, 124)
     const pid = Number((await readFile(pidPath, "utf8")).trim())
     assert.ok(pid > 0)
     assert.throws(() => process.kill(pid, 0), "取消后真实 Shell 进程必须已经释放")
     const terminalPidPath = join(root, "terminal-pid.txt")
-    const terminalCase = await run({ permissions: { auto_approve: { groups: ["terminal"] } } }, (body, attempt, response) => {
+    const terminalCase = await run(["--auto-approve-groups", "terminal"], (body, attempt, response) => {
       assert.deepEqual(body.tools.map((tool) => tool.function.name).filter((name) => name.startsWith("terminal_")).sort(), ["terminal_input", "terminal_open"])
       if (attempt === 1) {
         reply(response, [{ name: "terminal_open", args: { command: `$PID | Set-Content -LiteralPath '${terminalPidPath.replaceAll("'", "''")}'` } }], "")
@@ -436,9 +443,9 @@ async function main(): Promise<void> {
     const terminalPid = Number((await readFile(terminalPidPath, "utf8")).trim())
     assert.ok(terminalPid > 0)
     assert.throws(() => process.kill(terminalPid, 0), "CLI 收尾后真实 PTY 进程必须已经释放")
-    const broken = await run({}, undefined, [], true)
+    const broken = await raw(["run", "--prompt", "broken stdout", "--workspace", workspace, "--isolate", "skill,memory,mcp"], true)
     assert.equal(broken.code, 1)
-    assert.equal(broken.result.status, "failed")
+    assert.match(broken.stderr, /OUTPUT_FAILED/)
     assert.equal((await readdir(root)).some((name) => name.endsWith(".tmp")), false)
     console.log(`CLI integration: passed (${serial} real process runs)`)
   } finally {
