@@ -6,7 +6,7 @@
 
 Minou 是本地运行的 Coding Agent 应用，提供 Electron 桌面工作区和独立 Node CLI。两种入口复用统一模型协议、AgentLoop 和工具实现。应用状态与日志保存到本机，模型推理通过用户配置的供应商完成。
 
-桌面端面向持续交互：管理项目和对话，查看流式文本、思考和工具过程，发送或排队消息，处理审批，停止执行并恢复历史。CLI 面向脚本调用：每次接收一个任务，启动全新 Run，输出公共事件与最终结果。
+桌面端面向持续交互：管理项目和对话，查看流式文本、思考和工具过程，发送或排队消息，处理审批，停止执行并恢复历史。CLI 面向脚本调用：每次接收一个任务，启动全新 Run，逐行输出已提交的完整事件和最终结果。
 
 ## 已实现能力
 
@@ -24,7 +24,7 @@ Minou 是本地运行的 Coding Agent 应用，提供 Electron 桌面工作区�
 | Skill | Global / Project 来源同步、启停管理、描述注入及完整正文按需读取 | [SkillManager](../runtime/skill/src/manager.ts)、[skill-ipc.ts](../src/main/skill-ipc.ts) |
 | 项目记忆 | 按分类列索引、按需读正文、整批追加；同一 Project 的对话共用 | [MemoryManager](../runtime/memory/src/index.ts) |
 | 桌面上下文压缩 | Step 前检查压力，独立请求生成 Summary，按已提交事件恢复 | [summary.ts](../runtime/context/src/summary.ts)、[SessionRuntime](../runtime/agent/src/session-runtime.ts) |
-| Headless CLI | prompt 文件 / JSON 请求、JSON 结果与可选 JSONL 事件、限步、超时、内置工具白名单、MCP 来源选择及模型审核 | [CLI 入口](../src/cli/main.ts)、[协议](../src/cli/protocol.ts) |
+| Headless CLI | prompt 文件 / JSON 请求、JSON 结果与 JSONL 事件、限步、超时、内置工具白名单、MCP 来源选择及模型审核 | [CLI 入口](../src/cli/main.ts)、[协议](../src/cli/protocol.ts) |
 
 兼容供应商目录当前已经包含 DeepSeek 的三种协议创建资料，见 [compatible-providers.ts](../src/main/compatible-providers.ts)。这是仓库内置的创建模板，不代表已验证远端服务当前支持情况；创建后的配置保存在数据库中，不依赖模板持续覆盖。
 

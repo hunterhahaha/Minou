@@ -53,12 +53,12 @@ node dist/src/cli/main.js run --help
 node dist/src/cli/main.js run --prompt-file ./task.txt --workspace . --output ./result.json
 ```
 
-每次调用创建新的运行，使用已配置的默认模型。省略 `--output` 时，最终 JSON 保存到当前用户目录下的 `.minou/logs/cli/<session-id>/result.json`，stderr 会显示结果文件的绝对路径。默认 stdout 输出最终 JSON。使用 `--format jsonl` 可以同时获取实时公共事件和最终 JSON 文件。
+每次调用创建新的运行，使用已配置的默认模型。省略 `--output` 时，最终 JSON 保存到当前用户目录下的 `.minou/logs/cli/<session-id>/result.json`，stderr 会显示结果文件的绝对路径。stdout 逐行输出已提交的完整事件，最后以 `run.finished` 附带最终结果。
 
 也可以使用结构化请求：
 
 ```powershell
-node dist/src/cli/main.js run --request ./request.json --output ./result.json --format jsonl
+node dist/src/cli/main.js run --request ./request.json --output ./result.json
 ```
 
 任务文件输入和请求文件输入互斥。默认最多执行 100 步，总超时为 1,800 秒。CLI 不需要打开 Electron 窗口，也不恢复桌面端的历史对话。

@@ -1,6 +1,6 @@
 # Minou CLI 使用说明
 
-本文对应当前实现的 **Headless Agent Execution Protocol V1**。CLI 提供 `run` 命令：接收一个任务，执行现有 `runAgentLoop`，输出最终结果和可选的实时事件。它可以用于本地脚本、CI 或外部 Benchmark 调用。
+本文对应当前实现的 **Headless Agent Execution Protocol V1**。CLI 的 `run` 命令接收任务，执行 `runAgentLoop`，逐行输出已提交的事件和最终结果。它可以用于本地脚本、CI 或外部 Benchmark 调用。
 
 每次调用创建新的内部 Session，只执行一个 Turn，不复用历史上下文。CLI 使用独立 Node 入口，不需要启动 Electron 窗口。
 
@@ -52,7 +52,7 @@ node ".\dist\src\cli\main.js" run `
 node ".\dist\src\cli\main.js" run --prompt-file "G:\tasks\task.txt" --workspace "G:\code\repo" --output "G:\results\result.json"
 ```
 
-默认 stdout 输出一份最终 JSON。省略 `--output` 时，结果保存到当前用户的 `.minou/logs/cli/<session-id>/result.json`。写入成功后，stderr 会显示结果文件的绝对路径。
+stdout 逐行输出已提交的事件和 `run.finished`。省略 `--output` 时，结果保存到当前用户的 `.minou/logs/cli/<session-id>/result.json`。写入成功后，stderr 会显示结果文件的绝对路径。
 
 ### 使用 `minou` 命令
 
@@ -107,11 +107,10 @@ minou run --prompt-file "G:\tasks\task.txt" --workspace "G:\code\repo" --output 
 ```powershell
 node ".\dist\src\cli\main.js" run `
   --request "G:\tasks\request.json" `
-  --output "G:\results\result.json" `
-  --format jsonl
+  --output "G:\results\result.json"
 ```
 
-`--request` 与所有任务输入参数互斥，不能同时传入 `--prompt-file`、`--model`、`--workspace`、限制或权限参数。Request 模式只接受共用的 `--output` 和 `--format`，没有命令行覆盖 Request 字段的优先级规则。
+使用 `--request` 时，任务、模型、工作区、限制和权限都在请求文件中配置。命令行还可以用 `--output` 指定结果文件。
 
 最小 Request 只需要版本和非空白任务：
 
@@ -143,7 +142,6 @@ node ".\dist\src\cli\main.js" run `
 | `--max-steps <count>` | `limits.max_steps` | 默认 `100`，必须为正的安全整数。 |
 | `--timeout <seconds>` | `limits.timeout_seconds` | 默认 `1800`，必须为正整数且不超过 `2147483` 秒。 |
 | `--output <path>` | 无 | 可选，指定最终 JSON 结果文件。显式路径的父目录必须已存在。 |
-| `--format <json\|jsonl>` | 无 | 两种模式共用，默认 `json`，控制 stdout 格式。 |
 | `--help` | 无 | 使用 `minou run --help` 或 `minou --help` 查看帮助。 |
 
 列表参数使用逗号分隔，不使用空格分隔或重复传参：
@@ -294,8 +292,7 @@ node ".\dist\src\cli\main.js" run `
   --workspace "G:\code\repo" `
   --mcp-config "G:\tasks\mcp-servers.json" `
   --auto-approve-groups mcp `
-  --output "G:\results\result.json" `
-  --format jsonl
+  --output "G:\results\result.json"
 ```
 
 显式文件替换本次使用的整个 MCP 配置列表。省略该文件时，`use_configured_mcp` 为 `true` 会使用全局配置，为 `false` 则跳过全局服务的初始化。`{"mcpServers":[]}` 表示本次配置为空。以上设置只在本次运行生效。`isolated.mcp=true` 完全禁用 MCP 模块，并且与 `mcp_config` 互斥。
@@ -306,7 +303,7 @@ MCP 保留现有 Catalog、搜索、载入预算、Schema 校验和调用逻辑�
 
 ## 8. 最终结果 JSON
 
-`--format` 控制 stdout 的展示方式。CLI 始终尝试将最终结果写为 JSON 文件。下面是一份成功结果。
+CLI 始终尝试将最终结果写为 JSON 文件，并通过 stdout 最后一行的 `run.finished` 提供同一份结果。下面是一份成功结果。
 
 ```json
 {
@@ -374,44 +371,23 @@ MCP 保留现有 Catalog、搜索、载入预算、Schema 校验和调用逻辑�
 
 Usage 中，`input_tokens` 是未缓存输入；`cache_read_tokens`、`cache_write_tokens` 为另外两个输入桶。`output_tokens` 包含 reasoning，`reasoning_tokens` 只是其中子集，不能再次加入总量。`total_tokens`、缓存和 reasoning 字段未报告时保持缺失，不补零。
 
-停止时最终 `answer` 来自已记录的 Assistant Message，未完成消息的流式文本不保证写入最终回答；调用方可能已经在 `message.delta` 中看到这些片段。
+停止时最终 `answer` 来自已记录的 Assistant Message。JSONL 也只显示已提交的事件。
 
-## 9. 实时 JSONL 事件
+## 9. 已提交事件的 JSONL 输出
 
-使用 `--format jsonl` 时，stdout 每行输出一个 JSON 对象，结果文件仍写入显式输出路径或本次运行目录。以下命令分别保存公共事件和诊断信息。
+CLI 在 SQLite 提交成功后，按日志 `seq` 将每条事件的完整 JSON 对象写到 stdout，一行一条。结果文件写入显式输出路径或本次运行目录。以下命令分别保存事件和诊断信息。
 
 ```powershell
 node ".\dist\src\cli\main.js" run `
   --request "G:\tasks\request.json" `
   --output "G:\results\result.json" `
-  --format jsonl `
   1> "G:\results\events.jsonl" `
   2> "G:\results\diagnostics.log"
 ```
 
-公共事件信封固定为：
+事件行保留日志中的类型和字段，例如 `turn/start`、`user/message`、`assistant/block_end`、`assistant/message`、`tool/result` 和 `turn/end`。`eventId`、`sessionId`、`seq` 及事件载荷与 SQLite 记录一致。内存里的块开始和增量不会输出。已持久化的思考块、工具参数和结果也会随事件原样输出。
 
-```json
-{"version":1,"seq":1,"type":"run.started","run_id":"external-task-151","session_id":"5e800d84-7eef-4473-a0b5-a89d8180d863","data":{}}
-```
-
-`seq` 是本次公共输出独立、单调递增的序号，与内部 EventLog 序号无关。类型专属字段放在 `data` 中。
-
-| `type` | `data` 主要字段 | 说明 |
-| --- | --- | --- |
-| `run.started` | 空对象 | 请求校验通过后发出，运行环境可能尚在初始化。 |
-| `step.started` | `step` | 一个 Step 已开始。 |
-| `message.delta` | `step`、`block_id`、`text` | 公开文本增量，不导出 thinking 增量。 |
-| `message.completed` | `step`、`text` | 已记录 Assistant Message 的完整公开文本。 |
-| `tool.started` | `step`、`call_id`、`tool` | 已调度到工具执行入口，包含参数检查和权限检查阶段，不代表已经产生副作用。 |
-| `tool.completed` | `step`、`call_id`、`status` | 工具结果状态，不包含结果正文。 |
-| `approval.resolved` | `step`、`approval_id`、`decision` | 本次非交互审批的决定。 |
-| `step.completed` | `step`、`reason` | 内部 Step 结束原因。 |
-| `run.finished` | `result` | 最终结果与资源清理处理结束后发出，最多一次。正常写出时包含与结果文件一致的结果对象。 |
-
-`message.completed.text` 是完整消息文本；已经消费 `message.delta` 的程序应使用它确认或替换对应消息，避免把完整文本再次追加造成重复。最终回答以 Result 为准。
-
-公共输出采用字段白名单，不导出模型内部思考、原始工具参数、完整工具结果、凭据配置、请求头或异常堆栈。`answer` 和消息文本是模型生成内容，可能复述输入或工具中的信息，公共格式不等于对自然语言内容进行完整脱敏。
+最后一行是 `run.finished`，其中 `data.result` 与结果文件一致。这一行在日志事件之外提供最终运行状态。它的 `seq` 是最后一个日志序号加一。运行未写入任何日志事件时，`run.finished` 的 `seq` 为 1。最终回答取 `data.result.answer`。
 
 调用方应持续读取 stdout 和 stderr，或将其重定向到文件。CLI 等待写入回调处理背压；stdout 管道关闭或写入 5 秒内无法完成时按输出异常结束，不无限缓存事件。管道已经关闭时，调用方无法再依赖收到 `run.finished`，应结合退出码和可用结果文件判断。
 
@@ -462,7 +438,7 @@ $runExitCode
 
 最终结果的 `record_directory` 给出内部日志目录，`event_log_path` 直接指向事件日志数据库。省略 `--output` 时，结果文件位于同一运行目录。每次使用内部 UUID 生成目录，外部 `run_id` 仅用于关联。
 
-`events.sqlite` 保存已提交的内部事件，包括完整的 Assistant 内容块和消息。块开始和增量在运行时通过内存发布，JSONL 的 `message.delta` 来自该实时路径。内部记录可能包含已提交的模型思考和完整工具内容。工具产生的输出文件保存在 `tool_output`。
+`events.sqlite` 保存已提交的内部事件，包括完整的 Assistant 内容块和消息。JSONL 的事件行直接对应这些记录。工具产生的输出文件保存在 `tool_output`。
 
 | 现象 | 检查方式 |
 | --- | --- |
@@ -470,7 +446,7 @@ $runExitCode
 | 找不到指定模型或有效默认模型 | 确认当前用户配置中已保存模型；`--model` 填写稳定 `modelId`；检查运行账号及 `USERPROFILE` 是否与配置模型时一致。 |
 | 推理等级无效 | 删除 `--reasoning-level` 使用模型首个等级，或填写模型当前支持的值。 |
 | `workspace` 无效或输入文件不可读 | 检查目录/文件是否存在，并按前述路径基准核对相对路径。 |
-| 参数冲突 | Request 模式将任务配置放入 JSON，命令行仅保留 `--request`、`--output`、`--format`。 |
+| 参数冲突 | Request 模式将任务配置放入 JSON，命令行仅保留 `--request` 和可选的 `--output`。 |
 | 工具被拒绝 | 检查内置工具白名单、沙箱模式，以及触发审批后记录的决定。 |
 | MCP 服务连接失败或没有工具 | 检查 `use_configured_mcp`、`mcp_config`、模块隔离以及服务自身的 `enabled`、传输配置和启动超时。 |
 | Shell / Terminal 无法启动 | 检查错误中的绝对路径是否指向当前平台的 PowerShell 7 可执行文件，以及本机是否允许创建进程和 PTY。Windows x64 可用 `scripts/setup-pwsh.ps1` 准备资源。 |

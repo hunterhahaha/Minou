@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { Writable } from "node:stream"
-import { createStatistics, mapEvent, mapUsage, normalizeRequest, observeEvent, readCliInput, writeResult } from "../../src/cli/protocol.ts"
+import { createStatistics, mapUsage, normalizeRequest, observeEvent, readCliInput, writeResult } from "../../src/cli/protocol.ts"
 import { toolGroup, writeOutput } from "../../src/cli/main.ts"
 import type { RunResult } from "../../src/cli/protocol.ts"
 import type { SessionEvent } from "../../runtime/session/src/events.ts"
@@ -47,7 +47,7 @@ async function main(): Promise<void> {
     await assert.rejects(readCliInput(["run", "--request", "request.json", "--output", "out", "--model", "x"], root), /互斥/)
     for (const args of [
       ["run"], ["benchmark"], ["run", "--output", "x", "--prompt-file", "task.txt", "--bad", "x"],
-      ["run", "--output", "a", "--output", "b"], ["run", "--output", "x", "--prompt-file", "task.txt", "--format", "yaml"],
+      ["run", "--output", "a", "--output", "b"], ["run", "--prompt-file", "task.txt", "--format", "jsonl"],
       ["run", "--prompt-file", "task.txt", "--restrict-system-tools", "yes"], ["run", "--prompt-file", "task.txt", "--use-configured-mcp", "0"],
       ["run", "--prompt-file", "task.txt", "--system-tools", "read,,glob"],
     ]) await assert.rejects(readCliInput(args, root))
@@ -90,8 +90,6 @@ async function main(): Promise<void> {
     assert.equal(state.toolCalls, 1)
     assert.equal(state.answer, "last")
     assert.deepEqual(mapUsage(state.usage), { input_tokens: 10, output_tokens: 7 })
-    assert.equal(mapEvent({ type: "assistant/block_delta", turn: 1, step: 1, blockId: "b", delta: { type: "thinking", text: "private" } }), undefined)
-    assert.deepEqual(mapEvent(event({ type: "tool/result", toolCallId: "call", result: { status: "error", content: [{ type: "text", text: "private" }], error: { details: "credential" } } })), { type: "tool.completed", data: { step: 1, call_id: "call", status: "error" } })
     assert.equal(toolGroup("mcp_fake", { get: () => ({ kind: "builtin" }) } as unknown as ToolRegistry), undefined)
     assert.equal(toolGroup("mcp_remote", { get: () => ({ kind: "mcp" }) } as unknown as ToolRegistry), "mcp")
 

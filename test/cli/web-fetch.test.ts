@@ -81,7 +81,7 @@ async function main(): Promise<void> {
     setProviderApiKey(paths.providerDatabasePath, "model", "model-secret")
     const input = join(directory, "request.json"), output = join(directory, "result.json")
     await writeFile(input, JSON.stringify({ version: 1, prompt: "fetch", workspace, isolated: { skill: true, memory: true, mcp: true } }))
-    const child = spawn(process.execPath, [resolve("dist/src/cli/main.js"), "run", "--request", input, "--output", output, "--format", "jsonl"], { env: { ...process.env, USERPROFILE: profile }, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] })
+    const child = spawn(process.execPath, [resolve("dist/src/cli/main.js"), "run", "--request", input, "--output", output], { env: { ...process.env, USERPROFILE: profile }, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] })
     let stdout = "", stderr = ""
     child.stdout.on("data", (chunk) => { stdout += chunk.toString() })
     child.stderr.on("data", (chunk) => { stderr += chunk.toString() })

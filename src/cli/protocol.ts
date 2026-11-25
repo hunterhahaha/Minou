@@ -1,17 +1,15 @@
-/** Headless Agent Execution Protocol V1 的输入、公共事件和结果映射。 */
+/** Headless Agent Execution Protocol V1 的输入、统计与结果。 */
 import { randomUUID } from "node:crypto"
 import { readFile, rename, stat, unlink, writeFile } from "node:fs/promises"
 import { dirname, resolve } from "node:path"
 import { accumulateUsage } from "../../runtime/model/src/types.ts"
 import type { ModelRef, Usage } from "../../runtime/model/src/types.ts"
 import type { MCPConfig } from "../../runtime/mcp/src/types.ts"
-import type { AssistantBlockStreamInput, SessionEvent } from "../../runtime/session/src/events.ts"
+import type { SessionEvent } from "../../runtime/session/src/events.ts"
 import { SANDBOX_MODES } from "../../runtime/session/src/session-state.ts"
 import type { SandboxMode } from "../../runtime/session/src/session-state.ts"
 import { checkConfig } from "../main/config-schema.ts"
 
-/** stdout 使用单个最终 JSON 或逐行公共事件。 */
-export type OutputFormat = "json" | "jsonl"
 /** 自动审批的固定工具组；只影响已触发的审批。 */
 export const TOOL_GROUPS = ["file", "shell", "terminal", "mcp", "skill", "memory"] as const
 /** 一种明确的自动审批分组。 */
@@ -59,8 +57,6 @@ export interface CliInput {
   request: RunRequest
   /** 显式结果文件的绝对路径，父目录必须存在；省略时使用本次运行目录。 */
   output?: string
-  /** stdout 协议。 */
-  format: OutputFormat
 }
 
 /** 可公开的输入错误；不携带 SDK 错误、配置正文或凭据。 */
@@ -69,14 +65,14 @@ export class CliInputError extends Error {
   constructor(message: string) { super(message); this.name = "CliInputError" }
 }
 
-/** 公共事件的独立信封；data 只能由白名单映射产生。 */
-export interface PublicEvent {
-  /** 公共格式版本。 */ version: 1
-  /** 公共序号，与内部 EventLog 序号无关。 */ seq: number
-  /** 公共事件类型。 */ type: string
+/** JSONL 最后一行携带的最终运行结果。 */
+export interface RunFinishedEvent {
+  /** 结果格式版本。 */ version: 1
+  /** 最后一条已输出的日志事件序号加一。 */ seq: number
+  /** 最终结果标记。 */ type: "run.finished"
   /** 调用方关联身份。 */ run_id: string
   /** 本次内部 UUID。 */ session_id: string
-  /** 白名单字段。 */ data: Record<string, unknown>
+  /** 与结果文件相同的最终结果。 */ data: { result: RunResult }
 }
 
 /** 仅输出已报告的统一用量；缓存和 reasoning 缺失时不补零。 */
@@ -121,29 +117,24 @@ export interface RunResult {
 }
 
 const VALUE_OPTIONS = new Set([
-  "request", "output", "format", "prompt-file", "model", "reasoning-level", "workspace", "run-id",
+  "request", "output", "prompt-file", "model", "reasoning-level", "workspace", "run-id",
   "max-steps", "timeout", "mcp-config", "isolate", "sandbox-mode", "auto-approve-groups", "auto-approve-tools",
   "restrict-system-tools", "system-tools", "use-configured-mcp",
 ])
 
 /**
- * 尽力恢复错误路径的输出控制，不接受重复或缺少值的参数。
+ * 提取显式结果路径，使输入校验失败时也能尝试写入结果文件。
  * @param argv 原始命令参数。
  * @param cwd CLI 启动目录。
- * @returns 仅用于输入失败时的结果写入位置与 stdout 格式。
+ * @returns 唯一有效的显式结果路径，缺少路径或重复指定时返回 undefined。
  */
-export function outputDestination(argv: readonly string[], cwd: string): { output?: string; format: OutputFormat } {
-  const values: Record<string, string[]> = { output: [], format: [] }
+export function outputDestination(argv: readonly string[], cwd: string): string | undefined {
+  const values: string[] = []
   for (let i = 0; i < argv.length; i++) {
-    for (const name of ["output", "format"]) {
-      if (argv[i].startsWith(`--${name}=`)) values[name].push(argv[i].slice(name.length + 3))
-      else if (argv[i] === `--${name}` && argv[i + 1] && !argv[i + 1].startsWith("--")) values[name].push(argv[i + 1])
-    }
+    if (argv[i].startsWith("--output=")) values.push(argv[i].slice("--output=".length))
+    else if (argv[i] === "--output" && argv[i + 1] && !argv[i + 1].startsWith("--")) values.push(argv[i + 1])
   }
-  return {
-    output: values.output.length === 1 && values.output[0].trim() ? resolve(cwd, values.output[0]) : undefined,
-    format: values.format.length === 1 && values.format[0] === "jsonl" ? "jsonl" : "json",
-  }
+  return values.length === 1 && values[0].trim() ? resolve(cwd, values[0]) : undefined
 }
 
 /**
@@ -165,12 +156,10 @@ export async function readCliInput(argv: readonly string[], cwd: string): Promis
     if (value === undefined || value.startsWith("--") || !value.trim()) throw new CliInputError(`--${name} 缺少值。`)
     options[name] = value
   }
-  const format = options.format ?? "json"
-  if (format !== "json" && format !== "jsonl") throw new CliInputError("--format 仅支持 json 或 jsonl。")
   let raw: unknown
   let base = cwd
   if (options.request) {
-    if (Object.keys(options).some((key) => !["request", "output", "format"].includes(key))) {
+    if (Object.keys(options).some((key) => key !== "request" && key !== "output")) {
       throw new CliInputError("--request 与其他任务输入参数互斥。")
     }
     const path = resolve(cwd, options.request)
@@ -190,7 +179,7 @@ export async function readCliInput(argv: readonly string[], cwd: string): Promis
       limits: { max_steps: options["max-steps"] === undefined ? undefined : Number(options["max-steps"]), timeout_seconds: options.timeout === undefined ? undefined : Number(options.timeout) },
     }
   }
-  return { request: await normalizeRequest(raw, base, cwd), output: options.output && resolve(cwd, options.output), format }
+  return { request: await normalizeRequest(raw, base, cwd), output: options.output && resolve(cwd, options.output) }
 }
 
 /**
@@ -372,25 +361,6 @@ export function observeEvent(state: RunStatistics, event: SessionEvent): void {
   }
 }
 
-/**
- * 将内部事件映射为公开白名单字段，思考和原始工具载荷不导出。
- * @param event 已提交内部事件或内存中的流式块事件。
- * @returns 公共类型与载荷，或无需输出。
- */
-export function mapEvent(event: SessionEvent | AssistantBlockStreamInput): { type: string; data: Record<string, unknown> } | undefined {
-  const step = event.step
-  switch (event.type) {
-    case "step/start": return { type: "step.started", data: { step } }
-    case "step/end": return { type: "step.completed", data: { step, reason: event.reason } }
-    case "assistant/block_delta":
-      if (event.delta.type === "text") return { type: "message.delta", data: { step, block_id: event.blockId, text: event.delta.text } }
-      return undefined
-    case "assistant/message": return { type: "message.completed", data: { step, text: event.message.content.filter((block) => block.type === "text").map((block) => block.text).join("\n\n") } }
-    case "tool/result": return { type: "tool.completed", data: { step, call_id: event.toolCallId, status: event.result.status } }
-    case "approval/result": return { type: "approval.resolved", data: { step, approval_id: event.approvalId, decision: event.decision } }
-    default: return undefined
-  }
-}
 
 /**
  * 将内部累计 Usage 转为公共输出字段，保留未报告状态。
@@ -446,7 +416,7 @@ export async function writeResult(path: string, result: RunResult): Promise<void
 /** 命令帮助不触发任何配置初始化。 */
 export const CLI_HELP = `Minou Headless Agent Execution Protocol V1
 minou run --prompt-file <file> [--output <result.json>] [options]
-minou run --request <request.json> [--output <result.json>] [--format json|jsonl]
+minou run --request <request.json> [--output <result.json>]
 
 Options:
   --model <modelId>             默认使用 Minou 有效默认模型
@@ -464,6 +434,5 @@ Options:
   --auto-approve-groups <list>   file,shell,terminal,mcp,skill,memory；auto 模式由模型审核
   --auto-approve-tools <list>    精确工具名；auto 模式由模型审核
   --output <path>                结果 JSON，默认写入本次运行目录的 result.json
-  --format <json|jsonl>          stdout 格式，默认 json
   --help                        显示帮助
 `

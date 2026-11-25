@@ -53,12 +53,12 @@ Create a UTF-8 `task.txt` containing your task, then run:
 node dist/src/cli/main.js run --prompt-file ./task.txt --workspace . --output ./result.json
 ```
 
-Each invocation starts a fresh run using the configured default model. With no `--output`, Minou saves the final JSON to `.minou/logs/cli/<session-id>/result.json` under the configured user profile. The CLI prints the absolute result path to stderr. Stdout contains the final JSON by default. Use `--format jsonl` to stream public events alongside the JSON result file.
+Each invocation starts a fresh run using the configured default model. With no `--output`, Minou saves the final JSON to `.minou/logs/cli/<session-id>/result.json` under the configured user profile. The CLI prints the absolute result path to stderr. Stdout prints each committed event in full as JSON Lines, followed by `run.finished` with the final result.
 
 For structured requests:
 
 ```powershell
-node dist/src/cli/main.js run --request ./request.json --output ./result.json --format jsonl
+node dist/src/cli/main.js run --request ./request.json --output ./result.json
 ```
 
 Prompt-file input and request-file input are mutually exclusive. The defaults are 100 steps and a 1,800-second timeout. The CLI runs without an Electron window and does not resume desktop conversations.

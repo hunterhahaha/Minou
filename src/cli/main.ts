@@ -33,10 +33,10 @@ import { createTurnModelAdapter } from "../main/model-adapters.ts"
 import { listProviders, readDefaultModel } from "../main/provider-store.ts"
 import { estimateLocalTokens } from "../main/token-estimator.ts"
 import {
-  CLI_HELP, CliInputError, createStatistics, exitCode, mapEvent, mapUsage, observeEvent,
+  CLI_HELP, CliInputError, createStatistics, exitCode, mapUsage, observeEvent,
   outputDestination, readCliInput, resultStatus, writeResult,
 } from "./protocol.ts"
-import type { PublicEvent, RunRequest, RunResult, StopReason, ToolGroup } from "./protocol.ts"
+import type { RunFinishedEvent, RunRequest, RunResult, StopReason, ToolGroup } from "./protocol.ts"
 
 const SYSTEM_PROMPT = "You are an AI agent powered by Minou."
 const CLEANUP_MS = 5000
@@ -133,8 +133,8 @@ export async function runCli(argv: readonly string[]): Promise<number> {
   const cwd = process.cwd()
   const sessionId = randomUUID()
   const userProfile = process.env.USERPROFILE ?? homedir()
-  const destination = outputDestination(argv, cwd)
-  const outputPath = destination.output ?? join(userProfile, ".minou", "logs", "cli", sessionId, "result.json")
+  const explicitOutput = outputDestination(argv, cwd)
+  const outputPath = explicitOutput ?? join(userProfile, ".minou", "logs", "cli", sessionId, "result.json")
   const statistics = createStatistics()
   const controller = new AbortController()
   let runId: string = sessionId
@@ -148,7 +148,7 @@ export async function runCli(argv: readonly string[]): Promise<number> {
   let stage = "input"
   let startedAt = performance.now()
   let stoppedAt: number | undefined
-  let publicSeq = 0
+  let lastEventSeq = 0
   let stdoutFailed = false
   let finished = false
   let startedTurn = false
@@ -200,16 +200,12 @@ export async function runCli(argv: readonly string[]): Promise<number> {
    */
   function checkStopped(): void { if (controller.signal.aborted) throw createAbortError() }
   /**
-   * 按公共协议向 stdout 有序写入事件。
-   *
-   * @param type 公共事件类型。
-   * @param data 白名单数据。
+   * 向 stdout 按行写入已提交事件或最终结果。
+   * @param event 要原样序列化的输出对象。
    * @returns 有序写入完成。
    * @throws Error stdout 失败。
    */
-  function emit(type: string, data: Record<string, unknown>): Promise<void> {
-    if (destination.format !== "jsonl") return Promise.resolve()
-    const event: PublicEvent = { version: 1, seq: ++publicSeq, type, run_id: runId, session_id: sessionId, data }
+  function emit(event: SessionEvent | RunFinishedEvent): Promise<void> {
     const writing = outputTail.then(async () => {
       if (stdoutFailed) throw new Error("stdout 已关闭")
       try { await writeOutput(process.stdout, `${JSON.stringify(event)}\n`) }
@@ -219,7 +215,21 @@ export async function runCli(argv: readonly string[]): Promise<number> {
     return writing
   }
   /**
-   * 先提交内部事件，再更新运行统计与允许公开的事件输出。
+   * 累计运行统计，并按事务返回的顺序输出完整事件。
+   * @param events 已提交的事件，按日志序号排列。
+   * @returns 该批事件的输出全部完成后兑现。
+   * @throws Error stdout 写入失败。
+   */
+  async function publishCommittedEvents(events: readonly SessionEvent[]): Promise<void> {
+    await Promise.all(events.map((event) => {
+      observeEvent(statistics, event)
+      lastEventSeq = event.seq
+      return emit(event)
+    }))
+  }
+
+  /**
+   * 先提交事件，再更新运行统计并输出完整记录。
    *
    * @param input 未分配身份的现有事件。
    * @returns 已持久化事件。
@@ -228,10 +238,7 @@ export async function runCli(argv: readonly string[]): Promise<number> {
   async function appendEvent(input: SessionEventInput) {
     if (finished || !eventLog) throw new Error("本次事件日志不可写")
     const event = await eventLog.appendEvent(input)
-    if (finished) return event
-    observeEvent(statistics, event)
-    const mapped = mapEvent(event)
-    if (mapped) await emit(mapped.type, mapped.data)
+    await publishCommittedEvents([event])
     return event
   }
   /** 将进程信号统一映射为用户中断。 */
@@ -254,7 +261,6 @@ export async function runCli(argv: readonly string[]): Promise<number> {
     startedAt = performance.now()
     checkStopped()
     timeout = setTimeout(() => stop("timeout"), request.timeoutSeconds * 1000)
-    await emit("run.started", {})
     stage = "initialization"
     const { paths, config } = await initializeConfigFilesSnapshot(userProfile, { skipSkills: request.isolated.skill })
     checkStopped()
@@ -331,7 +337,7 @@ export async function runCli(argv: readonly string[]): Promise<number> {
       { type: "user/message", turn: 1, message: { id: randomUUID(), role: "user", content: [{ type: "text", text: request.prompt }] } },
     ])
     startedTurn = initial.length === 2
-    for (const event of initial) observeEvent(statistics, event)
+    await publishCommittedEvents(initial)
     const executeTool = createExecuteToolCall(tools, renders)
     /**
      * 记录本次审批，并按沙箱模式交给模型审核或匹配现有自动批准名单。
@@ -362,16 +368,10 @@ export async function runCli(argv: readonly string[]): Promise<number> {
     stage = "execution"
     const result = await runAgentLoop({
       turn: 1, model: selectedModel, adapter, content: [], signal: controller.signal, appendEvent,
-      publishBlockStream: async (event) => {
-        if (finished) return
-        const mapped = mapEvent(event)
-        if (mapped) await emit(mapped.type, mapped.data)
-      },
       tools: tools.listDefinitions().filter(({ name }) => tools.get(name)?.kind === "builtin" && (!allowedSystemTools || allowedSystemTools.has(name))),
       prepareHistory: async () => modelHistory(system, await log.readEvents() as SessionEvent[]),
       executeTool: async (name, args, context) => {
         if (finished) throw createAbortError()
-        await emit("tool.started", { step: context.step, call_id: context.toolCallId, tool: name })
         if (allowedSystemTools && tools.get(name)?.kind === "builtin" && !allowedSystemTools.has(name)) {
           return renderCommonError({ source: "tool", code: TOOL_NOT_FOUND, message: `未找到可用工具：${name}` })
         }
@@ -384,8 +384,10 @@ export async function runCli(argv: readonly string[]): Promise<number> {
             readLoadedTools: async () => structuredClone(loaded),
             writeLoadedTools: async (entries, change) => {
               const inputs = change ? mcpToolChanges(change, context.turn, context.step, context.toolCallEventId) : []
-              if (inputs.length > 0) await log.appendMcpToolChanges(inputs)
+              if (finished) throw createAbortError()
+              const committed = await log.appendMcpToolChanges(inputs)
               loaded = structuredClone(entries)
+              await publishCommittedEvents(committed)
             },
             readSandboxMode: async () => mode, requestApproval: approve,
           } } : {}),
@@ -420,15 +422,18 @@ export async function runCli(argv: readonly string[]): Promise<number> {
       error ??= { code: "CLEANUP_FAILED", stage: "cleanup", message: "部分资源清理失败或超时。" }
     }
     if (eventLog && startedTurn) {
+      const committed: SessionEvent[] = []
       try {
-        if (error) await eventLog.appendEvent({ type: "app/error", turn: 1, error: { source: "runtime", code: error.code, message: error.message } })
+        if (error) committed.push(await eventLog.appendEvent({ type: "app/error", turn: 1, error: { source: "runtime", code: error.code, message: error.message } }))
         const changes = fileTracker?.summarize() ?? []
-        if (changes.length) await eventLog.appendEvent({ type: "turn/file_changes", turn: 1, files: changes })
-        await eventLog.appendEvent({ type: "turn/end", turn: 1, reason: reason === "finished" ? "completed" : reason === "error" || reason === "invalid_request" ? "error" : "stopped" })
+        if (changes.length) committed.push(await eventLog.appendEvent({ type: "turn/file_changes", turn: 1, files: changes }))
+        committed.push(await eventLog.appendEvent({ type: "turn/end", turn: 1, reason: reason === "finished" ? "completed" : reason === "error" || reason === "invalid_request" ? "error" : "stopped" }))
       } catch {
         reason = "error"
         error = { code: "EVENT_WRITE_FAILED", stage: "output", message: "运行记录无法完成写入。" }
       }
+      /** stdout 失败由最终结果输出处理，日志收尾已经完成。 */
+      await publishCommittedEvents(committed).catch(() => undefined)
     }
     process.off("SIGINT", interrupt)
     process.off("SIGTERM", interrupt)
@@ -446,7 +451,7 @@ export async function runCli(argv: readonly string[]): Promise<number> {
   let resultWritten = false
   try {
     if (!isAbsolute(outputPath)) throw new Error("结果路径必须为绝对路径")
-    if (!destination.output) await mkdir(dirname(outputPath), { recursive: true, mode: 0o700 })
+    if (!explicitOutput) await mkdir(dirname(outputPath), { recursive: true, mode: 0o700 })
     await writeResult(outputPath, result)
     resultWritten = true
   } catch {
@@ -455,9 +460,7 @@ export async function runCli(argv: readonly string[]): Promise<number> {
     result.error = { code: "OUTPUT_FAILED", stage: "output", message: "最终结果无法原子写入结果路径。" }
   }
   try {
-    if (destination.format === "jsonl") await emit("run.finished", { result })
-    else if (!stdoutFailed) await writeOutput(process.stdout, `${JSON.stringify(result)}\n`)
-    else code = 1
+    await emit({ version: 1, seq: lastEventSeq + 1, type: "run.finished", run_id: runId, session_id: sessionId, data: { result } })
   } catch {
     code = 1
     result.status = "failed"; result.stop_reason = "error"; result.answer_complete = false

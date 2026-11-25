@@ -10,14 +10,15 @@ import { DatabaseSync } from "node:sqlite"
 import { initializeConfigFilesSnapshot, writeMcpServers } from "../../src/main/config-files.ts"
 import { saveModel, saveProvider, setProviderApiKey } from "../../src/main/provider-store.ts"
 import { createMCPTestServer, testTool } from "../../runtime/mcp/test/helpers.ts"
-import type { PublicEvent, RunResult } from "../../src/cli/protocol.ts"
+import type { RunFinishedEvent, RunResult } from "../../src/cli/protocol.ts"
+import type { SessionEvent } from "../../runtime/session/src/events.ts"
 
 /** 可检查的 Chat Completions 请求。 */
 interface RequestBody { messages: Array<{ role: string; content: string }>; tools: Array<{ function: { name: string; description?: string; parameters: { properties?: Record<string, unknown> } } }>; model: string; reasoning_effort: string; tool_choice?: string }
 /** 每个本地模型请求的脚本，挂起场景可保留 response 不结束。 */
 type Respond = (body: RequestBody, attempt: number, response: ServerResponse) => void
 /** 一次真实 CLI 子进程的输出。 */
-interface Outcome { code: number | null; result: RunResult; events: PublicEvent[]; stdout: string; stderr: string; requests: RequestBody[] }
+interface Outcome { code: number | null; result: RunResult; events: SessionEvent[]; stdout: string; stderr: string; requests: RequestBody[] }
 
 /**
  * 发布一个真实 SDK 可消费的 Chat Completion 流。
@@ -94,7 +95,7 @@ async function main(): Promise<void> {
     requests = []
     serverFailure = undefined
     respond = script ?? ((_body, _attempt, response) => reply(response))
-    const child = spawn(process.execPath, [...extra, cli, "run", "--request", input, "--output", output, "--format", "jsonl"], { env: { ...process.env, USERPROFILE: profile }, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] })
+    const child = spawn(process.execPath, [...extra, cli, "run", "--request", input, "--output", output], { env: { ...process.env, USERPROFILE: profile }, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] })
     let stdout = "", stderr = ""
     child.stdout.setEncoding("utf8"); child.stderr.setEncoding("utf8")
     child.stdout.on("data", (chunk: string) => { stdout += chunk; if (breakPipe) child.stdout.destroy() })
@@ -106,18 +107,29 @@ async function main(): Promise<void> {
     })
     const result = JSON.parse(await readFile(output, "utf8")) as RunResult
     if (serverFailure) throw serverFailure
-    const events = stdout.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as PublicEvent)
+    const lines = stdout.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line) as SessionEvent | RunFinishedEvent)
+    const events = lines.filter((event) => event.type !== "run.finished")
     if (!breakPipe) {
-      assert.deepEqual(events.map((event) => event.seq), events.map((_event, index) => index + 1))
-      assert.equal(events.filter((event) => event.type === "run.finished").length, 1)
-      assert.equal(stdout.includes("top-secret-thinking"), false)
+      const finished = lines.at(-1)
+      assert.equal(finished?.type, "run.finished")
+      assert.equal(lines.filter((event) => event.type === "run.finished").length, 1)
+      assert.equal(finished.seq, events.length + 1)
       assert.equal(stdout.includes("top-secret-key"), false)
-      assert.deepEqual(events.at(-1)?.data.result, result)
+      assert.deepEqual(finished.data.result, result)
+      if (result.event_log_path) {
+        const db = new DatabaseSync(result.event_log_path, { readOnly: true })
+        try {
+          const recorded = db.prepare("SELECT event_json FROM session_events ORDER BY seq").all()
+          assert.deepEqual(events, recorded.map((row) => JSON.parse(row.event_json as string)))
+        } finally { db.close() }
+      } else assert.deepEqual(events, [])
     }
     return { code, result, events, stdout, stderr, requests: [...requests] }
   }
   try {
-    assert.equal((await raw(["run", "--help"])).code, 0)
+    const help = await raw(["run", "--help"])
+    assert.equal(help.code, 0)
+    assert.doesNotMatch(help.stdout, /--format/)
     const normal = await run()
     assert.equal(normal.code, 0, normal.stderr)
     assert.equal(normal.result.answer, "answer")
@@ -134,10 +146,12 @@ async function main(): Promise<void> {
     assert.notEqual(normal.result.run_id, normal.result.session_id)
     assert.ok(normal.result.record_directory?.endsWith(normal.result.session_id))
     assert.equal(normal.result.event_log_path, join(normal.result.record_directory!, "events.sqlite"))
-    const messages = normal.events.filter((event) => event.type === "message.delta" || event.type === "message.completed")
-    assert.deepEqual(messages.map(({ type, data }) => [type, data.text]), [
-      ["message.delta", "answer"], ["message.completed", "answer"],
-    ])
+    const messages = normal.events.filter((event) => event.type === "assistant/message")
+    assert.equal(messages.length, 1)
+    assert.ok(messages[0].message.content.some((block) => block.type === "text" && block.text === "answer"))
+    assert.ok(normal.stdout.includes("top-secret-thinking"))
+    assert.deepEqual(normal.events.slice(0, 2).map((event) => event.type), ["turn/start", "user/message"])
+    assert.equal(normal.events.at(-1)?.type, "turn/end")
     assert.ok(normal.stderr.includes(`结果文件：${join(root, "result-1.json")}\n`))
     await writeFile(join(root, "simple.txt"), "simple task")
     requests = []
@@ -145,25 +159,35 @@ async function main(): Promise<void> {
     const simple = await raw(["run", "--prompt-file", join(root, "simple.txt"), "--workspace", workspace,
       "--output", simpleOutput, "--isolate", "skill,memory,mcp"])
     assert.equal(simple.code, 0, simple.stderr)
-    assert.deepEqual(JSON.parse(simple.stdout), JSON.parse(await readFile(simpleOutput, "utf8")))
+    const simpleEvents = simple.stdout.trim().split("\n").map((line) => JSON.parse(line) as SessionEvent | RunFinishedEvent)
+    assert.deepEqual(simpleEvents.slice(0, 2).map((event) => event.type), ["turn/start", "user/message"])
+    const simpleFinished = simpleEvents.at(-1)
+    assert.equal(simpleFinished?.type, "run.finished")
+    assert.deepEqual(simpleFinished.data.result, JSON.parse(await readFile(simpleOutput, "utf8")))
     const defaultOutput = await raw(["run", "--prompt-file", join(root, "simple.txt"), "--workspace", workspace,
       "--isolate", "skill,memory,mcp", "--restrict-system-tools", "true", "--system-tools", "read,glob"])
     assert.equal(defaultOutput.code, 0, defaultOutput.stderr)
     assert.deepEqual(requests.at(-1)?.tools.map((tool) => tool.function.name), ["glob", "read"])
-    const defaultResult = JSON.parse(defaultOutput.stdout) as RunResult
+    const defaultFinished = JSON.parse(defaultOutput.stdout.trim().split("\n").at(-1)!) as RunFinishedEvent
+    assert.equal(defaultFinished.type, "run.finished")
+    const defaultResult = defaultFinished.data.result
     const defaultPath = join(paths.rootDir, "logs", "cli", defaultResult.session_id, "result.json")
     assert.deepEqual(defaultResult, JSON.parse(await readFile(defaultPath, "utf8")))
     assert.ok(defaultOutput.stderr.includes(`结果文件：${defaultPath}\n`))
     const outputFailure = await raw(["run", "--prompt-file", join(root, "simple.txt"), "--workspace", workspace,
       "--output", root, "--isolate", "skill,memory,mcp"])
     assert.equal(outputFailure.code, 1)
-    assert.equal(JSON.parse(outputFailure.stdout).error.code, "OUTPUT_FAILED")
+    const outputFailureEvents = outputFailure.stdout.trim().split("\n").map((line) => JSON.parse(line) as SessionEvent | RunFinishedEvent)
+    assert.equal(outputFailureEvents.at(-2)?.type, "turn/end")
+    const outputFailureFinished = outputFailureEvents.at(-1)
+    assert.equal(outputFailureFinished?.type, "run.finished")
+    assert.equal(outputFailureFinished.data.result.error?.code, "OUTPUT_FAILED")
     assert.doesNotMatch(outputFailure.stderr, /结果文件：/)
     assert.equal((await raw(["run", "--bad", "x", "--output", join(root, "invalid.json")])).code, 2)
     assert.equal(JSON.parse(await readFile(join(root, "invalid.json"), "utf8")).stop_reason, "invalid_request")
-    const invalidDefaultOutput = await raw(["run", "--bad", "x", "--format", "jsonl"])
+    const invalidDefaultOutput = await raw(["run", "--bad", "x"])
     assert.equal(invalidDefaultOutput.code, 2)
-    const invalidEvent = JSON.parse(invalidDefaultOutput.stdout) as PublicEvent
+    const invalidEvent = JSON.parse(invalidDefaultOutput.stdout) as RunFinishedEvent
     assert.equal(invalidEvent.type, "run.finished")
     const invalidResult = invalidEvent.data.result as RunResult
     assert.equal(invalidResult.event_log_path, null)
@@ -217,11 +241,11 @@ async function main(): Promise<void> {
       assert.equal(outcome.code, 0, outcome.stderr)
       if (item.allow) assert.equal(await readFile(item.path, "utf8"), "private-tool-payload")
       else await assert.rejects(readFile(item.path), /ENOENT/)
-      assert.equal(outcome.events.some((event) => event.type === "approval.resolved"), item.approval)
+      assert.equal(outcome.events.some((event) => event.type === "approval/result"), item.approval)
       assert.equal(outcome.result.metrics.tool_calls, 1)
       assert.equal(outcome.result.metrics.steps, 2)
       assert.equal(outcome.result.metrics.usage?.input_tokens, 14)
-      assert.equal(outcome.stdout.includes("private-tool-payload"), false)
+      assert.ok(outcome.stdout.includes("private-tool-payload"))
       const db = new DatabaseSync(outcome.result.event_log_path!, { readOnly: true })
       const events = db.prepare("SELECT event_json FROM session_events ORDER BY seq").all().map((row) => JSON.parse(row.event_json as string))
       db.close()
@@ -249,7 +273,7 @@ async function main(): Promise<void> {
         } else reply(response)
       })
       assert.equal(auto.code, 0, auto.stderr)
-      assert.equal(auto.events.find((event) => event.type === "approval.resolved")?.data.decision, approved ? "approved" : "denied")
+      assert.equal(auto.events.find((event) => event.type === "approval/result")?.decision, approved ? "approved" : "denied")
       if (approved) assert.equal(await readFile(outside, "utf8"), "reviewed write")
       else await assert.rejects(readFile(outside), /ENOENT/)
       assert.equal(auto.requests.length, 3)
@@ -358,7 +382,7 @@ async function main(): Promise<void> {
         restrict_system_tools: true, system_tools: ["mcp_list_tools", "mcp_load_tools"], permissions: { auto_approve: { groups: allow ? ["mcp"] : [] } } }, mcpScript)
       assert.equal(mcpAllowed.code, 0, mcpAllowed.stderr)
       assert.equal(fixture.state.calls.length, allow ? 1 : 0)
-      assert.equal(mcpAllowed.stdout.includes("remote-private-value"), false)
+      assert.ok(mcpAllowed.stdout.includes("remote-private-value"))
       assert.deepEqual(JSON.parse(await readFile(paths.configPath, "utf8")).mcpServers, [], "本次 MCP 覆盖不得写回全局配置")
       } finally { await fixture.close() }
     }
@@ -379,7 +403,7 @@ async function main(): Promise<void> {
     assert.equal(timed.result.metrics.usage, null)
     const preload = join(root, "signal.cjs")
     // Windows 的 child.kill 会直接终止进程；用真实 CLI 进程中的信号事件验证监听和收尾路径。
-    await writeFile(preload, "const write=process.stdout.write; let sent=false; process.stdout.write=function(chunk,...args){ const result=write.call(this,chunk,...args); if(!sent && String(chunk).includes('step.started')){sent=true;setTimeout(()=>process.emit('SIGTERM'),100);} return result; };")
+    await writeFile(preload, "const write=process.stdout.write; let sent=false; process.stdout.write=function(chunk,...args){ const result=write.call(this,chunk,...args); if(!sent && String(chunk).includes('step/start')){sent=true;setTimeout(()=>process.emit('SIGTERM'),100);} return result; };")
     const interrupted = await run({}, hanging, ["--require", preload])
     assert.equal(interrupted.code, 130)
     assert.equal(interrupted.result.stop_reason, "interrupted")
@@ -387,7 +411,7 @@ async function main(): Promise<void> {
     const shellCase = await run({ permissions: { auto_approve: { groups: ["shell"] } } }, (_body, attempt, response) => attempt === 1
       ? reply(response, [{ name: "shell", args: { command: "[Console]::Write('cli-shell-ok')" } }], "") : reply(response))
     assert.equal(shellCase.code, 0)
-    assert.equal(shellCase.events.find((event) => event.type === "tool.completed")?.data.status, "success")
+    assert.equal(shellCase.events.find((event) => event.type === "tool/result")?.result.status, "success")
     assert.match(shellCase.requests[1].messages.at(-1)!.content, /cli-shell-ok/)
     const pidPath = join(root, "shell-pid.txt")
     const shellTimeout = await run({ limits: { timeout_seconds: 2 }, permissions: { auto_approve: { groups: ["shell"] } } }, (_body, _attempt, response) =>
@@ -408,7 +432,7 @@ async function main(): Promise<void> {
       } else reply(response)
     })
     assert.equal(terminalCase.code, 0, terminalCase.stderr)
-    assert.deepEqual(terminalCase.events.filter((event) => event.type === "tool.completed").map((event) => event.data.status), ["success", "success"])
+    assert.deepEqual(terminalCase.events.filter((event) => event.type === "tool/result").map((event) => event.result.status), ["success", "success"])
     const terminalPid = Number((await readFile(terminalPidPath, "utf8")).trim())
     assert.ok(terminalPid > 0)
     assert.throws(() => process.kill(terminalPid, 0), "CLI 收尾后真实 PTY 进程必须已经释放")
