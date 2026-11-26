@@ -113,6 +113,43 @@ const VALUE_OPTIONS = new Set([
 ])
 
 /**
+ * 解析只携带已有会话身份与新消息的续跑命令。
+ * @param argv 包含 continue 子命令的参数。
+ * @returns 初次 run 分配的会话 ID 及用户原文。
+ * @throws CliInputError 参数无效、重复或试图覆盖会话设置。
+ */
+export function readContinueInput(argv: readonly string[]): { sessionId: string; prompt: string } {
+  if (argv[0] !== "continue") throw new CliInputError("需要 continue 子命令。")
+  const options = parseOptions(argv, new Set(["session-id", "prompt"]))
+  const sessionId = text(options["session-id"], "--session-id").toLowerCase()
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(sessionId)) {
+    throw new CliInputError("--session-id 必须是 run 返回的会话 UUID。")
+  }
+  return { sessionId, prompt: text(options.prompt, "--prompt") }
+}
+
+/**
+ * 读取命令专属的长选项。
+ * @param argv 含子命令的完整参数。
+ * @param allowed 该命令允许的选项名。
+ * @returns 已解析的非空选项值。
+ * @throws CliInputError 选项未知、重复或缺少值。
+ */
+function parseOptions(argv: readonly string[], allowed: ReadonlySet<string>): Record<string, string> {
+  const options: Record<string, string> = {}
+  for (let i = 1; i < argv.length; i++) {
+    const match = /^--([^=]+)(?:=(.*))?$/.exec(argv[i])
+    if (!match || !allowed.has(match[1])) throw new CliInputError("存在未知参数或位置参数。")
+    const name = match[1]
+    if (name in options) throw new CliInputError(`--${name} 不能重复。`)
+    const value = match[2] ?? argv[++i]
+    if (value === undefined || (match[2] === undefined && value.startsWith("--")) || !value.trim()) throw new CliInputError(`--${name} 缺少值。`)
+    options[name] = value
+  }
+  return options
+}
+
+/**
  * 解析平铺的命令行参数并补齐运行默认值。
  * @param argv 包含 run 子命令的参数。
  * @param cwd 相对命令行路径的基准。
@@ -121,16 +158,7 @@ const VALUE_OPTIONS = new Set([
  */
 export async function readCliInput(argv: readonly string[], cwd: string): Promise<CliInput> {
   if (argv[0] !== "run") throw new CliInputError("需要 run 子命令；使用 minou run --help 查看参数。")
-  const options: Record<string, string> = {}
-  for (let i = 1; i < argv.length; i++) {
-    const match = /^--([^=]+)(?:=(.*))?$/.exec(argv[i])
-    if (!match || !VALUE_OPTIONS.has(match[1])) throw new CliInputError("存在未知参数或位置参数。")
-    const name = match[1]
-    if (name in options) throw new CliInputError(`--${name} 不能重复。`)
-    const value = match[2] ?? argv[++i]
-    if (value === undefined || (match[2] === undefined && value.startsWith("--")) || !value.trim()) throw new CliInputError(`--${name} 缺少值。`)
-    options[name] = value
-  }
+  const options = parseOptions(argv, VALUE_OPTIONS)
   const output = options.output === undefined ? undefined : resolve(cwd, options.output)
   const outputJson = options.outputjson === undefined ? undefined : resolve(cwd, options.outputjson)
   const caseInsensitive = process.platform === "win32"
@@ -336,6 +364,7 @@ export async function writeOutputFile(path: string, content: string): Promise<vo
 /** 命令帮助不触发任何配置初始化。 */
 export const CLI_HELP = `Minou Headless Agent Execution Protocol V1
 minou run --prompt <text> [options]
+minou continue --session-id <id> --prompt <text>
 
 Options:
   --modelid <id>                默认使用 Minou 有效默认模型

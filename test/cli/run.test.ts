@@ -74,9 +74,10 @@ async function main(): Promise<void> {
   saveModel(paths.providerDatabasePath, { supportsReasoning: false, providerId: "fixture", modelId: "plain-model", name: "plain-api-model", contextWindow: 128000, maxOutputTokens: 4096 })
   let serial = 0
   const cli = resolve("dist/src/cli/main.js")
-  /** @param args 编译入口参数。 @param breakPipe 是否主动关闭 stdout。 @returns 原始 stdout、stderr 和退出码。 */
-  async function raw(args: string[], breakPipe = false) {
+  /** @param args 编译入口参数。 @param breakPipe 是否主动关闭 stdout。 @param onSpawn 获取强制结束进程的函数。 @returns 原始 stdout、stderr 和退出码。 */
+  async function raw(args: string[], breakPipe = false, onSpawn?: (kill: () => void) => void) {
     const child = spawn(process.execPath, [cli, ...args], { env: { ...process.env, USERPROFILE: profile }, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] })
+    onSpawn?.(() => { child.kill("SIGKILL") })
     let stdout = "", stderr = ""
     child.stdout.setEncoding("utf8"); child.stderr.setEncoding("utf8")
     child.stdout.on("data", (chunk: string) => { stdout += chunk; if (breakPipe) child.stdout.destroy() })
@@ -125,6 +126,25 @@ async function main(): Promise<void> {
     } else assert.deepEqual(events, [])
     return { code, result, events, stdout, stderr, requests: [...requests] }
   }
+  /**
+   * 续跑一次已建立的 CLI 会话。
+   * @param sessionId 首次 run 返回的会话身份。
+   * @param prompt 本轮用户消息。
+   * @param script 本轮模型脚本。
+   * @returns 本次提交的事件与模型请求。
+   */
+  async function resume(sessionId: string, prompt: string, script?: Respond) {
+    requests = []
+    serverFailure = undefined
+    respond = script ?? ((_body, _attempt, response) => reply(response))
+    const outcome = await raw(["continue", "--session-id", sessionId, "--prompt", prompt])
+    if (serverFailure) throw serverFailure
+    assert.equal(outcome.code, 0, outcome.stderr)
+    const events = outcome.stdout.trim().split("\n").map((line) => JSON.parse(line) as SessionEvent)
+    assert.ok(events.every((event) => event.sessionId === sessionId))
+    return { events, requests: [...requests] }
+  }
+
   try {
     const help = await raw(["run", "--help"])
     assert.equal(help.code, 0)
@@ -331,6 +351,66 @@ async function main(): Promise<void> {
     assert.match(enabled.requests[0].messages[0].content, /global fixture skill description/)
     assert.doesNotMatch(enabled.requests[0].messages[0].content, /private skill body/)
     for (const name of ["skill_load", "memory_list", "mcp_list_tools"]) assert.ok(enabled.requests[0].tools.some((tool) => tool.function.name === name))
+    const initialRules = await readFile(join(workspace, "AGENTS.md"), "utf8")
+    const contextPath = join(enabled.result.record_directory!, "contextstate.json")
+    const initialContext = JSON.parse(await readFile(contextPath, "utf8"))
+    assert.deepEqual(Object.keys(initialContext).sort(), ["agentsmd", "mcp", "skills"])
+    assert.equal(initialContext.agentsmd.content, initialRules)
+    const activeSession = enabled.result.session_id
+    const noChanges = await resume(activeSession, "First follow-up.")
+    assert.deepEqual(noChanges.events.slice(0, 2).map((event) => event.type), ["turn/start", "user/message"])
+    assert.equal(noChanges.events[0].seq, enabled.events.at(-1)!.seq + 1)
+    assert.ok(noChanges.events.every((event) => event.turn === 2))
+    assert.equal(noChanges.requests[0].reasoning_effort, "high")
+    assert.ok(noChanges.requests[0].messages.some((message) => message.content === "fixture task"))
+    assert.ok(noChanges.requests[0].messages.some((message) => message.content === "First follow-up."))
+    const addedSkill = join(paths.rootDir, "skills", "second-fixture")
+    await mkdir(addedSkill)
+    await writeFile(join(addedSkill, "SKILL.md"), "---\ndescription: second fixture description\n---\nsecond body")
+    await writeFile(join(workspace, "AGENTS.md"), "Updated workspace rules.")
+    const changed = await resume(activeSession, "Apply the changes.")
+    assert.deepEqual(changed.events.slice(0, 4).map((event) => event.type),
+      ["context_update", "context_update", "turn/start", "user/message"])
+    assert.ok(changed.events.every((event) => event.turn === 3))
+    assert.equal(changed.events[0].seq, noChanges.events.at(-1)!.seq + 1)
+    assert.equal(changed.requests[0].messages[0].content, enabled.requests[0].messages[0].content)
+    assert.ok(changed.requests[0].messages.slice(1).some((message) => message.content.includes("Updated workspace rules.")))
+    assert.ok(changed.requests[0].messages.slice(1).some((message) => message.content.includes("second fixture description")))
+    assert.deepEqual(JSON.parse(await readFile(contextPath, "utf8")), initialContext)
+    assert.equal(await readFile(join(enabled.result.record_directory!, "agents_md.snapshot"), "utf8"), "Updated workspace rules.")
+    const unchangedAgain = await resume(activeSession, "One more follow-up.")
+    assert.equal(unchangedAgain.events[0].type, "turn/start")
+    assert.ok(unchangedAgain.events.every((event) => event.turn === 4))
+    const lockedTools = await resume(defaultEvents[0].sessionId, "Use the original tools.")
+    assert.deepEqual(lockedTools.requests[0].tools.map((tool) => tool.function.name), ["glob", "read"])
+    assert.match((await raw(["continue", "--session-id", activeSession, "--prompt", "bad", "--system-tools", "write"])).stderr, /未知参数/)
+
+    let killActive = () => {}
+    let ready!: () => void
+    const waiting = new Promise<void>((done) => { ready = done })
+    respond = (_body, _attempt, response) => {
+      response.writeHead(200, { "content-type": "text/event-stream" })
+      response.flushHeaders()
+      ready()
+    }
+    const interruptedTurn = raw(["continue", "--session-id", activeSession, "--prompt", "Interrupted turn."], false,
+      (kill) => { killActive = kill })
+    try {
+      await Promise.race([waiting, interruptedTurn.then(({ stderr }) => { throw new Error(stderr) })])
+      const concurrent = await raw(["continue", "--session-id", activeSession, "--prompt", "Concurrent turn."])
+      assert.equal(concurrent.code, 2, concurrent.stderr)
+      assert.match(concurrent.stderr, /正在执行/)
+      assert.equal(concurrent.stdout, "")
+    } finally { killActive(); await interruptedTurn }
+    const recovered = await resume(activeSession, "Recover and continue.")
+    assert.deepEqual(recovered.events.slice(0, 4).map((event) => [event.type, event.turn]),
+      [["step/end", 5], ["turn/end", 5], ["turn/start", 6], ["user/message", 6]])
+    await writeFile(contextPath, "{ invalid JSON")
+    const repairedState = await resume(activeSession, "Use the repaired context.")
+    assert.equal(repairedState.events[0].type, "turn/start")
+    assert.equal(repairedState.events[0].turn, 7)
+    assert.equal(JSON.parse(await readFile(contextPath, "utf8")).agentsmd.content, "Updated workspace rules.")
+    await writeFile(join(workspace, "AGENTS.md"), initialRules)
     const registryPath = join(paths.rootDir, "skills", "registry.json")
     await writeFile(registryPath, "do-not-touch")
     await run()
@@ -366,7 +446,8 @@ async function main(): Promise<void> {
     }
 
     for (const allow of [true, false]) {
-      const fixture = await createMCPTestServer([testTool("remote")])
+      let fixture = await createMCPTestServer([testTool("remote")])
+      let fixtureClosed = false
       try {
       const mcpFile = join(root, "mcp.json")
       await writeFile(mcpFile, JSON.stringify({ mcpServers: [{ name: "fixture", enabled: true, transport: "streamable-http", url: fixture.url }] }))
@@ -391,7 +472,30 @@ async function main(): Promise<void> {
       assert.equal(fixture.state.calls.length, allow ? 1 : 0)
       assert.ok(mcpAllowed.stdout.includes("remote-private-value"))
       assert.deepEqual(JSON.parse(await readFile(paths.configPath, "utf8")).mcpServers, [], "本次 MCP 覆盖不得写回全局配置")
-      } finally { await fixture.close() }
+      if (allow) {
+        const toolName = mcpAllowed.events.flatMap((event) =>
+          event.type === "mcp/tools_added" ? event.tools.map(({ entry }) => entry.name) : [])[0]
+        assert.ok(toolName)
+        const port = Number(new URL(fixture.url).port)
+        await fixture.close()
+        fixtureClosed = true
+        fixture = await createMCPTestServer([testTool("remote"), testTool("new_remote")], true, port)
+        fixtureClosed = false
+        await writeFile(mcpFile, JSON.stringify({ mcpServers: [] }))
+        const continued = await resume(mcpAllowed.result.session_id, "Reuse the remote tool.", (body, attempt, response) => {
+          assert.ok(body.tools.some((tool) => tool.function.name === toolName))
+          if (attempt === 1) reply(response, [{ name: "mcp_list_tools", args: {} }], "")
+          else if (attempt === 2) {
+            assert.match(body.messages.at(-1)!.content, new RegExp(toolName))
+            assert.doesNotMatch(body.messages.at(-1)!.content, /new_remote/)
+            reply(response, [{ name: toolName, args: { value: "second-turn" } }], "")
+          } else reply(response)
+        })
+        assert.equal(fixture.state.calls.length, 1)
+        assert.equal(fixture.state.calls[0].arguments?.value, "second-turn")
+        assert.equal(continued.events.some((event) => event.type === "mcp/tools_added"), false)
+      }
+      } finally { if (!fixtureClosed) await fixture.close() }
     }
     const fixture = await createMCPTestServer([testTool("remote")])
     try {

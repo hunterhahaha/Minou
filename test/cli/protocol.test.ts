@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { Writable } from "node:stream"
-import { createStatistics, mapUsage, observeEvent, readCliInput, writeOutputFile } from "../../src/cli/protocol.ts"
+import { createStatistics, mapUsage, observeEvent, readCliInput, readContinueInput, writeOutputFile } from "../../src/cli/protocol.ts"
 import { toolGroup, writeOutput } from "../../src/cli/main.ts"
 import type { SessionEvent } from "../../runtime/session/src/events.ts"
 import type { ToolRegistry } from "../../runtime/tools/src/tool-registry.ts"
@@ -28,6 +28,15 @@ async function main(): Promise<void> {
     assert.equal(base.request.sandboxMode, "sandbox-full-access")
     assert.equal(base.request.maxSteps, 100)
     assert.equal(base.request.timeoutSeconds, 1800)
+
+    const id = "03ad078c-9f24-478c-a2af-7071429bf5ba"
+    const continuation = ["continue", "--session-id", id, "--prompt", "  Follow-up\n"]
+    assert.deepEqual(readContinueInput(continuation), { sessionId: id, prompt: "  Follow-up\n" })
+    for (const option of ["workspace", "modelid", "mcp-config", "system-tools", "isolate", "timeout", "outputjson"]) {
+      assert.throws(() => readContinueInput([...continuation, "--" + option, "x"]), /未知参数/)
+    }
+    assert.throws(() => readContinueInput(["continue", "--session-id", "../other", "--prompt", "x"]), /UUID/)
+    assert.throws(() => readContinueInput([...continuation, "--prompt", "duplicate"]), /重复/)
 
     const nested = join(root, "nested")
     await mkdir(nested)

@@ -21,10 +21,11 @@ export interface MCPTestState {
  * 创建使用官方 Server Transport 的本地 HTTP MCP 服务，不访问公网。
  * @param tools 初始目录。
  * @param withTools 是否声明 tools 能力。
+ * @param port 可选固定端口，用于测试同一地址的服务重启。
  * @returns 端点、可控状态、通知入口和关闭方法。
  * @throws Error 本地监听或 SDK 初始化失败。
  */
-export async function createMCPTestServer(tools: Tool[], withTools = true) {
+export async function createMCPTestServer(tools: Tool[], withTools = true, port = 0) {
   const state: MCPTestState = { tools, calls: [], headers: [] }
   const server = new Server({ name: "local-test", version: "1" }, { capabilities: withTools ? { tools: { listChanged: true } } : {} })
   if (withTools) {
@@ -54,7 +55,7 @@ export async function createMCPTestServer(tools: Tool[], withTools = true) {
       await transport.handleRequest(request, response, body)
     })().catch(() => { if (!response.headersSent) response.writeHead(500); response.end() })
   })
-  await new Promise<void>((resolve) => http.listen(0, "127.0.0.1", resolve))
+  await new Promise<void>((resolve) => http.listen(port, "127.0.0.1", resolve))
   const address = http.address()
   if (!address || typeof address === "string") throw new Error("没有测试监听端口")
   return {

@@ -33,6 +33,7 @@ export interface MCPLoadResult {
 export class MCPManager {
   private readonly connections = new Map<string, MCPConnection>()
   private catalog = new Map<string, MCPCatalogTool>()
+  private allowedCatalog: ReadonlyMap<string, Pick<MCPCatalogTool, "serverId" | "originalToolName">> | undefined
   private searchIndex = new MCPToolSearch()
   private readonly listeners = new Set<() => void>()
   private readonly refreshes = new Map<MCPConnection, Promise<void>>()
@@ -49,6 +50,15 @@ export class MCPManager {
    * @param estimateTokens 仅用于 MCP 定义预算的稳定本地估算函数。
    */
   constructor(estimateTokens: (text: string) => number) { this.estimateTokens = estimateTokens }
+
+  /**
+   * 将当前 Manager 的有效目录限制到会话在启动时允许的工具身份。
+   * @param tools 首轮目录快照；缺席或身份不符的工具不会进入搜索、注册和执行。
+   */
+  restrictCatalog(tools: readonly Pick<MCPCatalogTool, "name" | "serverId" | "originalToolName">[]): void {
+    this.allowedCatalog = new Map(tools.map((tool) => [tool.name, tool]))
+    this.publish(new Map(this.catalog))
+  }
 
   /**
    * 对最终同名覆盖后的启用配置并行初始化，单个失败保留错误状态。
@@ -409,6 +419,12 @@ export class MCPManager {
 
   /** @param next 已完整验证的新目录；先完成索引再同步发布目录和通知。 @throws Error 索引构建或同步注册失败。 */
   private publish(next: Map<string, MCPCatalogTool>): void {
+    if (this.allowedCatalog) {
+      for (const [name, tool] of next) {
+        const allowed = this.allowedCatalog.get(name)
+        if (allowed?.serverId !== tool.serverId || allowed.originalToolName !== tool.originalToolName) next.delete(name)
+      }
+    }
     const search = new MCPToolSearch()
     search.rebuild([...next.values()])
     this.catalog = next

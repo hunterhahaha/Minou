@@ -2,7 +2,7 @@
 
 本文对应当前实现的 **Headless Agent Execution Protocol V1**。CLI 的 `run` 命令接收任务，执行 `runAgentLoop`，逐行输出已提交的事件和最终结果。它可以用于本地脚本、CI 或外部 Benchmark 调用。
 
-每次调用创建新的内部 Session，只执行一个 Turn，不复用历史上下文。CLI 使用独立 Node 入口，不需要启动 Electron 窗口。
+CLI 使用独立 Node 入口。每条命令执行一个 Turn，「run」创建会话，「continue」给已有会话追加一条消息。
 
 ## 1. 准备环境
 
@@ -250,7 +250,19 @@ $runExitCode
 
 两个输出文件均通过同目录临时文件完成写入后重命名。写入失败时，CLI 在 stderr 报告 `OUTPUT_FAILED` 并返回 `1`，原有文件可能仍然存在。
 
-## 10. 本地运行记录与错误排查
+## 10. 继续已有会话
+
+从首次执行的 JSONL 事件或 --outputjson 结果中读取 session_id：
+
+```powershell
+minou continue --session-id <id> --prompt "基于上一轮的结果，继续处理下一项。"
+```
+
+`continue` 只接受 `--session-id` 和 `--prompt`。工作区、模型选择、内置工具、MCP 服务与允许的工具、审批和限额来自首次 run 保存的会话设置。MCP 工具可在首次确定的范围内按需载入；续跑时重连原服务并恢复已载入的工具。相同会话已在执行时，第二个进程会收到占用错误。
+
+每次续跑先恢复已有日志，再检查当前 AGENTS.md 和已启用 Skill。实际增量排在新 Turn 的开始事件之前，模型同时收到原有基线和历史。JSONL 只输出本次提交的事件，包括必要的恢复事件。缺少会话设置的早期 CLI 日志会返回错误。
+
+## 11. 本地运行记录与错误排查
 
 运行记录默认保存在当前用户主目录下：
 
@@ -260,10 +272,13 @@ $runExitCode
     cli/
       <session_id>/
         events.sqlite
+        cli-session.sqlite
+        contextstate.json
+        agents_md.snapshot
         tool_output/
 ```
 
-`--outputjson` 文件中的 `record_directory` 给出内部日志目录，`event_log_path` 直接指向事件日志数据库。每次使用内部 UUID 生成目录。
+`--outputjson` 文件中的 `record_directory` 给出内部日志目录，`event_log_path` 直接指向事件日志数据库。首次 run 使用内部 UUID 创建目录，后续 continue 追加到同一目录。
 
 `events.sqlite` 保存已提交的内部事件，包括完整的 Assistant 内容块和消息。JSONL 的事件行直接对应这些记录。工具产生的输出文件保存在 `tool_output`。
 
@@ -283,9 +298,9 @@ $runExitCode
 
 参数校验失败时，CLI 通过 stderr 和退出码报告错误。参数有效后发生的运行错误也会写入显式指定的 `--outputjson` 文件。回答文件只有在 Turn 已启动且显式指定 `--output` 时才会写入。
 
-## 11. 当前边界与开发验证
+## 12. 当前边界与开发验证
 
-当前入口只支持新任务的一次执行，不提供会话恢复、交互式追问、Session 消息队列、Session 级自动上下文压缩或服务端常驻模式。Shell/Terminal 沿用当前 PowerShell 后端，没有新增 Bash 后端或操作系统级沙箱。
+CLI 通过独立命令逐轮执行。交互式终端、Session 消息队列、Session 级自动上下文压缩和服务端常驻模式仍在当前范围之外。Shell/Terminal 沿用当前 PowerShell 后端，没有新增 Bash 后端或操作系统级沙箱。
 
 外部 Benchmark 可负责准备工作区和任务正文，调用 `run`，读取 JSONL，并按需要通过 `--outputjson` 获取运行结果，再转换为自己的轨迹、Patch 或评分输入；CLI 本身不提供 Benchmark 专用子命令。
 

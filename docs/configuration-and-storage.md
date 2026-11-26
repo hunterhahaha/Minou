@@ -13,7 +13,7 @@
 ├─ providers.sqlite               Provider、Model、API Key 与默认模型
 ├─ web-search.sqlite              搜索服务商、启用状态、fetch 请求原文与 JMESPath
 ├─ workspace.sqlite               Project/default 分组、关联目录、对话索引
-├─ meta.sqlite                    桌面对话 Meta
+├─ meta.sqlite                    桌面与 CLI 会话 Meta
 ├─ events.sqlite                  桌面对话共享事件日志
 ├─ skills/
 │  ├─ registry.json               Global Skill 登记
@@ -31,7 +31,10 @@
 │        └─ tool_output/
 └─ logs/
    └─ cli/<session-id>/
-      ├─ events.sqlite            单次 CLI Run 的独立日志
+      ├─ events.sqlite            CLI 会话的独立日志
+      ├─ cli-session.sqlite       首次 run 的执行设置与进程锁
+      ├─ contextstate.json        与桌面同格式的固定上下文
+      ├─ agents_md.snapshot       下一轮比较使用的规则快照
       └─ tool_output/
 ```
 
@@ -244,7 +247,7 @@ project_group_id, session_id, seq, event_id, type, created_at, event_json
 
 主键是 `(project_group_id, session_id, seq)`，同一联合身份下 `event_id` 唯一。写入由日志层分配事件 ID、连续序号和时间，同一进程内同一会话串行写入。Turn 的 `turn/start` 与 `user/message` 在一个事务内提交。
 
-桌面会话共用根目录 `events.sqlite`，会话目录不另存一份正文日志。CLI 则在本次 Run 目录创建相同事件结构的独立数据库。事件类型和载荷见 [events.ts](../runtime/session/src/events.ts)。
+桌面会话共用根目录 `events.sqlite`，会话目录不另存一份正文日志。CLI 则为每个会话创建相同事件结构的独立数据库，续跑追加到同一个文件。事件类型和载荷见 [events.ts](../runtime/session/src/events.ts)。
 
 桌面普通会话、Team Router 和 CLI 使用各自数据库中的 `session_events`，Team 成员使用 `team_session_events`。所有入口均以 `assistant/block_end` 保存完整内容块，块开始与增量在活动 Step 中通过内存发布，不占用持久化序号。已结束的块可独立用于重启恢复。
 

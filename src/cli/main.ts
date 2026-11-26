@@ -1,22 +1,25 @@
 #!/usr/bin/env node
 /** 独立 Node CLI 装配入口：直接组合现有 Runtime，无 Electron 或 IPC。 */
 import { randomUUID } from "node:crypto"
-import { mkdir, readFile, stat } from "node:fs/promises"
+import { mkdir, stat } from "node:fs/promises"
 import { homedir } from "node:os"
-import { join, resolve } from "node:path"
+import { isAbsolute, join, resolve } from "node:path"
 import type { Writable } from "node:stream"
 import { performance } from "node:perf_hooks"
+import { composeSystemMessage, contextUpdates, repairSession } from "../../runtime/agent/src/session-runtime.ts"
 import { runAgentLoop } from "../../runtime/agent/src/loop.ts"
 import { reviewToolCall } from "../../runtime/agent/src/tool-approval.ts"
 import { createAbortError } from "../../runtime/error/src/abort.ts"
 import { MCPManager } from "../../runtime/mcp/src/index.ts"
-import type { SessionLoadedMCPTool } from "../../runtime/mcp/src/types.ts"
 import { MemoryManager } from "../../runtime/memory/src/index.ts"
 import type { ModelRef } from "../../runtime/model/src/types.ts"
 import { initNetworkDispatcher } from "../../runtime/network/src/dispatcher.ts"
 import { createFileSessionEventLog, initializeSessionEventDatabase } from "../../runtime/session/src/event-log.ts"
 import type { FileSessionEventLog } from "../../runtime/session/src/event-log.ts"
 import type { ApprovalDecision, SessionEvent, SessionEventInput } from "../../runtime/session/src/events.ts"
+import { createFileSessionState } from "../../runtime/session/src/session-state.ts"
+import type { CurrentSessionBaseline } from "../../runtime/session/src/session-state.ts"
+import { buildSkillContext } from "../../runtime/skill/src/context.ts"
 import { TurnFileChangeTracker } from "../../runtime/session/src/file-changes.ts"
 import { SkillManager } from "../../runtime/skill/src/index.ts"
 import {
@@ -27,6 +30,7 @@ import {
 } from "../../runtime/tools/src/index.ts"
 import { renderCommonError, TOOL_NOT_FOUND } from "../../runtime/tools/src/tool-executor.ts"
 import type { ToolExecutionContext } from "../../runtime/tools/src/types.ts"
+import { readAgentsBaseline } from "../main/project-context.ts"
 import { initializeConfigFilesSnapshot } from "../main/config-files.ts"
 import { mcpToolChanges, modelHistory } from "../../runtime/agent/src/model-history.ts"
 import { createTurnModelAdapter } from "../main/model-adapters.ts"
@@ -34,9 +38,10 @@ import { listProviders, readDefaultModel } from "../main/provider-store.ts"
 import { estimateLocalTokens } from "../main/token-estimator.ts"
 import {
   CLI_HELP, CliInputError, createStatistics, exitCode, mapUsage, observeEvent,
-  readCliInput, resultStatus, writeOutputFile,
+  readCliInput, readContinueInput, resultStatus, writeOutputFile,
 } from "./protocol.ts"
 import type { RunRequest, RunResult, StopReason, ToolGroup } from "./protocol.ts"
+import { openCliSession } from "./session-store.ts"
 
 const SYSTEM_PROMPT = "You are an AI agent powered by Minou."
 const CLEANUP_MS = 5000
@@ -118,12 +123,12 @@ export function toolGroup(name: string, registry: ToolRegistry): ToolGroup | und
 
 /**
  * 执行一次独立 CLI 调用。生产入口每进程只调用一次，并在返回后退出以关闭超宽限的残留句柄。
- * @param argv 包含 run 子命令的参数。
+ * @param argv 包含 run 或 continue 子命令的参数。
  * @returns 公共协议对应的退出码；所有正常输出已等待写入回调。
  * @throws 仅未预期的宿主异常可能向上传播；预期输入、运行和输出错误映射为退出码。
  */
 export async function runCli(argv: readonly string[]): Promise<number> {
-  if ((argv.length === 1 && argv[0] === "--help") || (argv.length === 2 && argv[0] === "run" && argv[1] === "--help")) {
+  if ((argv.length === 1 && argv[0] === "--help") || (argv.length === 2 && ["run", "continue"].includes(argv[0]) && argv[1] === "--help")) {
     const consumeError = (): void => {}
     process.stdout.on("error", consumeError)
     try { await writeOutput(process.stdout, CLI_HELP); return 0 }
@@ -131,7 +136,9 @@ export async function runCli(argv: readonly string[]): Promise<number> {
     finally { process.stdout.off("error", consumeError) }
   }
   const cwd = process.cwd()
-  const sessionId = randomUUID()
+  let sessionId: string = randomUUID()
+  let turn = 1
+  let session: ReturnType<typeof openCliSession> | undefined
   const userProfile = process.env.USERPROFILE ?? homedir()
   let outputPath: string | undefined
   let outputJsonPath: string | undefined
@@ -253,26 +260,36 @@ export async function runCli(argv: readonly string[]): Promise<number> {
    * @throws Error 所有阶段的错误由外层映射为公共结果。
    */
   async function execute(): Promise<void> {
-    const { request, output, outputJson } = await readCliInput(argv, cwd)
-    outputPath = output
-    outputJsonPath = outputJson
+    const continuation = argv[0] === "continue" ? readContinueInput(argv) : undefined
+    const input = continuation ? undefined : await readCliInput(argv, cwd)
+    const prompt = continuation?.prompt ?? input?.request.prompt
+    outputPath = input?.output
+    outputJsonPath = input?.outputJson
     startedAt = performance.now()
     checkStopped()
-    timeout = setTimeout(() => stop("timeout"), request.timeoutSeconds * 1000)
     stage = "initialization"
+    if (!isAbsolute(userProfile)) throw new CliInputError("USERPROFILE 必须是非空的绝对路径。")
+    sessionId = continuation?.sessionId ?? sessionId
+    const directory = join(userProfile, ".minou", "logs", "cli", sessionId)
+    const sessionPath = join(directory, "cli-session.sqlite")
+    const resumed = continuation ? (session = openCliSession(sessionPath)).settings : undefined
+    const request = resumed ?? input?.request
+    if (!request || prompt === undefined) throw new Error("CLI 请求未初始化。")
+    timeout = setTimeout(() => stop("timeout"), request.timeoutSeconds * 1000)
     const { paths, config } = await initializeConfigFilesSnapshot(userProfile, { skipSkills: request.isolated.skill })
     checkStopped()
-    recordDirectory = join(paths.rootDir, "logs", "cli", sessionId)
-    const outputDirectory = join(recordDirectory, "tool_output")
-    await mkdir(outputDirectory, { recursive: true, mode: 0o700 })
-    checkStopped()
-    const databasePath = join(recordDirectory, "events.sqlite")
-    await initializeSessionEventDatabase(databasePath)
+    recordDirectory = directory
+    const outputDirectory = join(directory, "tool_output")
+    const databasePath = join(directory, "events.sqlite")
+    if (!continuation) {
+      await mkdir(outputDirectory, { recursive: true, mode: 0o700 })
+      await initializeSessionEventDatabase(databasePath)
+      checkStopped()
+    }
     eventLogPath = databasePath
-    checkStopped()
-    const log = eventLog = createFileSessionEventLog({ sessionId, projectGroupId: "default", sessionDirectory: recordDirectory, databasePath })
+    const log = eventLog = createFileSessionEventLog({ sessionId, projectGroupId: "default", sessionDirectory: directory, databasePath })
     dispatcher = initNetworkDispatcher()
-    const selectedModel = model = resolveModel(paths.providerDatabasePath, request)
+    const selectedModel = model = "model" in request ? request.model : resolveModel(paths.providerDatabasePath, request)
     const adapter = await createTurnModelAdapter(paths, selectedModel, request.supportsReasoning)
     checkStopped()
     const tools = new ToolRegistry()
@@ -280,6 +297,11 @@ export async function runCli(argv: readonly string[]): Promise<number> {
     const tracker = fileTracker = new TurnFileChangeTracker()
     const mode = request.sandboxMode
     const workspace = request.workspace
+    if (continuation) {
+      try { if (!(await stat(workspace)).isDirectory()) throw new Error() }
+      catch { throw new CliInputError("会话绑定的工作区目录不可用。") }
+      checkStopped()
+    }
     const roots = [workspace, outputDirectory]
     /** 编译入口位于 dist/src/cli；源码导入仅供仓库内的离线测试。 */
     const applicationRoot = typeof __dirname === "string" ? resolve(__dirname, "../../..") : cwd
@@ -293,49 +315,93 @@ export async function runCli(argv: readonly string[]): Promise<number> {
     registerShellTools(tools, renders, shell, processAccess)
     registerTerminalTools(tools, renders, terminal, processAccess)
     if (!request.isolated.memory) registerMemoryTools(tools, renders, new MemoryManager(paths.rootDir))
-    let skillContent = ""
-    if (!request.isolated.skill) {
-      const skills = new SkillManager(paths.rootDir, estimateLocalTokens)
-      registerSkillTools(tools, renders, skills)
-      skillContent = (await skills.resolveSkills("default")).content
-      checkStopped()
-    }
-    let loaded: SessionLoadedMCPTool[] = []
+    const skills = request.isolated.skill ? undefined : new SkillManager(paths.rootDir, estimateLocalTokens)
+    if (skills) registerSkillTools(tools, renders, skills)
     if (!request.isolated.mcp) {
       mcp = new MCPManager(estimateLocalTokens)
+      if (resumed) mcp.restrictCatalog(resumed.mcpTools)
       unsubscribeMcp = registerMCPTools(tools, renders, mcp)
     }
-    const allowedSystemTools = request.restrictSystemTools ? new Set(request.systemTools) : undefined
-    if (allowedSystemTools) {
-      for (const name of allowedSystemTools) {
+    const original = input?.request
+    const chosenSystemTools = resumed?.systemTools ?? (original?.restrictSystemTools ? original.systemTools : undefined)
+    if (chosenSystemTools) {
+      for (const name of chosenSystemTools) {
         if (tools.get(name)?.kind !== "builtin") throw new CliInputError(`本次运行没有可用的内置工具：${name}。`)
       }
     }
-    const mcpServers = request.mcpServers ?? (request.useConfiguredMcp ? config.mcpServers : undefined)
-    if (mcp && mcpServers !== undefined) {
+    const selectedNames = chosenSystemTools && new Set(chosenSystemTools)
+    const systemTools = tools.listDefinitions().filter(({ name }) =>
+      tools.get(name)?.kind === "builtin" && (!selectedNames || selectedNames.has(name)))
+    const allowedSystemTools = new Set<string>(systemTools.map(({ name }) => name))
+    const serverSettings = resumed?.mcpServers ?? original?.mcpServers ?? (original?.useConfiguredMcp ? config.mcpServers : [])
+    const mcpServers = mcp ? serverSettings.map((server) =>
+      server.transport === "stdio" ? { ...server, cwd: resolve(cwd, server.cwd ?? ".") } : server) : []
+    if (mcp) {
       await mcp.initialize(mcpServers)
       checkStopped()
       for (const connection of mcp.getConnectionStates()) {
         if (connection.error) await writeOutput(process.stderr, `MCP 服务连接失败：${connection.name}\n`)
       }
     }
+    checkStopped()
+    const systemPrompt = resumed?.systemPrompt ?? SYSTEM_PROMPT
+    if (!continuation) {
+      const mcpTools = mcp?.listTools().flatMap(({ name }) => {
+        const tool = mcp?.getTool(name)
+        return tool ? [{ name: tool.name, serverId: tool.serverId, originalToolName: tool.originalToolName }] : []
+      }) ?? []
+      mcp?.restrictCatalog(mcpTools)
+      session = openCliSession(sessionPath, {
+        model: selectedModel, workspace, systemPrompt, mcpTools, mcpServers,
+        systemTools: [...allowedSystemTools], supportsReasoning: request.supportsReasoning,
+        isolated: request.isolated, sandboxMode: mode, approveGroups: request.approveGroups,
+        approveTools: request.approveTools, maxSteps: request.maxSteps, timeoutSeconds: request.timeoutSeconds,
+      })
+    }
     const agentsPath = join(workspace, "AGENTS.md")
-    let agents = ""
-    try {
-      if (!(await stat(agentsPath)).isFile()) throw new Error("AGENTS.md 必须为普通文件")
-      agents = await readFile(agentsPath, "utf8")
-    } catch (failure) {
-      if (!(failure instanceof Error && "code" in failure && failure.code === "ENOENT")) throw failure
+    let turnBaseline: Promise<CurrentSessionBaseline> | undefined
+    /** @returns 本轮用于初始化和比较的同一份项目上下文。 */
+    const resolveCurrentBaseline = (): Promise<CurrentSessionBaseline> => turnBaseline ??= Promise.all([
+      readAgentsBaseline(agentsPath, true),
+      skills?.resolveSkills("default") ?? buildSkillContext([], estimateLocalTokens),
+    ]).then(([agentsmd, skillBaseline]) => ({ agentsmd, skills: skillBaseline, mcp: [] }))
+    const sessionState = createFileSessionState({
+      projectId: "default", sessionId, sessionDirectory: directory, databasePath,
+      metaDatabasePath: paths.metaDatabasePath, initialSettings: { model: selectedModel, sandboxMode: mode },
+      readEvents: () => log.readEvents(!continuation), resolveCurrentBaseline,
+      estimateSkillTokens: estimateLocalTokens,
+    })
+    if (continuation) {
+      const recovered = await repairSession(sessionId, {
+        readEvents: log.readEvents,
+        initializeSession: sessionState.initializeSession,
+        repairDerivedState: sessionState.repairDerivedState,
+        appendEvent,
+      })
+      turn = recovered.lastTurn + 1
+    } else {
+      await sessionState.initializeSession()
     }
     checkStopped()
+    const baseline = await resolveCurrentBaseline()
+    const comparison = await sessionState.readContextComparisonState()
+    const updates = contextUpdates(turn, baseline, comparison)
+    const fixed = await sessionState.readSystemBaseline()
     const workspaceInfo = `<workspace_info>\n${JSON.stringify({ cwd: workspace, directories: [workspace], allowedRoots: roots, toolOutputDirectory: outputDirectory }, null, 2)}\n</workspace_info>`
-    const system = [SYSTEM_PROMPT, workspaceInfo, agents, skillContent].filter(Boolean).join("\n\n")
+    const system = composeSystemMessage(systemPrompt, workspaceInfo, {
+      ...baseline, agentsmd: { ...baseline.agentsmd, ...fixed.agentsmd },
+      skills: { ...baseline.skills, content: fixed.skills.content },
+    })
+    checkStopped()
     const initial = await log.appendTurnStartAndUserMessage([
-      { type: "turn/start", turn: 1, model: selectedModel },
-      { type: "user/message", turn: 1, message: { id: randomUUID(), role: "user", content: [{ type: "text", text: request.prompt }] } },
-    ])
-    startedTurn = initial.length === 2
+      { type: "turn/start", turn, model: selectedModel },
+      { type: "user/message", turn, message: { id: randomUUID(), role: "user", content: [{ type: "text", text: prompt }] } },
+    ], undefined, checkStopped, updates)
+    startedTurn = true
     await publishCommittedEvents(initial)
+    if (updates.length) await sessionState.repairDerivedState(await log.readEvents() as SessionEvent[])
+    await sessionState.synchronizeSkillStatus(baseline.skills.entries)
+    checkStopped()
     const executeTool = createExecuteToolCall(tools, renders)
     /**
      * 记录本次审批，并按沙箱模式交给模型审核或匹配现有自动批准名单。
@@ -364,13 +430,17 @@ export async function runCli(argv: readonly string[]): Promise<number> {
       return decision
     }
     stage = "execution"
+    let synchronizationFailure: { error: unknown } | undefined
     const result = await runAgentLoop({
-      turn: 1, model: selectedModel, adapter, content: [], signal: controller.signal, appendEvent,
-      tools: tools.listDefinitions().filter(({ name }) => tools.get(name)?.kind === "builtin" && (!allowedSystemTools || allowedSystemTools.has(name))),
+      turn, model: selectedModel, adapter, content: [], signal: controller.signal, appendEvent,
+      tools: systemTools,
       prepareHistory: async () => modelHistory(system, await log.readEvents() as SessionEvent[]),
       executeTool: async (name, args, context) => {
         if (finished) throw createAbortError()
-        if (allowedSystemTools && tools.get(name)?.kind === "builtin" && !allowedSystemTools.has(name)) {
+        if (synchronizationFailure) {
+          return renderCommonError({ source: "storage", code: "MCP_META_SYNC_FAILED", message: "MCP 状态同步失败，工具未执行。" })
+        }
+        if (tools.get(name)?.kind === "builtin" && !allowedSystemTools.has(name)) {
           return renderCommonError({ source: "tool", code: TOOL_NOT_FOUND, message: `未找到可用工具：${name}` })
         }
         return executeTool(name, args, {
@@ -379,18 +449,22 @@ export async function runCli(argv: readonly string[]): Promise<number> {
           processRuntime: { projectId: "default", sessionId, outputDirectory, requestApproval: approve },
           ...(mcp ? { mcpRuntime: {
             projectId: "default", sessionId, contextWindow: adapter.contextWindow,
-            readLoadedTools: async () => structuredClone(loaded),
+            readLoadedTools: sessionState.readLoadedMCPTools,
             writeLoadedTools: async (entries, change) => {
               const inputs = change ? mcpToolChanges(change, context.turn, context.step, context.toolCallEventId) : []
               if (finished) throw createAbortError()
               const committed = await log.appendMcpToolChanges(inputs)
-              loaded = structuredClone(entries)
-              await publishCommittedEvents(committed)
+              try { await sessionState.writeLoadedMCPTools(entries, committed.at(-1)?.seq) }
+              catch (error) {
+                if (committed.length > 0) synchronizationFailure = { error }
+                throw error
+              } finally { await publishCommittedEvents(committed) }
             },
             readSandboxMode: async () => mode, requestApproval: approve,
           } } : {}),
         })
       },
+      afterTools: () => { if (synchronizationFailure) throw synchronizationFailure.error },
       beforeStep: async ({ step }) => {
         checkStopped()
         if (step > request.maxSteps) { stop("max_steps"); throw createAbortError() }
@@ -422,16 +496,21 @@ export async function runCli(argv: readonly string[]): Promise<number> {
     if (eventLog && startedTurn) {
       const committed: SessionEvent[] = []
       try {
-        if (error) committed.push(await eventLog.appendEvent({ type: "app/error", turn: 1, error: { source: "runtime", code: error.code, message: error.message } }))
+        if (error) committed.push(await eventLog.appendEvent({ type: "app/error", turn, error: { source: "runtime", code: error.code, message: error.message } }))
         const changes = fileTracker?.summarize() ?? []
-        if (changes.length) committed.push(await eventLog.appendEvent({ type: "turn/file_changes", turn: 1, files: changes }))
-        committed.push(await eventLog.appendEvent({ type: "turn/end", turn: 1, reason: reason === "finished" ? "completed" : reason === "error" || reason === "invalid_request" ? "error" : "stopped" }))
+        if (changes.length) committed.push(await eventLog.appendEvent({ type: "turn/file_changes", turn, files: changes }))
+        committed.push(await eventLog.appendEvent({ type: "turn/end", turn, reason: reason === "finished" ? "completed" : reason === "error" || reason === "invalid_request" ? "error" : "stopped" }))
       } catch {
         reason = "error"
         error = { code: "EVENT_WRITE_FAILED", stage: "output", message: "运行记录无法完成写入。" }
       }
       /** stdout 失败统一在日志收尾后处理。 */
       await publishCommittedEvents(committed).catch(() => undefined)
+    }
+    try { session?.close() }
+    catch {
+      reason = "error"
+      error ??= { code: "CLEANUP_FAILED", stage: "cleanup", message: "无法关闭 CLI 会话设置库。" }
     }
     process.off("SIGINT", interrupt)
     process.off("SIGTERM", interrupt)

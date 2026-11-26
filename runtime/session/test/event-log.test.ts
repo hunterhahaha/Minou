@@ -6,7 +6,7 @@ import { DatabaseSync } from "node:sqlite"
 
 import { createFileSessionEventLog, initializeSessionEventDatabase } from "../src/event-log.ts"
 import type { FileSessionEventLogOptions } from "../src/event-log.ts"
-import type { McpToolChangeInput, SessionEvent, TurnStartEventInput, UserMessageEventInput } from "../src/events.ts"
+import type { ContextUpdateEventInput, McpToolChangeInput, SessionEvent, TurnStartEventInput, UserMessageEventInput } from "../src/events.ts"
 
 const CREATED_AT = "2026-09-19T00:00:00.000Z"
 const FIRST_PROJECT_ID = "00000000-0000-4000-8000-000000000001"
@@ -151,8 +151,17 @@ async function testTurnBatch(root: string): Promise<void> {
   await assert.rejects(log.appendTurnStartAndUserMessage(turnBatch(2)), /尚未完整结束/)
   await log.appendEvent({ type: "turn/end", turn: 1, reason: "completed" })
   await assert.rejects(log.appendTurnStartAndUserMessage(turnBatch(3)), /编号不连续/)
-  const second = await log.appendTurnStartAndUserMessage(turnBatch(2))
-  assert.deepEqual(second.map((event) => event.seq), [4, 5])
+  const before = await log.readEvents()
+  const update: ContextUpdateEventInput = {
+    type: "context_update", turn: 2,
+    source: { type: "agents_md", path: join(root, "AGENTS.md"), hash: "hash", fullContent: "current rules" },
+    content: "workspace rules changed",
+  }
+  await assert.rejects(log.appendTurnStartAndUserMessage(turnBatch(2), undefined, undefined, [{ ...update, turn: 3 }]), /不匹配/)
+  await assert.rejects(log.appendTurnStartAndUserMessage(turnBatch(2), undefined, () => { throw new Error("abort batch") }, [update]), /abort batch/)
+  assert.deepEqual(await log.readEvents(), before)
+  const second = await log.appendTurnStartAndUserMessage(turnBatch(2), undefined, undefined, [update])
+  assert.deepEqual(second.map(({ seq, type }) => [seq, type]), [[4, "context_update"], [5, "turn/start"], [6, "user/message"]])
 
   const duplicate = createFileSessionEventLog(await fixture(root, "duplicate-id", FIRST_PROJECT_ID, {
     createEventId: () => "same-id",

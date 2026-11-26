@@ -169,6 +169,8 @@ export interface CurrentSessionBaseline {
 export interface FileSessionStateOptions {
   /** Team 身份及重建初始 Meta 所需的可信默认设置。 */
   team?: { role: "router" | "member"; sandboxMode: SandboxMode; initialModel?: ModelRef }
+  /** CLI 初始化派生状态时使用的会话设置。 */
+  initialSettings?: { model: ModelRef; sandboxMode: SandboxMode }
   /** 当前 Session 所属 Project UUID 或 default。 */
   projectId: ProjectId
   /** 当前 SessionState 唯一绑定的 Session ID。 */
@@ -376,8 +378,9 @@ export function createFileSessionState(options: FileSessionStateOptions): FileSe
         ? await options.resolveCurrentBaseline()
         : summary.baseline
       validateCurrentBaseline(baseline)
-      const turnModel = rawEvents.length === 0 && options.team?.initialModel
-        ? options.team.initialModel : findLastTurnModel(rawEvents, paths.eventsPath)
+      const initialModel = options.initialSettings?.model ?? options.team?.initialModel
+      const turnModel = rawEvents.length === 0 && initialModel
+        ? initialModel : findLastTurnModel(rawEvents, paths.eventsPath)
       const latestSkillEventId = summary === undefined ? findLatestSkillEventId(rawEvents)
         : findLatestSkillEventId(rawEvents.filter((event) => isRecord(event) && typeof event.seq === "number" && event.seq > summary.throughEventSeq)) ?? summary.eventId
 
@@ -396,7 +399,7 @@ export function createFileSessionState(options: FileSessionStateOptions): FileSe
           name: INITIAL_SESSION_NAME,
           version: SESSION_META_VERSION,
           currentModel: turnModel,
-          sandboxMode: options.team?.sandboxMode ?? DEFAULT_SESSION_SANDBOX_MODE,
+          sandboxMode: options.initialSettings?.sandboxMode ?? options.team?.sandboxMode ?? DEFAULT_SESSION_SANDBOX_MODE,
           usage: { ...EMPTY_USAGE },
           skills: {
             id: latestSkillEventId,
@@ -1268,7 +1271,7 @@ export function isUnifiedToolDefinition(value: unknown): value is UnifiedToolDef
  * @param value 待检查的 JSON 值。
  * @returns 值是否为受支持协议的 ModelRef。
  */
-function isModelRef(value: unknown): value is ModelRef {
+export function isModelRef(value: unknown): value is ModelRef {
   return isRecord(value)
     && isNonEmptyString(value.providerId)
     && isNonEmptyString(value.modelId)

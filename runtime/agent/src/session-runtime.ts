@@ -44,6 +44,7 @@ import type {
   TurnStartEvent,
   UserMessageEvent,
   SkillContextChange,
+  ContextUpdateEventInput,
   TurnStartEventInput,
   UserMessageInput,
   UserMessageContent,
@@ -125,7 +126,7 @@ type SessionLoopOptions = Omit<AgentLoopOptions, "turn" | "model" | "content"> &
  * @returns 以双换行分隔非空部分的 System Message。
  * @throws Error AGENTS.md 路径非绝对路径或缺少 Skill 描述时抛出，调用方应终止上下文构建。
  */
-function composeSystemMessage(
+export function composeSystemMessage(
   systemPrompt: string,
   workspaceInfo: string,
   baseline: CurrentSessionBaseline,
@@ -141,6 +142,51 @@ function composeSystemMessage(
   return [systemPrompt, workspaceInfo, baseline.agentsmd.content, baseline.skills.content]
     .filter((part) => part.length > 0)
     .join("\n\n")
+}
+
+/**
+ * 生成下一 Turn 的上下文增量，规则文件更新排在 Skill 增量之前。
+ * @param turn 待开始的 Turn。
+ * @param baseline 本轮读取的当前上下文。
+ * @param comparison 上次提交后保存的比较快照。
+ * @returns 尚未分配日志身份的增量。
+ * @throws Error 新 Skill 缺少描述时拒绝生成增量。
+ */
+export function contextUpdates(
+  turn: number,
+  baseline: CurrentSessionBaseline,
+  comparison: Awaited<ReturnType<FileSessionState["readContextComparisonState"]>>,
+): ContextUpdateEventInput[] {
+  const updates: ContextUpdateEventInput[] = []
+
+  if (comparison.agentsSnapshot !== baseline.agentsmd.content) {
+    updates.push({
+      type: "context_update",
+      turn,
+      source: {
+        type: "agents_md",
+        path: baseline.agentsmd.path,
+        hash: baseline.agentsmd.hash,
+        fullContent: baseline.agentsmd.content,
+      },
+      content: formatAgentsMdUpdate(comparison.agentsSnapshot, baseline.agentsmd.content),
+    })
+  }
+
+  const skillChanges = collectSkillChanges(
+    baseline.skills.entries,
+    comparison.skills.entries,
+    baseline.skills.descriptions,
+  )
+  if (skillChanges.length > 0) {
+    updates.push({
+      type: "context_update",
+      turn,
+      source: { type: "skill", changes: skillChanges },
+      content: `<skills_update>\n${JSON.stringify(skillChanges, null, 2)}\n</skills_update>`,
+    })
+  }
+  return updates
 }
 
 /**
@@ -1103,35 +1149,8 @@ export class SessionRuntime implements SessionRepairPorts {
     const comparison = await this.sessionState.readContextComparisonState()
     const turn = lifecycle.lastTurn + 1
     const appended: SessionEvent[] = []
-
-    if (comparison.agentsSnapshot !== baseline.agentsmd.content) {
-      const written = await this.appendEvent({
-        type: "context_update",
-        turn,
-        source: {
-          type: "agents_md",
-          path: baseline.agentsmd.path,
-          hash: baseline.agentsmd.hash,
-          fullContent: baseline.agentsmd.content,
-        },
-        content: formatAgentsMdUpdate(comparison.agentsSnapshot, baseline.agentsmd.content),
-      })
-      appended.push(written)
-    }
-
-    const skillChanges = collectSkillChanges(
-      baseline.skills.entries,
-      comparison.skills.entries,
-      baseline.skills.descriptions,
-    )
-    if (skillChanges.length > 0) {
-      const written = await this.appendEvent({
-        type: "context_update",
-        turn,
-        source: { type: "skill", changes: skillChanges },
-        content: `<skills_update>\n${JSON.stringify(skillChanges, null, 2)}\n</skills_update>`,
-      })
-      appended.push(written)
+    for (const update of contextUpdates(turn, baseline, comparison)) {
+      appended.push(await this.appendEvent(update))
     }
 
     if (appended.length > 0) {

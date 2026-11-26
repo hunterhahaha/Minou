@@ -137,7 +137,7 @@ min(contextWindow × 0.8, contextWindow - maxOutputTokens - (10000 + maxOutputTo
 
 ### Step 历史与协议转换
 
-每个正常 Step 从宿主取得已提交的有序历史。最近成功的 `summary/end` 是历史的首项，其 MCP 快照作为工具基线。Builder 结合基础工具、基线和后续事件构造消息与工具表。桌面和 CLI 共用这一请求形状，CLI 以空基线和 Run 内载入状态启动。标题和独立 Summary 继续传显式消息。
+每个正常 Step 从宿主取得已提交的有序历史。最近成功的 `summary/end` 是历史的首项，其 MCP 快照作为工具基线。Builder 结合基础工具、基线和后续事件构造消息与工具表。桌面和 CLI 共用这一请求形状，CLI 首轮以空 MCP 基线启动，续跑用同一套 SessionState 重放已提交的载入事件。标题和独立 Summary 继续传显式消息。
 
 Adapter 按协议和模型名前缀匹配原生回放能力。使用 `anthropic_messages` 且模型名以 `claude` 开头时启用，适用于官方和代理地址，回放来源为 `anthropic` / `anthropic_messages`。完整且匹配的 Assistant 消息逐块回放，其他消息走通用转换。首次回放带签名或加密数据的思考块时固定顶层工具表，后续增量按序作为内联变更放在整组工具结果后，同名工具新增用于替换定义。系统提示中的 AGENTS.md 与 Skill 使用持久化基线；普通 Turn 的 AGENTS.md 变化只追加 `context_update` 并更新比较快照，成功 Summary 才替换固定基线。启用回放能力的 Adapter 将独立 Summary 的通用消息作为文本材料。历史的系统提示和消息前缀仍需满足服务端的签名校验。
 
@@ -168,7 +168,9 @@ flowchart TD
 
 ## CLI 独立调用
 
-[main.ts](../src/cli/main.ts) 直接装配配置、Adapter、工具、MCP、Skill、Memory 和独立事件日志，调用相同的 `runAgentLoop()`。它不创建桌面 SessionRuntime，也不注册 Electron IPC。每次使用内部 UUID，日志位于 `logs/cli/<session-id>/`。
+[main.ts](../src/cli/main.ts) 直接装配配置、Adapter、工具、MCP、Skill、Memory 和独立事件日志，调用相同的 `runAgentLoop()`。它不创建桌面 SessionRuntime，也不注册 Electron IPC。首次 run 分配内部 UUID，日志位于 `logs/cli/<session-id>/`。
+
+首次 run 保存有效设置和固定上下文。continue 按会话 ID 恢复 EventLog 和 SessionState，复用桌面的上下文比较逻辑，并在同一事务提交增量及新 Turn 的首批事件。CLI 每个会话的设置数据库提供跨进程独占，首次允许的 MCP 工具身份约束后续目录发布。
 
 两个入口共用 Loop 的事件提交规则。桌面端通过实时发布回调和 IPC 推送块开始和增量。完整块、消息、Step 和工具结果通过 `appendEvent` 提交到各自的 SQLite Event Log。CLI 的 JSONL 输出在日志提交成功后逐行输出完整事件。
 

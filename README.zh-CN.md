@@ -55,7 +55,7 @@ node dist/src/cli/main.js run --prompt "说明当前项目结构" --workspace . 
 
 每次调用创建新的运行。省略 `--modelid` 时使用已配置的默认模型。传入 `--supportreason false` 可以省略模型请求中的思考控制字段。stdout 逐行输出已提交事件。`--output` 将最终回答写成 UTF-8 文本，`--outputjson` 将运行结果写成 JSON；两者均可省略。
 
-默认最多执行 100 步，总超时为 1,800 秒。CLI 在独立 Node 进程中开始新的对话。
+默认最多执行 100 步，总超时为 1,800 秒。CLI 在独立 Node 进程中工作。`run` 创建会话，`continue --session-id <id> --prompt <text>` 使用已保存的会话设置继续下一轮。
 
 如需使用简短的 `minou` 命令，构建后执行 `npm link`，然后使用 `minou run ...`。启动参数、权限、隔离选项、事件和退出码详见 [CLI 使用说明](docs/cli-usage.md)。
 

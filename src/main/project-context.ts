@@ -13,6 +13,7 @@ import {
 import {
   lstat,
   readFile,
+  stat,
 } from "node:fs/promises"
 import { isAbsolute, join } from "node:path"
 
@@ -77,16 +78,12 @@ export function resolveProjectContext(
       allowedRoots,
     ),
     resolveCurrentBaseline: async (): Promise<CurrentSessionBaseline> => {
-      const [agentsContent, skills] = await Promise.all([
-        readOptionalTextFile(agentsMdPath, "AGENTS.md"),
+      const [agentsmd, skills] = await Promise.all([
+        readAgentsBaseline(agentsMdPath),
         options.skillManager.resolveSkills(projectId),
       ])
       return {
-        agentsmd: {
-          path: agentsMdPath,
-          hash: hashText(agentsContent),
-          content: agentsContent,
-        },
+        agentsmd,
         skills,
         mcp: [],
       }
@@ -123,13 +120,17 @@ function formatWorkspaceInfo(
 }
 
 /**
- * 对基线文本计算 SHA-256，用于 AGENTS.md 内容比较。
- *
- * @param content 要计算哈希的完整文本。
- * @returns SHA-256 十六进制字符串。
+ * 读取工作区规则并生成桌面和 CLI 共用的上下文基线。
+ * @param path 当前工作区 AGENTS.md 的绝对路径。
+ * @param followSymlinks CLI 沿用通过 stat 检查链接目标的行为。
+ * @returns 路径、正文和用于持久化的 SHA-256；文件缺失时使用空正文。
+ * @throws Error 文件类型不符或读取失败。
  */
-function hashText(content: string): string {
-  return createHash("sha256").update(content).digest("hex")
+export async function readAgentsBaseline(path: string, followSymlinks = false): Promise<CurrentSessionBaseline["agentsmd"]> {
+  const kind = await pathKind(path, followSymlinks)
+  if (kind !== "missing" && kind !== "file") throw new Error("AGENTS.md 不是普通文件：" + path)
+  const content = kind === "missing" ? "" : await readTextFile(path, "AGENTS.md")
+  return { path, content, hash: createHash("sha256").update(content).digest("hex") }
 }
 
 /**
@@ -166,31 +167,17 @@ async function readTextFile(filePath: string, label: string): Promise<string> {
 }
 
 /**
- * 缺失文件返回空文本；存在时要求普通文件并读取。
- *
- * @param filePath 可缺失的文件路径。
- * @param label 错误消息中的文件职责。
- * @returns 文件文本；不存在时为空字符串。
- * @throws Error 路径类型不符、检查或读取失败时传播。
- */
-async function readOptionalTextFile(filePath: string, label: string): Promise<string> {
-  const kind = await pathKind(filePath)
-  if (kind === "missing") return ""
-  if (kind !== "file") throw new Error(`${label}不是普通文件：${filePath}`)
-  return readTextFile(filePath, label)
-}
-
-/**
- * 通过 lstat 区分缺失、普通文件、目录及其他节点。
+ * 区分缺失、普通文件、目录及其他节点。
  *
  * @param path 要检查的路径。
+ * @param followSymlinks 是否检查链接指向的节点。
  * @returns 当前路径类型，仅 ENOENT 被解释为 missing。
  * @throws Error 除 ENOENT 外的路径检查错误包装后传播。
  */
-async function pathKind(path: string): Promise<"missing" | "file" | "directory" | "other"> {
+async function pathKind(path: string, followSymlinks: boolean): Promise<"missing" | "file" | "directory" | "other"> {
   let state
   try {
-    state = await lstat(path)
+    state = await (followSymlinks ? stat(path) : lstat(path))
   } catch (error) {
     if (isNodeError(error) && error.code === "ENOENT") return "missing"
     throw new Error(`无法检查路径：${path}`, { cause: error })

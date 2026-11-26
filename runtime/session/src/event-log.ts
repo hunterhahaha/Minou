@@ -15,7 +15,7 @@ import { TEAM_META_SCHEMA } from "./meta-store.ts"
 import { requireProjectId } from "./project-id.ts"
 
 import type {
-  McpToolChangeInput, SessionEvent, SessionEventInput, TurnStartEvent, TurnStartEventInput,
+  ContextUpdateEventInput, McpToolChangeInput, SessionEvent, SessionEventInput, TurnStartEvent, TurnStartEventInput,
   UserMessageEvent, UserMessageEventInput,
 } from "./events.ts"
 
@@ -43,10 +43,11 @@ export interface FileSessionEventLogOptions {
 export interface FileSessionEventLog {
   /**
    * 按 seq 读取当前 Session 的已提交事件。
+   * @param allowEmpty 首轮初始化可显式读取空日志。
    * @returns 尚待上层校验的事件值。
    * @throws Error 当目录、数据库、日志或事件内容无效时抛出。
    */
-  readEvents(): Promise<readonly unknown[]>
+  readEvents(allowEmpty?: boolean): Promise<readonly unknown[]>
   /**
    * 分配事件身份并提交一条事件。
    * @param event 尚未分配身份的事件。
@@ -74,6 +75,22 @@ export interface FileSessionEventLog {
     queuedMessageId?: string,
     onCommit?: (db: DatabaseSync) => void,
   ): Promise<readonly [TurnStartEvent, UserMessageEvent]>
+
+  /**
+   * 原子提交下一 Turn 的上下文增量、开始事件与用户消息。
+   * @param events Turn 开始与用户消息。
+   * @param queuedMessageId CLI 不使用持久队列。
+   * @param onCommit 提交前执行的同步检查；抛出时一并回滚。
+   * @param context 按顺序写在新 Turn 之前的上下文增量。
+   * @returns 本次按序提交的完整事件。
+   * @throws Error 当上下文与 Turn 不匹配或事务失败时抛出。
+   */
+  appendTurnStartAndUserMessage(
+    events: readonly [TurnStartEventInput, UserMessageEventInput],
+    queuedMessageId: undefined,
+    onCommit: ((db: DatabaseSync) => void) | undefined,
+    context: readonly ContextUpdateEventInput[],
+  ): Promise<readonly SessionEvent[]>
 }
 
 /** 同一进程、同一 Session 的共享写入队列。 */
@@ -159,24 +176,30 @@ export function createFileSessionEventLog(options: FileSessionEventLogOptions): 
     }))
   })
 
-  return {
-    readEvents: async () => {
-      await (WRITE_TAILS.get(queueKey) ?? Promise.resolve())
-      await requireDirectory(sessionDirectory)
-      await requireDatabase(databasePath)
-      return withDatabase(databasePath, (db) =>
-        readSessionEvents(db, options.projectGroupId, options.sessionId, databasePath, options.team, "all", table))
-    },
-    appendEvent: async (input) => {
-      if (input.type === "assistant/block_start" || input.type === "assistant/block_delta") {
-        throw new Error("Assistant 流片段只能在内存中发布")
-      }
-      return (await append([input], "tail"))[0]
-    },
-    appendMcpToolChanges: (inputs) => inputs.length === 0 ? Promise.resolve([]) : append(inputs),
-    appendTurnStartAndUserMessage: (inputs, queuedMessageId, onCommit) => runSerializedWrite(queueKey, async () => {
+  function appendTurnStartAndUserMessage(
+    inputs: readonly [TurnStartEventInput, UserMessageEventInput],
+    queuedMessageId?: string,
+    onCommit?: (db: DatabaseSync) => void,
+  ): Promise<readonly [TurnStartEvent, UserMessageEvent]>
+  function appendTurnStartAndUserMessage(
+    inputs: readonly [TurnStartEventInput, UserMessageEventInput],
+    queuedMessageId: undefined,
+    onCommit: ((db: DatabaseSync) => void) | undefined,
+    context: readonly ContextUpdateEventInput[],
+  ): Promise<readonly SessionEvent[]>
+  function appendTurnStartAndUserMessage(
+    inputs: readonly [TurnStartEventInput, UserMessageEventInput],
+    queuedMessageId?: string,
+    onCommit?: (db: DatabaseSync) => void,
+    context: readonly ContextUpdateEventInput[] = [],
+  ): Promise<readonly SessionEvent[]> {
+    return runSerializedWrite(queueKey, async () => {
       await requireDirectory(sessionDirectory)
       validateTurnBatch(inputs, databasePath)
+      if (context.some((event) => event.type !== "context_update" || event.turn !== inputs[0].turn) ||
+        (inputs[0].turn === 1 && context.length > 0)) {
+        throw new Error("Session 上下文增量与开轮批次不匹配")
+      }
       if (queuedMessageId !== undefined && queuedMessageId !== inputs[1].message.id) {
         throw new Error("Turn 用户消息身份与持久队首不一致")
       }
@@ -195,11 +218,11 @@ export function createFileSessionEventLog(options: FileSessionEventLogOptions): 
           }
         } else {
           validateNextTurn(values, inputs[0].turn, databasePath)
-          nextSeq = nextSequence(values, databasePath, 2)
+          nextSeq = nextSequence(values, databasePath, context.length + 2)
         }
         const written = materializeEvents(
-          inputs, options.sessionId, nextSeq, now, createEventId, databasePath,
-        ) as [TurnStartEvent, UserMessageEvent]
+          [...context, ...inputs], options.sessionId, nextSeq, now, createEventId, databasePath,
+        )
         if (queuedMessageId !== undefined) {
           const removed = db.prepare(`DELETE FROM session_message_queue WHERE message_id = ?
             AND position = (SELECT MIN(position) FROM session_message_queue WHERE project_id = ? AND session_id = ?)
@@ -211,7 +234,25 @@ export function createFileSessionEventLog(options: FileSessionEventLogOptions): 
         onCommit?.(db)
         return written
       }))
-    }),
+    })
+  }
+
+  return {
+    readEvents: async (allowEmpty = false) => {
+      await (WRITE_TAILS.get(queueKey) ?? Promise.resolve())
+      await requireDirectory(sessionDirectory)
+      await requireDatabase(databasePath)
+      return withDatabase(databasePath, (db) =>
+        readSessionEvents(db, options.projectGroupId, options.sessionId, databasePath, allowEmpty || options.team, "all", table))
+    },
+    appendEvent: async (input) => {
+      if (input.type === "assistant/block_start" || input.type === "assistant/block_delta") {
+        throw new Error("Assistant 流片段只能在内存中发布")
+      }
+      return (await append([input], "tail"))[0]
+    },
+    appendMcpToolChanges: (inputs) => inputs.length === 0 ? Promise.resolve([]) : append(inputs),
+    appendTurnStartAndUserMessage,
   }
 }
 

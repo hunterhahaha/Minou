@@ -55,7 +55,7 @@ node dist/src/cli/main.js run --prompt "Summarize this project" --workspace . --
 
 Each invocation starts a fresh run using the configured default model unless you pass `--modelid`. Use `--supportreason false` to omit reasoning controls. Stdout prints committed events as JSON Lines. Use `--output` to save the final answer as UTF-8 text and `--outputjson` to save the final run result as JSON.
 
-The defaults are 100 steps and a 1,800-second timeout. The CLI runs without an Electron window and starts with a fresh conversation.
+The defaults are 100 steps and a 1,800-second timeout. The CLI runs without an Electron window. Use `run` to start a conversation and `continue --session-id <id> --prompt <text>` to add a turn using its saved settings.
 
 To use the shorter `minou` command, run `npm link` after building, then use `minou run ...`. See the [detailed CLI guide (Chinese)](docs/cli-usage.md) for startup options, permissions, isolation options, events, and exit codes.
 
