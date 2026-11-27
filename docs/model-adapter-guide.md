@@ -10,7 +10,7 @@
 统一请求 → Adapter.buildRequest() → 按协议发起 SDK 请求 → Adapter.mapResponseStream() → 统一事件流
 ```
 
-路由表中的 `ModelConverter` 是转换器，Runtime 拿到的 `ModelAdapter` 是绑定本轮模型和连接的流接口。当前网关支持 `anthropic_messages`、`chat_completions` 和 `responses`，生产路由表目前登记这三种协议的通用转换器。新增厂商适配使用其中已有的协议。新增协议或改变 SDK 传输方式涉及网关与配置契约，应先独立确认范围。 [统一模型类型](../runtime/model/src/types.ts) · [架构与执行流程](architecture.md)
+路由表中的 `ModelConverter` 是转换器，Runtime 拿到的 `ModelAdapter` 是绑定本轮模型和连接的流接口。当前网关支持 `anthropic_messages`、`chat_completions` 和 `responses`，生产表登记了覆盖三种协议的 DeepSeek 转换器和各协议的通用转换器。新增厂商适配使用其中已有的协议。新增协议或改变 SDK 传输方式涉及网关与配置契约，应先独立确认范围。 [统一模型类型](../runtime/model/src/types.ts) · [架构与执行流程](architecture.md)
 
 ## 实现请求与响应流转换
 
@@ -23,7 +23,7 @@
 | `ProtocolRequest.protocol`、`params` | 协议标记及该协议的 SDK 请求参数。Anthropic Messages 分支另有 `useBeta`，供共享流选择 Messages SDK 入口。 |
 | `ProtocolResponseStream.protocol`、`events` | 原始流的协议标记及 SDK 事件的异步迭代器。先按协议收窄类型，再读取事件字段。 |
 
-下面的 `ExampleAdapter` 是示例厂商，展示如何在一个类里支持 Chat Completions 和 Responses。把文件放在 `runtime/model/src/gateway/example.ts`，在各自的请求构造和事件映射处实现厂商差异。协议共有部分可以复用现有构造函数和流映射器。 [Chat Completions 实现](../runtime/model/src/gateway/chat-completions.ts) · [Responses 实现](../runtime/model/src/gateway/responses.ts) · [Anthropic Messages 实现](../runtime/model/src/gateway/anthropic.ts)
+下面的 `ExampleAdapter` 展示如何在一个类里支持 Chat Completions 和 Responses。类放在 `runtime/model/src/gateway/example.ts`，请求构造和事件映射由厂商独立实现。示例从厂商自己的 `example/` 目录导入两个协议的实现。共享网关负责 SDK 传输，Adapter 可以使用模型层的上下文投影、推理校验与 Usage 工具。 [DeepSeek 实现](../runtime/model/src/gateway/deepseek.ts)
 
 ```ts
 import type {
@@ -32,8 +32,8 @@ import type {
   ProtocolRequest,
   ProtocolResponseStream,
 } from "./adapter.ts"
-import { buildChatCompletionsRequest, mapChatCompletionsStream } from "./chat-completions.ts"
-import { buildResponsesRequest, mapResponsesStream } from "./responses.ts"
+import { buildChatCompletionsRequest, mapChatCompletionsStream } from "./example/chat-completions.ts"
+import { buildResponsesRequest, mapResponsesStream } from "./example/responses.ts"
 import { invalidRequest } from "../shared.ts"
 import type { ModelStreamEvent, UnifiedModelRequest } from "../types.ts"
 
@@ -111,7 +111,6 @@ const exampleVendor = {
 } satisfies VendorAdapterEntry
 
 // 将 exampleVendor 加入现有注册表的 vendors 数组。
-// 当前数组为空时，写成 vendors: Object.freeze([exampleVendor])。
 ```
 
 | 注册字段 | 含义 |

@@ -1,6 +1,7 @@
 import type { ModelConverter } from "./adapter.ts"
 import { AnthropicMessagesAdapter } from "./anthropic.ts"
 import { ChatCompletionsAdapter } from "./chat-completions.ts"
+import { DeepSeekAdapter } from "./deepseek.ts"
 import { ResponsesAdapter } from "./responses.ts"
 import type { ModelConfig, Protocol } from "../types.ts"
 
@@ -37,9 +38,19 @@ export interface AdapterRegistry {
 /** 仅包含可安全展示的路由信息，由 Turn 工厂原样传递。 */
 export class AdapterRoutingError extends Error {}
 
-/** 本进程使用的路由表，目前登记三个通用转换器。 */
+/** 本进程使用的 DeepSeek 转换器及三种协议的通用兜底。 */
 export const MODEL_ADAPTER_REGISTRY: AdapterRegistry = Object.freeze({
-  vendors: Object.freeze([]),
+  vendors: Object.freeze([{
+    name: "DeepSeek",
+    providerNames: ["DeepSeek", "deepseek", "Deepseek"],
+    supportedProtocols: ["chat_completions", "responses", "anthropic_messages"],
+    modelRules: [
+      { modelPattern: "deepseek-*", protocol: "chat_completions" },
+      { modelPattern: "deepseek-*", protocol: "responses" },
+      { modelPattern: "deepseek-*", protocol: "anthropic_messages" },
+    ],
+    adapter: new DeepSeekAdapter(),
+  } satisfies VendorAdapterEntry]),
   genericByProtocol: Object.freeze({
     anthropic_messages: new AnthropicMessagesAdapter(),
     chat_completions: new ChatCompletionsAdapter(),

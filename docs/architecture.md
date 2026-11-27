@@ -69,7 +69,7 @@ Composer 的 `@` 查询调用 [文件查看器 IPC](../src/main/file-explorer-ip
 
 桌面新对话提交首条消息后，SessionRuntime 用本轮 Adapter 发起独立的标题请求，主回复与队列可同时执行。标题请求只携带首条消息和命名提示词，优先使用该模型支持的关闭或最低思考档位。活动期停止会放弃命名，60 秒超时则使用消息前 30 个字符。主进程仅在 Meta 名称仍为「新对话」时原子写入，再同步工作区索引并推送会话摘要。
 
-桌面与 CLI 共用 [Turn 模型工厂](../src/main/model-adapters.ts)。[路由器](../runtime/model/src/gateway/adapter-router.ts) 优先匹配忽略大小写及首尾空白的 Provider 名称或别名。名称命中但不支持所选协议时结束装配并报错。名称未命中时按 API 模型名与协议匹配，模型名支持精确名称和大小写敏感的末尾 `*` 前缀规则。多个转换器同时命中时报告冲突。未匹配到专用条目时按协议选择通用条目。当前生产表只登记三种通用转换器。SDK Client 在 Turn 装配时创建，Provider 凭据留在宿主和 SDK。
+桌面与 CLI 共用 [Turn 模型工厂](../src/main/model-adapters.ts)。[路由器](../runtime/model/src/gateway/adapter-router.ts) 优先匹配忽略大小写及首尾空白的 Provider 名称或别名。名称命中但不支持所选协议时结束装配并报错。名称未命中时按 API 模型名与协议匹配，模型名支持精确名称和大小写敏感的末尾 `*` 前缀规则。多个转换器同时命中时报告冲突。生产表按 `DeepSeek` 名称或 `deepseek-*` 与对应协议的组合选择 DeepSeek 转换器，未匹配到专用条目时按协议选择通用条目。SDK Client 在 Turn 装配时创建，Provider 凭据留在宿主和 SDK。
 
 ## 桌面 Team Mode
 
@@ -104,7 +104,9 @@ flowchart LR
 
 AgentLoop 在带用量的 `assistant/message` 中携带该请求 Adapter 的 `contextWindow`。Session 从这些事件累计 `inputTokens`、缓存读取 `cacheHitTokens` 和缓存写入 `cacheMissTokens`，命中率是缓存读取量除以三个累计输入桶的总和。最近一次上下文占用取该次请求的输入与输出分项和，占用率用该占用除以同一请求的模型上限。Renderer 从会话事件按相同口径展示用量。
 
-[Chat Completions Adapter](../runtime/model/src/gateway/chat-completions.ts) 按分片依次从非空的 `reasoning_content`、`reasoning` 和 `reasoning_details` 的文本或摘要提取可读思考。通用请求将同一 assistant 消息的 thinking 块按顺序拼接到 `reasoning_content`。OpenRouter 优先回传匹配来源的完整 `reasoning_details`，缺失或无法解析时改用 `reasoning`。独立摘要请求使用通用文本转换。字段依据见 [DeepSeek 思考模式](https://api-docs.deepseek.com/guides/thinking_mode/)、[Z.AI 深度思考](https://docs.z.ai/guides/capabilities/thinking)、[MiniMax OpenAI SDK](https://platform.minimax.io/docs/api-reference/text-openai-api) 和 [OpenRouter Reasoning Tokens](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens)。
+[Chat Completions Adapter](../runtime/model/src/gateway/chat-completions.ts) 按分片依次从非空的 `reasoning_content`、`reasoning` 和 `reasoning_details` 的文本或摘要提取可读思考。通用请求将同一 assistant 消息的 thinking 块按顺序拼接到 `reasoning_content`。OpenRouter 优先回传匹配来源的完整 `reasoning_details`，缺失或无法解析时改用 `reasoning`。独立摘要请求使用通用文本转换。字段依据见 [Z.AI 深度思考](https://docs.z.ai/guides/capabilities/thinking)、[MiniMax OpenAI SDK](https://platform.minimax.io/docs/api-reference/text-openai-api) 和 [OpenRouter Reasoning Tokens](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens)。
+
+[DeepSeek Adapter](../runtime/model/src/gateway/deepseek.ts) 将三种协议的请求构造和流解析实现在 [DeepSeek 目录](../runtime/model/src/gateway/deepseek/) 内，共享网关负责 SDK 传输。各协议下发模型输出上限，并在思考能力关闭或选中 `none` 时显式关闭思考。Chat Completions 在携带工具定义时把历史 thinking 拼入 `reasoning_content`，Responses 用明文 `reasoning` 输入项回放，Anthropic Messages 用已有 `replay` 字段保存同来源的完整内容块和签名，工具定义放在请求顶层。独立摘要省略这些回放。 [思考模式](https://api-docs.deepseek.com/zh-cn/guides/thinking_mode/) · [Responses](https://api-docs.deepseek.com/zh-cn/guides/responses_api/) · [Anthropic Messages](https://api-docs.deepseek.com/zh-cn/guides/anthropic_api/)
 
 网络层由 [retry.ts](../runtime/network/src/retry.ts) 控制重试，当前最大尝试次数为 3。可重试错误在尚无有效输出时重试；已产生有效流事件后失败，交由当前请求错误流程处理。取消不自动重试。
 
