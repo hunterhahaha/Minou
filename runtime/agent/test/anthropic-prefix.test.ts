@@ -65,7 +65,6 @@ async function testPrefix(initialRules: string): Promise<void> {
   const global = new SessionRuntimeGlobal(paths, new ToolRegistry(), new RenderRegistry())
   global.createTurnModelAdapter = async () => Object.assign(createModelAdapter(MODEL, {
     apiKey: "fixture", baseURL: provider.baseURL("anthropic_messages"),
-    nativeHistory: { name: "anthropic", protocol: "anthropic_messages", inlineToolChanges: true },
   }), { contextWindow: MODEL.contextWindow, maxOutputTokens: MODEL.maxOutputTokens })
   const sessionDirectory = join(paths.rootDir, "sessions", "default", "prefix")
   const agentsPath = join(paths.rootDir, "sessions", "default", "workspace", "AGENTS.md")

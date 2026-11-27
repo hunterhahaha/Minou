@@ -41,6 +41,18 @@ type ChatCompletionCreateParamsStreaming = OpenAI.ChatCompletionCreateParamsStre
 
 type AssistantToolCalls = NonNullable<ChatCompletionAssistantMessageParam["tool_calls"]>
 
+/** OpenRouter 原生思考详情的持久化来源。 */
+const OPENROUTER_REPLAY_SOURCE = { name: "openrouter", protocol: "chat_completions" } satisfies ReplaySource
+
+/**
+ * 判断 Provider 配置名称是否匹配 OpenRouter。
+ * @param providerName 本轮快照中的 Provider 名称，省略时使用通用 Chat Completions 转换。
+ * @returns 是否为 OpenRouter 或 Open Router，忽略大小写和首尾空白。
+ */
+function isOpenRouterProvider(providerName?: string): boolean {
+  const name = providerName?.trim().toLowerCase()
+  return name === "openrouter" || name === "open router"
+}
 
 /** 请求方向：统一上下文 → Chat Completions */
 
@@ -52,12 +64,12 @@ type AssistantToolCalls = NonNullable<ChatCompletionAssistantMessageParam["tool_
  * 没有正文、工具调用或原生思考回放的 assistant 消息不发送。
  *
  * @param messages 除首个 System Message 外的统一会话消息。
- * @param source 可选的 OpenRouter 原生思考来源；通用请求使用 reasoning_content。
+ * @param providerName 当前 Provider 名称；省略时用通用思考字段。
  * @returns Chat Completions 消息数组。
  */
-export function toChatCompletionsMessages(messages: ModelMessage[], source?: ReplaySource): ChatCompletionMessageParam[] {
+export function toChatCompletionsMessages(messages: ModelMessage[], providerName?: string): ChatCompletionMessageParam[] {
   const result: ChatCompletionMessageParam[] = []
-  const openRouter = isOpenRouterReplay(source)
+  const openRouter = isOpenRouterProvider(providerName)
 
   for (const message of messages) {
     if (message.role === "user") {
@@ -70,7 +82,7 @@ export function toChatCompletionsMessages(messages: ModelMessage[], source?: Rep
     if (message.role === "assistant") {
       const text = joinAssistantText(message.content)
       const toolCalls = toAssistantToolCalls(message.content)
-      const details = openRouter ? readOpenRouterReplay(message.content, source) : undefined
+      const details = openRouter ? readOpenRouterReplay(message.content) : undefined
       if (text.length === 0 && toolCalls.length === 0 && details === undefined) continue
 
       const param: ChatCompletionAssistantMessageParam = {
@@ -172,21 +184,21 @@ function toChatCompletionsTools(tools: UnifiedToolDefinition[]): ChatCompletionT
  *
  * @param request 待转换的统一模型请求。
  * @param config 当前 Adapter 绑定的完整模型配置，包含推理字段路径。
- * @param source 当前端点的原生思考来源；摘要请求使用通用文本转换。
+ * @param providerName 当前 Provider 名称；独立摘要使用通用文本转换。
  * @returns SDK 可接受的流式 Chat Completions 请求参数。
  * @throws `AppError` 当统一上下文或推理等级配置无效时抛出。
  */
 export function buildChatCompletionsRequest(
   request: UnifiedModelRequest,
   config: ModelConfig,
-  source?: ReplaySource,
+  providerName?: string,
 ): ChatCompletionCreateParamsStreaming {
   const { system, rest, tools } = splitSystemMessage(request)
-  const historySource = request.context.purpose === "summary" ? undefined : source
+  const historyProvider = request.context.purpose === "summary" ? undefined : providerName
 
   const params: ChatCompletionCreateParamsStreaming = {
     model: request.model.name,
-    messages: [{ role: "system", content: system }, ...toChatCompletionsMessages(rest, historySource)],
+    messages: [{ role: "system", content: system }, ...toChatCompletionsMessages(rest, historyProvider)],
     stream: true,
     stream_options: { include_usage: true },
   }
@@ -226,14 +238,6 @@ interface PendingBlock {
 type ReasoningDetail = Record<string, unknown> & { type: "reasoning.text" | "reasoning.summary" | "reasoning.encrypted" }
 
 /**
- * @param source Adapter 的原生历史策略。
- * @returns 来源名称和协议是否允许 OpenRouter 思考回放。
- */
-function isOpenRouterReplay(source?: ReplaySource): source is ReplaySource {
-  return source?.name === "openrouter" && source.protocol === "chat_completions"
-}
-
-/**
  * @param value 来自协议流或历史回放的 JSON 值。
  * @returns 是否为已知的结构化思考类型。
  */
@@ -247,12 +251,12 @@ function isReasoningDetail(value: unknown): value is ReasoningDetail {
  * 取回当前 assistant 响应携带的完整思考详情。
  *
  * @param blocks 当前 assistant 消息的统一内容块。
- * @param source 允许回放的名称与协议。
  * @returns 来源匹配且有效的详情数组；缺失或损坏时由请求转换回退到明文。
  */
-function readOpenRouterReplay(blocks: AssistantContentBlock[], source: ReplaySource): ReasoningDetail[] | undefined {
+function readOpenRouterReplay(blocks: AssistantContentBlock[]): ReasoningDetail[] | undefined {
+  const { name, protocol } = OPENROUTER_REPLAY_SOURCE
   for (const { replay } of blocks) {
-    if (replay?.name !== source.name || replay.protocol !== source.protocol) continue
+    if (replay?.name !== name || replay.protocol !== protocol) continue
     try {
       const details: unknown = JSON.parse(replay.payloadJson)
       if (Array.isArray(details) && details.length > 0 && details.every(isReasoningDetail)) return details
@@ -362,14 +366,17 @@ function resolveCompletion(
  * 同一通道内并行工具调用（不同 `tool_calls[].index`）允许交错，块之间靠 index 区分。
  *
  * @param chunks Chat Completions SDK 产生的原始流 chunk。
- * @param source 可保存原生思考详情的 OpenRouter 来源。
+ * @param request 原始请求，独立摘要不收取原生思考详情。
+ * @param providerName 本轮 Provider 名称，省略时走通用流转换。
  * @returns 按统一块协议产生的异步事件流。
  * @throws `Error` 当流为空时抛出中断错误。
  */
 export async function* mapChatCompletionsStream(
   chunks: AsyncIterable<ChatCompletionChunk>,
-  source?: ReplaySource,
+  request?: UnifiedModelRequest,
+  providerName?: string,
 ): AsyncGenerator<ModelStreamEvent> {
+  const replayOpenRouter = request?.context.purpose !== "summary" && isOpenRouterProvider(providerName)
   const openBlocks: PendingBlock[] = []
   const toolCallBlocks = new Map<number, PendingBlock>()
   const reasoningDetails: ReasoningDetail[] = []
@@ -488,7 +495,7 @@ export async function* mapChatCompletionsStream(
     const extensions = delta as Record<string, unknown>
     const rawDetails = extensions.reasoning_details
     const details = Array.isArray(rawDetails) ? rawDetails.filter(isReasoningDetail) : []
-    if (isOpenRouterReplay(source)) appendReasoningDetails(reasoningDetails, details)
+    if (replayOpenRouter) appendReasoningDetails(reasoningDetails, details)
 
     const reasoning = readReasoningDelta(extensions, details)
     if (reasoning.length > 0) {
@@ -559,7 +566,7 @@ export async function* mapChatCompletionsStream(
 
   const finalBlocks = flushBlocks()
   const completion = resolveCompletion(finishReason, endedToolCalls)
-  if (isOpenRouterReplay(source) && reasoningDetails.length > 0 &&
+  if (replayOpenRouter && reasoningDetails.length > 0 &&
     (completion === "finished" || completion === "tool_calls")) {
     /** 回放属于整条消息，附到最后一个块上，避免尾部签名打断正文或工具分片。 */
     if (finalBlocks.length === 0) {
@@ -569,7 +576,7 @@ export async function* mapChatCompletionsStream(
     }
     const lastBlock = finalBlocks.at(-1)
     if (lastBlock?.type === "block_end") {
-      lastBlock.block.replay = { name: source.name, protocol: source.protocol, payloadJson: JSON.stringify(reasoningDetails) }
+      lastBlock.block.replay = { ...OPENROUTER_REPLAY_SOURCE, payloadJson: JSON.stringify(reasoningDetails) }
     }
   }
   for (const event of finalBlocks) yield event
@@ -593,14 +600,14 @@ export class ChatCompletionsAdapter implements ModelConverter {
   /**
    * 生成可直接交给 SDK 的流式请求。
    * @param request 当前统一模型请求。
-   * @param context 本轮模型和回放配置。
+   * @param context 本轮模型和 Provider 信息。
    * @returns 带协议标记的请求及该协议必要的请求选项。
    * @throws AppError 当请求上下文或推理配置无效时抛出。
    */
   buildRequest(request: UnifiedModelRequest, context: ModelConversionContext): ProtocolRequest {
     return {
       protocol: "chat_completions",
-      params: buildChatCompletionsRequest(request, context.modelConfig, context.nativeHistory),
+      params: buildChatCompletionsRequest(request, context.modelConfig, context.providerName),
     }
   }
 
@@ -608,13 +615,13 @@ export class ChatCompletionsAdapter implements ModelConverter {
    * 使用独立的流状态将原始协议事件转换为 Runtime 事件。
    * @param raw 本次尝试产生的 SDK 事件流。
    * @param request 本次流对应的统一请求。
-   * @param context 本轮原生回放配置。
+   * @param context 本轮 Provider 信息。
    * @returns 逐步生成统一事件的异步流。
    * @throws 当原始协议与转换器不匹配，或流报告失败或截断时抛出。
    */
   mapResponseStream(raw: ProtocolResponseStream, request: UnifiedModelRequest, context: ModelConversionContext): AsyncIterable<ModelStreamEvent> {
     if (raw.protocol !== "chat_completions") throw invalidRequest("Adapter 收到了不匹配的协议事件")
-    return mapChatCompletionsStream(raw.events, request.context.purpose === "summary" ? undefined : context.nativeHistory)
+    return mapChatCompletionsStream(raw.events, request, context.providerName)
   }
 }
 

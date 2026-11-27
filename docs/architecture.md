@@ -96,7 +96,7 @@ flowchart LR
   MapResponseStream --> Events["Runtime 消费统一流事件"]
 ```
 
-共享 `stream()` 在每次逻辑请求开始时构造协议请求，并通过同一重试逻辑执行协议请求。每次网络尝试分别转换响应流，使用独立的分片状态。现有原生历史策略继续随 Turn 快照传给转换器，SDK 自身重试保持关闭。
+共享 `stream()` 在每次逻辑请求开始时构造协议请求，并通过同一重试逻辑执行协议请求。每次网络尝试分别转换响应流，使用独立的分片状态。原生历史的启用条件由各 Adapter 根据模型、Provider 名称和请求上下文判断。SDK 自身重试保持关闭。
 
 [loop.ts](../runtime/agent/src/loop.ts) 处理 `step/start`、模型块事件、`assistant/message`、`tool/result`、`step/end`，不承担宿主的 Turn 首尾。模型块包括 thinking、text 和 tool_call。工具结果通过 `toolCallId` 和对应块事件的 `toolCallEventId` 关联，不能只依据日志排列顺序配对。
 

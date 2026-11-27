@@ -15,7 +15,6 @@ import type {
   ModelRef,
 } from "../../runtime/model/src/types.ts"
 import type { ConfigFilePaths } from "./config-files.ts"
-import { COMPATIBLE_PROVIDERS } from "./compatible-providers.ts"
 import { readTurnProviderSnapshot } from "./provider-store.ts"
 
 /** 创建单个 Turn Adapter 前已经解析完成的模型与协议客户端参数。 */
@@ -60,21 +59,11 @@ export async function resolveTurnModelAdapterSpecification(
   }
 
   const baseURL = snapshot.provider.baseURL
-  const providerName = snapshot.provider.name
-  const normalizedProviderName = providerName.trim().toLowerCase()
-  const nativeHistory: ProtocolClientOptions["nativeHistory"] =
-    snapshot.model.protocol === "chat_completions" && (normalizedProviderName === "openrouter" || normalizedProviderName === "open router")
-      ? { name: "openrouter", protocol: "chat_completions", inlineToolChanges: false }
-      : Object.values(COMPATIBLE_PROVIDERS).flat().find((definition) =>
-        definition.protocol === snapshot.model.protocol && definition.nativeHistory !== undefined &&
-        snapshot.model.name.startsWith(definition.nativeHistory.modelNamePrefix),
-      )?.nativeHistory?.policy
   return {
-    providerName,
+    providerName: snapshot.provider.name,
     modelConfig,
     clientOptions: {
       apiKey,
-      ...(nativeHistory === undefined ? {} : { nativeHistory }),
       ...(baseURL === undefined ? {} : { baseURL }),
       ...(snapshot.provider.defaultHeaders === undefined
         ? {}

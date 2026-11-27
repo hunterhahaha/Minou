@@ -14,10 +14,7 @@ import type { AnthropicRequest } from "./anthropic.ts"
 import { requestChatCompletionsStream } from "./chat-completions.ts"
 import { requestResponsesStream } from "./responses.ts"
 import { assertRequestMatchesModel, invalidRequest, runModelStream } from "../shared.ts"
-import type { ModelAdapter, ModelConfig, ModelStreamEvent, ModelStreamOptions, ReplaySource, UnifiedModelRequest } from "../types.ts"
-
-/** 启用端点原生回放及可选的会话内工具变更。 */
-export type NativeHistoryPolicy = ReplaySource & { inlineToolChanges: boolean }
+import type { ModelAdapter, ModelConfig, ModelStreamEvent, ModelStreamOptions, UnifiedModelRequest } from "../types.ts"
 
 /**
  * 创建一个 Adapter 所需的协议侧连接参数。
@@ -35,16 +32,14 @@ export interface ProtocolClientOptions {
   baseURL?: string
   /** 传给协议客户端的额外请求头。 */
   defaultHeaders?: Record<string, string>
-  /** 匹配兼容目录规则时可回放的原生块来源。 */
-  nativeHistory?: NativeHistoryPolicy
 }
 
-/** 两个转换方法在本轮共用的模型和回放配置。 */
+/** 两个转换方法在本轮共用的模型和 Provider 信息。 */
 export interface ModelConversionContext {
   /** 绑定到本轮的模型、协议与推理配置。 */
   readonly modelConfig: ModelConfig
-  /** 本轮允许使用的原生历史。 */
-  readonly nativeHistory?: NativeHistoryPolicy
+  /** Provider 快照中的原始名称，供转换器识别厂商。 */
+  readonly providerName?: string
 }
 
 /** 协议请求的转换结果，协议标记对应 SDK 参数类型。 */
@@ -83,7 +78,7 @@ export interface ModelConverter {
 /**
  * 通过本轮选定的转换器发出一次模型请求，并流式返回统一事件。
  * @param converter 本轮路由选定的转换器。
- * @param context 本轮模型和回放配置。
+ * @param context 本轮模型和 Provider 信息。
  * @param client 绑定到 Provider 连接配置的 SDK Client。
  * @param request Runtime 提交的统一请求。
  * @param signal 调用方的取消信号。
@@ -159,6 +154,6 @@ export function createModelAdapter(
     maxRetries: 0,
   }
   const client = config.protocol === "anthropic_messages" ? new Anthropic(clientOptions) : new OpenAI(clientOptions)
-  const context = { modelConfig: config, nativeHistory: options.nativeHistory }
+  const context = { modelConfig: config, providerName }
   return { stream: stream.bind(undefined, converter, context, client) }
 }

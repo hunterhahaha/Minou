@@ -2,13 +2,13 @@
  * Anthropic Messages 的请求与统一流事件转换。
  *
  * 请求映射 system、messages、tool_use 与 tool_result；max_tokens 使用模型最大输出配置。
- * 启用兼容规则时回放完整原生历史，在签名边界之后发送内联工具变更。
+ * Claude 模型的历史回放使用完整原生块，并在签名边界之后发送内联工具变更。
  * SDK 自动重试关闭，流请求通过共享入口处理重试、取消与错误归一化。
  */
 
 import type Anthropic from "@anthropic-ai/sdk"
 
-import type { NativeHistoryPolicy, ModelConversionContext, ModelConverter, ProtocolRequest, ProtocolResponseStream } from "./adapter.ts"
+import type { ModelConversionContext, ModelConverter, ProtocolRequest, ProtocolResponseStream } from "./adapter.ts"
 import {
   applyHistoryToolChange,
   historyMessage,
@@ -56,6 +56,18 @@ export type AnthropicRequest = Omit<MessageCreateParamsStreaming, "messages"> & 
   messages: Array<MessageParam | { role: "system"; content: InlineToolBlock[] }>
 }
 const INLINE_TOOLS_BETA = "inline-tools-2026-09-15"
+
+/** Claude 原生签名历史的持久化来源。 */
+const ANTHROPIC_REPLAY_SOURCE = { name: "anthropic", protocol: "anthropic_messages" } satisfies ReplaySource
+
+/**
+ * 按已选择的协议和 API 模型名判断是否使用 Claude 原生历史。
+ * @param model 绑定到本轮的协议及 API 模型名。
+ * @returns 是否启用 Claude 原生历史及内联工具变更。
+ */
+function usesClaudeReplay(model: Pick<ModelConfig, "name" | "protocol">): boolean {
+  return model.protocol === ANTHROPIC_REPLAY_SOURCE.protocol && model.name.startsWith("claude")
+}
 
 /** Anthropic Messages 按模型名称前缀选用首条匹配的思考配置。 */
 const MODEL_THINKING_RULES: ReadonlyArray<{
@@ -187,14 +199,14 @@ function toAnthropicTools(tools: UnifiedToolDefinition[]): ToolUnion[] {
 /**
  * 读取同来源的完整块，任一块不可用时交给通用消息转换。
  * @param blocks 按响应顺序提交的内容块。
- * @param source 当前端点的回放来源。
  * @returns 可按顺序重放的原生内容。
  */
-function replayBlocks(blocks: AssistantContentBlock[], source: ReplaySource): NativeBlock[] | undefined {
+function replayBlocks(blocks: AssistantContentBlock[]): NativeBlock[] | undefined {
+  const { name, protocol } = ANTHROPIC_REPLAY_SOURCE
   const result: NativeBlock[] = []
   for (const block of blocks) {
     const replay = block.replay
-    if (replay?.name !== source.name || replay.protocol !== source.protocol) return undefined
+    if (replay?.name !== name || replay.protocol !== protocol) return undefined
     try {
       const native = JSON.parse(replay.payloadJson) as NativeBlock | null
       if (native === null) return undefined
@@ -218,10 +230,9 @@ function replayBlocks(blocks: AssistantContentBlock[], source: ReplaySource): Na
  * 重建有原生回放能力的请求历史及签名所绑定的顶层工具表。
  * @param history 宿主裁剪后的有序历史。
  * @param baseTools 每次请求提供的基础工具。
- * @param policy 当前端点能力与回放来源。
  * @returns 原生协议消息与顶层工具列表。
  */
-function buildNativeHistory(history: ModelHistory, baseTools: UnifiedToolDefinition[], policy: NativeHistoryPolicy): {
+function buildNativeHistory(history: ModelHistory, baseTools: UnifiedToolDefinition[]): {
   messages: AnthropicRequest["messages"]; tools: UnifiedToolDefinition[]
 } {
   const tools = new Map([...baseTools, ...history.mcpBaseline].map((tool) => [tool.name, tool]))
@@ -238,7 +249,7 @@ function buildNativeHistory(history: ModelHistory, baseTools: UnifiedToolDefinit
 
   for (const event of history.events) {
     if (event.type === "mcp/tools_added" || event.type === "mcp/tools_removed") {
-      if (!frozen || !policy.inlineToolChanges) applyHistoryToolChange(tools, event)
+      if (!frozen) applyHistoryToolChange(tools, event)
       else if (event.type === "mcp/tools_added") {
         for (const definition of toAnthropicTools(event.definitions)) {
           changes.push({ type: "tool_addition", tool: { type: "tool_definition", definition } })
@@ -251,7 +262,7 @@ function buildNativeHistory(history: ModelHistory, baseTools: UnifiedToolDefinit
     const projection = historyMessage(event)
     if (projection === undefined) continue
     if (event.type === "assistant/message") {
-      const replay = event.finishReason ? replayBlocks(event.content, policy) : undefined
+      const replay = event.finishReason ? replayBlocks(event.content) : undefined
       const content = replay ?? toAssistantContent(event.content)
       if (content.length === 0) continue
       flushChanges()
@@ -296,29 +307,28 @@ function summaryMessages(messages: ModelMessage[]): MessageParam[] {
  *
  * @param request 待转换的统一模型请求。
  * @param config 当前 Adapter 绑定的完整模型配置。
- * @param policy 可选的原生块回放与工具变更规则。
  * @returns SDK 可接受的流式 Messages 请求参数。
  * @throws `AppError` 当统一上下文或推理等级配置无效时抛出。
  */
 export function buildAnthropicRequest(
   request: UnifiedModelRequest,
   config: ModelConfig,
-  policy?: NativeHistoryPolicy,
 ): AnthropicRequest {
   const history = request.context.history
+  const nativeReplay = usesClaudeReplay(config)
   let system: string
   let messages: AnthropicRequest["messages"]
   let definitions: UnifiedToolDefinition[]
-  if (policy && history) {
+  if (nativeReplay && history) {
     system = history.system
-    const native = buildNativeHistory(history, request.tools, policy)
+    const native = buildNativeHistory(history, request.tools)
     messages = native.messages
     definitions = native.tools
   } else {
     const context = splitSystemMessage(request)
     system = context.system
     definitions = context.tools
-    messages = policy && request.context.purpose === "summary" ? summaryMessages(context.rest) : toAnthropicMessages(context.rest)
+    messages = nativeReplay && request.context.purpose === "summary" ? summaryMessages(context.rest) : toAnthropicMessages(context.rest)
   }
 
   const params: AnthropicRequest = {
@@ -469,14 +479,15 @@ function resolveCompletion(
  * 流在 `message_stop` 之前结束（连接被截断等）时抛错，不产出 `stream_end`。
  *
  * @param events Anthropic SDK 产生的原始流事件。
- * @param source 需要收取完整原生内容块时的来源。
+ * @param request 原始请求；仅 Claude 会话历史请求收取原生内容块。
  * @returns 按统一块协议产生的异步事件流。
  * @throws `Error` 当原始流在 `message_stop` 前结束时抛出。
  */
 export async function* mapAnthropicStream(
   events: AsyncIterable<RawMessageStreamEvent>,
-  source?: ReplaySource,
+  request?: UnifiedModelRequest,
 ): AsyncGenerator<ModelStreamEvent> {
+  const source = request?.context.history && usesClaudeReplay(request.model) ? ANTHROPIC_REPLAY_SOURCE : undefined
   /** key 是协议侧的 content block index；不在表里表示该 index 已被忽略。 */
   const blocks = new Map<number, PendingBlock>()
   let nextIndex = 0
@@ -741,15 +752,15 @@ export class AnthropicMessagesAdapter implements ModelConverter {
   /**
    * 生成可直接交给 SDK 的流式请求。
    * @param request 当前统一模型请求。
-   * @param context 本轮模型和回放配置。
+   * @param context 本轮模型配置。
    * @returns 带协议标记的请求及该协议必要的请求选项。
    * @throws AppError 当请求上下文或推理配置无效时抛出。
    */
   buildRequest(request: UnifiedModelRequest, context: ModelConversionContext): ProtocolRequest {
     return {
       protocol: "anthropic_messages",
-      params: buildAnthropicRequest(request, context.modelConfig, context.nativeHistory),
-      useBeta: request.context.history !== undefined && context.nativeHistory !== undefined,
+      params: buildAnthropicRequest(request, context.modelConfig),
+      useBeta: request.context.history !== undefined && usesClaudeReplay(context.modelConfig),
     }
   }
 
@@ -757,13 +768,12 @@ export class AnthropicMessagesAdapter implements ModelConverter {
    * 使用独立的流状态将原始协议事件转换为 Runtime 事件。
    * @param raw 本次尝试产生的 SDK 事件流。
    * @param request 本次流对应的统一请求。
-   * @param context 本轮原生回放配置。
    * @returns 逐步生成统一事件的异步流。
    * @throws 当原始协议与转换器不匹配，或流报告失败或截断时抛出。
    */
-  mapResponseStream(raw: ProtocolResponseStream, request: UnifiedModelRequest, context: ModelConversionContext): AsyncIterable<ModelStreamEvent> {
+  mapResponseStream(raw: ProtocolResponseStream, request: UnifiedModelRequest): AsyncIterable<ModelStreamEvent> {
     if (raw.protocol !== "anthropic_messages") throw invalidRequest("Adapter 收到了不匹配的协议事件")
-    return mapAnthropicStream(raw.events, request.context.history ? context.nativeHistory : undefined)
+    return mapAnthropicStream(raw.events, request)
   }
 }
 

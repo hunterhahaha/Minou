@@ -209,7 +209,7 @@ function completionOf(events: ModelStreamEvent[]): string | undefined {
  * @throws Error 当分片组装、工具参数或回传形状不符合预期时抛出。
  */
 async function testOpenRouterReasoningReplay(): Promise<void> {
-  const policy = { name: "openrouter", protocol: "chat_completions", inlineToolChanges: false } as const
+  const providerName = " Open Router "
   const signed = { type: "reasoning.text", index: 0, id: "thinking-0", format: "anthropic-claude-v1" }
   const encrypted = { type: "reasoning.encrypted", index: 1, id: "thinking-1", format: "anthropic-claude-v1" }
   const summary = { type: "reasoning.summary", index: 2, summary: "摘要" }
@@ -230,8 +230,8 @@ async function testOpenRouterReasoningReplay(): Promise<void> {
   const provider = await startFakeProvider(() => ({ events: [...raw.map(sseData), sseData("[DONE]")] }))
   try {
     const adapter = createModelAdapter(MODEL, {
-      apiKey: "fixture", baseURL: provider.baseURL("chat_completions"), nativeHistory: policy,
-    })
+      apiKey: "fixture", baseURL: provider.baseURL("chat_completions"),
+    }, providerName)
     const request = agentRequest()
     const events = await collect(adapter.stream(request, new AbortController().signal))
     assert.equal(completionOf(events), "tool_calls")
@@ -244,7 +244,7 @@ async function testOpenRouterReasoningReplay(): Promise<void> {
       { ...encrypted, data: "cipher-exact" },
     ]
     assert.deepEqual(blocks[1]?.replay, {
-      name: policy.name, protocol: policy.protocol, payloadJson: JSON.stringify(expected),
+      name: "openrouter", protocol: "chat_completions", payloadJson: JSON.stringify(expected),
     })
 
     const restored = JSON.parse(JSON.stringify(blocks)) as AssistantContentBlock[]
@@ -273,28 +273,39 @@ async function testOpenRouterReasoningReplay(): Promise<void> {
     })
     const summaryRequest = buildChatCompletionsRequest({ ...request, context: {
       purpose: "summary", messages: [{ role: "system", content: "system" }, { role: "assistant", content: restored }],
-    } }, MODEL, policy)
+    } }, MODEL, providerName)
     assert.deepEqual(summaryRequest.messages[1], generic.messages[2])
 
     const replay = restored[1]!.replay!
     replay.protocol = "responses"
     const plaintext = { role: "assistant", content: null, tool_calls: sent[2]?.tool_calls, reasoning: "先想摘要" }
-    assert.deepEqual(buildChatCompletionsRequest(continuation, MODEL, policy).messages[2], plaintext)
-    replay.protocol = policy.protocol
+    assert.deepEqual(buildChatCompletionsRequest(continuation, MODEL, providerName).messages[2], plaintext)
+    replay.protocol = "chat_completions"
     replay.payloadJson = "invalid"
-    assert.deepEqual(buildChatCompletionsRequest(continuation, MODEL, policy).messages[2], plaintext)
+    assert.deepEqual(buildChatCompletionsRequest(continuation, MODEL, providerName).messages[2], plaintext)
   } finally {
     await provider.close()
   }
 
   const opaque = chunk({ delta: { reasoning_details: [{ ...encrypted, data: "cipher-only" }] } })
-  const events = await collect(mapChatCompletionsStreamOf(streamOf([opaque, chunk({ finish_reason: "stop" })]), policy))
-  assert.deepEqual(summarize(events), ["start:0:thinking", "end:0:", "stream_end:finished"])
-  const blocks = events.flatMap((event) => event.type === "block_end" ? [event.block] : [])
-  assert.deepEqual(toChatCompletionsMessages([{ role: "assistant", content: blocks }], policy), [
-    { role: "assistant", content: null, reasoning_details: [{ ...encrypted, data: "cipher-only" }] },
-  ])
-  const truncated = await collect(mapChatCompletionsStreamOf(streamOf([opaque, chunk({ finish_reason: "length" })]), policy))
+  const request = agentRequest()
+  const finished = [opaque, chunk({ finish_reason: "stop" })]
+  for (const alias of ["OpenRouter", "open router", "OPEN ROUTER", providerName]) {
+    const events = await collect(mapChatCompletionsStreamOf(streamOf(finished), request, alias))
+    assert.deepEqual(summarize(events), ["start:0:thinking", "end:0:", "stream_end:finished"])
+    const blocks = events.flatMap((event) => event.type === "block_end" ? [event.block] : [])
+    assert.deepEqual(toChatCompletionsMessages([{ role: "assistant", content: blocks }], alias), [
+      { role: "assistant", content: null, reasoning_details: [{ ...encrypted, data: "cipher-only" }] },
+    ])
+  }
+  const summaryRequest: UnifiedModelRequest = { ...request, context: {
+    purpose: "summary", messages: [{ role: "system", content: "system" }, { role: "user", content: "summarize" }],
+  } }
+  const generic = await collect(mapChatCompletionsStreamOf(streamOf(finished), request, "Other"))
+  const summaryEvents = await collect(mapChatCompletionsStreamOf(streamOf(finished), summaryRequest, providerName))
+  assert.deepEqual(summarize(generic), ["stream_end:finished"])
+  assert.deepEqual(summaryEvents, generic)
+  const truncated = await collect(mapChatCompletionsStreamOf(streamOf([opaque, chunk({ finish_reason: "length" })]), request, providerName))
   assert.deepEqual(summarize(truncated), ["stream_end:incomplete"])
 }
 

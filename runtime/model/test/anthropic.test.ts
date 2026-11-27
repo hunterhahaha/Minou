@@ -8,7 +8,6 @@ import assert from "node:assert/strict"
 
 import type Anthropic from "@anthropic-ai/sdk"
 
-import type { NativeHistoryPolicy } from "../src/gateway/adapter.ts"
 import { createModelAdapter } from "../src/gateway/adapter.ts"
 import { buildChatCompletionsRequest } from "../src/gateway/chat-completions.ts"
 import { buildResponsesRequest } from "../src/gateway/responses.ts"
@@ -165,7 +164,6 @@ function endedText(events: ModelStreamEvent[]): string {
  * @throws Error 断言或场景执行失败时向上传播，测试入口报告失败。
  */
 async function testNativeReplay(): Promise<void> {
-  const policy: NativeHistoryPolicy = { name: "anthropic", protocol: "anthropic_messages", inlineToolChanges: true }
   const raw = [
     event({ type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "", signature: "" } }),
     event({ type: "content_block_delta", index: 0, delta: { type: "signature_delta", signature: "signed-prefix" } }),
@@ -187,7 +185,7 @@ async function testNativeReplay(): Promise<void> {
   const request = agentRequest()
   const tool = (name: string) => ({ ...request.tools[0], name })
   try {
-    const adapter = createModelAdapter(MODEL, { apiKey: "fixture", baseURL: provider.baseURL("anthropic_messages"), nativeHistory: policy })
+    const adapter = createModelAdapter(MODEL, { apiKey: "fixture", baseURL: provider.baseURL("anthropic_messages") }, "Editable name")
     const history: NonNullable<UnifiedModelRequest["context"]["history"]> = { system: "stable", mcpBaseline: [tool("mcp_base")], events: [
       { type: "user/message", seq: 1, content: [{ type: "text", text: "run" }] },
       { type: "mcp/tools_added", seq: 2, turn: 1, step: 1, definitions: [tool("mcp_before")] },
@@ -203,6 +201,7 @@ async function testNativeReplay(): Promise<void> {
       { type: "tool_use", id: "call-2", name: "read_file", input: { path: "/native-start" } },
     ]
     assert.deepEqual(blocks.map((block) => JSON.parse(block.replay!.payloadJson)), native)
+    assert.ok(blocks.every((block) => block.replay?.name === "anthropic" && block.replay.protocol === "anthropic_messages"))
     assert.equal(blocks[1].type === "thinking" && blocks[1].text, "")
     const assistant = { type: "assistant/message" as const, seq: 3, content: blocks, finishReason: "tool_use" }
     history.events.push(
@@ -235,7 +234,7 @@ async function testNativeReplay(): Promise<void> {
       { type: "tool/result", seq: 10, turn: 1, step: 3, toolCallEventId: "next-end", toolCallId: "call-1", content: [], isError: false },
       { type: "tool/result", seq: 11, turn: 1, step: 3, toolCallEventId: "next-end", toolCallId: "call-2", content: [], isError: false },
     )
-    const replacement = buildAnthropicRequest({ ...request, context: { history: refreshed } }, MODEL, policy)
+    const replacement = buildAnthropicRequest({ ...request, context: { history: refreshed } }, MODEL)
     assert.deepEqual(replacement.tools, initial.body.tools, "同名刷新不能改动顶层工具表")
     assert.deepEqual(replacement.messages.slice(0, messages.length), messages, "已签名的消息前缀必须保持不变")
     assert.deepEqual(replacement.messages.at(-1), { role: "system", content: [
@@ -243,12 +242,15 @@ async function testNativeReplay(): Promise<void> {
         name: "mcp_after", description: updatedTool.description, input_schema: updatedTool.inputSchema,
       } } },
     ] })
-    const latest = buildAnthropicRequest({ ...request, context: { history: refreshed } }, MODEL)
+    const genericConfig = { ...MODEL, name: "proxy-claude" }
+    const genericModel = { ...request.model, name: genericConfig.name }
+    const latest = buildAnthropicRequest({ ...request, model: genericModel, context: { history: refreshed } }, genericConfig)
     assert.deepEqual(latest.tools?.find((tool) => "name" in tool && tool.name === "mcp_after"), {
       name: "mcp_after", description: updatedTool.description, input_schema: updatedTool.inputSchema,
     })
     const historicalRequest = { ...request, context: { history } }
-    const generic = buildAnthropicRequest(historicalRequest, MODEL)
+    const genericRequest = { ...historicalRequest, model: genericModel }
+    const generic = buildAnthropicRequest(genericRequest, genericConfig)
     assert.deepEqual(generic.tools?.map((definition) => "name" in definition ? definition.name : undefined), ["read_file", "mcp_base", "mcp_after"])
     assert.deepEqual(generic.messages[1], { role: "assistant", content: native.slice(3) })
     const chat = buildChatCompletionsRequest(historicalRequest, MODEL)
@@ -257,24 +259,39 @@ async function testNativeReplay(): Promise<void> {
       assert.doesNotMatch(JSON.stringify(request), /signed-prefix|encrypted|tool_removal|mcp_before/)
       assert.match(JSON.stringify(request.tools), /mcp_after/)
     }
-    for (const different of [{ ...policy, name: "other" }, { ...policy, protocol: "responses" as const }]) {
-      const fallback = buildAnthropicRequest(historicalRequest, MODEL, different)
-      assert.deepEqual(fallback, generic)
+    for (const different of [{ name: "other", protocol: "anthropic_messages" }, { name: "anthropic", protocol: "responses" }]) {
+      const foreignHistory = structuredClone(history)
+      for (const item of foreignHistory.events) {
+        if (item.type === "assistant/message") {
+          for (const block of item.content) Object.assign(block.replay!, different)
+        }
+      }
+      const fallback = buildAnthropicRequest({ ...request, context: { history: foreignHistory } }, MODEL)
+      assert.deepEqual(fallback.messages, generic.messages)
+      assert.deepEqual(fallback.tools, generic.tools)
     }
     const incomplete = structuredClone(history)
     const historicalAssistant = incomplete.events.find((item) => item.type === "assistant/message")!
     assert.equal(historicalAssistant.type, "assistant/message")
     delete historicalAssistant.finishReason
-    assert.deepEqual(buildAnthropicRequest({ ...request, context: { history: incomplete } }, MODEL, policy), generic)
-    const compact = buildAnthropicRequest({ ...request, toolChoice: "none", context: { purpose: "summary", messages: [
+    const unfinished = buildAnthropicRequest({ ...request, context: { history: incomplete } }, MODEL)
+    assert.deepEqual(unfinished.messages, generic.messages)
+    assert.deepEqual(unfinished.tools, generic.tools)
+    const summaryRequest: UnifiedModelRequest = { ...request, toolChoice: "none", context: { purpose: "summary", messages: [
       { role: "system", content: "stable" }, { role: "assistant", content: blocks }, { role: "user", content: "summarize" },
-    ] } }, MODEL, policy)
+    ] } }
+    const compact = buildAnthropicRequest(summaryRequest, MODEL)
     assert.deepEqual(compact.tool_choice, { type: "none" })
     assert.equal(compact.messages.length, 1)
     assert.match(JSON.stringify(compact.messages), /native-start/)
     assert.doesNotMatch(JSON.stringify(compact.messages), /signed-prefix|encrypted|payloadJson/)
     const malformed = raw.filter((value) => value.type !== "content_block_stop" || value.index !== 0)
-    const error = await collectError(mapAnthropicStreamOf(streamOf(malformed), policy))
+    for (const nonReplaying of [genericRequest, summaryRequest]) {
+      const events = await collect(mapAnthropicStreamOf(streamOf(raw), nonReplaying))
+      assert.ok(events.some((item) => item.type === "block_end"))
+      assert.ok(events.every((item) => item.type !== "block_end" || item.block.replay === undefined))
+    }
+    const error = await collectError(mapAnthropicStreamOf(streamOf(malformed), historicalRequest))
     assert.ok(error instanceof Error)
     assert.match(error.message, /协议流在结束事件前中断/)
   } finally {

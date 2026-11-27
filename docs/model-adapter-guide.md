@@ -19,7 +19,7 @@
 | `buildRequest(request, context): ProtocolRequest` | 每次逻辑请求执行一次。把统一上下文、工具定义、模型及推理设置转换成 SDK 请求参数。 |
 | `mapResponseStream(raw, request, context): AsyncIterable<ModelStreamEvent>` | 每次网络尝试执行一次。消费 SDK 事件，增量产出统一事件。原始请求可用于区分会话历史、独立摘要和其他直接消息请求。 |
 | `context.modelConfig` | 本轮模型与协议配置，包括 API 模型名、`protocol`、`maxOutputTokens`、`supportsReasoning`、`reasoningLevels` 和 `reasoningField` 等。 |
-| `context.nativeHistory` | 可选原生回放策略。`name` 和 `protocol` 标识回放来源，`inlineToolChanges` 指定是否允许按策略发送会话内的工具变更。 |
+| `context.providerName` | 本轮 Provider 快照中的原始名称。厂商转换器可按名称判断是否启用自身的协议扩展。 |
 | `ProtocolRequest.protocol`、`params` | 协议标记及该协议的 SDK 请求参数。Anthropic Messages 分支另有 `useBeta`，供共享流选择 Messages SDK 入口。 |
 | `ProtocolResponseStream.protocol`、`events` | 原始流的协议标记及 SDK 事件的异步迭代器。先按协议收窄类型，再读取事件字段。 |
 
@@ -42,17 +42,17 @@ export class ExampleAdapter implements ModelConverter {
   /**
    * 按本轮选定协议构造流式请求。
    * @param request 统一模型请求。
-   * @param context 本轮模型和回放配置。
+   * @param context 本轮模型和 Provider 信息。
    * @returns 带协议标记的 SDK 请求。
    * @throws 本轮协议或请求内容无法转换时抛出。
    */
   buildRequest(request: UnifiedModelRequest, context: ModelConversionContext): ProtocolRequest {
-    const { modelConfig, nativeHistory } = context
+    const { modelConfig, providerName } = context
     switch (modelConfig.protocol) {
       case "chat_completions":
         return {
           protocol: "chat_completions",
-          params: buildChatCompletionsRequest(request, modelConfig, nativeHistory),
+          params: buildChatCompletionsRequest(request, modelConfig, providerName),
         }
       case "responses":
         return {
@@ -68,7 +68,7 @@ export class ExampleAdapter implements ModelConverter {
    * 将本次尝试的 SDK 事件流转换为统一事件。
    * @param raw 带协议标记的原始事件流。
    * @param request 产生该流的原始统一请求。
-   * @param context 本轮模型和回放配置。
+   * @param context 本轮模型和 Provider 信息。
    * @returns 独立的统一事件流。
    * @throws 协议不匹配、流报告失败或意外中断时抛出。
    */
@@ -81,10 +81,8 @@ export class ExampleAdapter implements ModelConverter {
       throw invalidRequest("Example Adapter 收到了不匹配的协议事件")
     }
     switch (raw.protocol) {
-      case "chat_completions": {
-        const source = request.context.purpose === "summary" ? undefined : context.nativeHistory
-        return mapChatCompletionsStream(raw.events, source)
-      }
+      case "chat_completions":
+        return mapChatCompletionsStream(raw.events, request, context.providerName)
       case "responses":
         return mapResponsesStream(raw.events)
       default:
@@ -139,7 +137,7 @@ const exampleVendor = {
 - **转换状态只属于一次尝试。** 把块索引、工具参数缓冲、Usage 和终止状态放在 `mapResponseStream()` 生成的流内。Adapter 实例跨 Turn 复用。首个 `block_delta` 之前发生可重试错误时，共享流可能重新发起请求并重新转换响应流，此前缓冲的事件会被丢弃。
 - **遵守统一事件契约。** 块的 `index` 从 0 开始分配，同一块的 `block_start`、`block_delta` 和 `block_end` 使用相同索引及对应类型。`block_end` 给出完整内容。工具调用需保留稳定的调用 ID，供后续工具结果关联。流按协议结束时，在全部块结束后输出一个 `stream_end`，交付统一完成状态，以及可用的 Usage 和原始结束原因。流失败、意外中断或取消时走错误路径。
 - **按实际字段语义映射。** 厂商专用字段及同名字段差异由厂商 Adapter 处理。推理配置可以复用 `reasoningRequestFragment()`，它仅在 `supportsReasoning` 为 true 时校验档位并生成配置字段。Usage 应沿用现有计数口径，缺失的可选计数桶保持缺失。
-- **成对实现原生回放。** 若需要保留厂商签名或加密思考，响应流转换时在完整内容块上保存带来源的 `replay`，构造后续请求时校验来源后在合适的历史请求中回传。检查摘要、标题等独立请求的行为。现有 Anthropic 和 OpenRouter 的回放处理可作为实例。
+- **成对实现原生回放。** 由 Adapter 决定哪些模型、Provider 和请求上下文启用回放。若需要保留厂商签名或加密思考，在完整内容块上保存带来源的 `replay`，构造历史请求时校验来源并回传。检查摘要、标题等独立请求的行为。
 
 [流事件与回放契约](../runtime/model/src/types.ts) · [共享流与推理配置](../runtime/model/src/shared.ts) · [Usage 转换](../runtime/model/src/usage.ts)
 

@@ -6,7 +6,8 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 
 import { initNetworkDispatcher } from "../../runtime/network/src/dispatcher.ts"
-import type { ModelRef } from "../../runtime/model/src/types.ts"
+import type { ModelRef, UnifiedModelRequest } from "../../runtime/model/src/types.ts"
+import { collect, sseData, startFakeProvider } from "../../runtime/model/test/helpers.ts"
 import { initializeConfigFiles } from "../../src/main/config-files.ts"
 import type { ConfigFilePaths } from "../../src/main/config-files.ts"
 import {
@@ -145,66 +146,54 @@ async function testRejectsInvalidBindingsWithoutSecrets(): Promise<void> {
 }
 
 /**
- * 验证原生能力由协议和实际模型名前缀决定。
- * @returns 匹配和回退均通过。
+ * 验证 Turn 工厂把实际 Provider 名称交给 Chat Completions Adapter 判断回放。
+ * @returns 真实 SDK 流上的正例与回退断言通过后完成。
+ * @throws 当流不符合 Provider 名称对应的原生回放行为时拒绝。
  */
-async function testNativeHistoryPolicy(): Promise<void> {
-  await withPaths(async (paths) => {
-    const database = paths.providerDatabasePath
-    const model: ModelRef = { ...MODEL, name: "claude-proxy-alias", protocol: "anthropic_messages" }
-    const provider = { id: model.providerId, protocol: model.protocol, type: "custom" as const, name: "Editable name" }
-    saveProvider(database, { ...provider, baseURL: "https://API.ANTHROPIC.COM:443/" })
-    saveModel(database, { ...model, supportsReasoning: false, contextWindow: 1000000, maxOutputTokens: 4096 })
-    setProviderApiKey(database, model.providerId, "fixture-key")
-    const expected = {
-      name: "anthropic", protocol: "anthropic_messages", inlineToolChanges: true,
-    }
-    for (const baseURL of ["https://api.anthropic.com", "https://proxy.example.com", undefined]) {
-      saveProvider(database, { ...provider, baseURL })
-      const { clientOptions } = await resolveTurnModelAdapterSpecification(paths, model)
-      assert.deepEqual(clientOptions.nativeHistory, expected)
-      assert.equal(clientOptions.baseURL, baseURL)
-    }
-    const identity = { providerId: model.providerId, modelId: model.modelId }
-    updateModel(database, identity, { name: "proxy-claude" })
-    assert.equal((await resolveTurnModelAdapterSpecification(paths, { ...model, name: "proxy-claude" })).clientOptions.nativeHistory, undefined)
-    updateModel(database, identity, { name: model.name })
-    saveProvider(database, { ...provider, protocol: "chat_completions" })
-    assert.equal((await resolveTurnModelAdapterSpecification(paths, { ...model, protocol: "chat_completions" })).clientOptions.nativeHistory, undefined)
-  })
-}
+async function testOpenRouterReplayUsesProviderSnapshot(): Promise<void> {
+  const encrypted = { type: "reasoning.encrypted", data: "fixture-cipher" }
+  const provider = await startFakeProvider({ events: [
+    { choices: [{ index: 0, delta: { reasoning_details: [encrypted] }, finish_reason: null }] },
+    { choices: [{ index: 0, delta: {}, finish_reason: "stop" }] },
+    sseData("[DONE]"),
+  ] })
+  try {
+    await withPaths(async (paths) => {
+      const database = paths.providerDatabasePath
+      const record = {
+        id: MODEL.providerId, protocol: MODEL.protocol, type: "custom" as const,
+        baseURL: provider.baseURL("chat_completions"),
+      }
+      saveProvider(database, { ...record, name: "OpenRouter" })
+      saveModel(database, { ...MODEL, supportsReasoning: false, contextWindow: 128000, maxOutputTokens: 4096 })
+      setProviderApiKey(database, record.id, "fixture-key")
 
-/**
- * 验证 OpenRouter 按 Provider 名称和协议启用回放，与 URL 和模型名无关。
- * @returns 正例和隔离断言通过后解析。
- * @throws Error 当数据库快照选出错误的策略时抛出。
- */
-async function testOpenRouterHistoryPolicy(): Promise<void> {
-  await withPaths(async (paths) => {
-    const database = paths.providerDatabasePath
-    const provider = {
-      id: MODEL.providerId, protocol: MODEL.protocol, type: "custom" as const, baseURL: "https://proxy.example.com",
-    }
-    saveProvider(database, { ...provider, name: "OpenRouter" })
-    saveModel(database, { ...MODEL, supportsReasoning: false, contextWindow: 128000, maxOutputTokens: 4096 })
-    setProviderApiKey(database, provider.id, "fixture-key")
-    const expected = { name: "openrouter", protocol: "chat_completions", inlineToolChanges: false }
-    for (const name of ["OpenRouter", "open router", "OPEN ROUTER"]) {
-      saveProvider(database, { ...provider, name })
-      assert.deepEqual((await resolveTurnModelAdapterSpecification(paths, MODEL)).clientOptions.nativeHistory, expected)
-    }
-    saveProvider(database, { ...provider, name: "Other", baseURL: "https://openrouter.ai/api/v1" })
-    assert.equal((await resolveTurnModelAdapterSpecification(paths, MODEL)).clientOptions.nativeHistory, undefined)
-    saveProvider(database, { ...provider, name: "OpenRouter", protocol: "responses" })
-    assert.equal((await resolveTurnModelAdapterSpecification(paths, { ...MODEL, protocol: "responses" })).clientOptions.nativeHistory, undefined)
-  })
+      const request: UnifiedModelRequest = {
+        model: MODEL, tools: [],
+        context: { messages: [{ role: "system", content: "fixture" }, { role: "user", content: "run" }] },
+      }
+      const named = await createTurnModelAdapter(paths, MODEL)
+      const events = await collect(named.stream(request, new AbortController().signal))
+      const block = events.find((item) => item.type === "block_end")
+      assert.deepEqual(block?.block.replay, {
+        name: "openrouter", protocol: "chat_completions", payloadJson: JSON.stringify([encrypted]),
+      })
+
+      saveProvider(database, { ...record, name: "Other" })
+      const generic = await createTurnModelAdapter(paths, MODEL)
+      assert.deepEqual(await collect(generic.stream(request, new AbortController().signal)), [
+        { type: "stream_end", completion: "finished", finishReason: "stop" },
+      ])
+    })
+  } finally {
+    await provider.close()
+  }
 }
 
 /** 运行 Turn Adapter 的全部断言。 */
 async function main(): Promise<void> {
   await testResolvesCurrentDatabaseConfiguration()
-  await testNativeHistoryPolicy()
-  await testOpenRouterHistoryPolicy()
+  await testOpenRouterReplayUsesProviderSnapshot()
   await testRejectsInvalidBindingsWithoutSecrets()
   console.log("model-adapters.test.ts: Provider 数据库与 Adapter 断言通过")
 }
