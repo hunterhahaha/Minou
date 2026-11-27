@@ -9,12 +9,13 @@ import assert from "node:assert/strict"
 import type Anthropic from "@anthropic-ai/sdk"
 
 import { createModelAdapter } from "../src/gateway/adapter.ts"
-import { buildChatCompletionsRequest } from "../src/gateway/chat-completions.ts"
-import { buildResponsesRequest } from "../src/gateway/responses.ts"
+import { AnthropicAdapter } from "../src/gateway/anthropic-adapter.ts"
+import { buildChatCompletionsRequest } from "../src/gateway/openai-chat-completions-adapter.ts"
+import { buildResponsesRequest } from "../src/gateway/openai-responses-adapter.ts"
 import {
   buildAnthropicRequest,
   mapAnthropicStream as mapAnthropicStreamOf,
-} from "../src/gateway/anthropic.ts"
+} from "../src/gateway/anthropic-messages-adapter.ts"
 import { CANCELLED, MODEL_REQUEST_FAILED } from "../../error/src/normalizer.ts"
 import type { ModelConfig, ModelStreamEvent, UnifiedModelRequest } from "../src/types.ts"
 
@@ -165,8 +166,10 @@ function endedText(events: ModelStreamEvent[]): string {
  */
 async function testNativeReplay(): Promise<void> {
   const raw = [
-    event({ type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "", signature: "" } }),
-    event({ type: "content_block_delta", index: 0, delta: { type: "signature_delta", signature: "signed-prefix" } }),
+    event({ type: "content_block_start", index: 0, content_block: { type: "thinking", thinking: "read", signature: "" } }),
+    event({ type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: " the file" } }),
+    event({ type: "content_block_delta", index: 0, delta: { type: "signature_delta", signature: "signed-" } }),
+    event({ type: "content_block_delta", index: 0, delta: { type: "signature_delta", signature: "prefix" } }),
     event({ type: "content_block_stop", index: 0 }),
     event({ type: "content_block_start", index: 1, content_block: { type: "redacted_thinking", data: "encrypted" } }),
     event({ type: "content_block_stop", index: 1 }),
@@ -184,8 +187,21 @@ async function testNativeReplay(): Promise<void> {
   const provider = await startFakeProvider(() => ({ events: raw.map((value) => sseEvent(value.type, value)) }))
   const request = agentRequest()
   const tool = (name: string) => ({ ...request.tools[0], name })
+  const converter = new AnthropicAdapter()
+  const context = { modelConfig: MODEL, providerName: "Editable name" }
+  /**
+   * 读取专用转换器的请求体。
+   * @param input 当前用例的统一请求。
+   * @returns Anthropic Messages 流式请求体。
+   * @throws Error 转换器未返回 Anthropic Messages 时抛出。
+   */
+  function build(input: UnifiedModelRequest) {
+    const result = converter.buildRequest(input, context)
+    assert.equal(result.protocol, "anthropic_messages")
+    return result.params
+  }
   try {
-    const adapter = createModelAdapter(MODEL, { apiKey: "fixture", baseURL: provider.baseURL("anthropic_messages") }, "Editable name")
+    const adapter = createModelAdapter(MODEL, { apiKey: "fixture", baseURL: provider.baseURL("anthropic_messages") }, context.providerName)
     const history: NonNullable<UnifiedModelRequest["context"]["history"]> = { system: "stable", mcpBaseline: [tool("mcp_base")], events: [
       { type: "user/message", seq: 1, content: [{ type: "text", text: "run" }] },
       { type: "mcp/tools_added", seq: 2, turn: 1, step: 1, definitions: [tool("mcp_before")] },
@@ -194,15 +210,19 @@ async function testNativeReplay(): Promise<void> {
     const first = await send()
     const blocks = first.flatMap((item) => item.type === "block_end" ? [item.block] : [])
     const native = [
-      { type: "thinking", thinking: "", signature: "signed-prefix" },
+      { type: "thinking", thinking: "read the file", signature: "signed-prefix" },
       { type: "redacted_thinking", data: "encrypted" },
       { type: "text", text: "", citations: null },
       { type: "tool_use", id: "call-1", name: "read_file", input: { path: "/workspace" } },
       { type: "tool_use", id: "call-2", name: "read_file", input: { path: "/native-start" } },
     ]
     assert.deepEqual(blocks.map((block) => JSON.parse(block.replay!.payloadJson)), native)
-    assert.ok(blocks.every((block) => block.replay?.name === "anthropic" && block.replay.protocol === "anthropic_messages"))
-    assert.equal(blocks[1].type === "thinking" && blocks[1].text, "")
+    assert.ok(blocks.every((block) => block.replay?.name === "Anthropic" && block.replay.protocol === "anthropic_messages"))
+    assert.deepEqual(blocks.slice(0, 2).map(({ replay: _replay, ...block }) => block), [
+      { type: "thinking", text: "read the file" }, { type: "thinking", text: "" },
+    ])
+    assert.deepEqual(first.filter((item) => "index" in item && item.index === 1).map(({ type }) => type), ["block_start", "block_end"])
+    assert.deepEqual(first.at(-1), { type: "stream_end", completion: "tool_calls", finishReason: "tool_use" })
     const assistant = { type: "assistant/message" as const, seq: 3, content: blocks, finishReason: "tool_use" }
     history.events.push(
       assistant,
@@ -234,7 +254,7 @@ async function testNativeReplay(): Promise<void> {
       { type: "tool/result", seq: 10, turn: 1, step: 3, toolCallEventId: "next-end", toolCallId: "call-1", content: [], isError: false },
       { type: "tool/result", seq: 11, turn: 1, step: 3, toolCallEventId: "next-end", toolCallId: "call-2", content: [], isError: false },
     )
-    const replacement = buildAnthropicRequest({ ...request, context: { history: refreshed } }, MODEL)
+    const replacement = build({ ...request, context: { history: refreshed } })
     assert.deepEqual(replacement.tools, initial.body.tools, "同名刷新不能改动顶层工具表")
     assert.deepEqual(replacement.messages.slice(0, messages.length), messages, "已签名的消息前缀必须保持不变")
     assert.deepEqual(replacement.messages.at(-1), { role: "system", content: [
@@ -259,14 +279,14 @@ async function testNativeReplay(): Promise<void> {
       assert.doesNotMatch(JSON.stringify(request), /signed-prefix|encrypted|tool_removal|mcp_before/)
       assert.match(JSON.stringify(request.tools), /mcp_after/)
     }
-    for (const different of [{ name: "other", protocol: "anthropic_messages" }, { name: "anthropic", protocol: "responses" }]) {
+    for (const name of [context.providerName, "anthropic"]) {
       const foreignHistory = structuredClone(history)
       for (const item of foreignHistory.events) {
         if (item.type === "assistant/message") {
-          for (const block of item.content) Object.assign(block.replay!, different)
+          for (const block of item.content) block.replay!.name = name
         }
       }
-      const fallback = buildAnthropicRequest({ ...request, context: { history: foreignHistory } }, MODEL)
+      const fallback = build({ ...request, context: { history: foreignHistory } })
       assert.deepEqual(fallback.messages, generic.messages)
       assert.deepEqual(fallback.tools, generic.tools)
     }
@@ -274,13 +294,28 @@ async function testNativeReplay(): Promise<void> {
     const historicalAssistant = incomplete.events.find((item) => item.type === "assistant/message")!
     assert.equal(historicalAssistant.type, "assistant/message")
     delete historicalAssistant.finishReason
-    const unfinished = buildAnthropicRequest({ ...request, context: { history: incomplete } }, MODEL)
-    assert.deepEqual(unfinished.messages, generic.messages)
-    assert.deepEqual(unfinished.tools, generic.tools)
+    const unfinished = build({ ...request, context: { history: incomplete } })
+    assert.deepEqual(unfinished.messages, messages)
+    assert.deepEqual(unfinished.tools, replayed.body.tools)
+    const directRequest: UnifiedModelRequest = { ...request, context: { messages: [
+      { role: "system", content: "stable" },
+      { role: "user", content: "run" },
+      { role: "assistant", content: [
+        { type: "thinking", text: "无回放" },
+        { type: "thinking", text: "界面文本", replay: blocks[0].replay },
+        blocks[1],
+        { type: "text", text: "普通文本" },
+      ] },
+      { role: "user", content: "continue" },
+    ] } }
+    await collect(adapter.stream(directRequest, new AbortController().signal))
+    assert.deepEqual((provider.requests[2].body.messages as unknown[])[1], {
+      role: "assistant", content: [...native.slice(0, 2), { type: "text", text: "普通文本" }],
+    })
     const summaryRequest: UnifiedModelRequest = { ...request, toolChoice: "none", context: { purpose: "summary", messages: [
       { role: "system", content: "stable" }, { role: "assistant", content: blocks }, { role: "user", content: "summarize" },
     ] } }
-    const compact = buildAnthropicRequest(summaryRequest, MODEL)
+    const compact = build(summaryRequest)
     assert.deepEqual(compact.tool_choice, { type: "none" })
     assert.equal(compact.messages.length, 1)
     assert.match(JSON.stringify(compact.messages), /native-start/)
@@ -291,7 +326,9 @@ async function testNativeReplay(): Promise<void> {
       assert.ok(events.some((item) => item.type === "block_end"))
       assert.ok(events.every((item) => item.type !== "block_end" || item.block.replay === undefined))
     }
-    const error = await collectError(mapAnthropicStreamOf(streamOf(malformed), historicalRequest))
+    const error = await collectError(converter.mapResponseStream({
+      protocol: "anthropic_messages", events: streamOf(malformed),
+    }, historicalRequest, context))
     assert.ok(error instanceof Error)
     assert.match(error.message, /协议流在结束事件前中断/)
   } finally {

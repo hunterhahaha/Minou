@@ -15,7 +15,7 @@ import {
   buildChatCompletionsRequest,
   mapChatCompletionsStream as mapChatCompletionsStreamOf,
   toChatCompletionsMessages,
-} from "../src/gateway/chat-completions.ts"
+} from "../src/gateway/openai-chat-completions-adapter.ts"
 import { CANCELLED, MODEL_REQUEST_FAILED } from "../../error/src/normalizer.ts"
 import type { AssistantContentBlock, ModelConfig, ModelStreamEvent, UnifiedModelRequest } from "../src/types.ts"
 

@@ -13,7 +13,7 @@ import {
   buildResponsesRequest,
   mapResponsesStream as mapResponsesStreamOf,
   toResponsesInput,
-} from "../src/gateway/responses.ts"
+} from "../src/gateway/openai-responses-adapter.ts"
 import { CANCELLED, MODEL_REQUEST_FAILED } from "../../error/src/normalizer.ts"
 import type { ModelConfig, ModelStreamEvent, UnifiedModelRequest } from "../src/types.ts"
 

@@ -4,7 +4,7 @@ import { DEEPSEEK_PROVIDERS } from "../../../src/main/compatible-providers/deeps
 import { CANCELLED } from "../../error/src/normalizer.ts"
 import { createModelAdapter } from "../src/gateway/adapter.ts"
 import { MODEL_ADAPTER_REGISTRY, resolveModelConverter } from "../src/gateway/adapter-router.ts"
-import { DeepSeekAdapter } from "../src/gateway/deepseek.ts"
+import { DeepSeekAdapter } from "../src/gateway/deepseek-adapter.ts"
 import type { ModelConfig, ModelMessage, Protocol, UnifiedModelRequest } from "../src/types.ts"
 import { collect, collectError, sseData, sseEvent, startFakeProvider } from "./helpers.ts"
 

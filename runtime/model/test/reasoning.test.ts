@@ -1,8 +1,8 @@
 /** 思考能力对三个协议及压缩请求的控制，以及默认配置与非法输入边界。 */
 import assert from "node:assert/strict"
-import { buildAnthropicRequest } from "../src/gateway/anthropic.ts"
-import { buildChatCompletionsRequest } from "../src/gateway/chat-completions.ts"
-import { buildResponsesRequest } from "../src/gateway/responses.ts"
+import { buildAnthropicRequest } from "../src/gateway/anthropic-messages-adapter.ts"
+import { buildChatCompletionsRequest } from "../src/gateway/openai-chat-completions-adapter.ts"
+import { buildResponsesRequest } from "../src/gateway/openai-responses-adapter.ts"
 import { completeReasoningConfig, defaultReasoningConfig } from "../src/reasoning.ts"
 import { assertRequestMatchesModel } from "../src/shared.ts"
 import { PROTOCOLS } from "../src/types.ts"

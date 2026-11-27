@@ -1,7 +1,7 @@
 import type {ModelConversionContext, ModelConverter, ProtocolRequest, ProtocolResponseStream} from "./adapter.ts"
-import {buildChatRequest, mapChatStream} from "./deepseek/chat-completions.ts"
-import {buildMessagesRequest, mapMessagesStream} from "./deepseek/messages.ts"
-import {buildResponsesRequest, mapResponsesStream} from "./deepseek/responses.ts"
+import {buildChatRequest, mapChatStream} from "./deepseek/openai-chat-completions-adapter.ts"
+import {buildMessagesRequest, mapMessagesStream} from "./deepseek/anthropic-messages-adapter.ts"
+import {buildResponsesRequest, mapResponsesStream} from "./deepseek/openai-responses-adapter.ts"
 import {invalidRequest} from "../shared.ts"
 import type {ModelStreamEvent, UnifiedModelRequest} from "../types.ts"
 

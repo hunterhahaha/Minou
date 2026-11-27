@@ -283,7 +283,7 @@ MCP 的 `mcp/tools_added` 保存载入记录和当时的工具定义，`mcp/tool
 
 支持原生回放的 Adapter 在 `assistant/block_end` 和 `assistant/message` 的内容块上保存可选的 `replay`。其 `name` 和 `protocol` 来自端点规则，`payloadJson` 保存对应协议的原生数据。桌面 IPC 和 CLI 输出通用字段。
 
-Chat Completions Adapter 对名称为 `OpenRouter` 或 `Open Router` 的供应商启用 `openrouter` 回放来源。名称匹配忽略大小写和首尾空白，独立摘要使用通用转换。正常结束或工具调用结束时，Adapter 将整条响应的有序 `reasoning_details` 数组附在最后完成的块上。只有密文时使用空文本的 thinking 块承载回放。签名和密文保存在 `payloadJson` 中，历史重建按来源校验后回传。 [Chat Completions Adapter](../runtime/model/src/gateway/chat-completions.ts)
+Chat Completions Adapter 对名称为 `OpenRouter` 或 `Open Router` 的供应商启用 `openrouter` 回放来源。名称匹配忽略大小写和首尾空白，独立摘要使用通用转换。正常结束或工具调用结束时，Adapter 将整条响应的有序 `reasoning_details` 数组附在最后完成的块上。只有密文时使用空文本的 thinking 块承载回放。签名和密文保存在 `payloadJson` 中，历史重建按来源校验后回传。 [Chat Completions Adapter](../runtime/model/src/gateway/openai-chat-completions-adapter.ts)
 
 ## Skill registry.json
 

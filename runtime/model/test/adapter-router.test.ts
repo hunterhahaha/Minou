@@ -1,10 +1,11 @@
 import assert from "node:assert/strict"
 
+import { AnthropicAdapter } from "../src/gateway/anthropic-adapter.ts"
 import { AdapterRoutingError, MODEL_ADAPTER_REGISTRY, resolveModelConverter } from "../src/gateway/adapter-router.ts"
 import type { AdapterRegistry } from "../src/gateway/adapter-router.ts"
-import { AnthropicMessagesAdapter } from "../src/gateway/anthropic.ts"
-import { ChatCompletionsAdapter } from "../src/gateway/chat-completions.ts"
-import { ResponsesAdapter } from "../src/gateway/responses.ts"
+import { AnthropicMessagesAdapter } from "../src/gateway/anthropic-messages-adapter.ts"
+import { ChatCompletionsAdapter } from "../src/gateway/openai-chat-completions-adapter.ts"
+import { ResponsesAdapter } from "../src/gateway/openai-responses-adapter.ts"
 import { PROTOCOLS } from "../src/types.ts"
 
 /**
@@ -72,9 +73,22 @@ async function main(): Promise<void> {
   assert.equal(resolveModelConverter(registry, { name: "gpt-exact-extra", protocol: "responses" }), registry.genericByProtocol.responses)
   assert.equal(resolveModelConverter(registry, { ...messagesModel, protocol: "responses" }), registry.genericByProtocol.responses)
 
+  const anthropic = resolveModelConverter(MODEL_ADAPTER_REGISTRY, messagesModel, "Unknown Proxy")
+  assert.ok(anthropic instanceof AnthropicAdapter)
+  for (const name of ["anthropic", "Anthropic", "  ANtHrOPic  "]) {
+    assert.equal(resolveModelConverter(MODEL_ADAPTER_REGISTRY, { ...messagesModel, name: "alias-model" }, name), anthropic)
+  }
+  assert.equal(resolveModelConverter(MODEL_ADAPTER_REGISTRY, { ...messagesModel, name: "claude" }), registry.genericByProtocol.anthropic_messages)
+  assert.equal(resolveModelConverter(MODEL_ADAPTER_REGISTRY, { ...messagesModel, name: "Claude-exact" }), registry.genericByProtocol.anthropic_messages)
+  assert.equal(resolveModelConverter(MODEL_ADAPTER_REGISTRY, { ...messagesModel, name: "alias-model" }, "ant"), registry.genericByProtocol.anthropic_messages)
+  assert.throws(
+    () => resolveModelConverter(MODEL_ADAPTER_REGISTRY, { ...messagesModel, protocol: "chat_completions" }, "Anthropic"),
+    { constructor: AdapterRoutingError, message: /Anthropic.*不支持协议 chat_completions/ },
+  )
   for (const protocol of PROTOCOLS) {
     assert.equal(resolveModelConverter(registry, { protocol, name: "unknown-model" }, "Unknown Proxy"), registry.genericByProtocol[protocol])
-    assert.equal(resolveModelConverter(MODEL_ADAPTER_REGISTRY, { protocol, name: "claude-exact" }, "Messages"), registry.genericByProtocol[protocol])
+    assert.equal(resolveModelConverter(MODEL_ADAPTER_REGISTRY, { protocol, name: "claude-exact" }, "Messages"),
+      protocol === "anthropic_messages" ? anthropic : registry.genericByProtocol[protocol])
   }
   console.log("adapter-router.test.ts: Adapter 路由断言通过")
 }

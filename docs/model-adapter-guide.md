@@ -2,6 +2,16 @@
 
 厂商 Adapter 将 Minou 的统一请求转换成厂商请求，并将厂商的流式响应转换成 Runtime 事件。厂商逻辑放在 `runtime/model/src/gateway/`，每个厂商实现一个 `ModelConverter`。同一厂商支持多种协议时，在它的 `buildRequest()` 和 `mapResponseStream()` 内分别处理协议分支。 [模型网关源码](../runtime/model/src/gateway/)
 
+## 文件命名
+
+Adapter 实现文件使用小写连字符命名，统一以 `-adapter.ts` 结尾。下表路径相对于 `runtime/model/src/`。
+
+| 文件职责 | 路径及命名 |
+| --- | --- |
+| 厂商入口 | `gateway/<厂商名>-adapter.ts`，例如 `gateway/anthropic-adapter.ts` 和 `gateway/deepseek-adapter.ts`。 |
+| 通用协议实现 | `gateway/<完整协议名>-adapter.ts`，现有文件为 `anthropic-messages-adapter.ts`、`openai-chat-completions-adapter.ts` 和 `openai-responses-adapter.ts`。 |
+| 厂商的协议实现 | `gateway/<厂商名>/<完整协议名>-adapter.ts`，沿用通用实现的协议文件名，例如 `gateway/anthropic/anthropic-messages-adapter.ts` 和 `gateway/deepseek/openai-responses-adapter.ts`。 |
+
 ## Adapter 在调用链中的位置
 
 桌面和 CLI 在进入 `runAgentLoop()` 前共用 Turn 模型装配。装配读取同一份 Provider 快照，用 Provider 名称、API 模型名和所选协议选出转换器，再绑定本轮 SDK Client。实际请求由共享 `stream()` 按下图执行。 [Turn 模型装配](../src/main/model-adapters.ts) · [共享流入口](../runtime/model/src/gateway/adapter.ts)
@@ -10,9 +20,14 @@
 统一请求 → Adapter.buildRequest() → 按协议发起 SDK 请求 → Adapter.mapResponseStream() → 统一事件流
 ```
 
-路由表中的 `ModelConverter` 是转换器，Runtime 拿到的 `ModelAdapter` 是绑定本轮模型和连接的流接口。当前网关支持 `anthropic_messages`、`chat_completions` 和 `responses`，生产表登记了覆盖三种协议的 DeepSeek 转换器和各协议的通用转换器。新增厂商适配使用其中已有的协议。新增协议或改变 SDK 传输方式涉及网关与配置契约，应先独立确认范围。 [统一模型类型](../runtime/model/src/types.ts) · [架构与执行流程](architecture.md)
+路由表中的 `ModelConverter` 是转换器，Runtime 拿到的 `ModelAdapter` 是绑定本轮模型和连接的流接口。当前网关支持 `anthropic_messages`、`chat_completions` 和 `responses`，生产表登记了覆盖三种协议的 DeepSeek 转换器、处理 Messages 协议的 Anthropic 转换器和各协议的通用转换器。新增厂商适配使用其中已有的协议。新增协议或改变 SDK 传输方式涉及网关与配置契约，应先独立确认范围。 [统一模型类型](../runtime/model/src/types.ts) · [架构与执行流程](architecture.md)
 
 ## 实现请求与响应流转换
+
+新增厂商 Adapter 时，参照 DeepSeek 的组织方式，在厂商入口和其协议实现中完整实现 `buildRequest()` 与 `mapResponseStream()`，从统一请求构造到 SDK 响应流解析都由厂商代码负责。 [DeepSeek 入口](../runtime/model/src/gateway/deepseek-adapter.ts) · [DeepSeek 协议实现](../runtime/model/src/gateway/deepseek/)
+
+- **保持通用 Adapter 独立。** 为接入厂商而编写的转换逻辑只放在厂商自己的实现中。接入时不得修改现有通用 Adapter，也不得从通用 Adapter 模块直接导入或调用其类、类型、函数或其他导出，或通过继承、包装、委托复用其转换流程。
+- **允许参考并改写通用实现。** 可将适用的代码放到厂商自己的协议文件中，再按厂商文档调整。模型层的统一类型、共享网关接口、上下文投影、推理校验和 Usage 工具仍可直接使用，SDK 请求仍由共享网关负责。
 
 | 方法或字段 | 含义 |
 | --- | --- |
@@ -23,7 +38,7 @@
 | `ProtocolRequest.protocol`、`params` | 协议标记及该协议的 SDK 请求参数。Anthropic Messages 分支另有 `useBeta`，供共享流选择 Messages SDK 入口。 |
 | `ProtocolResponseStream.protocol`、`events` | 原始流的协议标记及 SDK 事件的异步迭代器。先按协议收窄类型，再读取事件字段。 |
 
-下面的 `ExampleAdapter` 展示如何在一个类里支持 Chat Completions 和 Responses。类放在 `runtime/model/src/gateway/example.ts`，请求构造和事件映射由厂商独立实现。示例从厂商自己的 `example/` 目录导入两个协议的实现。共享网关负责 SDK 传输，Adapter 可以使用模型层的上下文投影、推理校验与 Usage 工具。 [DeepSeek 实现](../runtime/model/src/gateway/deepseek.ts)
+下面的 `ExampleAdapter` 展示如何在一个类里支持 Chat Completions 和 Responses。类放在 `runtime/model/src/gateway/example-adapter.ts`，请求构造和事件映射由厂商独立实现。示例从厂商自己的 `example/` 目录导入两个协议的实现。共享网关负责 SDK 传输，Adapter 可以使用模型层的上下文投影、推理校验与 Usage 工具。 [DeepSeek 实现](../runtime/model/src/gateway/deepseek-adapter.ts)
 
 ```ts
 import type {
@@ -32,8 +47,8 @@ import type {
   ProtocolRequest,
   ProtocolResponseStream,
 } from "./adapter.ts"
-import { buildChatCompletionsRequest, mapChatCompletionsStream } from "./example/chat-completions.ts"
-import { buildResponsesRequest, mapResponsesStream } from "./example/responses.ts"
+import { buildChatCompletionsRequest, mapChatCompletionsStream } from "./example/openai-chat-completions-adapter.ts"
+import { buildResponsesRequest, mapResponsesStream } from "./example/openai-responses-adapter.ts"
 import { invalidRequest } from "../shared.ts"
 import type { ModelStreamEvent, UnifiedModelRequest } from "../types.ts"
 
@@ -97,7 +112,7 @@ export class ExampleAdapter implements ModelConverter {
 在 `adapter-router.ts` 导入新 Adapter，将一个 `VendorAdapterEntry` 加入 `MODEL_ADAPTER_REGISTRY.vendors` 的数组。`genericByProtocol` 为三个已有协议提供最终兜底。 [路由表](../runtime/model/src/gateway/adapter-router.ts)
 
 ```ts
-import { ExampleAdapter } from "./example.ts"
+import { ExampleAdapter } from "./example-adapter.ts"
 
 const exampleVendor = {
   name: "Example",

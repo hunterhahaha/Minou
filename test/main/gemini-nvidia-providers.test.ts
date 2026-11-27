@@ -2,7 +2,7 @@
 
 import assert from "node:assert/strict"
 import {listCompatibleProviders, resolveCompatibleProvider} from "../../src/main/compatible-providers.ts"
-import {buildChatCompletionsRequest} from "../../runtime/model/src/gateway/chat-completions.ts"
+import {buildChatCompletionsRequest} from "../../runtime/model/src/gateway/openai-chat-completions-adapter.ts"
 import {completeReasoningConfig} from "../../runtime/model/src/reasoning.ts"
 import type {ModelConfig, UnifiedModelRequest} from "../../runtime/model/src/types.ts"
 
