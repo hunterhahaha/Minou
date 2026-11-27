@@ -334,6 +334,35 @@ async function main(): Promise<void> {
     assert.equal(missing.requests.length, 0)
     assert.equal(missing.result.metrics.turns, 0)
     assert.ok(missing.result.event_log_path)
+
+    const routingPreload = join(root, "adapter-routing.cjs")
+    const routerModule = resolve("dist/runtime/model/src/gateway/adapter-router.js")
+    await writeFile(routingPreload, `
+const router = require(${JSON.stringify(routerModule)})
+const { genericByProtocol } = router.MODEL_ADAPTER_REGISTRY
+router.MODEL_ADAPTER_REGISTRY = {
+  genericByProtocol,
+  vendors: [{
+    name: "Fixture Responses",
+    providerNames: ["fixture"],
+    supportedProtocols: ["responses"],
+    modelRules: [],
+    adapter: genericByProtocol.responses,
+  }],
+}
+`)
+    const routingFailure = await run([], undefined, ["--require", routingPreload])
+    const routingMessage = "Provider「fixture」匹配的 Adapter「Fixture Responses」不支持协议 chat_completions。"
+    assert.equal(routingFailure.code, 2)
+    assert.equal(routingFailure.result.stop_reason, "invalid_request")
+    assert.deepEqual(routingFailure.result.error, {
+      code: "INVALID_REQUEST", stage: "initialization", message: routingMessage,
+    })
+    assert.ok(routingFailure.stderr.includes(`INVALID_REQUEST: ${routingMessage}`))
+    assert.doesNotMatch(routingFailure.stderr, /top-secret-key/)
+    assert.equal(routingFailure.result.metrics.turns, 0)
+    assert.equal(routingFailure.requests.length, 0)
+
     const failed = await run([], (_body, _attempt, response) => { response.writeHead(400); response.end(JSON.stringify({ error: { message: "private-sdk-error-with-secret", type: "invalid_request_error" } })) })
     assert.equal(failed.code, 1)
     assert.equal(failed.result.stop_reason, "error")

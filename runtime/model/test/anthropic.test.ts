@@ -8,15 +8,14 @@ import assert from "node:assert/strict"
 
 import type Anthropic from "@anthropic-ai/sdk"
 
-import type { NativeHistoryPolicy } from "../src/adapter.ts"
-import { createModelAdapter } from "../src/adapter.ts"
-import { buildChatCompletionsRequest } from "../src/chat-completions.ts"
-import { buildResponsesRequest } from "../src/responses.ts"
+import type { NativeHistoryPolicy } from "../src/gateway/adapter.ts"
+import { createModelAdapter } from "../src/gateway/adapter.ts"
+import { buildChatCompletionsRequest } from "../src/gateway/chat-completions.ts"
+import { buildResponsesRequest } from "../src/gateway/responses.ts"
 import {
   buildAnthropicRequest,
-  createAnthropicAdapter,
   mapAnthropicStream as mapAnthropicStreamOf,
-} from "../src/anthropic.ts"
+} from "../src/gateway/anthropic.ts"
 import { CANCELLED, MODEL_REQUEST_FAILED } from "../../error/src/normalizer.ts"
 import type { ModelConfig, ModelStreamEvent, UnifiedModelRequest } from "../src/types.ts"
 
@@ -188,7 +187,7 @@ async function testNativeReplay(): Promise<void> {
   const request = agentRequest()
   const tool = (name: string) => ({ ...request.tools[0], name })
   try {
-    const adapter = createAnthropicAdapter(MODEL, { apiKey: "fixture", baseURL: provider.baseURL("anthropic_messages"), nativeHistory: policy })
+    const adapter = createModelAdapter(MODEL, { apiKey: "fixture", baseURL: provider.baseURL("anthropic_messages"), nativeHistory: policy })
     const history: NonNullable<UnifiedModelRequest["context"]["history"]> = { system: "stable", mcpBaseline: [tool("mcp_base")], events: [
       { type: "user/message", seq: 1, content: [{ type: "text", text: "run" }] },
       { type: "mcp/tools_added", seq: 2, turn: 1, step: 1, definitions: [tool("mcp_before")] },
@@ -777,7 +776,7 @@ async function main(): Promise<void> {
 
     /** 取消：请求挂起时 abort → 抛 CANCELLED，且不重试（只发出一次请求）。 */
     const controller = new AbortController()
-    const cancelling = createAnthropicAdapter(MODEL, {
+    const cancelling = createModelAdapter(MODEL, {
       apiKey: "k",
       baseURL: provider.baseURL("anthropic_messages"),
       defaultHeaders: { "x-test-scenario": "cancel" },

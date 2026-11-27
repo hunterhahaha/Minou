@@ -401,7 +401,7 @@ export interface ModelStreamOptions {
   retry?: boolean
 }
 
-/** 模型适配器。三个 Adapter 均实现此接口。 */
+/** 已绑定本轮连接和转换器的 Runtime 模型流接口。 */
 export interface ModelAdapter {
   /** 每 Turn 装配时从同一模型快照提供的压缩及 MCP 预算窗口；直接构造的 Adapter 可不提供。 */
   contextWindow?: number

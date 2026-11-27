@@ -50,6 +50,7 @@ async function testResolvesCurrentDatabaseConfiguration(): Promise<void> {
     })
     setProviderApiKey(database, "configured", "first-secret")
     const first = await resolveTurnModelAdapterSpecification(paths, MODEL)
+    assert.equal(first.providerName, "Configured Provider")
     assert.deepEqual(first.modelConfig, { supportsReasoning: true,
       modelId: "model-a", name: "gpt-test", providerId: "configured", protocol: "chat_completions",
       contextWindow: 128000, maxOutputTokens: 4096,
@@ -80,6 +81,7 @@ async function testResolvesCurrentDatabaseConfiguration(): Promise<void> {
     })
     setProviderApiKey(database, "configured", "second-secret")
     const second = await resolveTurnModelAdapterSpecification(paths, MODEL)
+    assert.equal(second.providerName, "Updated Provider")
     assert.deepEqual(second.modelConfig, { supportsReasoning: true,
       modelId: "model-a", name: "gpt-updated", providerId: "configured", protocol: "chat_completions",
       contextWindow: 64000, maxOutputTokens: 4096,

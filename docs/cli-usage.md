@@ -289,6 +289,7 @@ minou continue --session-id <id> --prompt "基于上一轮的结果，继续处�
 | 找不到 CLI 入口 | 在仓库目录执行 `npm run build:cli`，检查 `dist/src/cli/main.js` 是否存在；从其他目录运行时使用入口绝对路径。 |
 | 找不到指定模型或有效默认模型 | 确认当前用户配置中已保存模型；`--modelid` 填写稳定 `modelId`；检查运行账号及 `USERPROFILE` 是否与配置模型时一致。 |
 | 推理等级无效 | 删除 `--reasoning-level` 使用模型首个等级，或填写模型当前支持的值。 |
+| 初始化阶段出现 Adapter 路由错误 | 检查 `INVALID_REQUEST` 提示中的 Provider、协议或冲突条目。CLI 在发出模型请求之前退出，显式指定的结果 JSON 也包含该提示。 |
 | `workspace` 无效或输入文件不可读 | 检查目录/文件是否存在，并按前述路径基准核对相对路径。 |
 | 参数冲突 | 检查是否重复指定参数，或同时使用 `--isolate mcp` 和 `--mcp-config`。 |
 | 工具被拒绝 | 检查内置工具白名单、沙箱模式，以及触发审批后记录的决定。 |

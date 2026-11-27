@@ -8,13 +8,14 @@ import assert from "node:assert/strict"
 
 import type OpenAI from "openai"
 
-import { createModelAdapter } from "../src/adapter.ts"
+import { createModelAdapter } from "../src/gateway/adapter.ts"
+import type { ModelConverter, ProtocolResponseStream } from "../src/gateway/adapter.ts"
+import { MODEL_ADAPTER_REGISTRY } from "../src/gateway/adapter-router.ts"
 import {
   buildChatCompletionsRequest,
-  createChatCompletionsAdapter,
   mapChatCompletionsStream as mapChatCompletionsStreamOf,
   toChatCompletionsMessages,
-} from "../src/chat-completions.ts"
+} from "../src/gateway/chat-completions.ts"
 import { CANCELLED, MODEL_REQUEST_FAILED } from "../../error/src/normalizer.ts"
 import type { AssistantContentBlock, ModelConfig, ModelStreamEvent, UnifiedModelRequest } from "../src/types.ts"
 
@@ -228,7 +229,7 @@ async function testOpenRouterReasoningReplay(): Promise<void> {
   ]
   const provider = await startFakeProvider(() => ({ events: [...raw.map(sseData), sseData("[DONE]")] }))
   try {
-    const adapter = createChatCompletionsAdapter(MODEL, {
+    const adapter = createModelAdapter(MODEL, {
       apiKey: "fixture", baseURL: provider.baseURL("chat_completions"), nativeHistory: policy,
     })
     const request = agentRequest()
@@ -740,7 +741,7 @@ async function main(): Promise<void> {
 
     /** 取消：不重试，归一化为 CANCELLED。 */
     const controller = new AbortController()
-    const cancelling = createChatCompletionsAdapter(MODEL, {
+    const cancelling = createModelAdapter(MODEL, {
       apiKey: "k",
       baseURL: provider.baseURL("chat_completions"),
       defaultHeaders: { "x-test-scenario": "cancel" },
@@ -781,6 +782,68 @@ async function main(): Promise<void> {
       )
       assert.equal((error as { source?: string }).source, "model")
       assert.equal((error as { code?: string }).code, MODEL_REQUEST_FAILED)
+    } finally {
+      await provider.close()
+    }
+  }
+
+  /** 共享流入口每次请求只调用一次 A，每次网络尝试创建新的 B 事件流。 */
+  {
+    const rawStreams: ProtocolResponseStream[] = []
+    let requestConversions = 0
+    const generic = MODEL_ADAPTER_REGISTRY.genericByProtocol.chat_completions
+    const adapter: ModelConverter = {
+      /**
+       * 记录逻辑请求转换次数，再执行真实的通用请求转换。
+       * @param request 当前统一模型请求。
+       * @param context 本轮转换配置。
+       * @returns 带协议标记的真实请求参数。
+       * @throws 当通用请求转换失败时抛出。
+       */
+      A(request, context) {
+        requestConversions++
+        return generic.A(request, context)
+      },
+      /**
+       * 记录每次尝试收到的原始流，再执行真实的通用响应转换。
+       * @param raw 当前尝试的新事件流。
+       * @param request 生成当前流的统一请求。
+       * @param context 本轮转换配置。
+       * @returns 由真实转换器生成的统一事件流。
+       * @throws 当原始事件流无效或中断时抛出。
+       */
+      B(raw, request, context) {
+        rawStreams.push(raw)
+        return generic.B(raw, request, context)
+      },
+    }
+    const provider = await startFakeProvider((_request, attempt) => attempt === 0 ? { status: 503 } : {
+      events: [
+        chunk({ delta: { content: "重试成功" } }),
+        chunk({ finish_reason: "stop" }),
+        sseData("[DONE]"),
+      ],
+    })
+    try {
+      const routed = createModelAdapter(MODEL, {
+        apiKey: "test-key",
+        baseURL: provider.baseURL("chat_completions"),
+      }, "Test Provider", {
+        genericByProtocol: MODEL_ADAPTER_REGISTRY.genericByProtocol,
+        vendors: [{ name: "Test", providerNames: ["Test Provider"], supportedProtocols: ["chat_completions"], modelRules: [], adapter }],
+      })
+      const events = await collect(routed.stream(agentRequest(), new AbortController().signal))
+      assert.equal(requestConversions, 1)
+      assert.equal(rawStreams.length, 2)
+      assert.notEqual(rawStreams[0]?.events, rawStreams[1]?.events)
+      assert.equal(provider.requests.length, 2)
+      assert.deepEqual(provider.requests[0]?.body, provider.requests[1]?.body)
+      assert.deepEqual(events, [
+        { type: "block_start", index: 0, blockType: "text" },
+        { type: "block_delta", index: 0, delta: { type: "text", text: "重试成功" } },
+        { type: "block_end", index: 0, block: { type: "text", text: "重试成功" } },
+        { type: "stream_end", completion: "finished", finishReason: "stop" },
+      ])
     } finally {
       await provider.close()
     }

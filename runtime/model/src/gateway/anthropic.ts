@@ -6,30 +6,26 @@
  * SDK 自动重试关闭，流请求通过共享入口处理重试、取消与错误归一化。
  */
 
-import Anthropic from "@anthropic-ai/sdk"
+import type Anthropic from "@anthropic-ai/sdk"
 
-import type { NativeHistoryPolicy, ProtocolClientOptions } from "./adapter.ts"
+import type { NativeHistoryPolicy, ModelConversionContext, ModelConverter, ProtocolRequest, ProtocolResponseStream } from "./adapter.ts"
 import {
   applyHistoryToolChange,
-  assertRequestMatchesModel,
   historyMessage,
   invalidRequest,
   joinTextBlocks,
   parseToolCallArguments,
   reasoningRequestFragment,
   resolveToolCallInput,
-  runModelStream,
   serializeToolCallArguments,
   splitSystemMessage,
   streamInterruptedError,
-} from "./shared.ts"
-import { convertAnthropicUsage } from "./usage.ts"
-import type { AnthropicUsageFields } from "./usage.ts"
+} from "../shared.ts"
+import { convertAnthropicUsage } from "../usage.ts"
+import type { AnthropicUsageFields } from "../usage.ts"
 import type {
   AssistantContentBlock,
   BlockType,
-  ModelAdapter,
-  ModelStreamOptions,
   ModelCompletion,
   ModelConfig,
   ModelMessage,
@@ -39,7 +35,7 @@ import type {
   ModelTextBlock,
   UnifiedModelRequest,
   UnifiedToolDefinition,
-} from "./types.ts"
+} from "../types.ts"
 
 /** SDK 的协议类型都挂在 `Anthropic.Messages` 命名空间下，这里逐个取别名， */
 /** 让函数签名保持可读（注意命名空间本身不能别名为类型）。 */
@@ -55,7 +51,8 @@ type NativeBlock = Extract<Anthropic.Messages.RawContentBlockStartEvent["content
 type InlineToolBlock =
   | { type: "tool_addition"; tool: { type: "tool_definition"; definition: ToolUnion } }
   | { type: "tool_removal"; tool: { type: "tool_reference"; name: string } }
-type AnthropicRequest = Omit<MessageCreateParamsStreaming, "messages"> & {
+/** SDK 请求及兼容规则需要的内联工具历史。 */
+export type AnthropicRequest = Omit<MessageCreateParamsStreaming, "messages"> & {
   messages: Array<MessageParam | { role: "system"; content: InlineToolBlock[] }>
 }
 const INLINE_TOOLS_BETA = "inline-tools-2026-09-15"
@@ -468,7 +465,7 @@ function resolveCompletion(
 /**
  * Anthropic 协议流 → 统一流事件。
  *
- * 与 SDK 解耦的纯转换，便于离线验证；真正的网络与取消由 `createAnthropicAdapter` 接上。
+ * 与 SDK 解耦的纯转换，便于离线验证；网络与取消由模型网关统一接入。
  * 流在 `message_stop` 之前结束（连接被截断等）时抛错，不产出 `stream_end`。
  *
  * @param events Anthropic SDK 产生的原始流事件。
@@ -739,53 +736,35 @@ function hasKeys(value: unknown): boolean {
 /** Adapter */
 
 
-/**
- * 创建 Anthropic Messages Adapter。
- *
- * `config` 提供一个具体模型的配置：请求里的 `model` 用它校验，`max_tokens` 用它取默认值。
- * SDK 自身的重试被关闭（`maxRetries: 0`），重试统一由 `runtime/network/` 负责，
- * 否则一次逻辑请求会被两层重试各自放大。
- *
- * @param config 要绑定的 Anthropic 模型配置。
- * @param options Anthropic 客户端的凭据、地址和额外请求头。
- * @returns 已绑定配置并负责流式请求的 Anthropic Adapter。
- */
-export function createAnthropicAdapter(
-  config: ModelConfig,
-  options: ProtocolClientOptions,
-): ModelAdapter {
-  const { nativeHistory } = options
-  const client = new Anthropic({
-    apiKey: options.apiKey,
-    baseURL: options.baseURL,
-    defaultHeaders: options.defaultHeaders,
-    maxRetries: 0,
-  })
+/** 通用 Anthropic Messages 双向转换器。 */
+export class AnthropicMessagesAdapter implements ModelConverter {
   /**
-   * 执行一次绑定模型的 Anthropic 流式请求，并统一处理重试与错误归一化。
-   *
+   * 生成可直接交给 SDK 的流式请求。
    * @param request 当前统一模型请求。
-   * @param signal 调用方的取消信号。
-   * @param options 此次调用的 SDK 超时与网络重试选项。
-   * @returns Anthropic 响应转换后的统一模型事件流。
-   * @throws `AppError` 请求校验失败、协议请求失败或取消时抛出。
+   * @param context 本轮模型和回放配置。
+   * @returns 带协议标记的请求及该协议必要的请求选项。
+   * @throws AppError 当请求上下文或推理配置无效时抛出。
    */
-  async function* stream(
-    request: UnifiedModelRequest,
-    signal: AbortSignal,
-    options?: ModelStreamOptions,
-  ): AsyncGenerator<ModelStreamEvent> {
-    /** 校验与请求构建在迭代时抛出：AgentLoop 只需在一处处理 Adapter 的错误。 */
-    assertRequestMatchesModel(request, config)
-    const source = request.context.history ? nativeHistory : undefined
-    const params = buildAnthropicRequest(request, config, nativeHistory)
-
-    yield* runModelStream((attemptSignal) => {
-      return mapAnthropicStream(requestAnthropicStream(client, params, attemptSignal, source !== undefined, options?.timeoutMs), source)
-    }, signal, options?.retry)
+  A(request: UnifiedModelRequest, context: ModelConversionContext): ProtocolRequest {
+    return {
+      protocol: "anthropic_messages",
+      params: buildAnthropicRequest(request, context.modelConfig, context.nativeHistory),
+      useBeta: request.context.history !== undefined && context.nativeHistory !== undefined,
+    }
   }
 
-  return { stream }
+  /**
+   * 使用独立的流状态将原始协议事件转换为 Runtime 事件。
+   * @param raw 本次尝试产生的 SDK 事件流。
+   * @param request 本次流对应的统一请求。
+   * @param context 本轮原生回放配置。
+   * @returns 逐步生成统一事件的异步流。
+   * @throws 当原始协议与转换器不匹配，或流报告失败或截断时抛出。
+   */
+  B(raw: ProtocolResponseStream, request: UnifiedModelRequest, context: ModelConversionContext): AsyncIterable<ModelStreamEvent> {
+    if (raw.protocol !== "anthropic_messages") throw invalidRequest("Adapter 收到了不匹配的协议事件")
+    return mapAnthropicStream(raw.events, request.context.history ? context.nativeHistory : undefined)
+  }
 }
 
 /**
@@ -799,7 +778,7 @@ export function createAnthropicAdapter(
  * @returns 原始 Anthropic 流事件异步生成器。
  * @throws SDK 请求失败或取消时抛出底层异常。
  */
-async function* requestAnthropicStream(
+export async function* requestAnthropicStream(
   client: Anthropic,
   params: AnthropicRequest,
   signal: AbortSignal,

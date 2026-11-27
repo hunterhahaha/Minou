@@ -1,0 +1,85 @@
+import assert from "node:assert/strict"
+
+import { AdapterRoutingError, MODEL_ADAPTER_REGISTRY, resolveModelConverter } from "../src/gateway/adapter-router.ts"
+import type { AdapterRegistry } from "../src/gateway/adapter-router.ts"
+import { AnthropicMessagesAdapter } from "../src/gateway/anthropic.ts"
+import { ChatCompletionsAdapter } from "../src/gateway/chat-completions.ts"
+import { ResponsesAdapter } from "../src/gateway/responses.ts"
+import { PROTOCOLS } from "../src/types.ts"
+
+/**
+ * 用独立厂商条目验证路由优先级、冲突及三种通用兜底。
+ * @returns 路由断言全部通过后完成。
+ * @throws 选出的转换器或错误与预期不符时拒绝。
+ */
+async function main(): Promise<void> {
+  const messagesAdapter = new AnthropicMessagesAdapter()
+  const chatAdapter = new ChatCompletionsAdapter()
+  const responsesAdapter = new ResponsesAdapter()
+  const registry: AdapterRegistry = {
+    genericByProtocol: MODEL_ADAPTER_REGISTRY.genericByProtocol,
+    vendors: [
+      {
+        name: "Messages",
+        providerNames: ["Messages", "  M Alias  "],
+        supportedProtocols: ["anthropic_messages"],
+        modelRules: [
+          { modelPattern: "claude*", protocol: "anthropic_messages" },
+          { modelPattern: "claude-exact", protocol: "anthropic_messages" },
+        ],
+        adapter: messagesAdapter,
+      },
+      {
+        name: "Chat",
+        providerNames: ["Chat"],
+        supportedProtocols: ["chat_completions"],
+        modelRules: [{ modelPattern: "claude*", protocol: "chat_completions" }],
+        adapter: chatAdapter,
+      },
+      {
+        name: "Responses",
+        providerNames: ["Responses"],
+        supportedProtocols: ["responses"],
+        modelRules: [{ modelPattern: "gpt-exact", protocol: "responses" }],
+        adapter: responsesAdapter,
+      },
+      {
+        name: "Another Messages",
+        providerNames: ["Another Alias"],
+        supportedProtocols: ["anthropic_messages"],
+        modelRules: [{ modelPattern: "claude-sonnet*", protocol: "anthropic_messages" }],
+        adapter: new AnthropicMessagesAdapter(),
+      },
+    ],
+  }
+
+  const messagesModel = { name: "claude-exact", protocol: "anthropic_messages" } as const
+  const overlappingModel = { ...messagesModel, name: "claude-sonnet-latest" }
+  assert.equal(resolveModelConverter(registry, overlappingModel, "  m ALIAS  "), messagesAdapter)
+  assert.equal(resolveModelConverter(registry, { ...messagesModel, name: "other" }, "MESSAGES"), messagesAdapter)
+  assert.throws(
+    () => resolveModelConverter(registry, { ...messagesModel, protocol: "chat_completions" }, "Messages"),
+    { constructor: AdapterRoutingError, message: /Messages.*不支持协议 chat_completions/ },
+  )
+  assert.equal(resolveModelConverter(registry, messagesModel, "Unknown Proxy"), messagesAdapter)
+  assert.equal(resolveModelConverter(registry, { ...messagesModel, protocol: "chat_completions" }), chatAdapter)
+  assert.equal(resolveModelConverter(registry, { name: "gpt-exact", protocol: "responses" }), responsesAdapter)
+  assert.throws(
+    () => resolveModelConverter(registry, overlappingModel, "Unknown Proxy"),
+    { constructor: AdapterRoutingError, message: /claude-sonnet-latest.*Messages、Another Messages/ },
+  )
+  assert.equal(resolveModelConverter(registry, { ...messagesModel, name: "Claude-exact" }), registry.genericByProtocol.anthropic_messages)
+  assert.equal(resolveModelConverter(registry, { name: "gpt-exact-extra", protocol: "responses" }), registry.genericByProtocol.responses)
+  assert.equal(resolveModelConverter(registry, { ...messagesModel, protocol: "responses" }), registry.genericByProtocol.responses)
+
+  for (const protocol of PROTOCOLS) {
+    assert.equal(resolveModelConverter(registry, { protocol, name: "unknown-model" }, "Unknown Proxy"), registry.genericByProtocol[protocol])
+    assert.equal(resolveModelConverter(MODEL_ADAPTER_REGISTRY, { protocol, name: "claude-exact" }, "Messages"), registry.genericByProtocol[protocol])
+  }
+  console.log("adapter-router.test.ts: Adapter 路由断言通过")
+}
+
+main().catch((error: unknown) => {
+  console.error(error)
+  process.exitCode = 1
+})

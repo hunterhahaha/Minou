@@ -27,6 +27,7 @@ Thumbs.db
 !/docs/architecture.md
 !/docs/configuration-and-storage.md
 !/docs/development.md
+!/docs/model-adapter-guide.md
 !/docs/memory.md
 
 # Keep the bundled PowerShell files local; track only the setup guide.

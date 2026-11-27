@@ -6,26 +6,23 @@
  * 缺少调用 ID 的旧式 function_call 不构成完整工具调用；共享入口负责重试与错误归一化。
  */
 
-import OpenAI from "openai"
+import type OpenAI from "openai"
 
-import type { ProtocolClientOptions } from "./adapter.ts"
+import type { ModelConversionContext, ModelConverter, ProtocolRequest, ProtocolResponseStream } from "./adapter.ts"
 import {
-  assertRequestMatchesModel,
+  invalidRequest,
   joinTextBlocks,
   parseToolCallArguments,
   reasoningRequestFragment,
-  runModelStream,
   serializeToolCallArguments,
   splitSystemMessage,
   streamInterruptedError,
-} from "./shared.ts"
-import { convertChatCompletionsUsage } from "./usage.ts"
-import type { ChatCompletionsUsageFields } from "./usage.ts"
+} from "../shared.ts"
+import { convertChatCompletionsUsage } from "../usage.ts"
+import type { ChatCompletionsUsageFields } from "../usage.ts"
 import type {
   AssistantContentBlock,
   BlockType,
-  ModelAdapter,
-  ModelStreamOptions,
   ModelCompletion,
   ModelConfig,
   ModelMessage,
@@ -33,7 +30,7 @@ import type {
   ReplaySource,
   UnifiedModelRequest,
   UnifiedToolDefinition,
-} from "./types.ts"
+} from "../types.ts"
 
 type ChatCompletionChunk = OpenAI.ChatCompletionChunk
 type ChatCompletionMessageParam = OpenAI.ChatCompletionMessageParam
@@ -51,7 +48,7 @@ type AssistantToolCalls = NonNullable<ChatCompletionAssistantMessageParam["tool_
 /**
  * 统一 `messages[1...]` → Chat Completions `messages`（不含系统消息）。
  *
- * 该协议的 content 是字符串，多块文本按顺序直接拼接、不添加分隔符（见 `./types.ts`）。
+ * 该协议的 content 是字符串，多块文本按顺序直接拼接、不添加分隔符（见 `../types.ts`）。
  * 没有正文、工具调用或原生思考回放的 assistant 消息不发送。
  *
  * @param messages 除首个 System Message 外的统一会话消息。
@@ -591,53 +588,34 @@ export async function* mapChatCompletionsStream(
 /** Adapter */
 
 
-/**
- * 创建 Chat Completions Adapter。
- *
- * 与 Anthropic 一样关闭 SDK 自身的重试（`maxRetries: 0`），重试统一由 `runtime/network/` 负责，
- * 否则一次逻辑请求会被两层重试各自放大。
- *
- * @param config 要绑定的 Chat Completions 模型配置。
- * @param options OpenAI SDK 客户端的凭据、地址和额外请求头。
- * @returns 已绑定配置并负责流式请求的 Chat Completions Adapter。
- */
-export function createChatCompletionsAdapter(
-  config: ModelConfig,
-  options: ProtocolClientOptions,
-): ModelAdapter {
-  const { nativeHistory } = options
-  const client = new OpenAI({
-    apiKey: options.apiKey,
-    baseURL: options.baseURL,
-    defaultHeaders: options.defaultHeaders,
-    maxRetries: 0,
-  })
-
+/** 通用 Chat Completions 双向转换器。 */
+export class ChatCompletionsAdapter implements ModelConverter {
   /**
-   * 执行一次绑定模型的 Chat Completions 流式请求，并统一处理重试与错误归一化。
-   *
+   * 生成可直接交给 SDK 的流式请求。
    * @param request 当前统一模型请求。
-   * @param signal 调用方的取消信号。
-   * @param options 此次调用的 SDK 超时与网络重试选项。
-   * @returns Chat Completions 响应转换后的统一模型事件流。
-   * @throws `AppError` 请求校验失败、协议请求失败或取消时抛出。
+   * @param context 本轮模型和回放配置。
+   * @returns 带协议标记的请求及该协议必要的请求选项。
+   * @throws AppError 当请求上下文或推理配置无效时抛出。
    */
-  async function* stream(
-    request: UnifiedModelRequest,
-    signal: AbortSignal,
-    options?: ModelStreamOptions,
-  ): AsyncGenerator<ModelStreamEvent> {
-    /** 校验与请求构建在迭代时抛出：AgentLoop 只需在一处处理 Adapter 的错误。 */
-    assertRequestMatchesModel(request, config)
-    const params = buildChatCompletionsRequest(request, config, nativeHistory)
-    const source = request.context.purpose === "summary" ? undefined : nativeHistory
-
-    yield* runModelStream((attemptSignal) => {
-      return mapChatCompletionsStream(requestChatCompletionsStream(client, params, attemptSignal, options?.timeoutMs), source)
-    }, signal, options?.retry)
+  A(request: UnifiedModelRequest, context: ModelConversionContext): ProtocolRequest {
+    return {
+      protocol: "chat_completions",
+      params: buildChatCompletionsRequest(request, context.modelConfig, context.nativeHistory),
+    }
   }
 
-  return { stream }
+  /**
+   * 使用独立的流状态将原始协议事件转换为 Runtime 事件。
+   * @param raw 本次尝试产生的 SDK 事件流。
+   * @param request 本次流对应的统一请求。
+   * @param context 本轮原生回放配置。
+   * @returns 逐步生成统一事件的异步流。
+   * @throws 当原始协议与转换器不匹配，或流报告失败或截断时抛出。
+   */
+  B(raw: ProtocolResponseStream, request: UnifiedModelRequest, context: ModelConversionContext): AsyncIterable<ModelStreamEvent> {
+    if (raw.protocol !== "chat_completions") throw invalidRequest("Adapter 收到了不匹配的协议事件")
+    return mapChatCompletionsStream(raw.events, request.context.purpose === "summary" ? undefined : context.nativeHistory)
+  }
 }
 
 /**
@@ -650,7 +628,7 @@ export function createChatCompletionsAdapter(
  * @returns 原始 Chat Completions chunk 异步生成器。
  * @throws SDK 请求失败或取消时抛出底层异常。
  */
-async function* requestChatCompletionsStream(
+export async function* requestChatCompletionsStream(
   client: OpenAI,
   params: ChatCompletionCreateParamsStreaming,
   signal: AbortSignal,

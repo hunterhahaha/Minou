@@ -9,9 +9,9 @@ import { resolveTurnModelAdapterSpecification } from "../../src/main/model-adapt
 import { resolveCompatibleProvider } from "../../src/main/compatible-providers.ts"
 import { PROVIDER_IPC_CHANNELS as channels } from "../../src/preload/session-api.ts"
 import type { ProviderSummary } from "../../src/preload/session-api.ts"
-import { buildChatCompletionsRequest } from "../../runtime/model/src/chat-completions.ts"
-import { buildAnthropicRequest } from "../../runtime/model/src/anthropic.ts"
-import { buildResponsesRequest } from "../../runtime/model/src/responses.ts"
+import { buildChatCompletionsRequest } from "../../runtime/model/src/gateway/chat-completions.ts"
+import { buildAnthropicRequest } from "../../runtime/model/src/gateway/anthropic.ts"
+import { buildResponsesRequest } from "../../runtime/model/src/gateway/responses.ts"
 import type { UnifiedModelRequest } from "../../runtime/model/src/types.ts"
 
 /**

@@ -33,6 +33,7 @@ import type { ToolExecutionContext } from "../../runtime/tools/src/types.ts"
 import { readAgentsBaseline } from "../main/project-context.ts"
 import { initializeConfigFilesSnapshot } from "../main/config-files.ts"
 import { mcpToolChanges, modelHistory } from "../../runtime/agent/src/model-history.ts"
+import { AdapterRoutingError } from "../../runtime/model/src/gateway/adapter-router.ts"
 import { createTurnModelAdapter } from "../main/model-adapters.ts"
 import { listProviders, readDefaultModel } from "../main/provider-store.ts"
 import { estimateLocalTokens } from "../main/token-estimator.ts"
@@ -481,10 +482,11 @@ export async function runCli(argv: readonly string[]): Promise<number> {
       abandonTimer = setTimeout(() => reject(createAbortError()), CLEANUP_MS)
     }))])
   } catch (failure) {
-    if (!reason || reason === "finished") reason = failure instanceof CliInputError ? "invalid_request" : "error"
+    const invalidRequest = failure instanceof CliInputError || failure instanceof AdapterRoutingError
+    if (!reason || reason === "finished") reason = invalidRequest ? "invalid_request" : "error"
     if (reason === "error" || reason === "invalid_request") error = {
-      code: failure instanceof CliInputError ? "INVALID_REQUEST" : stdoutFailed ? "OUTPUT_FAILED" : "RUN_FAILED",
-      stage, message: failure instanceof CliInputError ? failure.message : "本次运行失败，请检查本地运行记录和配置。",
+      code: invalidRequest ? "INVALID_REQUEST" : stdoutFailed ? "OUTPUT_FAILED" : "RUN_FAILED",
+      stage, message: invalidRequest ? failure.message : "本次运行失败，请检查本地运行记录和配置。",
     }
   } finally {
     clearTimeout(timeout)

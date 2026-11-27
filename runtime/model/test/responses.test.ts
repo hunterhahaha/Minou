@@ -8,13 +8,12 @@ import assert from "node:assert/strict"
 
 import type OpenAI from "openai"
 
-import { createModelAdapter } from "../src/adapter.ts"
+import { createModelAdapter } from "../src/gateway/adapter.ts"
 import {
   buildResponsesRequest,
-  createResponsesAdapter,
   mapResponsesStream as mapResponsesStreamOf,
   toResponsesInput,
-} from "../src/responses.ts"
+} from "../src/gateway/responses.ts"
 import { CANCELLED, MODEL_REQUEST_FAILED } from "../../error/src/normalizer.ts"
 import type { ModelConfig, ModelStreamEvent, UnifiedModelRequest } from "../src/types.ts"
 
@@ -881,7 +880,7 @@ async function main(): Promise<void> {
 
     /** 取消：不重试，归一化为 CANCELLED。 */
     const controller = new AbortController()
-    const cancelling = createResponsesAdapter(MODEL, {
+    const cancelling = createModelAdapter(MODEL, {
       apiKey: "k",
       baseURL: provider.baseURL("responses"),
       defaultHeaders: { "x-test-scenario": "cancel" },

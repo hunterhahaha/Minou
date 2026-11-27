@@ -6,32 +6,29 @@
  * 失败或取消终态抛出异常，incomplete 作为完成状态交付；共享入口负责重试与错误归一化。
  */
 
-import OpenAI from "openai"
+import type OpenAI from "openai"
 
-import type { ProtocolClientOptions } from "./adapter.ts"
+import type { ModelConversionContext, ModelConverter, ProtocolRequest, ProtocolResponseStream } from "./adapter.ts"
 import {
-  assertRequestMatchesModel,
+  invalidRequest,
   joinTextBlocks,
   parseToolCallArguments,
   reasoningRequestFragment,
-  runModelStream,
   serializeToolCallArguments,
   splitSystemMessage,
   streamInterruptedError,
-} from "./shared.ts"
-import { convertResponsesUsage } from "./usage.ts"
-import type { ResponsesUsageFields } from "./usage.ts"
+} from "../shared.ts"
+import { convertResponsesUsage } from "../usage.ts"
+import type { ResponsesUsageFields } from "../usage.ts"
 import type {
   BlockType,
-  ModelAdapter,
-  ModelStreamOptions,
   ModelCompletion,
   ModelConfig,
   ModelMessage,
   ModelStreamEvent,
   UnifiedModelRequest,
   UnifiedToolDefinition,
-} from "./types.ts"
+} from "../types.ts"
 
 type ResponseStreamEvent = OpenAI.Responses.ResponseStreamEvent
 type ResponseInputItem = OpenAI.Responses.ResponseInputItem
@@ -549,51 +546,32 @@ export async function* mapResponsesStream(
 /** Adapter */
 
 
-/**
- * 创建 Responses Adapter。
- *
- * 与另外两个 Adapter 一样关闭 SDK 自身的重试（`maxRetries: 0`），
- * 重试统一由 `runtime/network/` 负责。
- *
- * @param config 要绑定的 Responses 模型配置。
- * @param options OpenAI SDK 客户端的凭据、地址和额外请求头。
- * @returns 已绑定配置并负责流式请求的 Responses Adapter。
- */
-export function createResponsesAdapter(
-  config: ModelConfig,
-  options: ProtocolClientOptions,
-): ModelAdapter {
-  const client = new OpenAI({
-    apiKey: options.apiKey,
-    baseURL: options.baseURL,
-    defaultHeaders: options.defaultHeaders,
-    maxRetries: 0,
-  })
-
+/** 通用 Responses 双向转换器。 */
+export class ResponsesAdapter implements ModelConverter {
   /**
-   * 执行一次绑定模型的 Responses 流式请求，并统一处理重试与错误归一化。
-   *
+   * 生成可直接交给 SDK 的流式请求。
    * @param request 当前统一模型请求。
-   * @param signal 调用方的取消信号。
-   * @param options 此次调用的 SDK 超时与网络重试选项。
-   * @returns Responses 响应转换后的统一模型事件流。
-   * @throws `AppError` 请求校验失败、协议请求失败或取消时抛出。
+   * @param context 本轮模型和回放配置。
+   * @returns 带协议标记的请求及该协议必要的请求选项。
+   * @throws AppError 当请求上下文或推理配置无效时抛出。
    */
-  async function* stream(
-    request: UnifiedModelRequest,
-    signal: AbortSignal,
-    options?: ModelStreamOptions,
-  ): AsyncGenerator<ModelStreamEvent> {
-    /** 校验与请求构建在迭代时抛出：AgentLoop 只需在一处处理 Adapter 的错误。 */
-    assertRequestMatchesModel(request, config)
-    const params = buildResponsesRequest(request, config)
-
-    yield* runModelStream((attemptSignal) => {
-      return mapResponsesStream(requestResponsesStream(client, params, attemptSignal, options?.timeoutMs))
-    }, signal, options?.retry)
+  A(request: UnifiedModelRequest, context: ModelConversionContext): ProtocolRequest {
+    return {
+      protocol: "responses",
+      params: buildResponsesRequest(request, context.modelConfig),
+    }
   }
 
-  return { stream }
+  /**
+   * 使用独立的流状态将原始协议事件转换为 Runtime 事件。
+   * @param raw 本次尝试产生的 SDK 事件流。
+   * @returns 逐步生成统一事件的异步流。
+   * @throws 当原始协议与转换器不匹配，或流报告失败或截断时抛出。
+   */
+  B(raw: ProtocolResponseStream): AsyncIterable<ModelStreamEvent> {
+    if (raw.protocol !== "responses") throw invalidRequest("Adapter 收到了不匹配的协议事件")
+    return mapResponsesStream(raw.events)
+  }
 }
 
 /**
@@ -606,7 +584,7 @@ export function createResponsesAdapter(
  * @returns 原始 Responses 流事件异步生成器。
  * @throws SDK 请求失败或取消时抛出底层异常。
  */
-async function* requestResponsesStream(
+export async function* requestResponsesStream(
   client: OpenAI,
   params: ResponseCreateParamsStreaming,
   signal: AbortSignal,

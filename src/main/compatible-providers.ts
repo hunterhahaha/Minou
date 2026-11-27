@@ -1,6 +1,6 @@
 /** 已兼容供应商目录与按名称、协议查询创建资料的入口。 */
 
-import type {NativeHistoryPolicy} from "../../runtime/model/src/adapter.ts"
+import type {NativeHistoryPolicy} from "../../runtime/model/src/gateway/adapter.ts"
 import type {Protocol, ReasoningField} from "../../runtime/model/src/types.ts"
 import type {CompatibleProviderOption} from "../preload/session-api.ts"
 import {DEEPSEEK_PROVIDERS} from "./compatible-providers/deepseek.ts"

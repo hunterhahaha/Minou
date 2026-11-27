@@ -5,7 +5,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { SessionRuntime } from "../src/session-runtime.ts"
-import { createAnthropicAdapter } from "../../model/src/anthropic.ts"
+import { createModelAdapter } from "../../model/src/gateway/adapter.ts"
 import type { ModelConfig } from "../../model/src/types.ts"
 import type { SessionEvent } from "../../session/src/events.ts"
 import { sseEvent, startFakeProvider } from "../../model/test/helpers.ts"
@@ -63,7 +63,7 @@ async function testPrefix(initialRules: string): Promise<void> {
   })
   const paths = await initializeConfigFiles(root)
   const global = new SessionRuntimeGlobal(paths, new ToolRegistry(), new RenderRegistry())
-  global.createTurnModelAdapter = async () => Object.assign(createAnthropicAdapter(MODEL, {
+  global.createTurnModelAdapter = async () => Object.assign(createModelAdapter(MODEL, {
     apiKey: "fixture", baseURL: provider.baseURL("anthropic_messages"),
     nativeHistory: { name: "anthropic", protocol: "anthropic_messages", inlineToolChanges: true },
   }), { contextWindow: MODEL.contextWindow, maxOutputTokens: MODEL.maxOutputTokens })

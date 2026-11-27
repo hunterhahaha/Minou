@@ -5,7 +5,7 @@ import { setTimeout as delay } from "node:timers/promises"
 import Anthropic from "@anthropic-ai/sdk"
 import OpenAI from "openai"
 import { generateSessionTitle } from "../src/session-title.ts"
-import { createModelAdapter } from "../../model/src/adapter.ts"
+import { createModelAdapter } from "../../model/src/gateway/adapter.ts"
 import type { ModelAdapter, ModelRef, ModelStreamEvent } from "../../model/src/types.ts"
 
 const MODEL: ModelRef = { providerId: "provider", protocol: "responses", modelId: "model", name: "model", reasoningLevel: "high" }

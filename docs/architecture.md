@@ -10,9 +10,13 @@ flowchart LR
   Bridge --> IPC[Electron 主进程 IPC]
   IPC --> Session[SessionRuntime]
   Session --> Global[SessionRuntimeGlobal]
+  Global --> TurnModel[Turn 模型装配]
+  CLI[独立 Node CLI] --> TurnModel
+  TurnModel --> Router[Adapter 路由器]
+  TurnModel --> ModelStream[共享模型 stream]
   Session --> Loop[runAgentLoop]
-  CLI[独立 Node CLI] --> Loop
-  Loop --> Adapter[Protocol Adapter]
+  CLI --> Loop
+  Loop --> ModelStream
   Loop --> Scheduler[ToolScheduler]
   Scheduler --> Executor[ToolExecutor]
   Session --> Store[Event Log / SessionState]
@@ -27,7 +31,7 @@ Renderer 负责页面、路由与展示缓存，不直接打开数据库、读�
 | `src/renderer/` | React 工作区、对话、设置、流式展示及缓存投影 |
 | `src/cli/` | Headless 请求校验、独立装配、公开协议与结果文件 |
 | `runtime/agent/` | Session 生命周期、Turn 队列、上下文组织与 Step 循环 |
-| `runtime/model/` | 统一模型类型、三种 Adapter、推理字段与 Usage 转换 |
+| `runtime/model/` | 统一模型类型、Adapter 路由、流执行、三种协议转换、推理字段与 Usage |
 | `runtime/session/` | 持久化事件、Meta、派生状态恢复、文件变化记录 |
 | `runtime/context/` | Summary 请求与压缩阈值计算 |
 | `runtime/tools/` | 注册、执行、结果整理、调度、权限和各类模型工具 |
@@ -53,7 +57,7 @@ Renderer 负责页面、路由与展示缓存，不直接打开数据库、读�
 1. 首页与 [session-page.tsx](../src/renderer/session-page.tsx) 把 [Composer](../src/renderer/composer-input.tsx) 的 Tiptap JSON [序列化](../src/renderer/composer-message.ts) 为一个文本块，经 preload 请求新建或继续会话；运行中发送的消息请求入队。文件节点展开为绝对路径，并附上供展示的 `fileReferences`。
 2. [session-ipc.ts](../src/main/session-ipc.ts) 以 Project + Session 联合身份管理活动 Runtime，校验参数并转发命令。
 3. [SessionRuntime](../runtime/agent/src/session-runtime.ts) 绑定会话目录、事件日志和 SessionState。新建或继续 Turn 时，先提交 `turn/start` 与 `user/message`；提交失败不启动模型循环。
-4. Turn 真正开始时读取所选模型和推理等级，通过 `SessionRuntimeGlobal.createTurnModelAdapter()` 打开 Provider 数据库，取得同一快照的模型规格、协议配置和凭据。模型支持思考时校验所选等级后，创建仅供本 Turn 使用的 Adapter；后续 Step 复用它。
+4. Turn 真正开始时读取所选模型和推理等级，通过 `SessionRuntimeGlobal.createTurnModelAdapter()` 从同一 Provider 数据库快照取得 Provider 名称、模型规格、协议配置和凭据。模型支持思考时校验所选等级。路由器随后选定转换器，工厂把它与本轮 SDK Client 绑定到共享流入口，后续 Step 复用此入口。
 5. Runtime 组织工作区说明、AGENTS.md / Skill 基线和基础工具，再调用 `runAgentLoop()`。
 6. Loop 将 Step、完整内容块和完整消息提交到 Event Log，并通过 SessionRuntime 在内存中发布块开始与增量；若产生工具调用，就运行工具小轮并把 ToolResult 回填上下文，然后进入下一 Step。
 7. Runtime 负责 Turn 完成、失败、停止、文件变化与派生状态同步，再消费 FIFO 队列。Queue 仅保存消息内容，不提前冻结后续 Turn 的模型。
@@ -65,7 +69,7 @@ Composer 的 `@` 查询调用 [文件查看器 IPC](../src/main/file-explorer-ip
 
 桌面新对话提交首条消息后，SessionRuntime 用本轮 Adapter 发起独立的标题请求，主回复与队列可同时执行。标题请求只携带首条消息和命名提示词，优先使用该模型支持的关闭或最低思考档位。活动期停止会放弃命名，60 秒超时则使用消息前 30 个字符。主进程仅在 Meta 名称仍为「新对话」时原子写入，再同步工作区索引并推送会话摘要。
 
-模型工厂见 [model-adapters.ts](../src/main/model-adapters.ts)。启动阶段不预先为全部模型创建 SDK Client，也不把 Provider 凭据快照传入 Renderer。
+桌面与 CLI 共用 [Turn 模型工厂](../src/main/model-adapters.ts)。[路由器](../runtime/model/src/gateway/adapter-router.ts) 优先匹配忽略大小写及首尾空白的 Provider 名称或别名。名称命中但不支持所选协议时结束装配并报错。名称未命中时按 API 模型名与协议匹配，模型名支持精确名称和大小写敏感的末尾 `*` 前缀规则。多个转换器同时命中时报告冲突。未匹配到专用条目时按协议选择通用条目。当前生产表只登记三种通用转换器。SDK Client 在 Turn 装配时创建，Provider 凭据留在宿主和 SDK。
 
 ## 桌面 Team Mode
 
@@ -83,13 +87,24 @@ Router 页头的「团队成员」通过可信会话 IPC 查询同一 Workspace 
 
 ## Step、协议与 Usage
 
+```mermaid
+flowchart LR
+  Runtime["Runtime 发起统一请求"] --> Stream["共享 stream()"]
+  Stream --> A["已选 Adapter 的 A()"]
+  A --> SDK["按协议调用 SDK 流入口"]
+  SDK --> B["已选 Adapter 的 B()"]
+  B --> Events["Runtime 消费统一流事件"]
+```
+
+共享 `stream()` 在每次逻辑请求开始时调用 A，并通过同一重试逻辑执行协议请求。每次网络尝试分别调用 B，使用独立的分片状态。现有原生历史策略继续随 Turn 快照传给转换器，SDK 自身重试保持关闭。
+
 [loop.ts](../runtime/agent/src/loop.ts) 处理 `step/start`、模型块事件、`assistant/message`、`tool/result`、`step/end`，不承担宿主的 Turn 首尾。模型块包括 thinking、text 和 tool_call。工具结果通过 `toolCallId` 和对应块事件的 `toolCallEventId` 关联，不能只依据日志排列顺序配对。
 
 模型类型见 [types.ts](../runtime/model/src/types.ts)，Adapter 将各协议转成同一事件与内容结构。Usage 的 `inputTokens` 排除缓存读取与缓存写入，`reasoningTokens` 是 `outputTokens` 的一部分。总量按 `inputTokens + outputTokens + (cacheReadTokens ?? 0) + (cacheWriteTokens ?? 0)` 校验。厂商总量缺失时填入分项和，上报值与分项和不同时省略 `totalTokens`。缓存字段缺失仍保持缺失。具体映射见 [usage.ts](../runtime/model/src/usage.ts)。
 
 AgentLoop 在带用量的 `assistant/message` 中携带该请求 Adapter 的 `contextWindow`。Session 从这些事件累计 `inputTokens`、缓存读取 `cacheHitTokens` 和缓存写入 `cacheMissTokens`，命中率是缓存读取量除以三个累计输入桶的总和。最近一次上下文占用取该次请求的输入与输出分项和，占用率用该占用除以同一请求的模型上限。Renderer 从会话事件按相同口径展示用量。
 
-[Chat Completions Adapter](../runtime/model/src/chat-completions.ts) 按分片依次从非空的 `reasoning_content`、`reasoning` 和 `reasoning_details` 的文本或摘要提取可读思考。通用请求将同一 assistant 消息的 thinking 块按顺序拼接到 `reasoning_content`。OpenRouter 优先回传匹配来源的完整 `reasoning_details`，缺失或无法解析时改用 `reasoning`。独立摘要请求使用通用文本转换。字段依据见 [DeepSeek 思考模式](https://api-docs.deepseek.com/guides/thinking_mode/)、[Z.AI 深度思考](https://docs.z.ai/guides/capabilities/thinking)、[MiniMax OpenAI SDK](https://platform.minimax.io/docs/api-reference/text-openai-api) 和 [OpenRouter Reasoning Tokens](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens)。
+[Chat Completions Adapter](../runtime/model/src/gateway/chat-completions.ts) 按分片依次从非空的 `reasoning_content`、`reasoning` 和 `reasoning_details` 的文本或摘要提取可读思考。通用请求将同一 assistant 消息的 thinking 块按顺序拼接到 `reasoning_content`。OpenRouter 优先回传匹配来源的完整 `reasoning_details`，缺失或无法解析时改用 `reasoning`。独立摘要请求使用通用文本转换。字段依据见 [DeepSeek 思考模式](https://api-docs.deepseek.com/guides/thinking_mode/)、[Z.AI 深度思考](https://docs.z.ai/guides/capabilities/thinking)、[MiniMax OpenAI SDK](https://platform.minimax.io/docs/api-reference/text-openai-api) 和 [OpenRouter Reasoning Tokens](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens)。
 
 网络层由 [retry.ts](../runtime/network/src/retry.ts) 控制重试，当前最大尝试次数为 3。可重试错误在尚无有效输出时重试；已产生有效流事件后失败，交由当前请求错误流程处理。取消不自动重试。
 

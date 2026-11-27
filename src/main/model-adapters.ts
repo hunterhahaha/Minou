@@ -6,8 +6,9 @@
  */
 
 import { CredentialStore } from "../../runtime/credential/src/index.ts"
-import { createModelAdapter } from "../../runtime/model/src/adapter.ts"
-import type { ProtocolClientOptions } from "../../runtime/model/src/adapter.ts"
+import { AdapterRoutingError } from "../../runtime/model/src/gateway/adapter-router.ts"
+import { createModelAdapter } from "../../runtime/model/src/gateway/adapter.ts"
+import type { ProtocolClientOptions } from "../../runtime/model/src/gateway/adapter.ts"
 import type {
   ModelAdapter,
   ModelConfig,
@@ -19,6 +20,8 @@ import { readTurnProviderSnapshot } from "./provider-store.ts"
 
 /** 创建单个 Turn Adapter 前已经解析完成的模型与协议客户端参数。 */
 export interface TurnModelAdapterSpecification {
+  /** Provider 快照中的名称，用于选择厂商 Adapter。 */
+  providerName: string
   /** 已补入所属 Provider 与唯一协议的运行时模型配置。 */
   modelConfig: ModelConfig
   /** 当前数据库凭据与协议连接参数形成的客户端输入。 */
@@ -57,15 +60,17 @@ export async function resolveTurnModelAdapterSpecification(
   }
 
   const baseURL = snapshot.provider.baseURL
-  const providerName = snapshot.provider.name.trim().toLowerCase()
+  const providerName = snapshot.provider.name
+  const normalizedProviderName = providerName.trim().toLowerCase()
   const nativeHistory: ProtocolClientOptions["nativeHistory"] =
-    snapshot.model.protocol === "chat_completions" && (providerName === "openrouter" || providerName === "open router")
+    snapshot.model.protocol === "chat_completions" && (normalizedProviderName === "openrouter" || normalizedProviderName === "open router")
       ? { name: "openrouter", protocol: "chat_completions", inlineToolChanges: false }
       : Object.values(COMPATIBLE_PROVIDERS).flat().find((definition) =>
         definition.protocol === snapshot.model.protocol && definition.nativeHistory !== undefined &&
         snapshot.model.name.startsWith(definition.nativeHistory.modelNamePrefix),
       )?.nativeHistory?.policy
   return {
+    providerName,
     modelConfig,
     clientOptions: {
       apiKey,
@@ -85,23 +90,24 @@ export async function resolveTurnModelAdapterSpecification(
  * @param model 当前 Turn 选定的模型引用。
  * @param supportsReasoning 本次调用的思考能力覆盖值，省略时采用数据库配置。
  * @returns 当前 Turn 共用的 Adapter，附带同一配置快照的预算及思考能力。
- * @throws Error 当配置解析、凭据读取或协议 Adapter 构造失败时抛出；不返回半构建实例。
+ * @throws Error 当配置解析、凭据读取、Adapter 路由或 SDK 构造失败时抛出。
  */
 export async function createTurnModelAdapter(
   paths: Pick<ConfigFilePaths, "providerDatabasePath">,
   model: ModelRef,
   supportsReasoning?: boolean,
 ): Promise<ModelAdapter> {
-  const specification = await resolveTurnModelAdapterSpecification(paths, model, supportsReasoning)
+  const { providerName, modelConfig, clientOptions } = await resolveTurnModelAdapterSpecification(paths, model, supportsReasoning)
   try {
-    return Object.assign(createModelAdapter(specification.modelConfig, specification.clientOptions), {
-      contextWindow: specification.modelConfig.contextWindow,
-      maxOutputTokens: specification.modelConfig.maxOutputTokens,
-      ...(specification.modelConfig.supportsReasoning
-        ? { reasoningLevels: [...specification.modelConfig.reasoningLevels] }
+    return Object.assign(createModelAdapter(modelConfig, clientOptions, providerName), {
+      contextWindow: modelConfig.contextWindow,
+      maxOutputTokens: modelConfig.maxOutputTokens,
+      ...(modelConfig.supportsReasoning
+        ? { reasoningLevels: [...modelConfig.reasoningLevels] }
         : {}),
     })
-  } catch {
+  } catch (error) {
+    if (error instanceof AdapterRoutingError) throw error
     throw new Error(
       `无法为 ${formatModelRef(model)} 创建 Adapter；模型配置与凭据来自 ${paths.providerDatabasePath}。`,
     )
