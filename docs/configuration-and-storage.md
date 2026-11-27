@@ -268,6 +268,8 @@ current_model_json, sandbox_mode_json, usage_json, skills_json, additional_meta_
 
 Meta 不等同于 Event Log：名称和运行设置有自己的写入入口，Usage 与部分上下文状态由事件派生。单条 Meta 缺失或 JSON 损坏时可交恢复流程补建，数据库结构不合法则报错。详细类型与恢复逻辑见 [session-state.ts](../runtime/session/src/session-state.ts)。
 
+`usage_json` 保存六个数字字段。前三项 `inputTokens`、`cacheHitTokens`、`cacheMissTokens` 分别累计普通请求的未缓存输入、缓存读取和缓存写入。`cacheHitRate` 为缓存读取量除以前三项之和，分母为零时取零。`latestContextTokens` 是最近一条带用量的正常助手消息的完整输入加输出，`contextUsageRate` 为该值除以同一请求记录的 `contextWindow`，上限缺失时取零。六项初始值均为零。
+
 ### 会话派生文件
 
 - `contextstate.json` 保存 `agentsmd: { hash, content }`、`skills: { id, content }` 和 `mcp` 定义数组。`agentsmd` 是系统提示中的固定基线，普通规则更新不替换它；成功 Summary 后切换到摘要基线。MCP 数组初始为空，成功 Summary 提交后才替换为该次摘要的工具定义快照。

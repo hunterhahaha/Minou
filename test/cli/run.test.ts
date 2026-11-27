@@ -10,6 +10,8 @@ import { DatabaseSync } from "node:sqlite"
 import { initializeConfigFilesSnapshot, writeMcpServers } from "../../src/main/config-files.ts"
 import { saveModel, saveProvider, setProviderApiKey } from "../../src/main/provider-store.ts"
 import { createMCPTestServer, testTool } from "../../runtime/mcp/test/helpers.ts"
+import { readSessionMeta } from "../../runtime/session/src/meta-store.ts"
+import type { SessionMeta } from "../../runtime/session/src/session-state.ts"
 import type { RunResult } from "../../src/cli/protocol.ts"
 import type { SessionEvent } from "../../runtime/session/src/events.ts"
 
@@ -165,6 +167,12 @@ async function main(): Promise<void> {
     assert.equal(normal.result.event_log_path, join(normal.result.record_directory!, "events.sqlite"))
     const messages = normal.events.filter((event) => event.type === "assistant/message")
     assert.equal(messages.length, 1)
+    assert.equal(messages[0].contextWindow, 128000)
+    const meta = readSessionMeta(paths.metaDatabasePath, "default", messages[0].sessionId) as SessionMeta
+    assert.deepEqual(meta.usage, {
+      inputTokens: 7, cacheHitTokens: 3, cacheMissTokens: 0, cacheHitRate: 3 / 10,
+      latestContextTokens: 12, contextUsageRate: 12 / 128000,
+    })
     assert.ok(messages[0].message.content.some((block) => block.type === "text" && block.text === "answer"))
     assert.ok(normal.stdout.includes("top-secret-thinking"))
     assert.deepEqual(normal.events.slice(0, 2).map((event) => event.type), ["turn/start", "user/message"])
@@ -273,7 +281,9 @@ async function main(): Promise<void> {
       assert.equal(outcome.events.some((event) => event.type === "approval/result"), item.approval)
       assert.equal(outcome.result.metrics.tool_calls, 1)
       assert.equal(outcome.result.metrics.steps, 2)
-      assert.equal(outcome.result.metrics.usage?.input_tokens, 14)
+      assert.equal(outcome.result.metrics.usage?.input_tokens, 7)
+      assert.equal(outcome.result.metrics.usage?.output_tokens, 2)
+      assert.equal(outcome.result.metrics.usage_scope, "latest_reported_agent_request")
       assert.ok(outcome.stdout.includes("private-tool-payload"))
       const db = new DatabaseSync(outcome.result.event_log_path!, { readOnly: true })
       const events = db.prepare("SELECT event_json FROM session_events ORDER BY seq").all().map((row) => JSON.parse(row.event_json as string))
@@ -307,7 +317,7 @@ async function main(): Promise<void> {
       assert.equal(auto.requests.length, 3)
       assert.equal(auto.result.metrics.turns, 1)
       assert.equal(auto.result.metrics.steps, 2)
-      assert.equal(auto.result.metrics.usage?.total_tokens, 24)
+      assert.equal(auto.result.metrics.usage?.total_tokens, 12)
       assert.equal(auto.result.metrics.usage_complete, true)
     }
     const limited = await run(["--max-steps", "1"], (_body, _attempt, response) => reply(response, [{ name: "read", args: { path: inside } }], ""))

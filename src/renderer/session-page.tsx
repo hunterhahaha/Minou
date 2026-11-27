@@ -1,7 +1,7 @@
 /** 从工作区事件字典派生聊天页面；输入操作仅走 preload 的固定 Session API。 */
 import { Fragment, memo, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type Ref } from "react"
 import { IconArrowDown, IconArrowUp, IconBrain, IconCheck, IconCode, IconCopy, IconDashboard, IconDatabase, IconGitCompare, IconPlayerStop, IconShieldCheck, IconSparkles, IconTool } from "@tabler/icons-react"
-import type { AssistantContentBlock } from "../../runtime/model/src/types.ts"
+import { contextTokens, type AssistantContentBlock } from "../../runtime/model/src/types.ts"
 import { preferredReasoningLevel } from "../../runtime/model/src/reasoning.ts"
 import type { FileChange, FileReference, SessionEvent, UserMessageContent } from "../../runtime/session/src/events.ts"
 import type { ProviderSummary, SandboxMode, SessionSettingsPatch } from "../preload/session-api.ts"
@@ -291,6 +291,7 @@ export function SessionPage({ projectId, sessionId, state, providers, onOpenDiff
     let toolCalls = 0
     let latest: Extract<SessionEvent, { type: "assistant/message" }> | undefined
     let cacheRead = 0
+    let cacheWrite = 0
     let uncachedInput = 0
     for (const event of events) {
       if (event.type === "turn/start") turns++
@@ -299,14 +300,15 @@ export function SessionPage({ projectId, sessionId, state, providers, onOpenDiff
       if (!event.usage) continue
       latest = event
       cacheRead += event.usage.cacheReadTokens ?? 0
+      cacheWrite += event.usage.cacheWriteTokens ?? 0
       uncachedInput += event.usage.inputTokens
     }
     const latestUsage = latest?.usage
-    const total = cacheRead + uncachedInput
+    const total = cacheRead + uncachedInput + cacheWrite
     return {
       turns, toolCalls, model: latest?.model,
-      inputTokens: latestUsage && latestUsage.inputTokens + (latestUsage.cacheReadTokens ?? 0) + (latestUsage.cacheWriteTokens ?? 0),
-      /** 沿用 Session Meta 的命中率口径，缓存写入量只计入完整输入量。 */
+      contextWindow: latest?.contextWindow,
+      latestContextTokens: latestUsage && contextTokens(latestUsage),
       cacheHitRate: latestUsage && (total === 0 ? 0 : cacheRead / total),
     }
   }, [events])
@@ -332,9 +334,10 @@ export function SessionPage({ projectId, sessionId, state, providers, onOpenDiff
   })))
   const selectedKey = control ? JSON.stringify([control.currentModel.providerId, control.currentModel.modelId]) : ""
   const currentModelOption = modelOptions.find((model) => JSON.stringify([model.providerId, model.modelId]) === selectedKey)
-  const contextWindow = currentModelOption?.contextWindow
-  const contextUsage = usage.inputTokens !== undefined && contextWindow !== undefined ? usage.inputTokens / contextWindow : undefined
-  const inputFromOtherModel = control && usage.model &&
+  const contextWindow = usage.model ? usage.contextWindow : currentModelOption?.contextWindow
+  const contextUsage = usage.latestContextTokens !== undefined && contextWindow !== undefined
+    ? usage.latestContextTokens / contextWindow : undefined
+  const usageFromOtherModel = control && usage.model &&
     (usage.model.providerId !== control.currentModel.providerId || usage.model.modelId !== control.currentModel.modelId)
   useLayoutEffect(() => {
     const composer = composerRef.current, page = pageRef.current, dialog = approvalRef.current
@@ -461,7 +464,7 @@ export function SessionPage({ projectId, sessionId, state, providers, onOpenDiff
                     <span data-usage-metric="tools">工具调用 {hasHistory ? usageCountFormat.format(usage.toolCalls) : "—"}</span>
                   </span></li>
                   <li><IconDatabase aria-hidden="true" /><span className="session-usage-metrics">
-                    <span data-usage-metric="context">上下文 {usage.inputTokens === undefined ? "—" : usageCountFormat.format(usage.inputTokens)}{inputFromOtherModel && "（来自其他模型）"} / {contextWindow === undefined ? "—" : usageCountFormat.format(contextWindow)} Token</span>
+                    <span data-usage-metric="context">上下文 {usage.latestContextTokens === undefined ? "—" : usageCountFormat.format(usage.latestContextTokens)}{usageFromOtherModel && "（来自其他模型）"} / {contextWindow === undefined ? "—" : usageCountFormat.format(contextWindow)} Token</span>
                     <span data-usage-metric="cache">缓存命中率 {usage.cacheHitRate === undefined ? "—" : usagePercentFormat.format(usage.cacheHitRate)}</span>
                   </span></li>
                   <li><span>上下文占用</span><span data-usage-metric="pressure">{contextUsage === undefined ? "—" : usagePercentFormat.format(contextUsage)}</span></li>

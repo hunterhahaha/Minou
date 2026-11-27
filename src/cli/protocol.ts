@@ -2,7 +2,6 @@
 import { randomUUID } from "node:crypto"
 import { readFile, rename, stat, unlink, writeFile } from "node:fs/promises"
 import { resolve } from "node:path"
-import { accumulateUsage } from "../../runtime/model/src/types.ts"
 import type { ModelRef, Usage } from "../../runtime/model/src/types.ts"
 import type { MCPConfig } from "../../runtime/mcp/src/types.ts"
 import type { SessionEvent } from "../../runtime/session/src/events.ts"
@@ -69,11 +68,11 @@ export class CliInputError extends Error {
 
 /** 仅输出已报告的统一用量；缓存和 reasoning 缺失时不补零。 */
 export interface PublicUsage {
-  /** 未缓存输入累计。 */ input_tokens: number
-  /** 包含 reasoning 的输出累计。 */ output_tokens: number
+  /** 此次请求的未缓存输入。 */ input_tokens: number
+  /** 此次请求的输出，包含 reasoning。 */ output_tokens: number
   /** 厂商可确定的总量。 */ total_tokens?: number
-  /** 缓存读取累计。 */ cache_read_tokens?: number
-  /** 缓存写入累计。 */ cache_write_tokens?: number
+  /** 此次请求的缓存读取。 */ cache_read_tokens?: number
+  /** 此次请求的缓存写入。 */ cache_write_tokens?: number
   /** 输出中的 reasoning 子集。 */ reasoning_tokens?: number
 }
 
@@ -85,7 +84,7 @@ export interface RunStatistics {
   /** 已提交的 Assistant Message 数量。 */ messages: number
   /** 报告了权威 Usage 的消息数量。 */ reportedUsage: number
   /** 最后一条 Assistant Message 的文本。 */ answer: string
-  /** 仅已报告消息的累计 Usage。 */ usage?: Usage
+  /** 最近一条报告了 Usage 的 Assistant Message 的用量。 */ usage?: Usage
 }
 
 /** 可选写入 JSON 文件的最终运行结果。 */
@@ -101,7 +100,12 @@ export interface RunResult {
   /** 已提交事件派生的指标。 */
   metrics: {
     turns: number; steps: number; tool_calls: number; duration_ms: number; usage: PublicUsage | null
-    usage_complete: boolean; usage_reported_steps: number; usage_scope: "reported_agent_requests"
+    /** 本次运行有 Step，且每个 Step 都报告了 Usage。 */
+    usage_complete: boolean
+    /** 本次运行中报告了 Usage 的 Step 数。 */
+    usage_reported_steps: number
+    /** 用量来自本次运行最近一次报告 Usage 的 Agent 请求。 */
+    usage_scope: "latest_reported_agent_request"
   }
   /** 仅公开稳定错误码和阶段说明。 */ error?: { code: string; stage: string; message: string }
 }
@@ -294,7 +298,7 @@ async function readJson(path: string): Promise<unknown> {
 export function createStatistics(): RunStatistics { return { turns: 0, steps: 0, toolCalls: 0, messages: 0, reportedUsage: 0, answer: "" } }
 
 /**
- * 从已经持久化的权威事件累计指标，每条事件调用一次。
+ * 从已经持久化的权威事件更新指标，每条事件调用一次。新报告的 Usage 覆盖此前的用量。
  * @param state 本次 Run 的统计状态。
  * @param event 已提交内部事件。
  */
@@ -305,15 +309,18 @@ export function observeEvent(state: RunStatistics, event: SessionEvent): void {
   if (event.type === "assistant/message") {
     state.messages++
     state.answer = event.message.content.filter((block) => block.type === "text").map((block) => block.text).join("\n\n")
-    if (event.usage !== undefined) { state.reportedUsage++; state.usage = accumulateUsage(state.usage, event.usage) }
+    if (event.usage !== undefined) {
+      state.reportedUsage++
+      state.usage = event.usage
+    }
   }
 }
 
 
 /**
- * 将内部累计 Usage 转为公共输出字段，保留未报告状态。
+ * 将最近一次报告的 Usage 转为公共输出字段，保留未报告状态。
  *
- * @param usage 已报告消息的累计 Usage。
+ * @param usage 最近一条报告了 Usage 的 Assistant Message 的用量。
  * @returns 公共字段名，缺失字段保持缺失。
  */
 export function mapUsage(usage?: Usage): PublicUsage | null {

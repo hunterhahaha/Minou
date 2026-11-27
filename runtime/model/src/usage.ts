@@ -6,7 +6,7 @@
  * 本文件只做字段映射，累计及派生量由统一 Usage 函数计算。
  */
 
-import type { Usage } from "./types.ts"
+import { resolveTotalTokens, type Usage } from "./types.ts"
 
 /**
  * 读取一个可能为 null / undefined 的数字。
@@ -42,6 +42,17 @@ function subtractCacheBuckets(
   return Math.max(0, uncached)
 }
 
+/**
+ * 补齐缺报的总量或保留与分项相符的厂商总量。总量不符时保留其余用量字段。
+ * @param usage 已映射的分项计数，由调用方为本次转换创建。
+ * @param reportedTotal 厂商原始总量，协议未提供时省略。
+ * @returns 已完成总量校验的同一个对象。
+ */
+function withTotalTokens(usage: Usage, reportedTotal?: number | null): Usage {
+  const totalTokens = resolveTotalTokens(usage, readCount(reportedTotal))
+  if (totalTokens !== undefined) usage.totalTokens = totalTokens
+  return usage
+}
 
 /** Anthropic Messages */
 
@@ -56,6 +67,8 @@ export interface AnthropicUsageFields {
   input_tokens?: number | null
   /** 输出 Token。 */
   output_tokens?: number | null
+  /** 兼容厂商提供的输入与输出总 Token。 */
+  total_tokens?: number | null
   /** 从已有 Prompt Cache 读取的输入 Token。 */
   cache_read_input_tokens?: number | null
   /** 创建或写入 Prompt Cache 的输入 Token。 */
@@ -72,8 +85,7 @@ export interface AnthropicUsageFields {
  *   cacheWriteTokens  ← cache_creation_input_tokens
  *   reasoningTokens   ← output_tokens_details.thinking_tokens
  *
- * `totalTokens` 留空：Anthropic 不返回该字段，统一总量由 `resolveTotalTokens` 从各输入桶与
- * `outputTokens` 相加得到。
+ * `totalTokens` 由各输入桶与 `outputTokens` 相加得到。
  *
  * `thinking_tokens`：仅在 output_tokens_details.thinking_tokens 提供数值时映射 reasoning，缺失时不推算。
  *
@@ -96,7 +108,7 @@ export function convertAnthropicUsage(fields: AnthropicUsageFields): Usage {
 
   if (reasoningTokens !== undefined) usage.reasoningTokens = reasoningTokens
 
-  return usage
+  return withTotalTokens(usage, fields.total_tokens)
 }
 
 
@@ -140,7 +152,7 @@ export interface ChatCompletionsUsageFields {
  *   inputTokens      ← prompt_tokens − cacheReadTokens − cacheWriteTokens
  *   outputTokens     ← completion_tokens
  *   reasoningTokens  ← completion_tokens_details.reasoning_tokens
- *   totalTokens      ← total_tokens；缺失时用 prompt_tokens + completion_tokens
+ *   totalTokens      ← 按输入和输出分项校验或补齐 total_tokens
  *
  * @param fields Chat Completions 最后一个带 Usage 的流 chunk 的字段。
  * @returns 符合统一 Usage 契约的字段；缓存细分缺失时不将其伪造为 0。
@@ -160,20 +172,13 @@ export function convertChatCompletionsUsage(fields: ChatCompletionsUsageFields):
     outputTokens: completionTokens ?? 0,
   }
 
-  const totalTokens = readCount(fields.total_tokens)
-  if (totalTokens !== undefined) {
-    usage.totalTokens = totalTokens
-  } else if (promptTokens !== undefined && completionTokens !== undefined) {
-    usage.totalTokens = promptTokens + completionTokens
-  }
-
   if (cacheReadTokens !== undefined) usage.cacheReadTokens = cacheReadTokens
   if (cacheWriteTokens !== undefined) usage.cacheWriteTokens = cacheWriteTokens
 
   const reasoningTokens = readCount(fields.completion_tokens_details?.reasoning_tokens)
   if (reasoningTokens !== undefined) usage.reasoningTokens = reasoningTokens
 
-  return usage
+  return withTotalTokens(usage, fields.total_tokens)
 }
 
 
@@ -207,7 +212,7 @@ export interface ResponsesUsageFields {
  *   inputTokens      ← input_tokens − cacheReadTokens − cacheWriteTokens
  *   outputTokens     ← output_tokens
  *   reasoningTokens  ← output_tokens_details.reasoning_tokens
- *   totalTokens      ← total_tokens（该协议直接提供，缺失则留空，不自行相加）
+ *   totalTokens      ← 按输入和输出分项校验或补齐 total_tokens
  *
  * @param fields Responses 终态事件中的 `response.usage` 字段。
  * @returns 符合统一 Usage 契约的字段；缺失的可选协议字段保持未报告。
@@ -222,8 +227,6 @@ export function convertResponsesUsage(fields: ResponsesUsageFields): Usage {
     outputTokens: readCount(fields.output_tokens) ?? 0,
   }
 
-  const totalTokens = readCount(fields.total_tokens)
-  if (totalTokens !== undefined) usage.totalTokens = totalTokens
 
   if (cacheReadTokens !== undefined) usage.cacheReadTokens = cacheReadTokens
   if (cacheWriteTokens !== undefined) usage.cacheWriteTokens = cacheWriteTokens
@@ -231,5 +234,5 @@ export function convertResponsesUsage(fields: ResponsesUsageFields): Usage {
   const reasoningTokens = readCount(fields.output_tokens_details?.reasoning_tokens)
   if (reasoningTokens !== undefined) usage.reasoningTokens = reasoningTokens
 
-  return usage
+  return withTotalTokens(usage, fields.total_tokens)
 }

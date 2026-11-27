@@ -100,7 +100,10 @@ async function main(): Promise<void> {
     assert.equal(state.turns, 1)
     assert.equal(state.toolCalls, 1)
     assert.equal(state.answer, "last")
-    assert.deepEqual(mapUsage(state.usage), { input_tokens: 10, output_tokens: 7 })
+    assert.deepEqual(mapUsage(state.usage), { input_tokens: 6, output_tokens: 5 })
+    observeEvent(state, event({ type: "assistant/message", message: { content: [{ type: "text", text: "without usage" }] } }))
+    assert.deepEqual(mapUsage(state.usage), { input_tokens: 6, output_tokens: 5 })
+    assert.equal(state.reportedUsage, 2)
     assert.equal(toolGroup("mcp_fake", { get: () => ({ kind: "builtin" }) } as unknown as ToolRegistry), undefined)
     assert.equal(toolGroup("mcp_remote", { get: () => ({ kind: "mcp" }) } as unknown as ToolRegistry), "mcp")
 

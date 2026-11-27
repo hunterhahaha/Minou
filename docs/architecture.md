@@ -85,7 +85,9 @@ Router 页头的「团队成员」通过可信会话 IPC 查询同一 Workspace 
 
 [loop.ts](../runtime/agent/src/loop.ts) 处理 `step/start`、模型块事件、`assistant/message`、`tool/result`、`step/end`，不承担宿主的 Turn 首尾。模型块包括 thinking、text 和 tool_call。工具结果通过 `toolCallId` 和对应块事件的 `toolCallEventId` 关联，不能只依据日志排列顺序配对。
 
-模型类型见 [types.ts](../runtime/model/src/types.ts)，Adapter 将各协议转成同一事件与内容结构。Usage 的 `inputTokens` 是未缓存输入；完整输入还包含已报告的 `cacheReadTokens`、`cacheWriteTokens`。`reasoningTokens` 属于输出子集，不应再次相加。可选桶未报告时保持缺失，其累计规则也不能简单视为零。具体映射见 [usage.ts](../runtime/model/src/usage.ts)。Session 的 `RealUsage` 是另一个派生结构，其中 `inputTokens` 表示最近一次正常 Agent 请求的完整输入，不可与统一 Usage 同名字段混用。
+模型类型见 [types.ts](../runtime/model/src/types.ts)，Adapter 将各协议转成同一事件与内容结构。Usage 的 `inputTokens` 排除缓存读取与缓存写入，`reasoningTokens` 是 `outputTokens` 的一部分。总量按 `inputTokens + outputTokens + (cacheReadTokens ?? 0) + (cacheWriteTokens ?? 0)` 校验。厂商总量缺失时填入分项和，上报值与分项和不同时省略 `totalTokens`。缓存字段缺失仍保持缺失。具体映射见 [usage.ts](../runtime/model/src/usage.ts)。
+
+AgentLoop 在带用量的 `assistant/message` 中携带该请求 Adapter 的 `contextWindow`。Session 从这些事件累计 `inputTokens`、缓存读取 `cacheHitTokens` 和缓存写入 `cacheMissTokens`，命中率是缓存读取量除以三个累计输入桶的总和。最近一次上下文占用取该次请求的输入与输出分项和，占用率用该占用除以同一请求的模型上限。Renderer 从会话事件按相同口径展示用量。
 
 [Chat Completions Adapter](../runtime/model/src/chat-completions.ts) 按分片依次从非空的 `reasoning_content`、`reasoning` 和 `reasoning_details` 的文本或摘要提取可读思考。通用请求将同一 assistant 消息的 thinking 块按顺序拼接到 `reasoning_content`。OpenRouter 优先回传匹配来源的完整 `reasoning_details`，缺失或无法解析时改用 `reasoning`。独立摘要请求使用通用文本转换。字段依据见 [DeepSeek 思考模式](https://api-docs.deepseek.com/guides/thinking_mode/)、[Z.AI 深度思考](https://docs.z.ai/guides/capabilities/thinking)、[MiniMax OpenAI SDK](https://platform.minimax.io/docs/api-reference/text-openai-api) 和 [OpenRouter Reasoning Tokens](https://openrouter.ai/docs/guides/best-practices/reasoning-tokens)。
 
@@ -127,7 +129,7 @@ Router 页头的「团队成员」通过可信会话 IPC 查询同一 Workspace 
 
 ## 桌面 Summary
 
-SessionRuntime 在正常 Step 前依据最近一次正常 Agent 请求的完整输入量检查阈值：
+SessionRuntime 在正常 Step 前把最近一次正常 Agent 请求完成后的上下文占用量（完整输入加输出）与下方阈值比较。
 
 ```text
 min(contextWindow × 0.8, contextWindow - maxOutputTokens - (10000 + maxOutputTokens))
@@ -176,4 +178,4 @@ flowchart TD
 
 CLI 在装配阶段按模块隔离选项与 MCP 来源选择初始化工具。启用内置工具白名单时，CLI 从本次注册的内置工具中校验名称，并同时约束模型收到的定义和实际执行入口。远端 MCP 工具继续通过 Run 内的载入事件开放。`auto` 将权限检查触发的审批交给现有 `reviewToolCall()`，并在 CLI 事件日志记录审批请求和决定。
 
-CLI 默认 100 Step、1800 秒总时限，收尾宽限为 5 秒。[protocol.ts](../src/cli/protocol.ts) 按已提交事件累计 Turn、Step、工具调用和 Agent Token 用量，取最后一条 Assistant Message 的文本作为 `answer`。stdout 以 JSONL 逐行输出已提交事件。显式指定 `--output` 时写入 UTF-8 回答文本，指定 `--outputjson` 时写入包含运行状态、统计、回答和日志路径的 JSON 文件。启动参数、审批、隔离与退出码见 [CLI 使用说明](cli-usage.md)。
+CLI 默认 100 Step、1800 秒总时限，收尾宽限为 5 秒。[protocol.ts](../src/cli/protocol.ts) 按已提交事件累计 Turn、Step 和工具调用，使用本次运行最近一次上报的 Agent 请求用量，并取最后一条 Assistant Message 的文本作为 `answer`。stdout 以 JSONL 逐行输出已提交事件。显式指定 `--output` 时写入 UTF-8 回答文本，指定 `--outputjson` 时写入包含运行状态、统计、回答和日志路径的 JSON 文件。启动参数、审批、隔离与退出码见 [CLI 使用说明](cli-usage.md)。

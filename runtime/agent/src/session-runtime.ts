@@ -1308,7 +1308,7 @@ export class SessionRuntime implements SessionRepairPorts {
         ) }
       },
       /**
-       * 检查正常请求的输入量，达到阈值时使用本 Turn Adapter 压缩上下文。
+       * 检查最近正常请求完成后的上下文占用，达到阈值时使用本 Turn Adapter 压缩上下文。
        * 成功提交 summary/end 并修复派生状态后，下一 Step 从已提交摘要重建历史。
        * @param input 下一 Step 的基础工具。
        * @returns 未达阈值时直接完成；达到阈值时等待压缩及状态更新完成。
@@ -1317,7 +1317,7 @@ export class SessionRuntime implements SessionRepairPorts {
       beforeStep: async (input) => {
         if (options.signal.aborted) throw createAbortError()
         if (options.finalOnly?.()) return
-        if (await this.sessionState.readAgentInputTokens() < threshold) return
+        if (await this.sessionState.readLatestContextTokens() < threshold) return
         const baseline = structuredClone(await this.projectContext.resolveCurrentBaseline())
         validateCurrentBaseline(baseline)
         const events = validateEventLog(this.sessionId, await this.eventLog.readEvents())
@@ -1776,6 +1776,9 @@ function validateSessionEvent(sessionId: string, value: unknown, index: number):
       requireAssistantMessage(sessionId, event.message, index)
       requireModel(sessionId, event.model, index)
       if (event.usage !== undefined) requireUsage(sessionId, event.usage, index)
+      if (event.contextWindow !== undefined && !isPositiveInteger(event.contextWindow)) {
+        corrupted(sessionId, `第 ${index + 1} 条事件的 contextWindow 无效`)
+      }
       if (event.finishReason !== undefined && typeof event.finishReason !== "string") {
         corrupted(sessionId, `第 ${index + 1} 条事件的 finishReason 无效`)
       }

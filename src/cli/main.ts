@@ -148,6 +148,7 @@ export async function runCli(argv: readonly string[]): Promise<number> {
   let recordDirectory: string | null = null
   let eventLogPath: string | null = null
   let eventLog: FileSessionEventLog | undefined
+  let synchronizeUsage: (() => Promise<void>) | undefined
   let fileTracker: TurnFileChangeTracker | undefined
   let reason: StopReason | undefined
   let error: RunResult["error"]
@@ -233,7 +234,7 @@ export async function runCli(argv: readonly string[]): Promise<number> {
   }
 
   /**
-   * 先提交事件，再更新运行统计并输出完整记录。
+   * 先提交事件，再同步权威用量，最后更新运行统计并输出完整记录。
    *
    * @param input 未分配身份的现有事件。
    * @returns 已持久化事件。
@@ -242,6 +243,7 @@ export async function runCli(argv: readonly string[]): Promise<number> {
   async function appendEvent(input: SessionEventInput) {
     if (finished || !eventLog) throw new Error("本次事件日志不可写")
     const event = await eventLog.appendEvent(input)
+    if (event.type === "assistant/message" && event.usage !== undefined) await synchronizeUsage?.()
     await publishCommittedEvents([event])
     return event
   }
@@ -371,6 +373,7 @@ export async function runCli(argv: readonly string[]): Promise<number> {
       readEvents: () => log.readEvents(!continuation), resolveCurrentBaseline,
       estimateSkillTokens: estimateLocalTokens,
     })
+    synchronizeUsage = sessionState.synchronizeUsage
     if (continuation) {
       const recovered = await repairSession(sessionId, {
         readEvents: log.readEvents,
@@ -536,7 +539,7 @@ export async function runCli(argv: readonly string[]): Promise<number> {
       answer: statistics.answer, answer_complete: finalReason === "finished", model, record_directory: recordDirectory, event_log_path: eventLogPath,
       metrics: { turns: statistics.turns, steps: statistics.steps, tool_calls: statistics.toolCalls, duration_ms: Math.round(performance.now() - startedAt),
         usage: mapUsage(statistics.usage), usage_complete: statistics.steps > 0 && statistics.reportedUsage === statistics.steps,
-        usage_reported_steps: statistics.reportedUsage, usage_scope: "reported_agent_requests" },
+        usage_reported_steps: statistics.reportedUsage, usage_scope: "latest_reported_agent_request" },
       ...(error ? { error } : {}),
     }
     try {

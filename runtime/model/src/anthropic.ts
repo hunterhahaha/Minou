@@ -398,6 +398,7 @@ function mergeAnthropicUsage(
   const merged: AnthropicUsageFields = {
     input_tokens: pickCount(next.input_tokens, previous.input_tokens),
     output_tokens: pickCount(next.output_tokens, previous.output_tokens),
+    total_tokens: pickCount(next.total_tokens, previous.total_tokens),
     cache_read_input_tokens: pickCount(
       next.cache_read_input_tokens,
       previous.cache_read_input_tokens,
@@ -427,6 +428,7 @@ function hasReportedUsage(fields: AnthropicUsageFields): boolean {
   return (
     fields.input_tokens != null ||
     fields.output_tokens != null ||
+    fields.total_tokens != null ||
     fields.cache_read_input_tokens != null ||
     fields.cache_creation_input_tokens != null ||
     fields.output_tokens_details?.thinking_tokens != null

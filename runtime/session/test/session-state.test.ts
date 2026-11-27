@@ -157,7 +157,7 @@ async function testDerivedRepair(root: string): Promise<void> {
     {
       type: "assistant/message", turn: 2, step: 1,
       message: { id: "assistant-1", role: "assistant", content: [{ type: "text", text: "answer" }] },
-      model: MODEL, usage: { inputTokens: 10, outputTokens: 2, cacheReadTokens: 5, cacheWriteTokens: 2 },
+      model: MODEL, contextWindow: 200, usage: { inputTokens: 10, outputTokens: 2, cacheReadTokens: 5, cacheWriteTokens: 2 },
     },
   ]
   additions.forEach((event, index) => events.push({
@@ -171,7 +171,8 @@ async function testDerivedRepair(root: string): Promise<void> {
   assert.equal(meta.name, "已命名")
   assert.deepEqual(meta.currentModel, OTHER_MODEL)
   assert.deepEqual(meta.usage, {
-    inputTokens: 17, cacheHitTokens: 5, cacheMissTokens: 10, cacheHitRate: 1 / 3,
+    inputTokens: 10, cacheHitTokens: 5, cacheMissTokens: 2, cacheHitRate: 5 / 17,
+    latestContextTokens: 19, contextUsageRate: 19 / 200,
   })
   assert.deepEqual(meta.skills, { id: "event-4", entries: [
     { name: "alpha", path: join(root, "skills", "alpha"), scope: "global", enabled: false, estimatedTokens: 5 },

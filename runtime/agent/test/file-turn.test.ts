@@ -118,7 +118,7 @@ async function run(scenario: Scenario): Promise<SessionEvent[]> {
     },
     sessionState: {
       readSettings: async () => ({ sandboxMode: "sandbox-full-access" }),
-      readAgentInputTokens: async () => 0,
+      readLatestContextTokens: async () => 0,
       synchronizeUsage: async () => {},
       readLoadedMCPTools: async () => [],
       writeLoadedMCPTools: async () => {},

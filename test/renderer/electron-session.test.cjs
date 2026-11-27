@@ -79,7 +79,7 @@ async function main() {
     estimateSkillTokens: () => 0, listToolDefinitions: () => [],
     executeTool: async () => { throw new Error("unexpected tool") },
     /** 对话展示测试使用足够大的窗口，避免进入另有专门测试的 Summary 压缩流程。 */
-    createTurnModelAdapter: async (selectedModel) => ({  contextWindow: 256000, maxOutputTokens: 32000, stream: async function* (request, _signal, options) {
+    createTurnModelAdapter: async (selectedModel) => ({ contextWindow: selectedModel.modelId === alternateModel.modelId ? 128000 : 256000, maxOutputTokens: 32000, stream: async function* (request, _signal, options) {
       if (options?.timeoutMs !== undefined) {
         await titleGate
         yield { type: "block_start", index: 0, blockType: "text" }
@@ -228,7 +228,7 @@ async function main() {
   assert.equal(await evaluate(`document.querySelectorAll('.turn-process, .final-answer').length`), 0, "没有 turn/end 时保持流式展示")
   releaseAnswer()
   await until(() => evaluate(`document.querySelectorAll('.user-bubble').length === 2 && document.querySelector('.session-phase')?.textContent === '准备就绪'`))
-  assert.deepEqual(await readUsage(), ["上下文 11,000 / 256,000 Token", "缓存命中率 20%", "轮数 2", "工具调用 0"], "流式回复提交后显示完整输入量，排队消息开始后计入轮数")
+  assert.deepEqual(await readUsage(), ["上下文 11,015 / 256,000 Token", "缓存命中率 18.2%", "轮数 2", "工具调用 0"], "流式回复提交后显示输入和输出的占用量，排队消息开始后计入轮数")
   await until(() => evaluate(`(() => {
     const scroll = document.querySelector('.chat-scroll')
     return scroll.scrollHeight > scroll.clientHeight && scroll.scrollHeight - scroll.clientHeight - scroll.scrollTop <= 2
@@ -351,9 +351,9 @@ async function main() {
     const current = readSessionMeta(paths.metaDatabasePath, "default", reasoningSessionId)?.currentModel
     return current?.modelId === alternateModel.modelId && current.reasoningLevel === "low"
   })
-  await until(async () => (await readUsage())[0] === "上下文 11,000（来自其他模型） / 128,000 Token")
-  assert.deepEqual((await readUsage()).slice(1), ["缓存命中率 20%", "轮数 2", "工具调用 0"], "切换模型时保留会话统计")
-  assert.equal(await evaluate("document.querySelector('[data-usage-metric=pressure]').textContent"), "8.6%", "占用比例使用当前模型上限")
+  await until(async () => (await readUsage())[0] === "上下文 11,015（来自其他模型） / 256,000 Token")
+  assert.deepEqual((await readUsage()).slice(1), ["缓存命中率 18.2%", "轮数 2", "工具调用 0"], "切换模型时保留会话统计")
+  assert.equal(await evaluate("document.querySelector('[data-usage-metric=pressure]').textContent"), "4.3%", "占用比例使用产生该用量的模型上限")
   const usagePoint = await evaluate(`(() => {
     const rect = document.querySelector('.session-usage-trigger').getBoundingClientRect()
     return { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2) }
@@ -409,7 +409,7 @@ async function main() {
   await until(() => evaluate(`document.querySelector('[aria-label="发送消息"]')?.disabled === false`))
   await evaluate(`document.querySelector('[aria-label="发送消息"]').click()`)
   await until(() => evaluate(`document.querySelectorAll('.turn-process').length === 3 && document.querySelector('.session-phase')?.textContent === '准备就绪'`))
-  assert.deepEqual(await readUsage(), ["上下文 12,000 / 128,000 Token", "缓存命中率 26.7%", "轮数 3", "工具调用 0"], "所选模型提交用量后撤去来源提示，命中率继续按会话累计")
+  assert.deepEqual(await readUsage(), ["上下文 12,015 / 128,000 Token", "缓存命中率 23.5%", "轮数 3", "工具调用 0"], "所选模型提交用量后撤去来源提示，命中率继续按会话累计")
   assert.equal(await evaluate(`document.querySelector('.turn-process').open`), true, "后续 Turn 事件不能关闭已展开过程")
   await evaluate(`document.querySelector('.new-chat').click()`)
   await until(() => evaluate(`document.querySelector('.composer-editor[aria-label="任务描述"]')?.textContent === '切换保留的草稿'`))
@@ -426,7 +426,7 @@ async function main() {
   await evaluate(`document.querySelector('[aria-label="发送消息"]').click()`)
   await until(() => evaluate(`document.querySelector('.turn-process') !== null && document.querySelector('.session-phase')?.textContent === '准备就绪'`))
   assert.notEqual(await evaluate(`document.querySelector('.chat-page').dataset.sessionId`), originalSession)
-  assert.deepEqual(await readUsage(), ["上下文 11,000 / 256,000 Token", "缓存命中率 20%", "轮数 1", "工具调用 0"], "会话之间不共享统计")
+  assert.deepEqual(await readUsage(), ["上下文 11,015 / 256,000 Token", "缓存命中率 18.2%", "轮数 1", "工具调用 0"], "会话之间不共享统计")
   assert.equal(await evaluate(`document.querySelector('.turn-process').open`), false, "不同对话的相同 Turn 编号不能继承展开状态")
   await evaluate("location.hash = " + JSON.stringify(route))
   await until(() => evaluate(`document.querySelectorAll('.turn-process').length === 3`))
@@ -633,7 +633,7 @@ async function main() {
   await until(() => evaluate("window.originalToolNode.open"))
   await pushToolEvents([
     { type: "assistant/block_end", turn: 1, step: 1, blockId: "block-shared", index: 0, block: toolBlock("shared", "first.ts") },
-    { type: "assistant/message", turn: 1, step: 1, model, usage: firstUsage, message: { id: "tools1", role: "assistant", content: [toolBlock("shared", "first.ts"), toolBlock("second", "second.ts")] } },
+    { type: "assistant/message", turn: 1, step: 1, model, contextWindow: 256000, usage: firstUsage, message: { id: "tools1", role: "assistant", content: [toolBlock("shared", "first.ts"), toolBlock("second", "second.ts")] } },
     toolResult(1, 1, "second", "第二调用先返回"),
   ])
   assert.equal((await readUsage())[3], "工具调用 2", "权威回复中的调用只统计一次，工具结果不增加次数")
@@ -695,7 +695,7 @@ async function main() {
   await evaluate("location.hash = " + JSON.stringify(route.replace(originalSession, historySession)))
   await until(() => evaluate("document.querySelector('.chat-page')?.dataset.sessionId === 'merged-tool-history' && document.querySelectorAll('.tool-detail').length === 6"))
   assert.deepEqual(await toolSnapshot(), mergedSnapshot, "历史 IPC 一次加载和实时逐条推送展示一致")
-  assert.deepEqual(await readUsage(), ["上下文 11,000 / 256,000 Token", "缓存命中率 20%", "轮数 3", "工具调用 6"], "历史恢复完整统计，后续未报告用量的消息保留最近已知输入")
+  assert.deepEqual(await readUsage(), ["上下文 11,015 / 256,000 Token", "缓存命中率 18.2%", "轮数 3", "工具调用 6"], "历史恢复完整统计，后续未报告用量的消息保留最近已知占用")
   await evaluate("location.hash = " + JSON.stringify(route.replace(originalSession, mergedToolSession)))
   await until(() => evaluate("document.querySelector('.chat-page')?.dataset.sessionId === 'merged-tool-display'"))
   await pushToolEvents([

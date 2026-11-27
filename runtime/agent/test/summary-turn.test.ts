@@ -150,12 +150,13 @@ function harness(root: string, name: string, respond: (request: UnifiedModelRequ
  * @throws Error 断言或场景执行失败时向上传播，测试入口记录错误并设置失败退出码。
  */
 async function testImmediateUsage(root: string): Promise<void> {
+  const firstInput = HIGH - 4
   let normal = 0
   const h = harness(root, "immediate-usage", async function* (request) {
     if (request.toolChoice === "none") {
-      assert.equal(h.meta().usage.inputTokens, HIGH, "下一步压缩前 Meta 已包含上一 Step 的完整输入")
+      assert.equal(h.meta().usage.latestContextTokens, HIGH, "上一 Step 加上输出后才达到压缩阈值")
       yield* response("summary usage must stay separate", 999999)
-    } else yield* response(`usage-${++normal}`, normal === 1 ? HIGH : 10, normal === 1)
+    } else yield* response(`usage-${++normal}`, normal === 1 ? firstInput : 10, normal === 1)
   })
   const append = h.runtime.appendEvent.bind(h.runtime)
   let ended = 0
@@ -164,13 +165,16 @@ async function testImmediateUsage(root: string): Promise<void> {
     if (event.type === "step/end") {
       ended++
       assert.deepEqual(h.meta().usage, ended === 1
-        ? { inputTokens: HIGH, cacheHitTokens: 2, cacheMissTokens: HIGH - 3, cacheHitRate: 2 / (HIGH - 1) }
-        : { inputTokens: 10, cacheHitTokens: 4, cacheMissTokens: HIGH + 4, cacheHitRate: 4 / (HIGH + 8) })
+        ? { inputTokens: firstInput - 3, cacheHitTokens: 2, cacheMissTokens: 1, cacheHitRate: 2 / firstInput,
+          latestContextTokens: HIGH, contextUsageRate: HIGH / 128000 }
+        : { inputTokens: firstInput + 4, cacheHitTokens: 4, cacheMissTokens: 2, cacheHitRate: 4 / (firstInput + 10),
+          latestContextTokens: 14, contextUsageRate: 14 / 128000 })
     }
     return written
   }
   await (await h.runtime.startNewSession({ model: MODEL, content: MESSAGE })).completion
   assert.equal(ended, 2)
+  assert.equal((await h.runtime.readEvents() as SessionEvent[]).filter((event) => event.type === "summary/end").length, 1)
 }
 
 /**
@@ -240,7 +244,7 @@ async function testRepeatedCompression(root: string): Promise<void> {
   assert.equal((await h.context()).skills.id, compressed[1].eventId)
   assert.deepEqual(h.counts(), { factoryCalls: 1, executions: 2 })
   await h.runtime.repairSession()
-  assert.equal(h.meta().usage.inputTokens, 10, "压缩 Usage 不得污染正常 Agent Usage")
+  assert.equal(h.meta().usage.latestContextTokens, 14, "压缩 Usage 不得污染正常 Agent Usage")
 }
 
 /**
@@ -437,7 +441,7 @@ async function testUsageFailureRecovery(root: string): Promise<void> {
   assert.equal(h.meta().usage.inputTokens, 0)
   const restored = h.create()
   await restored.repairSession()
-  assert.equal(h.meta().usage.inputTokens, 20)
+  assert.equal(h.meta().usage.inputTokens, 17)
   const expected = structuredClone(h.meta().usage)
   await restored.repairSession()
   assert.deepEqual(h.meta().usage, expected)
@@ -489,7 +493,7 @@ async function testUsageAtOtherStepOutcomes(root: string): Promise<void> {
     stopped.runtime.stop()
   })
   assert.equal((await (await stopped.runtime.startNewSession({ model: MODEL, content: MESSAGE })).completion).stopped, true)
-  assert.equal(stopped.meta().usage.inputTokens, 30)
+  assert.equal(stopped.meta().usage.latestContextTokens, 34)
   const last = (await stopped.runtime.readEvents() as SessionEvent[]).filter((event) => event.type === "step/end").at(-1)!
   assert.equal(last.reason, "stopped")
   let step = 0
@@ -501,9 +505,10 @@ async function testUsageAtOtherStepOutcomes(root: string): Promise<void> {
     }
   })
   await (await missing.runtime.startNewSession({ model: MODEL, content: MESSAGE })).completion
-  assert.equal(missing.meta().usage.inputTokens, 20)
+  assert.equal(missing.meta().usage.inputTokens, 17)
   assert.equal(missing.meta().usage.cacheHitTokens, 2)
-  assert.equal(missing.meta().usage.cacheMissTokens, 17)
+  assert.equal(missing.meta().usage.cacheMissTokens, 1)
+  assert.equal(missing.meta().usage.latestContextTokens, 24)
 }
 
 /**

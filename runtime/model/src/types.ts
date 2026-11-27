@@ -120,18 +120,18 @@ export type AssistantBlockDelta =
  *   - `inputTokens`、`cacheReadTokens`、`cacheWriteTokens` 三个输入桶互不重叠。
  *   - `reasoningTokens` 是 `outputTokens` 的子集，不能再次加入 Total。
  *
- * 可选字段的 undefined 表示**未报告**，而不是 0；两者要尽量保留区别。
+ * 可选细分字段缺失表示厂商未报告。总量字段缺失表示厂商总量校验失败。
  * `cacheWriteTokens` 只在厂商明确提供时才填，不自行推算。
  *
  * 协议字段由 Adapter 映射为此格式，调用方不处理原始 Usage 字段。
  */
 export interface Usage {
-  /** 未落入缓存读取与缓存写入两个桶的输入 Token。 */
+  /** 未命中缓存、也未计入本次缓存写入的输入 Token。 */
   inputTokens: number
   /** 本次模型完整输出 Token。 */
   outputTokens: number
 
-  /** 完整 Prompt Token 与 Output Token 之和；厂商未提供时为 undefined。 */
+  /** 本次消耗的总 Token；厂商值与分项总和不符时省略。 */
   totalTokens?: number
   /** 从已有 Prompt Cache 中读取的输入 Token；未报告时为 undefined。 */
   cacheReadTokens?: number
@@ -142,48 +142,33 @@ export interface Usage {
 }
 
 /**
- * 完整 Prompt Token，即本次真正送入模型的上下文大小。
- *
- * 计算顺序：
- *   1. 三个输入桶都齐备时，取 `inputTokens + cacheReadTokens + cacheWriteTokens`；
- *   2. 否则若 `totalTokens` 可信，取 `totalTokens - outputTokens`；
- *   3. 两者都无法确定时返回 undefined。
- *
- * 第 3 种情形是刻意的：可选缓存字段缺失表示**未报告**，不能当作 0 参与相加，
- * 否则会低估上下文大小。
- *
- * 完整输入不包含当前请求的输出 Token。
+ * 计算已归类的完整输入。缺失的缓存桶在求和时贡献 0。
  *
  * @param usage 本次请求已经统一化的 Usage。
- * @returns 可确定的完整 Prompt Token；缓存桶不完整且没有可信 `totalTokens` 时返回 `undefined`。
+ * @returns 未缓存输入、缓存读取和缓存写入之和。
  */
-export function promptTokens(usage: Usage): number | undefined {
-  const { inputTokens, outputTokens, totalTokens, cacheReadTokens, cacheWriteTokens } = usage
-
-  if (cacheReadTokens !== undefined && cacheWriteTokens !== undefined) {
-    return inputTokens + cacheReadTokens + cacheWriteTokens
-  }
-  if (totalTokens !== undefined) {
-    return totalTokens - outputTokens
-  }
-  return undefined
+export function promptTokens(usage: Usage): number {
+  return usage.inputTokens + (usage.cacheReadTokens ?? 0) + (usage.cacheWriteTokens ?? 0)
 }
 
 /**
- * 完整请求 Token：优先使用协议返回的 `totalTokens`，否则由
- * Prompt Token + `outputTokens` 相加得到；无法确定时返回 undefined。
- *
- * `reasoningTokens` 已含在 `outputTokens` 内，不重复加入。
- *
- * @param usage 本次请求已经统一化的 Usage。
- * @returns 协议提供或由输入与输出推导出的完整 Token 数；无法确定 Prompt 时返回 `undefined`。
+ * 计算本次请求完成后的上下文占用，推理已计入输出。
+ * @param usage 本次请求的统一用量。
+ * @returns 完整输入与输出之和。
  */
-export function resolveTotalTokens(usage: Usage): number | undefined {
-  if (usage.totalTokens !== undefined) {
-    return usage.totalTokens
-  }
-  const prompt = promptTokens(usage)
-  return prompt === undefined ? undefined : prompt + usage.outputTokens
+export function contextTokens(usage: Usage): number {
+  return promptTokens(usage) + usage.outputTokens
+}
+
+/**
+ * 在 Adapter 转换阶段用分项总和校验厂商用量。
+ * @param usage 已映射的单次请求用量。
+ * @param reportedTotal 厂商原始总量，默认读取入参的 `totalTokens`。
+ * @returns 分项总和，厂商上报了不同的总量时返回 `undefined`。
+ */
+export function resolveTotalTokens(usage: Usage, reportedTotal = usage.totalTokens): number | undefined {
+  const total = contextTokens(usage)
+  return reportedTotal === undefined || reportedTotal === total ? total : undefined
 }
 
 /**
@@ -231,7 +216,7 @@ function sumOptional(a: number | undefined, b: number | undefined): number | und
 }
 
 /**
- * 累计缓存命中率：这是缓存命中率**唯一**的口径，不计算单次请求的命中率。
+ * 根据完整上报的模型层累计用量计算缓存命中率。
  *
  * ```text
  * 累计命中   = 累计 cacheReadTokens

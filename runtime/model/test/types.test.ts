@@ -178,15 +178,15 @@ assert.equal(
   1100,
 )
 
-/** 「未报告」不等于 0：缓存写入缺失时不能当作 0 参与相加， */
-/** 但此时仍可由可信的 totalTokens 反推完整 Prompt。 */
+/** 可选缓存字段缺失时仍可计算已报告的分项。 */
 const noCacheWrite: Usage = { inputTokens: 300, outputTokens: 50, cacheReadTokens: 700, totalTokens: 1050 }
 assert.equal(promptTokens(noCacheWrite), 1000)
 assert.equal(resolveTotalTokens(noCacheWrite), 1050)
 
-/** 缓存字段与 totalTokens 双双缺失时，完整 Prompt 无法确定，不得猜成 inputTokens。 */
-assert.equal(promptTokens({ inputTokens: 300, outputTokens: 50 }), undefined)
-assert.equal(resolveTotalTokens({ inputTokens: 300, outputTokens: 50 }), undefined)
+/** 缺失总量时求和，上报总量与分项不一致时留空。 */
+assert.equal(promptTokens({ inputTokens: 300, outputTokens: 50 }), 300)
+assert.equal(resolveTotalTokens({ inputTokens: 300, outputTokens: 50 }), 350)
+assert.equal(resolveTotalTokens({ ...cacheUsage, totalTokens: 9999 }), undefined)
 
 /** 边界：三者全 0 但字段齐备时，Prompt 与 Total 都是 0，而不是 undefined。 */
 assert.equal(promptTokens({ inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 }), 0)

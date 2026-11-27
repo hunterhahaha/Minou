@@ -178,8 +178,10 @@ export interface AssistantMessageEvent extends EventBase {
   }
   /** 本次输入选定的完整模型引用。 */
   model: ModelRef
-  /** 从已提交正常 Assistant 消息派生的 Session Usage。 */
+  /** 本次正常模型请求的统一用量，供 Session 统计。 */
   usage?: Usage
+  /** 产生本次用量的模型上下文上限，取自执行该请求的 Adapter。 */
+  contextWindow?: number
   finishReason?: string
 }
 

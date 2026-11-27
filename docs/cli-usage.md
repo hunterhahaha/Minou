@@ -219,6 +219,8 @@ node ".\dist\src\cli\main.js" run `
 
 调用方应持续读取 stdout 和 stderr，或将其重定向到文件。CLI 等待写入回调处理背压；stdout 管道关闭或写入 5 秒内无法完成时按输出异常结束，不无限缓存事件。管道写入失败时，退出码和日志可用于判断运行状态。
 
+`--outputjson` 的 `metrics.usage` 取本次运行最近一次上报的 Agent 请求用量，`usage_scope` 为 `latest_reported_agent_request`。每次上报覆盖整份用量，其中 `input_tokens` 为未缓存输入，`output_tokens` 包含推理用量，缓存桶单列。后续请求未上报时保留最近一次上报值，整次运行都未上报时为 `null`。`usage_reported_steps` 记录上报用量的 Step 数，`usage_complete` 表示本次运行至少有一个 Step 且每个 Step 都上报了用量。
+
 ## 9. 限制、取消与退出码
 
 | 情况 | `status` | `stop_reason` | 退出码 |

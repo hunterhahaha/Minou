@@ -162,7 +162,7 @@ function fixture(
       appendTurnStartAndUserMessage: overrides.appendTurnStartAndUserMessage,
     },
     sessionState: {
-      readAgentInputTokens: async () => 0,
+      readLatestContextTokens: async () => 0,
       synchronizeUsage: async () => {},
       readLoadedMCPTools: async () => [],
       writeLoadedMCPTools: async () => {},

@@ -13,7 +13,7 @@ import { lstat, mkdir, readFile, rename, unlink, writeFile } from "node:fs/promi
 import { isAbsolute, join, resolve } from "node:path"
 import { isDeepStrictEqual } from "node:util"
 
-import { PROTOCOLS } from "../../model/src/types.ts"
+import { contextTokens, PROTOCOLS } from "../../model/src/types.ts"
 import type { ModelRef, UnifiedToolDefinition } from "../../model/src/types.ts"
 import type { ContextUpdateEvent, SessionEvent, SkillContextChange, SkillScope, SummaryEndEvent } from "./events.ts"
 import { INITIAL_SESSION_NAME, readSessionMeta, saveSessionMeta, updateSessionMetaName } from "./meta-store.ts"
@@ -53,14 +53,18 @@ export const DEFAULT_SESSION_SANDBOX_MODE: SandboxMode = "sandbox-read-only"
 
 /** Session Meta usage 的 V1 派生结构。 */
 export interface RealUsage {
-  /** 最近一次正常 Agent 请求的完整输入 Token。 */
+  /** Session 内累计未命中缓存且未写入缓存的输入 Token。 */
   inputTokens: number
   /** Session 内累计缓存读取 Token。 */
   cacheHitTokens: number
-  /** Session 内累计未缓存输入 Token。 */
+  /** Session 内累计缓存写入 Token。 */
   cacheMissTokens: number
-  /** 累计缓存命中率；分母为 0 时为 0。 */
+  /** 缓存读取量除以三个累计输入桶的总和；分母为 0 时为 0。 */
   cacheHitRate: number
+  /** 最近正常请求的完整输入与输出之和。 */
+  latestContextTokens: number
+  /** 最近一次上下文占用除以该请求模型的上限；缺少上限时为 0。 */
+  contextUsageRate: number
 }
 
 /** Session Meta 中用于下一 Turn Skill 增量比较的条目。 */
@@ -203,10 +207,10 @@ export interface FileSessionStateOptions {
 export interface FileSessionState {
   /**
    * 读取当前 Session 的持久化状态。
-   * @returns 从 Meta 读取最近正常 Agent 请求的完整输入 Token；不包括压缩 Usage。
+   * @returns 从 Meta 读取最近正常 Agent 请求完成后的上下文占用；压缩用量单独记录。
    * @throws Error Meta 不可读或无效。
    */
-  readAgentInputTokens(): Promise<number>
+  readLatestContextTokens(): Promise<number>
   /**
    * 按权威 assistant/message Usage 幂等同步 Meta，仅替换 usage，不修改其他派生状态。
    * @returns Meta 已包含全部已提交正常 Usage 后解析；重复调用不会重复累计。
@@ -311,6 +315,8 @@ const EMPTY_USAGE: RealUsage = {
   cacheHitTokens: 0,
   cacheMissTokens: 0,
   cacheHitRate: 0,
+  latestContextTokens: 0,
+  contextUsageRate: 0,
 }
 
 /**
@@ -560,7 +566,7 @@ export function createFileSessionState(options: FileSessionStateOptions): FileSe
   })
 
   return {
-    readAgentInputTokens: () => runSerialized(queue, async () => readRequiredMeta(paths).usage.inputTokens),
+    readLatestContextTokens: () => runSerialized(queue, async () => readRequiredMeta(paths).usage.latestContextTokens),
     synchronizeUsage: () => runSerialized(queue, async () => {
       const usage = rebuildUsage(await options.readEvents() as SessionEvent[])
       const meta = readRequiredMeta(paths)
@@ -815,14 +821,13 @@ function rebuildUsage(events: readonly SessionEvent[]): RealUsage {
   const usage: RealUsage = { ...EMPTY_USAGE }
   for (const event of events) {
     if (event.type !== "assistant/message" || event.usage === undefined) continue
-    /** 项目负责人于 2026-09-19 明确：厂商未报告的缓存字段在此派生统计中按 0 处理。 */
-    const cacheReadTokens = event.usage.cacheReadTokens ?? 0
-    const cacheWriteTokens = event.usage.cacheWriteTokens ?? 0
-    usage.inputTokens = event.usage.inputTokens + cacheReadTokens + cacheWriteTokens
-    usage.cacheHitTokens += cacheReadTokens
-    usage.cacheMissTokens += event.usage.inputTokens
+    usage.inputTokens += event.usage.inputTokens
+    usage.cacheHitTokens += event.usage.cacheReadTokens ?? 0
+    usage.cacheMissTokens += event.usage.cacheWriteTokens ?? 0
+    usage.latestContextTokens = contextTokens(event.usage)
+    usage.contextUsageRate = event.contextWindow ? usage.latestContextTokens / event.contextWindow : 0
   }
-  const total = usage.cacheHitTokens + usage.cacheMissTokens
+  const total = usage.inputTokens + usage.cacheHitTokens + usage.cacheMissTokens
   usage.cacheHitRate = total === 0 ? 0 : usage.cacheHitTokens / total
   return usage
 }
@@ -1204,6 +1209,8 @@ function isRealUsage(value: unknown): value is RealUsage {
     && isNonNegativeNumber(value.cacheMissTokens)
     && isNonNegativeNumber(value.cacheHitRate)
     && value.cacheHitRate <= 1
+    && isNonNegativeNumber(value.latestContextTokens)
+    && isNonNegativeNumber(value.contextUsageRate)
 }
 
 /**

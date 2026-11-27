@@ -271,6 +271,7 @@ interface ModelStepOutcome {
  */
 async function runModelStep(params: ModelStepParams): Promise<ModelStepOutcome> {
   const { turn, step, model, adapter, content, history, tools, executeTool, signal, appendEvent, publishBlockStream } = params
+  const contextWindow = adapter.contextWindow
 
   const request: UnifiedModelRequest = { context: history === undefined ? { messages: content } : { history }, tools, model }
   /**
@@ -369,6 +370,7 @@ async function runModelStep(params: ModelStepParams): Promise<ModelStepOutcome> 
         message: { id: randomUUID(), role: "assistant", content: ordered.map(([, ended]) => ended.block) },
         model,
         ...(usage === undefined ? {} : { usage }),
+        ...(usage === undefined || contextWindow === undefined ? {} : { contextWindow }),
         ...(!stopped || finishReason === undefined ? {} : { finishReason }),
       })
     }
@@ -401,6 +403,7 @@ async function runModelStep(params: ModelStepParams): Promise<ModelStepOutcome> 
     message: { id: randomUUID(), role: "assistant", content: blockList },
     model,
     ...(usage === undefined ? {} : { usage }),
+    ...(usage === undefined || contextWindow === undefined ? {} : { contextWindow }),
     ...(finishReason === undefined ? {} : { finishReason }),
   })
 

@@ -42,7 +42,7 @@ async function main(): Promise<void> {
     /** 完整 Prompt = 三个输入桶之和。 */
     assert.equal(promptTokens(usage), 1050)
     /** 该协议不返回 total_tokens，由 Prompt + Output 派生。 */
-    assert.equal(usage.totalTokens, undefined)
+    assert.equal(usage.totalTokens, 1090)
     assert.equal(resolveTotalTokens(usage), 1090)
   }
 
@@ -52,7 +52,8 @@ async function main(): Promise<void> {
     assert.equal(usage.cacheReadTokens, undefined, "缺失的缓存字段必须是 undefined")
     assert.equal(usage.cacheWriteTokens, undefined)
     assert.equal(usage.reasoningTokens, undefined)
-    assert.equal(promptTokens(usage), undefined, "缓存桶未知时无法确定完整 Prompt")
+    assert.equal(promptTokens(usage), 100)
+    assert.equal(usage.totalTokens, 110)
   }
 
   /** 明确为 0 与缺失要保留区别。 */
@@ -152,10 +153,10 @@ async function main(): Promise<void> {
     assert.equal(resolveTotalTokens(usage), 550, "缺 total_tokens 时由 Prompt + Output 派生")
   }
 
-  /** 缺 total_tokens 且缺 prompt_tokens → 不构造总量。 */
+  /** 即使厂商缺报输入，仍按归一化后的输入与输出计算总量。 */
   {
     const usage = convertChatCompletionsUsage({ completion_tokens: 5 })
-    assert.equal(usage.totalTokens, undefined)
+    assert.equal(usage.totalTokens, 5)
     assert.equal(usage.inputTokens, 0)
   }
 
@@ -191,7 +192,7 @@ async function main(): Promise<void> {
     })
     assert.equal(usage.cacheWriteTokens, undefined)
     assert.equal(usage.inputTokens, 200)
-    /** totalTokens 可信时仍能推出完整 Prompt。 */
+    /** 完整输入由归一化的输入桶得出。 */
     assert.equal(promptTokens(usage), 900)
   }
 
@@ -203,7 +204,21 @@ async function main(): Promise<void> {
       input_tokens_details: { cached_tokens: 500 },
     })
     assert.equal(usage.inputTokens, 0)
+    assert.equal(usage.totalTokens, 510)
   }
+
+  /** 三种 Adapter 对不符的原始总量都省略 totalTokens，仍保留各分项。 */
+  for (const usage of [
+    convertAnthropicUsage({ input_tokens: 5, output_tokens: 3, total_tokens: 0 }),
+    convertChatCompletionsUsage({ prompt_tokens: 5, completion_tokens: 3, total_tokens: 9 }),
+    convertResponsesUsage({ input_tokens: 5, output_tokens: 3, total_tokens: 9 }),
+  ]) {
+    assert.deepEqual(usage, { inputTokens: 5, outputTokens: 3 })
+  }
+  assert.equal(convertResponsesUsage({
+    input_tokens: 5, output_tokens: 3, input_tokens_details: { cached_tokens: 2, cache_write_tokens: 1 },
+    output_tokens_details: { reasoning_tokens: 2 },
+  }).totalTokens, 8)
 
   console.log("usage.test.ts: Usage 转换断言通过")
 }
