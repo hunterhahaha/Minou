@@ -787,7 +787,7 @@ async function main(): Promise<void> {
     }
   }
 
-  /** 共享流入口每次请求只调用一次 A，每次网络尝试创建新的 B 事件流。 */
+  /** 共享流入口每次请求只构造一次请求参数，每次网络尝试创建新的响应转换流。 */
   {
     const rawStreams: ProtocolResponseStream[] = []
     let requestConversions = 0
@@ -800,9 +800,9 @@ async function main(): Promise<void> {
        * @returns 带协议标记的真实请求参数。
        * @throws 当通用请求转换失败时抛出。
        */
-      A(request, context) {
+      buildRequest(request, context) {
         requestConversions++
-        return generic.A(request, context)
+        return generic.buildRequest(request, context)
       },
       /**
        * 记录每次尝试收到的原始流，再执行真实的通用响应转换。
@@ -812,9 +812,9 @@ async function main(): Promise<void> {
        * @returns 由真实转换器生成的统一事件流。
        * @throws 当原始事件流无效或中断时抛出。
        */
-      B(raw, request, context) {
+      mapResponseStream(raw, request, context) {
         rawStreams.push(raw)
-        return generic.B(raw, request, context)
+        return generic.mapResponseStream(raw, request, context)
       },
     }
     const provider = await startFakeProvider((_request, attempt) => attempt === 0 ? { status: 503 } : {

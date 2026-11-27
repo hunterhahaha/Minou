@@ -47,19 +47,19 @@ export interface ModelConversionContext {
   readonly nativeHistory?: NativeHistoryPolicy
 }
 
-/** A 产出的请求，协议标记对应 SDK 参数类型。 */
+/** 协议请求的转换结果，协议标记对应 SDK 参数类型。 */
 export type ProtocolRequest =
   | { protocol: "anthropic_messages"; params: AnthropicRequest; useBeta: boolean }
   | { protocol: "chat_completions"; params: OpenAI.ChatCompletionCreateParamsStreaming }
   | { protocol: "responses"; params: OpenAI.Responses.ResponseCreateParamsStreaming }
 
-/** B 消费的一次请求尝试的原始协议事件。 */
+/** 一次网络尝试返回的原始协议事件。 */
 export type ProtocolResponseStream =
   | { protocol: "anthropic_messages"; events: AsyncIterable<Anthropic.Messages.RawMessageStreamEvent> }
   | { protocol: "chat_completions"; events: AsyncIterable<OpenAI.ChatCompletionChunk> }
   | { protocol: "responses"; events: AsyncIterable<OpenAI.Responses.ResponseStreamEvent> }
 
-/** 注册表中的双向转换器。每次 B 调用独立维护流解析状态。 */
+/** 注册表中的双向转换器。每次响应流转换独立维护流解析状态。 */
 export interface ModelConverter {
   /**
    * 将统一请求转换为所选协议的 SDK 参数。
@@ -68,7 +68,7 @@ export interface ModelConverter {
    * @returns 发送前的协议请求。
    * @throws AppError 请求无法转换时抛出。
    */
-  A(request: UnifiedModelRequest, context: ModelConversionContext): ProtocolRequest
+  buildRequest(request: UnifiedModelRequest, context: ModelConversionContext): ProtocolRequest
   /**
    * 消费协议事件，逐步生成 Runtime 事件。
    * @param raw 原始事件的协议标记和异步流。
@@ -77,18 +77,18 @@ export interface ModelConverter {
    * @returns 此次尝试的新事件流。
    * @throws 当协议不匹配、报告失败或流被截断时抛出。
    */
-  B(raw: ProtocolResponseStream, request: UnifiedModelRequest, context: ModelConversionContext): AsyncIterable<ModelStreamEvent>
+  mapResponseStream(raw: ProtocolResponseStream, request: UnifiedModelRequest, context: ModelConversionContext): AsyncIterable<ModelStreamEvent>
 }
 
 /**
- * 通过本轮选定的 A/B 发出一次模型请求，并流式返回统一事件。
+ * 通过本轮选定的转换器发出一次模型请求，并流式返回统一事件。
  * @param converter 本轮路由选定的转换器。
  * @param context 本轮模型和回放配置。
  * @param client 绑定到 Provider 连接配置的 SDK Client。
  * @param request Runtime 提交的统一请求。
  * @param signal 调用方的取消信号。
  * @param options 单次请求的 SDK 超时和网络重试设置。
- * @returns 由 B 转换并由共享重试入口交付的模型事件流。
+ * @returns 经响应流转换并由共享重试入口交付的模型事件流。
  * @throws AppError 请求无效、失败或取消时抛出。
  */
 async function* stream(
@@ -100,7 +100,7 @@ async function* stream(
   options?: ModelStreamOptions,
 ): AsyncGenerator<ModelStreamEvent> {
   assertRequestMatchesModel(request, context.modelConfig)
-  const outbound = converter.A(request, context)
+  const outbound = converter.buildRequest(request, context)
   if (outbound.protocol !== context.modelConfig.protocol) {
     throw invalidRequest("Adapter 生成的请求协议与当前模型配置不一致")
   }
@@ -131,7 +131,7 @@ async function* stream(
         }
         break
     }
-    return converter.B(raw, request, context)
+    return converter.mapResponseStream(raw, request, context)
   }, signal, options?.retry)
 }
 

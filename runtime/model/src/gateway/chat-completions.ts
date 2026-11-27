@@ -597,7 +597,7 @@ export class ChatCompletionsAdapter implements ModelConverter {
    * @returns 带协议标记的请求及该协议必要的请求选项。
    * @throws AppError 当请求上下文或推理配置无效时抛出。
    */
-  A(request: UnifiedModelRequest, context: ModelConversionContext): ProtocolRequest {
+  buildRequest(request: UnifiedModelRequest, context: ModelConversionContext): ProtocolRequest {
     return {
       protocol: "chat_completions",
       params: buildChatCompletionsRequest(request, context.modelConfig, context.nativeHistory),
@@ -612,7 +612,7 @@ export class ChatCompletionsAdapter implements ModelConverter {
    * @returns 逐步生成统一事件的异步流。
    * @throws 当原始协议与转换器不匹配，或流报告失败或截断时抛出。
    */
-  B(raw: ProtocolResponseStream, request: UnifiedModelRequest, context: ModelConversionContext): AsyncIterable<ModelStreamEvent> {
+  mapResponseStream(raw: ProtocolResponseStream, request: UnifiedModelRequest, context: ModelConversionContext): AsyncIterable<ModelStreamEvent> {
     if (raw.protocol !== "chat_completions") throw invalidRequest("Adapter 收到了不匹配的协议事件")
     return mapChatCompletionsStream(raw.events, request.context.purpose === "summary" ? undefined : context.nativeHistory)
   }

@@ -18,11 +18,11 @@ export interface VendorAdapterEntry {
   readonly name: string
   /** 配置中用于优先匹配的 Provider 名称和别名。 */
   readonly providerNames: readonly string[]
-  /** Adapter 的 A/B 能处理的协议。 */
+  /** Adapter 在请求构造和响应流转换中均支持的协议。 */
   readonly supportedProtocols: readonly Protocol[]
   /** Provider 名称未知时尝试的模型规则。 */
   readonly modelRules: readonly AdapterModelRule[]
-  /** 跨 Turn 复用的转换器，单次流的状态由 B 持有。 */
+  /** 跨 Turn 复用的转换器，单次流的状态由响应流转换器持有。 */
   readonly adapter: ModelConverter
 }
 
