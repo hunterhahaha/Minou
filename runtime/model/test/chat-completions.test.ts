@@ -784,7 +784,7 @@ async function main(): Promise<void> {
     assert.equal(sent?.headers.authorization as string | undefined, "Bearer test-key")
     assert.deepEqual(sent?.body.stream_options, { include_usage: true })
     const sentMessages = sent?.body.messages as Array<Record<string, unknown>>
-    assert.deepEqual(sentMessages[0], { role: "system", content: "You are a coding agent." })
+    assert.deepEqual(sentMessages[0], { role: "developer", content: "You are a coding agent." })
     assert.deepEqual(sentMessages[3], {
       role: "tool",
       tool_call_id: "call_01",

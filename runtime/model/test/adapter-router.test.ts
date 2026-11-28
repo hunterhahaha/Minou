@@ -5,6 +5,7 @@ import { AdapterRoutingError, MODEL_ADAPTER_REGISTRY, resolveModelConverter } fr
 import type { AdapterRegistry } from "../src/gateway/adapter-router.ts"
 import { AnthropicMessagesAdapter } from "../src/gateway/anthropic-messages-adapter.ts"
 import { ChatCompletionsAdapter } from "../src/gateway/openai-chat-completions-adapter.ts"
+import { OpenAIAdapter } from "../src/gateway/openai-adapter.ts"
 import { ResponsesAdapter } from "../src/gateway/openai-responses-adapter.ts"
 import { OpenRouterAdapter } from "../src/gateway/openrouter-adapter.ts"
 import { PROTOCOLS } from "../src/types.ts"
@@ -98,6 +99,24 @@ async function main(): Promise<void> {
   assert.throws(
     () => resolveModelConverter(MODEL_ADAPTER_REGISTRY, { name: openRouterModel.name, protocol: "responses" }, "OpenRouter"),
     { constructor: AdapterRoutingError, message: /OpenRouter.*不支持协议 responses/ },
+  )
+
+  const openAI = resolveModelConverter(MODEL_ADAPTER_REGISTRY, { name: "custom-model", protocol: "responses" }, "OpenAI")
+  assert.ok(openAI instanceof OpenAIAdapter)
+  for (const protocol of ["responses", "chat_completions"] as const) {
+    for (const providerName of ["OpenAI", "OpenAi", "openAI", "openai", "  oPeNaI  "]) {
+      assert.equal(resolveModelConverter(MODEL_ADAPTER_REGISTRY, { name: "custom-model", protocol }, providerName), openAI)
+    }
+    for (const name of ["gpt-test", "GPT-test"]) {
+      assert.equal(resolveModelConverter(MODEL_ADAPTER_REGISTRY, { name, protocol }, "Unknown Proxy"), openAI)
+    }
+    assert.equal(resolveModelConverter(MODEL_ADAPTER_REGISTRY, { name: "Gpt-test", protocol }), registry.genericByProtocol[protocol])
+  }
+  assert.equal(resolveModelConverter(MODEL_ADAPTER_REGISTRY, { name: "gpt-test", protocol: "chat_completions" }, "OpenRouter"), openRouter)
+  assert.equal(resolveModelConverter(MODEL_ADAPTER_REGISTRY, { name: "gpt-test", protocol: "anthropic_messages" }), registry.genericByProtocol.anthropic_messages)
+  assert.throws(
+    () => resolveModelConverter(MODEL_ADAPTER_REGISTRY, { name: "gpt-test", protocol: "anthropic_messages" }, "OpenAI"),
+    { constructor: AdapterRoutingError, message: /OpenAI.*不支持协议 anthropic_messages/ },
   )
 
   for (const protocol of PROTOCOLS) {

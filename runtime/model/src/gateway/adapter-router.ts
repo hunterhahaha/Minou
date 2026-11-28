@@ -3,6 +3,7 @@ import { AnthropicAdapter } from "./anthropic-adapter.ts"
 import { AnthropicMessagesAdapter } from "./anthropic-messages-adapter.ts"
 import { ChatCompletionsAdapter } from "./openai-chat-completions-adapter.ts"
 import { DeepSeekAdapter } from "./deepseek-adapter.ts"
+import { OpenAIAdapter } from "./openai-adapter.ts"
 import { ResponsesAdapter } from "./openai-responses-adapter.ts"
 import { OpenRouterAdapter } from "./openrouter-adapter.ts"
 import type { ModelConfig, Protocol } from "../types.ts"
@@ -52,6 +53,17 @@ export const MODEL_ADAPTER_REGISTRY: AdapterRegistry = Object.freeze({
       { modelPattern: "deepseek-*", protocol: "anthropic_messages" },
     ],
     adapter: new DeepSeekAdapter(),
+  } satisfies VendorAdapterEntry, {
+    name: "OpenAI",
+    providerNames: ["OpenAI"],
+    supportedProtocols: ["responses", "chat_completions"],
+    modelRules: [
+      { modelPattern: "gpt*", protocol: "responses" },
+      { modelPattern: "gpt*", protocol: "chat_completions" },
+      { modelPattern: "GPT*", protocol: "responses" },
+      { modelPattern: "GPT*", protocol: "chat_completions" },
+    ],
+    adapter: new OpenAIAdapter(),
   } satisfies VendorAdapterEntry, {
     name: "Anthropic",
     providerNames: ["Anthropic", "anthropic"],
