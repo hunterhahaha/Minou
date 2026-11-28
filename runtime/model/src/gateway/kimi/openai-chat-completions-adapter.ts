@@ -8,11 +8,8 @@ import {
 } from "../../shared.ts"
 import { convertChatCompletionsUsage } from "../../usage.ts"
 import type {
-  AssistantContentBlock, ModelCompletion, ModelConfig, ModelStreamEvent, UnifiedModelRequest, Usage,
+  ModelCompletion, ModelConfig, ModelStreamEvent, UnifiedModelRequest, Usage,
 } from "../../types.ts"
-
-/** 四个入口和自定义 Provider 共用的原生思考回放来源。 */
-const REPLAY_SOURCE = { name: "Kimi", protocol: "chat_completions" } as const
 
 /** Coding Plan 文档示例中的额度消息，以及可直接展示的说明。 */
 const CODING_PLAN_QUOTAS = [
@@ -35,23 +32,7 @@ function record(value: unknown): Record<string, unknown> | undefined {
 }
 
 /**
- * 读取同来源、同协议的原生思考，保持服务端输出的全部空格和换行。
- * @param block 会话中已有的统一内容块。
- * @returns 原始推理字符串；块类型、来源或载荷无效时返回空字符串。
- */
-function readReasoningReplay(block: AssistantContentBlock): string {
-  if (block.type !== "thinking" || block.replay?.name !== REPLAY_SOURCE.name ||
-      block.replay.protocol !== REPLAY_SOURCE.protocol || typeof block.replay.payloadJson !== "string") return ""
-  try {
-    const value = record(JSON.parse(block.replay.payloadJson))?.reasoning_content
-    return typeof value === "string" ? value : ""
-  } catch {
-    return ""
-  }
-}
-
-/**
- * 投影统一上下文和工具，按模型的保留式思考规则重放 Kimi 原生载荷。
+ * 投影统一上下文和工具，按模型的保留式思考规则发送非空的思考文本。
  * @param request 请求的已裁剪上下文、工具和推理档位。
  * @param config 本轮 API 模型原名、输出上限和推理字段配置。
  * @returns 可直接由共享 OpenAI SDK 发送的流式请求。
@@ -61,7 +42,7 @@ export function buildChatRequest(request: UnifiedModelRequest, config: ModelConf
   const { system, rest, tools } = splitSystemMessage(request)
   const reasoning = reasoningRequestFragment(request, config)
   const thinking = record(reasoning.thinking)
-  const replayThinking = request.context.purpose !== "summary" && thinking?.type !== "disabled"
+  const includeThinking = request.context.purpose !== "summary" && thinking?.type !== "disabled"
   const currentToolTurnOnly = config.name.toLowerCase() === "kimi-k2.6" && thinking?.keep !== "all"
   const lastUserIndex = currentToolTurnOnly
     ? rest.reduce((last, message, index) => message.role === "user" ? index : last, -1) : -1
@@ -82,8 +63,8 @@ export function buildChatRequest(request: UnifiedModelRequest, config: ModelConf
           } })
         }
       }
-      const reasoningContent = replayThinking && (!currentToolTurnOnly || (index > lastUserIndex && toolCalls.length > 0))
-        ? message.content.map(readReasoningReplay).join("") : ""
+      const reasoningContent = includeThinking && (!currentToolTurnOnly || (index > lastUserIndex && toolCalls.length > 0))
+        ? message.content.flatMap((block) => block.type === "thinking" && block.text !== "" ? [block.text] : []).join("") : ""
       if (content.length === 0 && reasoningContent.length === 0 && toolCalls.length === 0) continue
       const assistant = {
         role: "assistant" as const,
@@ -225,17 +206,12 @@ interface ToolCall {
 }
 
 /**
- * 生成完成的文本块；只在思考明确结束时附带回放。
+ * 生成包含完整已接收文本的思考或正文结束事件。
  * @param block 已接收的思考或正文。
- * @param thinkingComplete 当前块是否已越过思考结束边界。
  * @returns 可由 Runtime 持久化的结束事件。
  */
-function endTextBlock({ index, type, text }: TextBlock, thinkingComplete: boolean): ModelStreamEvent {
-  return { type: "block_end", index, block: {
-    type, text,
-    ...(type === "thinking" && thinkingComplete
-      ? { replay: { ...REPLAY_SOURCE, payloadJson: JSON.stringify({ reasoning_content: text }) } } : {}),
-  } }
+function endTextBlock({ index, type, text }: TextBlock): ModelStreamEvent {
+  return { type: "block_end", index, block: { type, text } }
 }
 
 /**
@@ -257,7 +233,7 @@ function completionFor(reason: string): ModelCompletion {
 }
 
 /**
- * 转换一次 SDK 流，收齐工具参数、思考回放与结束原因之后的用量。
+ * 转换一次 SDK 流，收齐工具参数、思考文本与结束原因之后的用量。
  * @param chunks 本次尝试的 Chat Completions 事件。
  * @param signal SDK 传输使用的取消信号，离线样本可省略。
  * @returns 独立分配块序号的统一事件流，正常完成只产生一次 stream_end。
@@ -281,7 +257,7 @@ export async function* mapChatStream(
    */
   function* appendText(type: TextBlock["type"], text: string): Generator<ModelStreamEvent> {
     if (activeText?.type !== type) {
-      if (activeText) yield endTextBlock(activeText, true)
+      if (activeText) yield endTextBlock(activeText)
       activeText = { index: nextIndex++, type, text: "" }
       yield { type: "block_start", index: activeText.index, blockType: type }
     }
@@ -308,7 +284,7 @@ export async function* mapChatStream(
         const { name: nameDelta, arguments: argumentsDelta } = deltaCall.function ?? {}
         if (!deltaCall.id && !nameDelta && !argumentsDelta) continue
         if (activeText) {
-          yield endTextBlock(activeText, true)
+          yield endTextBlock(activeText)
           activeText = undefined
         }
         let call = calls.get(deltaCall.index)
@@ -333,9 +309,9 @@ export async function* mapChatStream(
   }
 
   if (signal?.aborted) throw createAbortError()
-  if (finishReason === undefined) throw streamInterruptedError(REPLAY_SOURCE.protocol)
+  if (finishReason === undefined) throw streamInterruptedError("chat_completions")
   const completion = completionFor(finishReason)
-  if (activeText) yield endTextBlock(activeText, completion === "finished" || completion === "tool_calls")
+  if (activeText) yield endTextBlock(activeText)
   if (completion === "tool_calls") {
     if (calls.size === 0 || [...calls.values()].some((call) => !call.id || !call.name)) {
       throw new Error("Kimi Chat Completions 工具调用缺少 ID 或名称。")

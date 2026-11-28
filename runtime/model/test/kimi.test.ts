@@ -124,7 +124,7 @@ function verifyRouting(): void {
 }
 
 /**
- * 通过真实 SDK 核对四条地址路径、凭据、工具结果及下一次请求的原样回放。
+ * 通过真实 SDK 核对四条地址路径、凭据、工具结果及下一次请求发送的思考文本。
  * @returns 所有本地请求完成并关闭服务器后解析。
  * @throws 断言、网络或清理失败时拒绝。
  */
@@ -152,8 +152,7 @@ async function verifySdkRequests(): Promise<void> {
       assert.deepEqual(events.filter((event) => event.type === "block_start").map((event) => event.index), [0, 1, 2, 3])
       const blocks = events.flatMap((event) => event.type === "block_end" ? [event.block] : [])
       assert.deepEqual(blocks, [
-        { type: "thinking", text: THINKING, replay: { name: "Kimi", protocol: "chat_completions",
-          payloadJson: JSON.stringify({ reasoning_content: THINKING }) } },
+        { type: "thinking", text: THINKING },
         { type: "text", text: "正在查询" },
         { type: "tool_call", toolCallId: "call_a", name: "look_up", arguments: { city: "A" } },
         { type: "tool_call", toolCallId: "call_b", name: "look_up", arguments: { city: "B" } },
@@ -199,26 +198,23 @@ async function verifySdkRequests(): Promise<void> {
 }
 
 /**
- * 检查推理字段、来源过滤、K2.6 跨轮边界和独立请求投影。
+ * 检查推理字段、思考空文本过滤、K2.6 跨轮边界和独立请求投影。
  * @throws 请求中的推理字段或消息序列不符时断言失败。
  */
-function verifyRequestReplay(): void {
-  const native = { name: "Kimi", protocol: "chat_completions" } as const
-  const thinking = (payloadJson: string): AssistantContentBlock => ({ type: "thinking", text: "display only",
-    replay: { ...native, payloadJson } })
-  const valid = thinking(JSON.stringify({ reasoning_content: " 一\n" }))
-  const oldAssistant: AssistantContentBlock[] = [valid,
-    { type: "thinking", text: "wrong source", replay: { ...valid.replay!, name: "Other" } },
-    { type: "thinking", text: "wrong casing", replay: { ...valid.replay!, name: "kimi" } },
-    { type: "thinking", text: "wrong protocol", replay: { ...valid.replay!, protocol: "responses" } },
-    { type: "thinking", text: "no replay" }, thinking("{"), thinking("null"), thinking("{}"),
-    thinking('{"reasoning_content":2}'), thinking('{"reasoning_content":""}'),
-    { type: "text", text: "历史答案", replay: valid.replay }, thinking('{"reasoning_content":"二  "}'),
+function verifyThinkingText(): void {
+  const native = { name: "Kimi", protocol: "chat_completions", payloadJson: '{"reasoning_content":"不同的载荷"}' } as const
+  const oldAssistant: AssistantContentBlock[] = [
+    { type: "thinking", text: " 一\n", replay: native },
+    { type: "thinking", text: "二", replay: { name: "Other", protocol: "responses", payloadJson: "{" } },
+    { type: "thinking", text: "", replay: native },
+    { type: "thinking", text: "  " },
+    { type: "text", text: "历史答案", replay: native },
   ]
   const messages: ModelMessage[] = [
     { role: "system", content: "system" }, { role: "user", content: "旧轮" },
+    { role: "assistant", content: [{ type: "thinking", text: "", replay: native }] },
     { role: "assistant", content: oldAssistant }, { role: "user", content: "新轮" },
-    { role: "assistant", content: [thinking('{"reasoning_content":"工具推理"}'),
+    { role: "assistant", content: [{ type: "thinking", text: "工具推理" },
       { type: "tool_call", toolCallId: "id", name: TOOL.name, arguments: {} }] },
     { role: "tool", toolCallId: "id", content: [{ type: "text", text: "工具结果" }], isError: false },
   ]
@@ -232,7 +228,9 @@ function verifyRequestReplay(): void {
 
   const k3 = modelConfig({ name: "k3" })
   assert.equal(build(k3, "max").reasoning_effort, "max")
-  assert.equal(build(k3, "low").messages[2]?.reasoning_content, " 一\n二  ")
+  const converted = build(k3, "low").messages
+  assert.equal(converted.length, messages.length - 1)
+  assert.deepEqual(converted[2], { role: "assistant", content: "历史答案", reasoning_content: " 一\n二  " })
   assert.throws(() => build(k3, "medium"), { code: "INVALID_MODEL_REQUEST" })
   const summary = build(k3, "low", true)
   assert.ok(summary.messages.every((message) => !("reasoning_content" in message)))
@@ -381,7 +379,7 @@ async function verifySdkErrors(): Promise<void> {
  */
 async function main(): Promise<void> {
   verifyRouting()
-  verifyRequestReplay()
+  verifyThinkingText()
   await verifyStreamBoundaries()
   await verifySdkRequests()
   await verifySdkErrors()
