@@ -54,7 +54,12 @@ export type ProtocolRequest =
 /** 一次网络尝试返回的原始协议事件。 */
 export type ProtocolResponseStream =
   | { protocol: "anthropic_messages"; events: AsyncIterable<Anthropic.Messages.RawMessageStreamEvent> }
-  | { protocol: "chat_completions"; events: AsyncIterable<OpenAI.ChatCompletionChunk> }
+  | {
+    protocol: "chat_completions"
+    events: AsyncIterable<OpenAI.ChatCompletionChunk>
+    /** SDK 可能在取消时静默结束迭代，转换器可据此区分流尾结束与取消。 */
+    signal?: AbortSignal
+  }
   | { protocol: "responses"; events: AsyncIterable<OpenAI.Responses.ResponseStreamEvent> }
 
 /** 注册表中的双向转换器。每次响应流转换独立维护流解析状态。 */
@@ -119,6 +124,7 @@ async function* stream(
         raw = {
           protocol: outbound.protocol,
           events: requestChatCompletionsStream(client, outbound.params, attemptSignal, timeout),
+          signal: attemptSignal,
         }
         break
       case "responses":

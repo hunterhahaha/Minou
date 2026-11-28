@@ -6,6 +6,7 @@ import { DeepSeekAdapter } from "./deepseek-adapter.ts"
 import { GeminiAdapter } from "./gemini-adapter.ts"
 import { GLMAdapter } from "./glm-adapter.ts"
 import { BIGMODEL_NAMES, ZAI_NAMES } from "./glm/provider.ts"
+import { KimiAdapter } from "./kimi-adapter.ts"
 import { OpenAIAdapter } from "./openai-adapter.ts"
 import { ResponsesAdapter } from "./openai-responses-adapter.ts"
 import { OpenRouterAdapter } from "./openrouter-adapter.ts"
@@ -79,6 +80,19 @@ export const MODEL_ADAPTER_REGISTRY: AdapterRegistry = Object.freeze({
       { modelPattern: "GEMINI-*", protocol: "chat_completions" },
     ],
     adapter: new GeminiAdapter(),
+  } satisfies VendorAdapterEntry, {
+    name: "Kimi",
+    providerNames: ["Kimi", "Kimi 国内 API", "Kimi 国内 Coding Plan", "Kimi 国际 API", "Kimi 国际 Coding Plan"],
+    supportedProtocols: ["chat_completions"],
+    modelRules: [
+      { modelPattern: "kimi-*", protocol: "chat_completions" },
+      { modelPattern: "KIMI-*", protocol: "chat_completions" },
+      { modelPattern: "k3", protocol: "chat_completions" },
+      { modelPattern: "k3-256k", protocol: "chat_completions" },
+      { modelPattern: "k3.1-pro", protocol: "chat_completions" },
+      { modelPattern: "k3.1-pro-highspeed", protocol: "chat_completions" },
+    ],
+    adapter: new KimiAdapter(),
   } satisfies VendorAdapterEntry, {
     name: "OpenAI",
     providerNames: ["OpenAI"],
