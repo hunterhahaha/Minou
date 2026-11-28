@@ -29,26 +29,25 @@ export class GLMAdapter implements ModelConverter {
   /**
    * 转换一次 SDK 请求的流，并按 Provider 提取错误与用量。
    * @param raw 本次尝试的 SDK 事件流。
-   * @param request 生成流的请求，用于判断是否保存会话思考回放。
+   * @param _request 生成流的统一请求，当前转换只依赖协议与 Provider。
    * @param context 本轮绑定的协议与 Provider 名称。
    * @returns 本次尝试的统一事件流。
    * @throws AppError 当协议不匹配时抛出；流报告失败或缺少终态时由迭代器抛出。
    */
   mapResponseStream(
     raw: ProtocolResponseStream,
-    request: UnifiedModelRequest,
+    _request: UnifiedModelRequest,
     { modelConfig, providerName }: ModelConversionContext,
   ): AsyncIterable<ModelStreamEvent> {
     if (raw.protocol !== modelConfig.protocol) throw invalidRequest("GLM Adapter 收到了不匹配的协议事件")
     const provider = glmProvider(providerName)
-    const captureReplay = request.context.purpose !== "summary"
     switch (raw.protocol) {
       case "chat_completions":
-        return mapChatStream(readProviderStream(raw.events, raw.protocol, provider), provider, captureReplay)
+        return mapChatStream(readProviderStream(raw.events, raw.protocol, provider), provider)
       case "responses":
-        return mapResponsesStream(readProviderStream(raw.events, raw.protocol, provider), provider, captureReplay)
+        return mapResponsesStream(readProviderStream(raw.events, raw.protocol, provider), provider)
       case "anthropic_messages":
-        return mapMessagesStream(readProviderStream(raw.events, raw.protocol, provider), provider, captureReplay)
+        return mapMessagesStream(readProviderStream(raw.events, raw.protocol, provider), provider)
     }
   }
 }

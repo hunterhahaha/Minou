@@ -1,6 +1,6 @@
 import { isAbortError } from "../../../../error/src/abort.ts"
 import { isAppError } from "../../shared.ts"
-import type { AssistantContentBlock, BlockReplay, Protocol } from "../../types.ts"
+import type { Protocol } from "../../types.ts"
 
 /** BigModel 的路由和错误、Usage 提取共用这些 Provider 名称。 */
 export const BIGMODEL_NAMES = ["BigModel", "BigModel API", "BigModel Coding Plan"] as const
@@ -30,29 +30,6 @@ export function glmProvider(providerName?: string): GlmProvider {
 export function record(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown> : undefined
-}
-
-/**
- * 读取同来源、同协议的思考回放对象，具体原生字段由协议校验。
- * @param block 从会话历史读取的统一内容块。
- * @param protocol 目标请求协议。
- * @returns 可供协议验证的 JSON 对象，来源或 JSON 无效时省略。
- */
-export function readThinkingReplay(block: AssistantContentBlock, protocol: Protocol): Record<string, unknown> | undefined {
-  if (block.type !== "thinking" || block.replay?.name !== "GLM" || block.replay.protocol !== protocol) return undefined
-  try { return record(JSON.parse(block.replay.payloadJson)) }
-  catch { return undefined }
-}
-
-/**
- * 封装已完成的原生思考块供后续同协议请求使用。
- * @param protocol 产生思考的协议。
- * @param payload 该协议构造的可 JSON 序列化原生字段。
- * @returns 可随统一思考块持久化的回放。
- * @throws TypeError 原生字段无法序列化时抛出。
- */
-export function thinkingReplay(protocol: Protocol, payload: object): BlockReplay {
-  return { name: "GLM", protocol, payloadJson: JSON.stringify(payload) }
 }
 
 /**

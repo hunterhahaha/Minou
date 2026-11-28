@@ -142,7 +142,7 @@ MiniMax 的 API 与 Coding Plan 共用地区地址，不单独拆分套餐入口
 
 套餐白名单按协议保守收录：Chat Completions 为 `glm-5.3`、`glm-5.3-flash`、`glm-5.2`，Anthropic 为前两者，Responses 为 `glm-5.3`。不由普通 API 列表推断套餐权益，FlashX 官方尚未开放套餐。普通 API 只预设双方明确给出的标准 Chat 入口；不代表其余协议在服务端不受支持。
 
-5.3 系列使用 1,000,000 上下文、131,072 最大输出，推理等级为 `low/high/max`；5.2 使用相同窗口与输出，预设使用 `none/high/max` 三个实际档位。更早型号使用 200,000 上下文与 `thinking.type=enabled/disabled`。Chat 的 5.2/5.3 使用 `reasoning_effort`，套餐 Anthropic 使用 `output_config.effort`，Responses 使用 `reasoning.effort`。5.3 预设不提供关闭思考选项。GLM 的 Chat Completions 历史思考使用通用 `reasoning_content` 回传规则。
+5.3 系列使用 1,000,000 上下文、131,072 最大输出，推理等级为 `low/high/max`；5.2 使用相同窗口与输出，预设使用 `none/high/max` 三个实际档位。更早型号使用 200,000 上下文与 `thinking.type=enabled/disabled`。Chat 的 5.2/5.3 使用 `reasoning_effort`，套餐 Anthropic 使用 `output_config.effort`，Responses 使用 `reasoning.effort`。5.3 预设不提供关闭思考选项。GLM 的 Chat Completions 和 Responses 从统一历史的非空思考文本构造 `reasoning_content` 或 `reasoning_text`，独立摘要省略历史思考。Messages 流保留明文思考供展示，历史请求携带正文、工具调用和结果。
 
 核对来源：[BigModel 模型概览](https://docs.bigmodel.cn/cn/guide/start/model-overview)、[深度思考参数](https://docs.bigmodel.cn/cn/guide/capabilities/thinking)、[套餐模型与协议](https://docs.bigmodel.cn/cn/coding-plan/latest-model)、[Responses](https://docs.bigmodel.cn/cn/guide/develop/responses/introduction)、[Z.AI 模型概览](https://docs.z.ai/guides/overview/overview)、[标准 API](https://docs.z.ai/api-reference/introduction)、[套餐协议](https://docs.z.ai/devpack/tool/others)、[套餐模型与 effort](https://docs.z.ai/devpack/latest-model)、[Flash/FlashX 权益](https://docs.z.ai/guides/vlm/glm-5.3-flash)。
 

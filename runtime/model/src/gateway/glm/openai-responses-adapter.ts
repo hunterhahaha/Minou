@@ -1,7 +1,7 @@
 import type OpenAI from "openai"
 import { joinTextBlocks, parseToolCallArguments, reasoningRequestFragment, serializeToolCallArguments, splitSystemMessage, streamInterruptedError } from "../../shared.ts"
 import type { AssistantContentBlock, ModelConfig, ModelStreamEvent, UnifiedModelRequest } from "../../types.ts"
-import { extractProviderError, readThinkingReplay, record, thinkingReplay } from "./provider.ts"
+import { extractProviderError, record } from "./provider.ts"
 import type { GlmProvider } from "./provider.ts"
 import { responsesUsage } from "./usage.ts"
 
@@ -30,12 +30,8 @@ export function buildResponsesRequest(request: UnifiedModelRequest, config: Mode
         if (block.type === "text" && block.text.length > 0) input.push({ type: "message", role: "assistant", content: block.text })
         if (block.type === "tool_call") input.push({ type: "function_call", call_id: block.toolCallId,
           name: block.name, arguments: serializeToolCallArguments(block.arguments) })
-        if (block.type === "thinking" && request.context.purpose !== "summary") {
-          const native = readThinkingReplay(block, "responses")
-          const part = record(native?.content)
-          if (native?.type === "reasoning" && part?.type === "reasoning_text" && typeof part.text === "string" && part.text.length > 0) {
-            input.push({ type: "reasoning", content: { type: "reasoning_text", text: part.text } })
-          }
+        if (block.type === "thinking" && block.text.length > 0 && request.context.purpose !== "summary") {
+          input.push({ type: "reasoning", content: { type: "reasoning_text", text: block.text } })
         }
       }
     } else if (message.role === "tool") {
@@ -59,7 +55,7 @@ export function buildResponsesRequest(request: UnifiedModelRequest, config: Mode
 
 /** 按原生 output_index 保存的 Runtime 块，文本内部再按 content_index 累积。 */
 type PendingItem =
-  | { index: number; type: "thinking" | "text"; parts: Map<number, string>; reasoningDone: boolean }
+  | { index: number; type: "thinking" | "text"; parts: Map<number, string> }
   | { index: number; type: "tool_call"; toolCallId: string; name: string; argumentsJson: string }
 
 /**
@@ -81,12 +77,11 @@ function itemText(item: OpenAI.Responses.ResponseOutputItem): string {
  * 按 output_index 转换 Responses 流，并以 Responses 终态交付用量。
  * @param events 本次尝试的 OpenAI SDK 流。
  * @param provider 用于提取错误的 Provider 分支。
- * @param captureReplay 是否保存已完成的原生思考项。
  * @returns 按块交付的统一事件流。
  * @throws 响应报告错误、流缺少终态或工具调用缺少身份时抛出。
  */
 export async function* mapResponsesStream(
-  events: AsyncIterable<OpenAI.Responses.ResponseStreamEvent>, provider: GlmProvider, captureReplay: boolean,
+  events: AsyncIterable<OpenAI.Responses.ResponseStreamEvent>, provider: GlmProvider,
 ): AsyncGenerator<ModelStreamEvent> {
   const pending = new Map<number, PendingItem>()
   const closed = new Set<number>()
@@ -102,7 +97,7 @@ export async function* mapResponsesStream(
   function* openText(outputIndex: number, type: "thinking" | "text"): Generator<ModelStreamEvent> {
     if (pending.has(outputIndex) || closed.has(outputIndex)) return
     const index = nextIndex++
-    pending.set(outputIndex, { index, type, parts: new Map(), reasoningDone: false })
+    pending.set(outputIndex, { index, type, parts: new Map() })
     yield { type: "block_start", index, blockType: type }
   }
 
@@ -151,10 +146,6 @@ export async function* mapResponsesStream(
         yield { type: "block_delta", index: block.index, delta: { type: block.type, text: text.slice(streamed.length) } }
       }
       content = { type: block.type, text }
-      if (block.type === "thinking" && (complete || block.reasoningDone) && captureReplay && text.length > 0) {
-        const native: ReasoningInput = { type: "reasoning", content: { type: "reasoning_text", text } }
-        content.replay = thinkingReplay("responses", native)
-      }
     }
     yield { type: "block_end", index: block.index, block: content }
   }
@@ -177,7 +168,6 @@ export async function* mapResponsesStream(
         const previous = block.parts.get(partIndex) ?? ""
         const text = "delta" in event ? previous + event.delta : event.text
         block.parts.set(partIndex, text)
-        if (event.type === "response.reasoning_text.done") block.reasoningDone = true
         if (text.length > previous.length && text.startsWith(previous)) {
           yield { type: "block_delta", index: block.index, delta: { type, text: text.slice(previous.length) } }
         }

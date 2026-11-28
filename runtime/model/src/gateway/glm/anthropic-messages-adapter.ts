@@ -3,12 +3,12 @@ import { joinTextBlocks, parseToolCallArguments, reasoningRequestFragment, resol
 import type { AssistantContentBlock, ModelCompletion, ModelConfig, ModelStreamEvent, UnifiedModelRequest } from "../../types.ts"
 import { convertAnthropicUsage } from "../../usage.ts"
 import type { AnthropicUsageFields } from "../../usage.ts"
-import { extractProviderError, readThinkingReplay, record, thinkingReplay } from "./provider.ts"
+import { extractProviderError, record } from "./provider.ts"
 import type { GlmProvider } from "./provider.ts"
 import { mergeMessagesUsage } from "./usage.ts"
 
 /**
- * 将会话投影到 Messages，只有带有效签名或原生遮蔽数据的同协议思考可回传。
+ * 将会话的正文、工具调用与结果投影到 Messages 请求。
  * @param request 当前上下文、工具和所选模型档位。
  * @param config 本轮模型输出上限和推理配置。
  * @returns 可由 Anthropic SDK 发送的普通 Messages 流式请求。
@@ -39,14 +39,6 @@ export function buildMessagesRequest(request: UnifiedModelRequest, config: Model
         if (block.type === "text" && block.text.length > 0) content.push({ type: "text", text: block.text })
         if (block.type === "tool_call") content.push({ type: "tool_use", id: block.toolCallId, name: block.name,
           input: resolveToolCallInput(block.arguments) })
-        if (block.type === "thinking" && request.context.purpose !== "summary") {
-          const native = readThinkingReplay(block, "anthropic_messages")
-          if (native?.type === "thinking" && typeof native.thinking === "string" && typeof native.signature === "string" && native.signature.length > 0) {
-            content.push({ type: "thinking", thinking: native.thinking, signature: native.signature })
-          } else if (native?.type === "redacted_thinking" && typeof native.data === "string" && native.data.length > 0) {
-            content.push({ type: "redacted_thinking", data: native.data })
-          }
-        }
       }
       if (content.length === 0) continue
       messages.push({ role: "assistant", content })
@@ -69,9 +61,7 @@ export function buildMessagesRequest(request: UnifiedModelRequest, config: Model
 
 /** 与 Messages 原始索引关联的内容块，只保留 Runtime 支持的类型。 */
 type PendingBlock = { index: number } & (
-  | { type: "text"; text: string }
-  | { type: "thinking"; text: string; signature: string; signatureStarted: boolean }
-  | { type: "redacted_thinking"; data: string }
+  | { type: "text" | "thinking"; text: string }
   | { type: "tool_use"; toolCallId: string; name: string; input: unknown; argumentsJson: string }
 )
 
@@ -94,15 +84,14 @@ function completionFor(reason: string | undefined, completedCalls: number): Mode
 }
 
 /**
- * 按 Messages 内容块索引拼接正文、思考签名与工具参数，并以 message_stop 确认终态。
+ * 按 Messages 内容块索引拼接正文、思考文本与工具参数，并以 message_stop 确认终态。
  * @param events 本次尝试的 Anthropic SDK 流。
  * @param provider 用于提取错误的 Provider 分支。
- * @param captureReplay 是否保存可回放的已完成思考块。
  * @returns 统一块事件与最终用量。
  * @throws 流报告错误、缺少 message_stop 或工具调用缺少身份时抛出。
  */
 export async function* mapMessagesStream(
-  events: AsyncIterable<Anthropic.Messages.RawMessageStreamEvent>, provider: GlmProvider, captureReplay: boolean,
+  events: AsyncIterable<Anthropic.Messages.RawMessageStreamEvent>, provider: GlmProvider,
 ): AsyncGenerator<ModelStreamEvent> {
   const blocks = new Map<number, PendingBlock>()
   let nextIndex = 0
@@ -111,7 +100,7 @@ export async function* mapMessagesStream(
   let usage: AnthropicUsageFields | undefined
 
   /**
-   * 结束块，原生思考回放要求确认收到内容块停止事件。
+   * 结束内容块，收到内容块停止事件的工具调用计入完成状态。
    * @param pending 该块的累计内容。
    * @param complete 是否收到内容块停止事件。
    * @returns Runtime 的完整内容块事件。
@@ -120,19 +109,8 @@ export async function* mapMessagesStream(
     let block: AssistantContentBlock
     switch (pending.type) {
       case "text":
-        block = { type: "text", text: pending.text }
-        break
       case "thinking":
-        block = { type: "thinking", text: pending.text }
-        if (complete && captureReplay && pending.signature.length > 0) {
-          block.replay = thinkingReplay("anthropic_messages", { type: "thinking", thinking: pending.text, signature: pending.signature })
-        }
-        break
-      case "redacted_thinking":
-        block = { type: "thinking", text: "" }
-        if (complete && captureReplay && pending.data.length > 0) {
-          block.replay = thinkingReplay("anthropic_messages", { type: "redacted_thinking", data: pending.data })
-        }
+        block = { type: pending.type, text: pending.text }
         break
       case "tool_use":
         if (complete) completedCalls += 1
@@ -156,10 +134,7 @@ export async function* mapMessagesStream(
         let block: PendingBlock
         switch (content.type) {
           case "thinking":
-            block = { index: nextIndex++, type: content.type, text: content.thinking ?? "", signature: content.signature ?? "", signatureStarted: false }
-            break
-          case "redacted_thinking":
-            block = { index: nextIndex++, type: content.type, data: content.data ?? "" }
+            block = { index: nextIndex++, type: content.type, text: content.thinking ?? "" }
             break
           case "text":
             block = { index: nextIndex++, type: content.type, text: content.text ?? "" }
@@ -173,11 +148,11 @@ export async function* mapMessagesStream(
         }
         const { index } = block
         blocks.set(event.index, block)
-        const blockType = block.type === "tool_use" ? "tool_call" : block.type === "redacted_thinking" ? "thinking" : block.type
+        const blockType = block.type === "tool_use" ? "tool_call" : block.type
         yield { type: "block_start", index, blockType }
         if (block.type === "tool_use") {
           yield { type: "block_delta", index, delta: { type: "tool_call", toolCallId: block.toolCallId, nameDelta: block.name } }
-        } else if (block.type !== "redacted_thinking" && block.text.length > 0) {
+        } else if (block.text.length > 0) {
           yield { type: "block_delta", index, delta: { type: block.type, text: block.text } }
         }
         break
@@ -193,9 +168,6 @@ export async function* mapMessagesStream(
         } else if (block.type === "thinking" && delta.type === "thinking_delta" && delta.thinking.length > 0) {
           block.text += delta.thinking
           yield { type: "block_delta", index, delta: { type: "thinking", text: delta.thinking } }
-        } else if (block.type === "thinking" && delta.type === "signature_delta") {
-          block.signature = (block.signatureStarted ? block.signature : "") + delta.signature
-          block.signatureStarted = true
         } else if (block.type === "tool_use" && delta.type === "input_json_delta" && delta.partial_json.length > 0) {
           block.argumentsJson += delta.partial_json
           yield { type: "block_delta", index, delta: { type: "tool_call", toolCallId: block.toolCallId, argumentsDelta: delta.partial_json } }

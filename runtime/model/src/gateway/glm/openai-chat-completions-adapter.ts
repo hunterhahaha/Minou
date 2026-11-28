@@ -1,12 +1,12 @@
 import type OpenAI from "openai"
 import { joinTextBlocks, parseToolCallArguments, reasoningRequestFragment, serializeToolCallArguments, splitSystemMessage, streamInterruptedError } from "../../shared.ts"
-import type { AssistantContentBlock, ModelCompletion, ModelConfig, ModelStreamEvent, UnifiedModelRequest, Usage } from "../../types.ts"
-import { extractProviderError, readThinkingReplay, record, thinkingReplay } from "./provider.ts"
+import type { ModelCompletion, ModelConfig, ModelStreamEvent, UnifiedModelRequest, Usage } from "../../types.ts"
+import { extractProviderError, record } from "./provider.ts"
 import type { GlmProvider } from "./provider.ts"
 import { chatUsage } from "./usage.ts"
 
 /**
- * 将会话投影到 GLM Chat，启用保留式思考时按原顺序回传原生文本。
+ * 将会话投影到 GLM Chat，启用保留式思考时按原顺序回传历史思考文本。
  * @param request 当前上下文、工具和所选模型档位。
  * @param config 本轮模型输出上限、推理能力和档位字段。
  * @returns 使用服务端默认用量报告行为的流式请求。
@@ -16,12 +16,12 @@ export function buildChatRequest(request: UnifiedModelRequest, config: ModelConf
   const { system, rest, tools } = splitSystemMessage(request)
   const reasoning = reasoningRequestFragment(request, config)
   const thinking = record(reasoning.thinking)
-  const replayThinking = config.supportsReasoning && request.context.purpose !== "summary" &&
+  const sendHistoryThinking = config.supportsReasoning && request.context.purpose !== "summary" &&
     thinking?.type !== "disabled" && thinking?.clear_thinking !== true &&
     reasoning.reasoning_effort !== "minimal" &&
     !["none", "disabled", "false", "off"].includes(request.model.reasoningLevel.toLowerCase())
   const messages: OpenAI.ChatCompletionMessageParam[] = [{ role: "system", content: system }]
-  let hasReplay = false
+  let hasHistoryThinking = false
 
   for (const message of rest) {
     if (message.role === "user") {
@@ -33,10 +33,7 @@ export function buildChatRequest(request: UnifiedModelRequest, config: ModelConf
       const toolCalls: NonNullable<OpenAI.ChatCompletionAssistantMessageParam["tool_calls"]> = []
       for (const block of message.content) {
         if (block.type === "text") content += block.text
-        if (block.type === "thinking" && replayThinking) {
-          const native = readThinkingReplay(block, "chat_completions")
-          if (typeof native?.reasoning_content === "string") reasoningContent += native.reasoning_content
-        }
+        if (block.type === "thinking" && sendHistoryThinking) reasoningContent += block.text
         if (block.type === "tool_call") {
           toolCalls.push({ id: block.toolCallId, type: "function", function: {
             name: block.name, arguments: serializeToolCallArguments(block.arguments),
@@ -44,7 +41,7 @@ export function buildChatRequest(request: UnifiedModelRequest, config: ModelConf
         }
       }
       if (content.length === 0 && reasoningContent.length === 0 && toolCalls.length === 0) continue
-      hasReplay ||= reasoningContent.length > 0
+      hasHistoryThinking ||= reasoningContent.length > 0
       const assistant = {
         role: "assistant" as const,
         content: content || null,
@@ -67,7 +64,7 @@ export function buildChatRequest(request: UnifiedModelRequest, config: ModelConf
     ...(request.toolChoice === "none" ? { tool_choice: "none" as const } : {}),
   } satisfies OpenAI.ChatCompletionCreateParamsStreaming
   return Object.assign(params, reasoning, { max_tokens: config.maxOutputTokens },
-    hasReplay ? { thinking: { ...thinking, clear_thinking: false } } : {})
+    hasHistoryThinking ? { thinking: { ...thinking, clear_thinking: false } } : {})
 }
 
 /** 一段连续的正文或原生思考，切换通道时结束。 */
@@ -89,12 +86,11 @@ interface ToolCall {
  * 读取 GLM Chat 流，直到 SDK 流关闭才交付最终 Usage。
  * @param chunks 本次尝试的原始 SDK 流。
  * @param provider 用于提取错误与 Usage 的平台分支。
- * @param captureReplay 是否为独立摘要之外的请求保存已完成思考。
  * @returns 统一块事件和一个最终流事件。
  * @throws 流报告错误、缺少结束原因或工具调用缺少身份时抛出。
  */
 export async function* mapChatStream(
-  chunks: AsyncIterable<OpenAI.ChatCompletionChunk>, provider: GlmProvider, captureReplay: boolean,
+  chunks: AsyncIterable<OpenAI.ChatCompletionChunk>, provider: GlmProvider,
 ): AsyncGenerator<ModelStreamEvent> {
   let nextIndex = 0
   let activeText: TextBlock | undefined
@@ -103,17 +99,12 @@ export async function* mapChatStream(
   let usage: Usage | undefined
 
   /**
-   * 封装完整文本块，已结束的原生思考可被下一次请求回传。
+   * 封装当前累计的正文或思考文本。
    * @param pending 当前累计的文本块。
-   * @param complete 是否已越过思考边界或正常结束思考。
    * @returns 对应的块结束事件。
    */
-  function endText(pending: TextBlock, complete: boolean): ModelStreamEvent {
-    const block: AssistantContentBlock = { type: pending.type, text: pending.text }
-    if (block.type === "thinking" && complete && captureReplay) {
-      block.replay = thinkingReplay("chat_completions", { reasoning_content: block.text })
-    }
-    return { type: "block_end", index: pending.index, block }
+  function endText(pending: TextBlock): ModelStreamEvent {
+    return { type: "block_end", index: pending.index, block: { type: pending.type, text: pending.text } }
   }
 
   /**
@@ -124,7 +115,7 @@ export async function* mapChatStream(
    */
   function* appendText(type: TextBlock["type"], text: string): Generator<ModelStreamEvent> {
     if (activeText?.type !== type) {
-      if (activeText) yield endText(activeText, true)
+      if (activeText) yield endText(activeText)
       activeText = { index: nextIndex++, type, text: "" }
       yield { type: "block_start", index: activeText.index, blockType: type }
     }
@@ -153,7 +144,7 @@ export async function* mapChatStream(
     const content = delta?.content ?? delta?.refusal
     if (content) yield* appendText("text", content)
     if (delta?.tool_calls?.length && activeText) {
-      yield endText(activeText, true)
+      yield endText(activeText)
       activeText = undefined
     }
 
@@ -186,7 +177,7 @@ export async function* mapChatStream(
   const completion: ModelCompletion = finishReason === "stop" ? "finished"
     : toolFinish && calls.size > 0 ? "tool_calls"
       : ["length", "sensitive", "content_filter", "model_context_window_exceeded"].includes(finishReason) ? "incomplete" : "unknown"
-  if (activeText) yield endText(activeText, completion === "finished" || completion === "tool_calls")
+  if (activeText) yield endText(activeText)
   for (const call of calls.values()) {
     if (!call.toolCallId || !call.name) throw new Error("GLM Chat Completions 返回了缺少 ID 或名称的工具调用")
     yield { type: "block_end", index: call.index, block: { type: "tool_call", toolCallId: call.toolCallId,

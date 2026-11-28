@@ -13,6 +13,8 @@ import type { FakeResponse } from "./helpers.ts"
 const TOOL = { name: "lookup", inputSchema: { type: "object" } }
 const CALL_ID = "call_lookup"
 const THINKING = "  原始思考\n 下一段  "
+const HISTORY_THINKING = "\n 历史块的明文  "
+const MALFORMED_PAYLOAD_THINKING = "\n 带无效载荷的明文 "
 const TEXT = "开始查询。"
 const ARGUMENTS = { city: "Singapore" }
 const TERMINAL = { chat_completions: "tool_calls", responses: "completed", anthropic_messages: "tool_use" }
@@ -75,6 +77,8 @@ function sample(protocol: Protocol, bigmodel: boolean): (string | object)[] {
         { type: "content_block_delta", index: 4, delta: { type: "signature_delta", signature: "signed-" } },
         { type: "content_block_delta", index: 4, delta: { type: "signature_delta", signature: "thought" } },
         { type: "content_block_stop", index: 4 },
+        { type: "content_block_start", index: 5, content_block: { type: "redacted_thinking", data: "redacted-data" } },
+        { type: "content_block_stop", index: 5 },
         { type: "content_block_start", index: 6, content_block: { type: "text", text: "" } },
         { type: "content_block_delta", index: 6, delta: { type: "text_delta", text: TEXT } },
         { type: "content_block_stop", index: 6 },
@@ -90,7 +94,7 @@ function sample(protocol: Protocol, bigmodel: boolean): (string | object)[] {
 }
 
 /**
- * 用实际 SDK 请求本地 Coding Plan 替身，核对请求地址、工具续接和原生思考。
+ * 用实际 SDK 请求本地 Coding Plan 替身，核对请求地址、工具续接和明文思考。
  * @param model 对应 Coding Plan 目录的运行时模型配置。
  * @param providerName 本轮对应的平台 Provider 名称。
  * @param pathname 目录所配置的 baseURL 路径前缀。
@@ -133,19 +137,21 @@ async function verifyProtocol(model: ModelConfig, providerName: string, pathname
     assert.deepEqual(first.flatMap((event) => event.type === "block_end" ? [event.index] : []), [0, 1, 2])
     assert.ok(first.every((event) => event.type !== "block_delta" || event.delta.type !== "tool_call" || event.delta.toolCallId === CALL_ID))
     const blocks = first.flatMap((event) => event.type === "block_end" ? [event.block] : [])
-    assert.deepEqual(blocks.map(({ replay: _replay, ...block }) => block), [
+    assert.deepEqual(blocks, [
       { type: "thinking", text: THINKING }, { type: "text", text: TEXT },
       { type: "tool_call", toolCallId: CALL_ID, name: TOOL.name, arguments: ARGUMENTS },
     ])
-    assert.equal(blocks[0].replay?.name, "GLM")
-    assert.equal(blocks[0].replay?.protocol, protocol)
 
-    const ignored: AssistantContentBlock[] = [
-      { type: "thinking", text: "跨协议", replay: { ...blocks[0].replay!, protocol: protocol === "responses" ? "anthropic_messages" : "responses" } },
-      { type: "thinking", text: "其他厂商", replay: { ...blocks[0].replay!, name: "Other" } },
-      { type: "thinking", text: "无效载荷", replay: { name: "GLM", protocol, payloadJson: '{"reasoning_content":42,"content":[],"thinking":"无效载荷"}' } },
+    const metadata = { name: "Other", protocol: "anthropic_messages", payloadJson: '{"type":"thinking","thinking":"载荷文本","signature":"签名"}' } as const
+    const followingBlocks: AssistantContentBlock[] = [
+      { ...blocks[1], replay: metadata },
+      { type: "thinking", text: HISTORY_THINKING, replay: metadata },
+      { type: "thinking", text: "", replay: { ...metadata, protocol: "responses", name: "GLM",
+        payloadJson: '{"type":"reasoning","content":{"type":"reasoning_text","text":"空思考的载荷文本"}}' } },
+      blocks[0],
+      { type: "thinking", text: MALFORMED_PAYLOAD_THINKING, replay: { name: "GLM", protocol, payloadJson: "invalid json" } },
+      { ...blocks[2], replay: metadata },
     ]
-    const followingBlocks = [blocks[1], ...ignored, blocks[0], blocks[2]]
     const outcome = { type: "text" as const, text: "查询结果。" }
     assert.ok(request.context.history)
     request.context.history.events.push(
@@ -170,7 +176,7 @@ async function verifyProtocol(model: ModelConfig, providerName: string, pathname
         assert.equal(body.reasoning_effort, "high")
         assert.equal(body.stream_options, undefined)
         assert.deepEqual((body.messages as unknown[]).slice(-2), [
-          { role: "assistant", content: TEXT, reasoning_content: THINKING, tool_calls: [{ id: CALL_ID, type: "function",
+          { role: "assistant", content: TEXT, reasoning_content: HISTORY_THINKING + THINKING + MALFORMED_PAYLOAD_THINKING, tool_calls: [{ id: CALL_ID, type: "function",
             function: { name: TOOL.name, arguments: JSON.stringify(ARGUMENTS) } }] },
           { role: "tool", tool_call_id: CALL_ID, content: outcome.text },
         ])
@@ -182,7 +188,9 @@ async function verifyProtocol(model: ModelConfig, providerName: string, pathname
         assert.deepEqual(body.input, [
           { type: "message", role: "user", content: "查询日期。" },
           { type: "message", role: "assistant", content: TEXT },
+          { type: "reasoning", content: { type: "reasoning_text", text: HISTORY_THINKING } },
           { type: "reasoning", content: { type: "reasoning_text", text: THINKING } },
+          { type: "reasoning", content: { type: "reasoning_text", text: MALFORMED_PAYLOAD_THINKING } },
           { type: "function_call", call_id: CALL_ID, name: TOOL.name, arguments: JSON.stringify(ARGUMENTS) },
           { type: "function_call_output", call_id: CALL_ID, output: outcome.text },
         ])
@@ -190,8 +198,7 @@ async function verifyProtocol(model: ModelConfig, providerName: string, pathname
       case "anthropic_messages":
         assert.deepEqual(body.output_config, { effort: "high" })
         assert.deepEqual((body.messages as unknown[]).slice(-2), [
-          { role: "assistant", content: [{ type: "text", text: TEXT }, { type: "thinking", thinking: THINKING, signature: "signed-thought" },
-            { type: "tool_use", id: CALL_ID, name: TOOL.name, input: ARGUMENTS }] },
+          { role: "assistant", content: [{ type: "text", text: TEXT }, { type: "tool_use", id: CALL_ID, name: TOOL.name, input: ARGUMENTS }] },
           { role: "user", content: [{ type: "tool_result", tool_use_id: CALL_ID, content: outcome.text }] },
         ])
         break
@@ -202,7 +209,10 @@ async function verifyProtocol(model: ModelConfig, providerName: string, pathname
       { role: "system", content: "总结对话。" }, { role: "assistant", content: followingBlocks.slice(0, -1) },
     ] } }, signal, { retry: false }))
     assert.ok(summary.every((event) => event.type !== "block_end" || event.block.replay === undefined))
-    assert.ok(!JSON.stringify(provider.requests[3].body).includes(JSON.stringify(THINKING).slice(1, -1)))
+    const summaryBody = JSON.stringify(provider.requests[3].body)
+    for (const text of [HISTORY_THINKING, THINKING, MALFORMED_PAYLOAD_THINKING]) {
+      assert.ok(!summaryBody.includes(JSON.stringify(text).slice(1, -1)))
+    }
 
     const interrupted: ModelStreamEvent[] = []
     await assert.rejects(async () => {
@@ -365,7 +375,7 @@ async function main(): Promise<void> {
   }
   await verifyErrors()
   await verifyBoundaries()
-  console.log("glm.test.ts: GLM 三协议本地 SDK 与回放断言通过")
+  console.log("glm.test.ts: GLM 三协议本地 SDK 与明文思考断言通过")
 }
 
 main().catch((error: unknown) => {
