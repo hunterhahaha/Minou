@@ -21,6 +21,10 @@ export interface CapturedRequest {
 /** 一次响应：SSE 文本行（已含 `event:`/`data:` 前缀）与状态码。 */
 export interface FakeResponse {
   status?: number
+  /** HTTP 错误样本的原始 JSON 响应体。 */
+  errorBody?: object
+  /** 由 SDK 读取的附加响应头，例如请求 ID。 */
+  headers?: Record<string, string>
   /** 按顺序写入的 SSE 文本块；字符串直接写入，对象会按 `data:` 行序列化。 */
   events?: (string | object)[]
   /** 是否在流末尾挂起不结束（用于取消测试）。 */
@@ -133,12 +137,12 @@ export async function startFakeProvider(plan: ResponsePlan): Promise<FakeProvide
     const status = planned.status ?? 200
 
     if (status !== 200) {
-      response.writeHead(status, { "content-type": "application/json" })
-      response.end(JSON.stringify({ error: { type: "test_error", message: "planned failure" } }))
+      response.writeHead(status, { "content-type": "application/json", ...planned.headers })
+      response.end(JSON.stringify(planned.errorBody ?? { error: { type: "test_error", message: "planned failure" } }))
       return
     }
 
-    response.writeHead(200, { "content-type": "text/event-stream" })
+    response.writeHead(200, { "content-type": "text/event-stream", ...planned.headers })
     for (const event of planned.events ?? []) {
       response.write(typeof event === "string" ? event : sseData(event))
     }

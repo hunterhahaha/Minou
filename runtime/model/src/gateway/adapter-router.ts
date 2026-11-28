@@ -4,6 +4,8 @@ import { AnthropicMessagesAdapter } from "./anthropic-messages-adapter.ts"
 import { ChatCompletionsAdapter } from "./openai-chat-completions-adapter.ts"
 import { DeepSeekAdapter } from "./deepseek-adapter.ts"
 import { GeminiAdapter } from "./gemini-adapter.ts"
+import { GLMAdapter } from "./glm-adapter.ts"
+import { BIGMODEL_NAMES, ZAI_NAMES } from "./glm/provider.ts"
 import { OpenAIAdapter } from "./openai-adapter.ts"
 import { ResponsesAdapter } from "./openai-responses-adapter.ts"
 import { OpenRouterAdapter } from "./openrouter-adapter.ts"
@@ -55,6 +57,19 @@ export const MODEL_ADAPTER_REGISTRY: AdapterRegistry = Object.freeze({
       { modelPattern: "deepseek-*", protocol: "anthropic_messages" },
     ],
     adapter: new DeepSeekAdapter(),
+  } satisfies VendorAdapterEntry, {
+    name: "GLM",
+    providerNames: [...BIGMODEL_NAMES, ...ZAI_NAMES],
+    supportedProtocols: ["chat_completions", "responses", "anthropic_messages"],
+    modelRules: [
+      { modelPattern: "glm-*", protocol: "chat_completions" },
+      { modelPattern: "GLM-*", protocol: "chat_completions" },
+      { modelPattern: "glm-*", protocol: "responses" },
+      { modelPattern: "GLM-*", protocol: "responses" },
+      { modelPattern: "glm-*", protocol: "anthropic_messages" },
+      { modelPattern: "GLM-*", protocol: "anthropic_messages" },
+    ],
+    adapter: new GLMAdapter(),
   } satisfies VendorAdapterEntry, {
     name: "Gemini",
     providerNames: ["Gemini"],

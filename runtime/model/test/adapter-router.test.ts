@@ -6,6 +6,7 @@ import type { AdapterRegistry } from "../src/gateway/adapter-router.ts"
 import { AnthropicMessagesAdapter } from "../src/gateway/anthropic-messages-adapter.ts"
 import { ChatCompletionsAdapter } from "../src/gateway/openai-chat-completions-adapter.ts"
 import { GeminiAdapter } from "../src/gateway/gemini-adapter.ts"
+import { GLMAdapter } from "../src/gateway/glm-adapter.ts"
 import { OpenAIAdapter } from "../src/gateway/openai-adapter.ts"
 import { XaiAdapter } from "../src/gateway/xai-adapter.ts"
 import { ResponsesAdapter } from "../src/gateway/openai-responses-adapter.ts"
@@ -157,6 +158,22 @@ async function main(): Promise<void> {
     () => resolveModelConverter(MODEL_ADAPTER_REGISTRY, { name: "grok-test", protocol: "anthropic_messages" }, "xAI"),
     { constructor: AdapterRoutingError, message: /Xai.*不支持协议 anthropic_messages/ },
   )
+
+  const glm = resolveModelConverter(MODEL_ADAPTER_REGISTRY, { name: "glm-5.3", protocol: "chat_completions" })
+  assert.ok(glm instanceof GLMAdapter)
+  for (const protocol of PROTOCOLS) {
+    for (const providerName of ["BigModel", "bigmodel", "BIGMODEL", " BigModel API ", "BigModel Coding Plan",
+      "ZAI", "Zai", "zai", "Z.AI", "z.ai", " Z.AI API ", "Z.AI Coding Plan"]) {
+      assert.equal(resolveModelConverter(MODEL_ADAPTER_REGISTRY, { protocol, name: "configured-alias" }, providerName), glm)
+    }
+    for (const name of ["glm-5.3", "GLM-5.3"]) {
+      for (const providerName of [undefined, " ", "My Relay"]) {
+        assert.equal(resolveModelConverter(MODEL_ADAPTER_REGISTRY, { protocol, name }, providerName), glm)
+      }
+    }
+    assert.equal(resolveModelConverter(MODEL_ADAPTER_REGISTRY, { protocol, name: "Glm-5.3" }, "Z.AI relay"),
+      MODEL_ADAPTER_REGISTRY.genericByProtocol[protocol])
+  }
 
   for (const protocol of PROTOCOLS) {
     assert.equal(resolveModelConverter(registry, { protocol, name: "unknown-model" }, "Unknown Proxy"), registry.genericByProtocol[protocol])
