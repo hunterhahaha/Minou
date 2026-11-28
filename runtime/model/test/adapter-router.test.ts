@@ -7,6 +7,7 @@ import { AnthropicMessagesAdapter } from "../src/gateway/anthropic-messages-adap
 import { ChatCompletionsAdapter } from "../src/gateway/openai-chat-completions-adapter.ts"
 import { GeminiAdapter } from "../src/gateway/gemini-adapter.ts"
 import { GLMAdapter } from "../src/gateway/glm-adapter.ts"
+import { NvidiaAdapter } from "../src/gateway/nvidia-adapter.ts"
 import { OpenAIAdapter } from "../src/gateway/openai-adapter.ts"
 import { XaiAdapter } from "../src/gateway/xai-adapter.ts"
 import { ResponsesAdapter } from "../src/gateway/openai-responses-adapter.ts"
@@ -122,6 +123,25 @@ async function main(): Promise<void> {
     () => resolveModelConverter(MODEL_ADAPTER_REGISTRY, { name: "gemini-test", protocol: "responses" }, "Gemini"),
     { constructor: AdapterRoutingError, message: /Gemini.*不支持协议 responses/ },
   )
+
+  const nvidiaModel = { name: "openai/gpt-oss-120b", protocol: "chat_completions" } as const
+  const nvidia = resolveModelConverter(MODEL_ADAPTER_REGISTRY, nvidiaModel, "NVIDIA")
+  assert.ok(nvidia instanceof NvidiaAdapter)
+  for (const name of [nvidiaModel.name, "meta/llama-3.3-70b-instruct"]) {
+    const model = { ...nvidiaModel, name }
+    for (const providerName of ["NVIDIA", "nvidia", "Nvidia", "  NvIdIa\t"]) {
+      assert.equal(resolveModelConverter(MODEL_ADAPTER_REGISTRY, model, providerName), nvidia)
+    }
+    assert.equal(resolveModelConverter(MODEL_ADAPTER_REGISTRY, model, "OpenRouter"), openRouter)
+    assert.equal(resolveModelConverter(MODEL_ADAPTER_REGISTRY, model, "Unknown Proxy"),
+      MODEL_ADAPTER_REGISTRY.genericByProtocol.chat_completions)
+  }
+  for (const protocol of ["responses", "anthropic_messages"] as const) {
+    assert.throws(
+      () => resolveModelConverter(MODEL_ADAPTER_REGISTRY, { ...nvidiaModel, protocol }, "Nvidia"),
+      { constructor: AdapterRoutingError, message: new RegExp(`NVIDIA.*不支持协议 ${protocol}`) },
+    )
+  }
 
   const openAI = resolveModelConverter(MODEL_ADAPTER_REGISTRY, { name: "custom-model", protocol: "responses" }, "OpenAI")
   assert.ok(openAI instanceof OpenAIAdapter)

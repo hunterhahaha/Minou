@@ -8,6 +8,7 @@ import { GLMAdapter } from "./glm-adapter.ts"
 import { BIGMODEL_NAMES, ZAI_NAMES } from "./glm/provider.ts"
 import { KimiAdapter } from "./kimi-adapter.ts"
 import { MiniMaxAdapter } from "./minimax-adapter.ts"
+import { NvidiaAdapter } from "./nvidia-adapter.ts"
 import { OpenAIAdapter } from "./openai-adapter.ts"
 import { ResponsesAdapter } from "./openai-responses-adapter.ts"
 import { OpenRouterAdapter } from "./openrouter-adapter.ts"
@@ -107,6 +108,12 @@ export const MODEL_ADAPTER_REGISTRY: AdapterRegistry = Object.freeze({
       { modelPattern: "MINIMAX-*", protocol: "chat_completions" },
     ],
     adapter: new MiniMaxAdapter(),
+  } satisfies VendorAdapterEntry, {
+    name: "NVIDIA",
+    providerNames: ["NVIDIA"],
+    supportedProtocols: ["chat_completions"],
+    modelRules: [],
+    adapter: new NvidiaAdapter(),
   } satisfies VendorAdapterEntry, {
     name: "OpenAI",
     providerNames: ["OpenAI"],

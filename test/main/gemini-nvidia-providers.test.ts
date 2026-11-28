@@ -2,7 +2,7 @@
 
 import assert from "node:assert/strict"
 import {listCompatibleProviders, resolveCompatibleProvider} from "../../src/main/compatible-providers.ts"
-import {buildChatCompletionsRequest} from "../../runtime/model/src/gateway/openai-chat-completions-adapter.ts"
+import {MODEL_ADAPTER_REGISTRY, resolveModelConverter} from "../../runtime/model/src/gateway/adapter-router.ts"
 import {completeReasoningConfig} from "../../runtime/model/src/reasoning.ts"
 import type {ModelConfig, UnifiedModelRequest} from "../../runtime/model/src/types.ts"
 
@@ -24,18 +24,23 @@ for (const [name, url, names] of [
             ...model, ...completeReasoningConfig(model, "chat_completions"),
             providerId: name, modelId: model.name, protocol: "chat_completions",
         }
+        const converter = resolveModelConverter(MODEL_ADAPTER_REGISTRY, config, name)
+        const context = {modelConfig: config, providerName: name}
         for (const level of config.reasoningLevels) {
             const request: UnifiedModelRequest = {
                 model: {providerId: name, modelId: model.name, protocol: "chat_completions", name: model.name, reasoningLevel: level},
                 context: {messages: [{role: "system", content: "You are a coding agent."}, {role: "user", content: "Hello"}]},
                 tools: [{name: "read", description: "Read a file", inputSchema: {type: "object", properties: {}}}],
             }
-            const body = buildChatCompletionsRequest(request, config)
+            const outbound = converter.buildRequest(request, context)
+            assert.equal(outbound.protocol, "chat_completions")
+            const body = outbound.params
             assert.equal(body.model, model.name)
             assert.equal(body.stream, true)
             assert.deepEqual(body.stream_options, {include_usage: true})
             assert.equal(body.tools?.[0]?.type, "function")
             assert.equal(body.reasoning_effort, model.supportsReasoning ? level : undefined)
+            if (name === "NVIDIA") assert.equal(body.max_tokens, 4096)
         }
         if (model.supportsReasoning) {
             assert.deepEqual(config.reasoningLevels, ["low", "medium", "high"])
@@ -43,7 +48,7 @@ for (const [name, url, names] of [
                 model: {providerId: name, modelId: model.name, protocol: "chat_completions", name: model.name, reasoningLevel: "none"},
                 context: {messages: [{role: "system", content: "System"}, {role: "user", content: "Hello"}]}, tools: [],
             }
-            assert.throws(() => buildChatCompletionsRequest(invalid, config))
+            assert.throws(() => converter.buildRequest(invalid, context))
         }
     }
 }
