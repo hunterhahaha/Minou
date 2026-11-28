@@ -17,6 +17,7 @@ import {ANTHROPIC_PROVIDERS} from "./compatible-providers/anthropic.ts"
 import {OPENROUTER_PROVIDERS} from "./compatible-providers/openrouter.ts"
 import {GEMINI_PROVIDERS} from "./compatible-providers/gemini.ts"
 import {NVIDIA_PROVIDERS} from "./compatible-providers/nvidia.ts"
+import {XAI_PROVIDERS} from "./compatible-providers/xai.ts"
 import {
     BAILIAN_BEIJING_PROVIDERS,
     BAILIAN_SINGAPORE_PROVIDERS,
@@ -63,6 +64,7 @@ export const COMPATIBLE_PROVIDERS: CompatibleProviderCatalog = {
     "OpenRouter": OPENROUTER_PROVIDERS,
     "Gemini": GEMINI_PROVIDERS,
     "NVIDIA": NVIDIA_PROVIDERS,
+    "xAI": XAI_PROVIDERS,
     "阿里云百炼（北京）": BAILIAN_BEIJING_PROVIDERS,
     "阿里云百炼（新加坡）": BAILIAN_SINGAPORE_PROVIDERS,
     "阿里云百炼（弗吉尼亚）": BAILIAN_VIRGINIA_PROVIDERS,

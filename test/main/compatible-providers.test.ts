@@ -8,18 +8,40 @@ import type { Protocol } from "../../runtime/model/src/types.ts"
 import { completeReasoningConfig, renderReasoningField } from "../../runtime/model/src/reasoning.ts"
 
 /**
- * 验证字典查询边界、地域与协议目录、推理字段，以及 DeepSeek 完整模型资料。
+ * 验证字典查询边界、地域与协议目录、推理字段，以及 DeepSeek 和 xAI 模型资料。
  * @returns 所有同步目录断言完成。
  */
 function main(): void {
   assert.deepEqual(listCompatibleProviders({}), [])
   assert.equal(resolveCompatibleProvider("DeepSeek", "responses", {}), undefined)
   assert.deepEqual(Object.keys(COMPATIBLE_PROVIDERS), ["DeepSeek", "Kimi 国内 API", "Kimi 国内 Coding Plan", "Kimi 国际 API", "Kimi 国际 Coding Plan",
-    "BigModel API", "BigModel Coding Plan", "Z.AI API", "Z.AI Coding Plan", "MiniMax 国内", "MiniMax 国际", "OpenAI", "Anthropic", "OpenRouter", "Gemini", "NVIDIA",
+    "BigModel API", "BigModel Coding Plan", "Z.AI API", "Z.AI Coding Plan", "MiniMax 国内", "MiniMax 国际", "OpenAI", "Anthropic", "OpenRouter", "Gemini", "NVIDIA", "xAI",
     "阿里云百炼（北京）", "阿里云百炼（新加坡）", "阿里云百炼（弗吉尼亚）", "阿里云百炼（中国香港）"])
   assert.deepEqual(listCompatibleProviders().filter(({ name }) => name === "DeepSeek"), [{
     name: "DeepSeek", protocol: ["chat_completions", "responses", "anthropic_messages"],
   }])
+
+  assert.deepEqual(listCompatibleProviders().find(({ name }) => name === "xAI"), {
+    name: "xAI", protocol: ["responses", "chat_completions"],
+  })
+  assert.equal(resolveCompatibleProvider("xAI", "anthropic_messages"), undefined)
+  for (const protocol of ["responses", "chat_completions"] as const) {
+    const definition = resolveCompatibleProvider("xAI", protocol)!
+    assert.equal(definition.url, "https://api.x.ai/v1")
+    assert.deepEqual(definition.models.map(({ name }) => name), ["grok-4.7", "grok-4.6", "grok-4.5"])
+    for (const model of definition.models) {
+      assert.equal(model.contextWindow, 500000)
+      assert.equal(model.maxOutputTokens, 128000)
+      assert.equal(model.supportsReasoning, true)
+      const { reasoningField, reasoningLevels } = completeReasoningConfig(model, protocol)
+      assert.deepEqual(reasoningLevels, model.name === "grok-4.5" ? ["low", "medium", "high"] : ["low", "medium", "high", "xhigh"])
+      for (const level of reasoningLevels) {
+        assert.deepEqual(renderReasoningField(reasoningField, level, protocol), protocol === "responses"
+          ? { reasoning: { effort: level } }
+          : { reasoning_effort: level })
+      }
+    }
+  }
 
   const regionalEndpoints = [
     ["Kimi 国内 API", "https://api.moonshot.cn/v1", 6],
