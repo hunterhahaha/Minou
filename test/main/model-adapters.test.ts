@@ -190,10 +190,66 @@ async function testOpenRouterReplayUsesProviderSnapshot(): Promise<void> {
   }
 }
 
+/** 验证 MiniMax 地区别名共用转换行为，SDK 连接信息来自各自的 Provider 快照。 */
+async function testMiniMaxRegionalProviderSnapshots(): Promise<void> {
+  const domestic = await startFakeProvider({ events: [
+    { choices: [{ index: 0, delta: { reasoning_content: "domestic" }, finish_reason: "stop" }] },
+    sseData("[DONE]"),
+  ] })
+  try {
+    const international = await startFakeProvider({ events: [
+      { type: "response.output_item.done", output_index: 0, item: {
+        id: "reason", type: "reasoning", summary: [], content: [{ type: "reasoning_text", text: "international" }],
+      } },
+      { type: "response.completed", response: { status: "completed", output: [] } },
+    ] })
+    try {
+      await withPaths(async (paths) => {
+        const database = paths.providerDatabasePath
+        for (const [providerId, name, protocol, server] of [
+          ["domestic", "MiniMax 国内", "chat_completions", domestic],
+          ["international", "MiniMax 国际", "responses", international],
+        ] as const) {
+          const model = { ...MODEL, modelId: `model-${providerId}`, providerId, protocol, name: "no-model-rule" }
+          const record = {
+            id: providerId, name, protocol, type: "custom" as const,
+            baseURL: `${server.origin}/${providerId}/v1`, defaultHeaders: { "X-Provider-Fixture": providerId },
+          }
+          saveProvider(database, record)
+          saveModel(database, { ...model, supportsReasoning: false, contextWindow: 128000, maxOutputTokens: 4096 })
+          setProviderApiKey(database, providerId, `${providerId}-fixture-key`)
+          const request: UnifiedModelRequest = {
+            model, tools: [], context: { messages: [{ role: "system", content: "fixture" }, { role: "user", content: "run" }] },
+          }
+          for (const providerName of [name, ` ${name.toUpperCase()} `]) {
+            if (providerName !== name) saveProvider(database, { ...record, name: providerName })
+            const adapter = await createTurnModelAdapter(paths, model)
+            const events = await collect(adapter.stream(request, new AbortController().signal))
+            const block = events.find((event) => event.type === "block_end")
+            assert.deepEqual(block?.block, { type: "thinking", text: providerId })
+            const captured = server.requests.at(-1)
+            assert.equal(captured?.path, `/${providerId}/v1/${protocol === "responses" ? "responses" : "chat/completions"}`)
+            assert.equal(captured?.headers.authorization, `Bearer ${providerId}-fixture-key`)
+            assert.equal(captured?.headers["x-provider-fixture"], providerId)
+            assert.equal(captured?.body[protocol === "responses" ? "max_output_tokens" : "reasoning_split"],
+              protocol === "responses" ? 4096 : true)
+          }
+          assert.equal(server.requests.length, 2)
+        }
+      })
+    } finally {
+      await international.close()
+    }
+  } finally {
+    await domestic.close()
+  }
+}
+
 /** 运行 Turn Adapter 的全部断言。 */
 async function main(): Promise<void> {
   await testResolvesCurrentDatabaseConfiguration()
   await testOpenRouterReplayUsesProviderSnapshot()
+  await testMiniMaxRegionalProviderSnapshots()
   await testRejectsInvalidBindingsWithoutSecrets()
   console.log("model-adapters.test.ts: Provider 数据库与 Adapter 断言通过")
 }

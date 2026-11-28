@@ -7,6 +7,7 @@ import { GeminiAdapter } from "./gemini-adapter.ts"
 import { GLMAdapter } from "./glm-adapter.ts"
 import { BIGMODEL_NAMES, ZAI_NAMES } from "./glm/provider.ts"
 import { KimiAdapter } from "./kimi-adapter.ts"
+import { MiniMaxAdapter } from "./minimax-adapter.ts"
 import { OpenAIAdapter } from "./openai-adapter.ts"
 import { ResponsesAdapter } from "./openai-responses-adapter.ts"
 import { OpenRouterAdapter } from "./openrouter-adapter.ts"
@@ -93,6 +94,19 @@ export const MODEL_ADAPTER_REGISTRY: AdapterRegistry = Object.freeze({
       { modelPattern: "k3.1-pro-highspeed", protocol: "chat_completions" },
     ],
     adapter: new KimiAdapter(),
+  } satisfies VendorAdapterEntry, {
+    name: "MiniMax",
+    providerNames: ["MiniMax", "MiniMax 国内", "MiniMax 国际"],
+    supportedProtocols: ["responses", "chat_completions"],
+    modelRules: [
+      { modelPattern: "MiniMax-*", protocol: "responses" },
+      { modelPattern: "MiniMax-*", protocol: "chat_completions" },
+      { modelPattern: "minimax-*", protocol: "responses" },
+      { modelPattern: "minimax-*", protocol: "chat_completions" },
+      { modelPattern: "MINIMAX-*", protocol: "responses" },
+      { modelPattern: "MINIMAX-*", protocol: "chat_completions" },
+    ],
+    adapter: new MiniMaxAdapter(),
   } satisfies VendorAdapterEntry, {
     name: "OpenAI",
     providerNames: ["OpenAI"],
