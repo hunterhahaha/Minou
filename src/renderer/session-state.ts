@@ -268,8 +268,10 @@ export interface AssistantDisplay {
   turn: number
   /** Turn 内的模型请求编号。 */
   step: number
-  /** 按块顺序排列的流式或权威内容。 */
+  /** 按块顺序排列的可见流式或权威内容。 */
   blocks: AssistantContentBlock[]
+  /** 与 blocks 对齐的过滤前位置，供界面保留相邻块的组件身份。 */
+  blockPositions: number[]
 }
 /** 复用原始事件的展示项；是否生成标签由页面决定。 */
 export interface EventDisplay {
@@ -301,6 +303,7 @@ export interface CompletedTurnDisplay {
 export type ChatDisplay = ChatItem | CompletedTurnDisplay
 /**
  * 汇聚 Assistant 流式块并以权威消息覆盖同一 Step；收到 turn/end 后重组该 Turn。
+ * 文本为空字符串的思考块不进入展示；仅有空思考的 Step 不产生展示项。
  * 仅 completed 提取最后一条权威消息的全部正文，用户消息与无 Turn 事件独立展示。
  * 不修改输入事件或工作区缓存；历史与实时更新使用相同投影规则。
  * @param events 单个对话按持久化与流式序号合并的原始事件。
@@ -317,7 +320,7 @@ export function projectSessionEvents(events: readonly SessionLiveEvent[]): ChatD
       const key = JSON.stringify([event.turn, event.step])
       let state = steps.get(key)
       if (!state) {
-        const display: AssistantDisplay = { kind: "assistant", id: key, turn: event.turn, step: event.step, blocks: [] }
+        const display: AssistantDisplay = { kind: "assistant", id: key, turn: event.turn, step: event.step, blocks: [], blockPositions: [] }
         state = { display, blocks: new Map(), authoritative: false }
         steps.set(key, state); result.push(display)
       }
@@ -349,13 +352,22 @@ export function projectSessionEvents(events: readonly SessionLiveEvent[]): ChatD
       result.push({ kind: "event", id: event.eventId, event })
     }
   }
+  const visible = result.filter((item) => {
+    if (item.kind === "event" || item.blocks.length === 0) return true
+    item.blocks = item.blocks.filter((block, position) => {
+      if (block.type === "thinking" && block.text === "") return false
+      item.blockPositions.push(position)
+      return true
+    })
+    return item.blocks.length > 0
+  })
   /** 每个已结束 Turn 的整体展示与外部用户消息；只存本次投影派生数据。 */
   const completed = new Map<number, { display: CompletedTurnDisplay; users: EventDisplay[] }>()
   for (const [turn, end] of endings) completed.set(turn, {
     display: { kind: "completed-turn", id: JSON.stringify(["turn", turn]), turn, reason: end.reason, process: [], finalAnswer: [] },
     users: [],
   })
-  for (const item of result) {
+  for (const item of visible) {
     const turn = item.kind === "assistant" ? item.turn : item.event.turn
     const group = turn === undefined ? undefined : completed.get(turn)
     if (!group) continue
@@ -364,12 +376,13 @@ export function projectSessionEvents(events: readonly SessionLiveEvent[]): ChatD
     } else if (item.kind === "assistant" && group.display.reason === "completed" && item.step === lastMessageSteps.get(item.turn)) {
       group.display.finalAnswer = item.blocks.filter((block) => block.type === "text")
       const processBlocks = item.blocks.filter((block) => block.type !== "text")
-      if (processBlocks.length > 0) group.display.process.push({ ...item, blocks: processBlocks })
+      if (processBlocks.length > 0) group.display.process.push({ ...item, blocks: processBlocks,
+        blockPositions: item.blockPositions.filter((_, index) => item.blocks[index].type !== "text") })
     } else group.display.process.push(item)
   }
   const display: ChatDisplay[] = []
   const emitted = new Set<number>()
-  for (const item of result) {
+  for (const item of visible) {
     const turn = item.kind === "assistant" ? item.turn : item.event.turn
     const group = turn === undefined ? undefined : completed.get(turn)
     if (!group) display.push(item)

@@ -180,6 +180,47 @@ function testProjection(): void {
   assert.deepEqual(mergeSessionEvents([third, first], [second, third]), [first, second, third])
   assert.throws(() => mergeSessionEvents([first], [{ ...first, eventId: "other" }]), /身份冲突/)
 }
+/** 验证空思考在实时投影和持久化历史中都不产生展示项。 */
+function testEmptyThinking(): void {
+  const step = event(3, { type: "step/start", turn: 1, step: 1 })
+  const base = { sessionId: "s", createdAt: step.createdAt, turn: 1, step: 1, afterSeq: 3 }
+  const stream = [
+    { ...base, type: "assistant/block_start", blockType: "thinking", blockId: "b0", index: 0, eventId: "stream-1", streamSeq: 1 },
+    { ...base, type: "assistant/block_delta", blockId: "b0", delta: { type: "thinking", text: "" }, eventId: "stream-2", streamSeq: 2 },
+    { ...base, type: "assistant/block_start", blockType: "text", blockId: "b1", index: 1, eventId: "stream-3", streamSeq: 3 },
+    { ...base, type: "assistant/block_delta", blockId: "b0", delta: { type: "thinking", text: "思考" }, eventId: "stream-4", streamSeq: 4 },
+    { ...base, type: "assistant/block_delta", blockId: "b0", delta: { type: "thinking", text: "" }, eventId: "stream-5", streamSeq: 5 },
+  ] satisfies AssistantBlockStreamEvent[]
+  const start = [first, second, step]
+  for (const length of [1, 2]) {
+    assert.deepEqual(projectSessionEvents([...start, ...stream.slice(0, length)]), projectSessionEvents(start), "开始和空增量都不产生助手行")
+  }
+  const pending = projectSessionEvents([...start, ...stream.slice(0, 3)]).find((item) => item.kind === "assistant")
+  assert.deepEqual(pending?.blocks, [{ type: "text", text: "" }], "空正文仍可占位")
+  assert.deepEqual(pending?.blockPositions, [1])
+  const live = projectSessionEvents([...start, ...stream]).find((item) => item.kind === "assistant")
+  assert.deepEqual(live?.blocks, [{ type: "thinking", text: "思考" }, { type: "text", text: "" }])
+  assert.deepEqual(live?.blockPositions, [0, 1], "思考出现时继续使用原正文位置")
+
+  const empty = { type: "thinking", text: "" } as const
+  const blockEnd = event(4, { type: "assistant/block_end", turn: 1, step: 1, blockId: "b0", index: 0, block: empty })
+  assert.deepEqual(projectSessionEvents([...start, blockEnd]), projectSessionEvents(start), "历史仅有空 block_end 时也不生成助手行")
+  assert.deepEqual(projectSessionEvents([...start, stream[0], { ...stream[3], streamSeq: 2 }, blockEnd]), projectSessionEvents(start), "空 block_end 覆盖同块的实时临时文本")
+  const emptyMessage = event(5, { type: "assistant/message", turn: 1, step: 1, model,
+    message: { id: "empty", role: "assistant", content: [empty] } })
+  const answer = { type: "text", text: "最终正文" } as const
+  const whitespace = { type: "thinking", text: " \n" } as const
+  const message = event(6, { type: "assistant/message", turn: 1, step: 2, model,
+    message: { id: "answer", role: "assistant", content: [empty, whitespace, answer] } })
+  const end = event(7, { type: "turn/end", turn: 1, reason: "completed" })
+  const history = [...start, blockEnd, emptyMessage, message, end]
+  const snapshot = structuredClone(history)
+  const turn = projectSessionEvents(history).find((item) => item.kind === "completed-turn")
+  assert.deepEqual(turn?.finalAnswer, [answer])
+  const process = turn?.process.filter((item) => item.kind === "assistant")
+  assert.deepEqual(process?.map((item) => [item.step, item.blocks, item.blockPositions]), [[2, [whitespace], [1]]], "仅空字符串被过滤，全空 Step 不计入过程")
+  assert.deepEqual(history, snapshot, "投影保留原始历史内容")
+}
 /** 验证完成态分组、权威最终正文、终态边界以及历史与增量投影一致性。 */
 function testCompletedTurns(): void {
   const history = [
@@ -220,7 +261,7 @@ function testCompletedTurns(): void {
     assert.deepEqual(ended.process.filter((item) => item.kind === "assistant").map((item) => item.blocks),
       projectSessionEvents(history.slice(0, -1)).filter((item) => item.kind === "assistant").map((item) => item.blocks))
   }
-  for (const content of [[{ type: "thinking" as const, text: "没有最终正文" }], []]) {
+  for (const content of [[{ type: "thinking" as const, text: "没有最终正文" }], [{ type: "thinking" as const, text: "" }], []]) {
     const ended = projectSessionEvents([...history.slice(0, 7), event(8, { type: "assistant/message", turn: 1, step: 3, model,
       message: { id: "a3", role: "assistant", content } }), history[8]]).find((item) => item.kind === "completed-turn")
     assert.ok(ended?.kind === "completed-turn")
@@ -314,6 +355,7 @@ async function main(): Promise<void> {
   await testMemberCache()
   await testTransientStream()
   testProjection()
+  testEmptyThinking()
   testCompletedTurns()
   const summary = event(4, { type: "summary/end", summaryId: "summary-1", turn: 1, fromEventSeq: 2, throughEventSeq: 2, summary: "compressed",
     baseline: { mcp: [], agentsmd: { path: "G:/AGENTS.md", hash: "h", content: "rules" }, skills: { content: "", entries: [], descriptions: {} } } })

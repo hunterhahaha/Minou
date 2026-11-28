@@ -90,15 +90,18 @@ async function main() {
       modelUserInputs.push(...(request.context.history?.events.filter((event) => event.type === "user/message") ?? []))
       await loopGate
       yield { type: "block_start", index: 0, blockType: "thinking" }
-      yield { type: "block_delta", index: 0, delta: { type: "thinking", text: "本机思考过程" } }
-      yield { type: "block_end", index: 0, block: { type: "thinking", text: "本机思考过程" } }
-      yield { type: "block_start", index: 1, blockType: "text" }
-      yield { type: "block_delta", index: 1, delta: { type: "text", text: "本机流式正文" } }
-      await answerGate
-      yield { type: "block_end", index: 1, block: { type: "text", text: "本机流式正文" } }
+      yield { type: "block_delta", index: 0, delta: { type: "thinking", text: "" } }
+      yield { type: "block_end", index: 0, block: { type: "thinking", text: "" } }
+      yield { type: "block_start", index: 1, blockType: "thinking" }
+      yield { type: "block_delta", index: 1, delta: { type: "thinking", text: "本机思考过程" } }
+      yield { type: "block_end", index: 1, block: { type: "thinking", text: "本机思考过程" } }
       yield { type: "block_start", index: 2, blockType: "text" }
-      yield { type: "block_delta", index: 2, delta: { type: "text", text: "最终第二段" } }
-      yield { type: "block_end", index: 2, block: { type: "text", text: "最终第二段" } }
+      yield { type: "block_delta", index: 2, delta: { type: "text", text: "本机流式正文" } }
+      await answerGate
+      yield { type: "block_end", index: 2, block: { type: "text", text: "本机流式正文" } }
+      yield { type: "block_start", index: 3, blockType: "text" }
+      yield { type: "block_delta", index: 3, delta: { type: "text", text: "最终第二段" } }
+      yield { type: "block_end", index: 3, block: { type: "text", text: "最终第二段" } }
       yield { type: "stream_end", completion: "finished", usage: selectedModel.modelId === alternateModel.modelId ? alternateUsage : firstUsage }
     } }),
   }
@@ -219,10 +222,11 @@ async function main() {
   const db = new DatabaseSync(join(paths.rootDir, "events.sqlite"), { readOnly: true })
   try {
     const rows = db.prepare("SELECT seq, type, event_json FROM session_events ORDER BY seq").all()
-    assert.deepEqual(rows.map(({ seq }) => seq), [1, 2, 3, 4])
-    assert.deepEqual(rows.map(({ type }) => type), ["turn/start", "user/message", "step/start", "assistant/block_end"])
-    assert.equal(JSON.parse(rows[3].event_json).block.text, "本机思考过程")
+    assert.deepEqual(rows.map(({ seq }) => seq), [1, 2, 3, 4, 5])
+    assert.deepEqual(rows.map(({ type }) => type), ["turn/start", "user/message", "step/start", "assistant/block_end", "assistant/block_end"])
+    assert.deepEqual(rows.slice(3).map(({ event_json }) => JSON.parse(event_json).block.text), ["", "本机思考过程"])
   } finally { db.close() }
+  assert.deepEqual(await evaluate("[...document.querySelectorAll('.thinking-detail code')].map(node => node.textContent)"), ["本机思考过程"], "运行中只显示带文字的思考")
   assert.equal(await evaluate("document.querySelectorAll('[aria-label=\"复制AI回复\"]').length"), 0, "运行中的正文不显示 AI 复制入口")
   assert.equal(await evaluate("document.querySelectorAll('.message-label').length"), 1, "运行中的整轮回复只显示一个助手标题")
   assert.equal(await evaluate(`document.querySelectorAll('.turn-process, .final-answer').length`), 0, "没有 turn/end 时保持流式展示")
@@ -621,19 +625,29 @@ async function main() {
   }
   await pushToolEvents([
     { type: "turn/start", turn: 1, model },
-    { type: "assistant/block_start", turn: 1, step: 1, blockId: "block-shared", index: 0, blockType: "tool_call" },
+    { type: "assistant/block_start", turn: 1, step: 1, blockId: "thinking", index: 0, blockType: "thinking" },
+    { type: "assistant/block_delta", turn: 1, step: 1, blockId: "thinking", delta: { type: "thinking", text: "" } },
+    { type: "assistant/block_start", turn: 1, step: 1, blockId: "block-shared", index: 1, blockType: "tool_call" },
     { type: "assistant/block_delta", turn: 1, step: 1, blockId: "block-shared", delta: { type: "tool_call", toolCallId: "shared", nameDelta: "read", argumentsDelta: '{"path":' } },
   ])
   await evaluate("location.hash = " + JSON.stringify(route.replace(originalSession, mergedToolSession)))
   await until(() => evaluate("document.querySelector('.chat-page')?.dataset.sessionId === 'merged-tool-display' && Boolean(document.querySelector('.tool-detail'))"))
+  assert.equal(await evaluate("document.querySelector('.thinking-detail')"), null, "空思考开始和空增量不生成 DOM 入口")
   assert.deepEqual((await readUsage()).slice(1), ["缓存命中率 —", "轮数 1", "工具调用 0"], "流式工具片段尚未计入调用数")
   assert.equal(await evaluate("document.querySelector('.tool-detail').open"), false)
   await evaluate("window.originalToolNode = document.querySelector('.tool-detail'); window.originalToolNode.querySelector('summary').focus()")
   for (const type of ["keyDown", "keyUp"]) window.webContents.sendInputEvent({ type, keyCode: "Space" })
   await until(() => evaluate("window.originalToolNode.open"))
+  const thinking = { type: "thinking", text: "思考内容稍后到达" }
   await pushToolEvents([
-    { type: "assistant/block_end", turn: 1, step: 1, blockId: "block-shared", index: 0, block: toolBlock("shared", "first.ts") },
-    { type: "assistant/message", turn: 1, step: 1, model, contextWindow: 256000, usage: firstUsage, message: { id: "tools1", role: "assistant", content: [toolBlock("shared", "first.ts"), toolBlock("second", "second.ts")] } },
+    { type: "assistant/block_delta", turn: 1, step: 1, blockId: "thinking", delta: thinking },
+  ])
+  assert.equal(await evaluate("document.querySelector('.thinking-detail code')?.textContent"), thinking.text)
+  assert.equal(await evaluate("document.querySelector('.tool-detail') === window.originalToolNode && window.originalToolNode.open && document.activeElement === window.originalToolNode.querySelector('summary')"), true, "思考出现时工具保留原节点、展开状态和焦点")
+  await pushToolEvents([
+    { type: "assistant/block_end", turn: 1, step: 1, blockId: "thinking", index: 0, block: thinking },
+    { type: "assistant/block_end", turn: 1, step: 1, blockId: "block-shared", index: 1, block: toolBlock("shared", "first.ts") },
+    { type: "assistant/message", turn: 1, step: 1, model, contextWindow: 256000, usage: firstUsage, message: { id: "tools1", role: "assistant", content: [thinking, toolBlock("shared", "first.ts"), toolBlock("second", "second.ts")] } },
     toolResult(1, 1, "second", "第二调用先返回"),
   ])
   assert.equal((await readUsage())[3], "工具调用 2", "权威回复中的调用只统计一次，工具结果不增加次数")
@@ -664,6 +678,7 @@ async function main() {
     { ...toolResult(1, 2, "shared", "失败结果正文"), result: { status: "error", content: [{ type: "text", text: "失败结果正文" }], error: { source: "tool", code: "TEST", message: "失败错误信息" } } },
     { type: "assistant/message", turn: 1, step: 3, model, message: { id: "tools3", role: "assistant", content: [toolBlock("missing", "missing.ts")] } },
     toolResult(1, 3, "orphan", "无法配对的结果"),
+    { type: "assistant/message", turn: 1, step: 4, model, message: { id: "empty-thinking", role: "assistant", content: [{ type: "thinking", text: "" }] } },
     { type: "turn/end", turn: 1, reason: "stopped" },
     { type: "turn/start", turn: 2, model },
     { type: "assistant/message", turn: 2, step: 1, model, message: { id: "tools4", role: "assistant", content: [toolBlock("shared", "next-turn.ts")] } },
@@ -680,7 +695,7 @@ async function main() {
   assert.equal(mergedSnapshot.tools[3].summary, "工具：read", "无结果不虚构终态")
   assert.equal(mergedSnapshot.standalone.length, 1)
   assert.ok(mergedSnapshot.standalone[0].includes("无法配对的结果"))
-  assert.deepEqual(mergedSnapshot.counts, ["4 项", "1 项", "1 项"], "过程项计数不包含已经合并的结果")
+  assert.deepEqual(mergedSnapshot.counts, ["4 项", "1 项", "1 项"], "过程项计数排除已合并结果和只有空思考的步骤")
   await evaluate("location.hash = " + JSON.stringify(route))
   await until(() => evaluate("document.querySelector('.chat-page')?.dataset.sessionId === " + JSON.stringify(originalSession)))
   await evaluate("location.hash = " + JSON.stringify(route.replace(originalSession, mergedToolSession)))

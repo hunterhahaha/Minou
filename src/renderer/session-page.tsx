@@ -234,7 +234,7 @@ export function SessionTranscript({ projectId, sessionId, state, onOpenDiff, onO
     if (item.kind === "event" && pairedResultIds.has(item.id)) return null
     return <div className={"chat-entry " + (item.kind === "assistant" ? "assistant-entry" : "")} key={JSON.stringify([key, item.id])}>
       {item.kind === "assistant" && showAssistantLabel && <div className="message-label"><span className="assistant-avatar"><IconSparkles size={13} /></span><strong>Minou</strong><span>协作伙伴</span></div>}
-      {item.kind === "assistant" ? item.blocks.map((content, index) => <AssistantBlock block={content} key={index} onOpenWeb={onOpenWeb}
+      {item.kind === "assistant" ? item.blocks.map((content, index) => <AssistantBlock block={content} key={item.blockPositions[index]} onOpenWeb={onOpenWeb}
         toolResult={content.type === "tool_call" ? toolResults.get(toolDisplayKey(item.turn, item.step, content.toolCallId)) ?? undefined : undefined} />) : eventView(item.event)}
     </div>
   }
