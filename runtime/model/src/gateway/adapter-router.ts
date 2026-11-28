@@ -7,6 +7,7 @@ import { GeminiAdapter } from "./gemini-adapter.ts"
 import { OpenAIAdapter } from "./openai-adapter.ts"
 import { ResponsesAdapter } from "./openai-responses-adapter.ts"
 import { OpenRouterAdapter } from "./openrouter-adapter.ts"
+import { XaiAdapter } from "./xai-adapter.ts"
 import type { ModelConfig, Protocol } from "../types.ts"
 
 /** 在指定协议下匹配 API 模型原名的规则。 */
@@ -86,6 +87,17 @@ export const MODEL_ADAPTER_REGISTRY: AdapterRegistry = Object.freeze({
     supportedProtocols: ["chat_completions"],
     modelRules: [],
     adapter: new OpenRouterAdapter(),
+  } satisfies VendorAdapterEntry, {
+    name: "Xai",
+    providerNames: ["xAI"],
+    supportedProtocols: ["responses", "chat_completions"],
+    modelRules: [
+      { modelPattern: "grok*", protocol: "responses" },
+      { modelPattern: "grok*", protocol: "chat_completions" },
+      { modelPattern: "GROK*", protocol: "responses" },
+      { modelPattern: "GROK*", protocol: "chat_completions" },
+    ],
+    adapter: new XaiAdapter(),
   } satisfies VendorAdapterEntry]),
   genericByProtocol: Object.freeze({
     anthropic_messages: new AnthropicMessagesAdapter(),

@@ -15,6 +15,7 @@ import { GeminiAdapter } from "./gemini-adapter.ts"
 import { OpenAIAdapter } from "./openai-adapter.ts"
 import { requestChatCompletionsStream } from "./openai-chat-completions-adapter.ts"
 import { requestResponsesStream } from "./openai-responses-adapter.ts"
+import { XaiAdapter } from "./xai-adapter.ts"
 import { assertRequestMatchesModel, invalidRequest, runModelStream } from "../shared.ts"
 import type { ModelAdapter, ModelConfig, ModelStreamEvent, ModelStreamOptions, UnifiedModelRequest } from "../types.ts"
 
@@ -155,8 +156,9 @@ export function createModelAdapter(
     defaultHeaders: options.defaultHeaders,
     maxRetries: 0,
   }
-  /** Gemini 和 OpenAI Responses 可在请求体中回传签名或密文，关闭 SDK 的请求日志。 */
-  const logLevel = converter instanceof GeminiAdapter || (converter instanceof OpenAIAdapter && config.protocol === "responses")
+  /** 关闭可记录签名、密文或上游错误正文的 SDK 日志。 */
+  const logLevel = converter instanceof GeminiAdapter || converter instanceof XaiAdapter ||
+    (converter instanceof OpenAIAdapter && config.protocol === "responses")
     ? "off" : undefined
   const client = config.protocol === "anthropic_messages" ? new Anthropic(clientOptions) : new OpenAI({ ...clientOptions, logLevel })
   const context = { modelConfig: config, providerName }

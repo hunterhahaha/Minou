@@ -7,6 +7,7 @@ import { AnthropicMessagesAdapter } from "../src/gateway/anthropic-messages-adap
 import { ChatCompletionsAdapter } from "../src/gateway/openai-chat-completions-adapter.ts"
 import { GeminiAdapter } from "../src/gateway/gemini-adapter.ts"
 import { OpenAIAdapter } from "../src/gateway/openai-adapter.ts"
+import { XaiAdapter } from "../src/gateway/xai-adapter.ts"
 import { ResponsesAdapter } from "../src/gateway/openai-responses-adapter.ts"
 import { OpenRouterAdapter } from "../src/gateway/openrouter-adapter.ts"
 import { PROTOCOLS } from "../src/types.ts"
@@ -137,6 +138,24 @@ async function main(): Promise<void> {
   assert.throws(
     () => resolveModelConverter(MODEL_ADAPTER_REGISTRY, { name: "gpt-test", protocol: "anthropic_messages" }, "OpenAI"),
     { constructor: AdapterRoutingError, message: /OpenAI.*不支持协议 anthropic_messages/ },
+  )
+
+  const xai = resolveModelConverter(MODEL_ADAPTER_REGISTRY, { name: "custom-model", protocol: "responses" }, "xAI")
+  assert.ok(xai instanceof XaiAdapter)
+  for (const protocol of ["responses", "chat_completions"] as const) {
+    for (const providerName of ["xAI", "Xai", "XAI", "xai", "  xAi  "]) {
+      assert.equal(resolveModelConverter(MODEL_ADAPTER_REGISTRY, { name: "custom-model", protocol }, providerName), xai)
+    }
+    for (const name of ["grok-test", "GROK-test"]) {
+      assert.equal(resolveModelConverter(MODEL_ADAPTER_REGISTRY, { name, protocol }, "Unknown Proxy"), xai)
+    }
+    assert.equal(resolveModelConverter(MODEL_ADAPTER_REGISTRY, { name: "Grok-test", protocol }), registry.genericByProtocol[protocol])
+  }
+  assert.equal(resolveModelConverter(MODEL_ADAPTER_REGISTRY, { name: "grok-test", protocol: "chat_completions" }, "OpenRouter"), openRouter)
+  assert.equal(resolveModelConverter(MODEL_ADAPTER_REGISTRY, { name: "grok-test", protocol: "anthropic_messages" }), registry.genericByProtocol.anthropic_messages)
+  assert.throws(
+    () => resolveModelConverter(MODEL_ADAPTER_REGISTRY, { name: "grok-test", protocol: "anthropic_messages" }, "xAI"),
+    { constructor: AdapterRoutingError, message: /Xai.*不支持协议 anthropic_messages/ },
   )
 
   for (const protocol of PROTOCOLS) {
