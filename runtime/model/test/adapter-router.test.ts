@@ -6,6 +6,7 @@ import type { AdapterRegistry } from "../src/gateway/adapter-router.ts"
 import { AnthropicMessagesAdapter } from "../src/gateway/anthropic-messages-adapter.ts"
 import { ChatCompletionsAdapter } from "../src/gateway/openai-chat-completions-adapter.ts"
 import { ResponsesAdapter } from "../src/gateway/openai-responses-adapter.ts"
+import { OpenRouterAdapter } from "../src/gateway/openrouter-adapter.ts"
 import { PROTOCOLS } from "../src/types.ts"
 
 /**
@@ -85,6 +86,20 @@ async function main(): Promise<void> {
     () => resolveModelConverter(MODEL_ADAPTER_REGISTRY, { ...messagesModel, protocol: "chat_completions" }, "Anthropic"),
     { constructor: AdapterRoutingError, message: /Anthropic.*不支持协议 chat_completions/ },
   )
+
+  const openRouterModel = { name: "anthropic/claude-test", protocol: "chat_completions" } as const
+  const openRouter = resolveModelConverter(MODEL_ADAPTER_REGISTRY, openRouterModel, "OpenRouter")
+  assert.ok(openRouter instanceof OpenRouterAdapter)
+  for (const name of ["Openrouter", "openRouter", "openrouter", " oPeNrOuTeR ", "Open Router"]) {
+    assert.equal(resolveModelConverter(MODEL_ADAPTER_REGISTRY, openRouterModel, name), openRouter)
+  }
+  assert.equal(resolveModelConverter(MODEL_ADAPTER_REGISTRY, openRouterModel, "Unknown Proxy"),
+    MODEL_ADAPTER_REGISTRY.genericByProtocol.chat_completions)
+  assert.throws(
+    () => resolveModelConverter(MODEL_ADAPTER_REGISTRY, { name: openRouterModel.name, protocol: "responses" }, "OpenRouter"),
+    { constructor: AdapterRoutingError, message: /OpenRouter.*不支持协议 responses/ },
+  )
+
   for (const protocol of PROTOCOLS) {
     assert.equal(resolveModelConverter(registry, { protocol, name: "unknown-model" }, "Unknown Proxy"), registry.genericByProtocol[protocol])
     assert.equal(resolveModelConverter(MODEL_ADAPTER_REGISTRY, { protocol, name: "claude-exact" }, "Messages"),

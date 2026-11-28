@@ -20,7 +20,7 @@ Adapter 实现文件使用小写连字符命名，统一以 `-adapter.ts` 结尾
 统一请求 → Adapter.buildRequest() → 按协议发起 SDK 请求 → Adapter.mapResponseStream() → 统一事件流
 ```
 
-路由表中的 `ModelConverter` 是转换器，Runtime 拿到的 `ModelAdapter` 是绑定本轮模型和连接的流接口。当前网关支持 `anthropic_messages`、`chat_completions` 和 `responses`，生产表登记了覆盖三种协议的 DeepSeek 转换器、处理 Messages 协议的 Anthropic 转换器和各协议的通用转换器。新增厂商适配使用其中已有的协议。新增协议或改变 SDK 传输方式涉及网关与配置契约，应先独立确认范围。 [统一模型类型](../runtime/model/src/types.ts) · [架构与执行流程](architecture.md)
+路由表中的 `ModelConverter` 是转换器，Runtime 拿到的 `ModelAdapter` 是绑定本轮模型和连接的流接口。当前网关支持 `anthropic_messages`、`chat_completions` 和 `responses`，生产表登记了覆盖三种协议的 DeepSeek 转换器、处理 Messages 协议的 Anthropic 转换器、处理 Chat Completions 协议的 OpenRouter 转换器，以及各协议的通用转换器。新增厂商适配使用其中已有的协议。新增协议或改变 SDK 传输方式涉及网关与配置契约，应先独立确认范围。 [统一模型类型](../runtime/model/src/types.ts) · [架构与执行流程](architecture.md)
 
 ## 实现请求与响应流转换
 

@@ -146,7 +146,7 @@ async function testRejectsInvalidBindingsWithoutSecrets(): Promise<void> {
 }
 
 /**
- * 验证 Turn 工厂把实际 Provider 名称交给 Chat Completions Adapter 判断回放。
+ * 验证 Turn 工厂使用数据库中的 Provider 名称选择 OpenRouter 回放转换器。
  * @returns 真实 SDK 流上的正例与回退断言通过后完成。
  * @throws 当流不符合 Provider 名称对应的原生回放行为时拒绝。
  */
@@ -164,7 +164,7 @@ async function testOpenRouterReplayUsesProviderSnapshot(): Promise<void> {
         id: MODEL.providerId, protocol: MODEL.protocol, type: "custom" as const,
         baseURL: provider.baseURL("chat_completions"),
       }
-      saveProvider(database, { ...record, name: "OpenRouter" })
+      saveProvider(database, { ...record, name: "openRouter" })
       saveModel(database, { ...MODEL, supportsReasoning: false, contextWindow: 128000, maxOutputTokens: 4096 })
       setProviderApiKey(database, record.id, "fixture-key")
 
@@ -176,7 +176,7 @@ async function testOpenRouterReplayUsesProviderSnapshot(): Promise<void> {
       const events = await collect(named.stream(request, new AbortController().signal))
       const block = events.find((item) => item.type === "block_end")
       assert.deepEqual(block?.block.replay, {
-        name: "openrouter", protocol: "chat_completions", payloadJson: JSON.stringify([encrypted]),
+        name: "OpenRouter", protocol: "chat_completions", payloadJson: JSON.stringify({ reasoning_details: [encrypted] }),
       })
 
       saveProvider(database, { ...record, name: "Other" })

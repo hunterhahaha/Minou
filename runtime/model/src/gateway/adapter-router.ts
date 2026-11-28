@@ -4,6 +4,7 @@ import { AnthropicMessagesAdapter } from "./anthropic-messages-adapter.ts"
 import { ChatCompletionsAdapter } from "./openai-chat-completions-adapter.ts"
 import { DeepSeekAdapter } from "./deepseek-adapter.ts"
 import { ResponsesAdapter } from "./openai-responses-adapter.ts"
+import { OpenRouterAdapter } from "./openrouter-adapter.ts"
 import type { ModelConfig, Protocol } from "../types.ts"
 
 /** 在指定协议下匹配 API 模型原名的规则。 */
@@ -57,6 +58,12 @@ export const MODEL_ADAPTER_REGISTRY: AdapterRegistry = Object.freeze({
     supportedProtocols: ["anthropic_messages"],
     modelRules: [{ modelPattern: "claude-*", protocol: "anthropic_messages" }],
     adapter: new AnthropicAdapter(),
+  } satisfies VendorAdapterEntry, {
+    name: "OpenRouter",
+    providerNames: ["OpenRouter", "Openrouter", "openRouter", "openrouter", "Open Router"],
+    supportedProtocols: ["chat_completions"],
+    modelRules: [],
+    adapter: new OpenRouterAdapter(),
   } satisfies VendorAdapterEntry]),
   genericByProtocol: Object.freeze({
     anthropic_messages: new AnthropicMessagesAdapter(),
