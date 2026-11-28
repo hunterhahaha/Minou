@@ -3,6 +3,7 @@ import { AnthropicAdapter } from "./anthropic-adapter.ts"
 import { AnthropicMessagesAdapter } from "./anthropic-messages-adapter.ts"
 import { ChatCompletionsAdapter } from "./openai-chat-completions-adapter.ts"
 import { DeepSeekAdapter } from "./deepseek-adapter.ts"
+import { GeminiAdapter } from "./gemini-adapter.ts"
 import { OpenAIAdapter } from "./openai-adapter.ts"
 import { ResponsesAdapter } from "./openai-responses-adapter.ts"
 import { OpenRouterAdapter } from "./openrouter-adapter.ts"
@@ -53,6 +54,15 @@ export const MODEL_ADAPTER_REGISTRY: AdapterRegistry = Object.freeze({
       { modelPattern: "deepseek-*", protocol: "anthropic_messages" },
     ],
     adapter: new DeepSeekAdapter(),
+  } satisfies VendorAdapterEntry, {
+    name: "Gemini",
+    providerNames: ["Gemini"],
+    supportedProtocols: ["chat_completions"],
+    modelRules: [
+      { modelPattern: "gemini-*", protocol: "chat_completions" },
+      { modelPattern: "GEMINI-*", protocol: "chat_completions" },
+    ],
+    adapter: new GeminiAdapter(),
   } satisfies VendorAdapterEntry, {
     name: "OpenAI",
     providerNames: ["OpenAI"],

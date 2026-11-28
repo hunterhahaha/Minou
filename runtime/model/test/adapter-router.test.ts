@@ -5,6 +5,7 @@ import { AdapterRoutingError, MODEL_ADAPTER_REGISTRY, resolveModelConverter } fr
 import type { AdapterRegistry } from "../src/gateway/adapter-router.ts"
 import { AnthropicMessagesAdapter } from "../src/gateway/anthropic-messages-adapter.ts"
 import { ChatCompletionsAdapter } from "../src/gateway/openai-chat-completions-adapter.ts"
+import { GeminiAdapter } from "../src/gateway/gemini-adapter.ts"
 import { OpenAIAdapter } from "../src/gateway/openai-adapter.ts"
 import { ResponsesAdapter } from "../src/gateway/openai-responses-adapter.ts"
 import { OpenRouterAdapter } from "../src/gateway/openrouter-adapter.ts"
@@ -99,6 +100,25 @@ async function main(): Promise<void> {
   assert.throws(
     () => resolveModelConverter(MODEL_ADAPTER_REGISTRY, { name: openRouterModel.name, protocol: "responses" }, "OpenRouter"),
     { constructor: AdapterRoutingError, message: /OpenRouter.*不支持协议 responses/ },
+  )
+
+  const geminiModel = { name: "custom-model", protocol: "chat_completions" } as const
+  const gemini = resolveModelConverter(MODEL_ADAPTER_REGISTRY, geminiModel, "Gemini")
+  assert.ok(gemini instanceof GeminiAdapter)
+  for (const providerName of ["Gemini", "gemini", "  GEMINI  "]) {
+    assert.equal(resolveModelConverter(MODEL_ADAPTER_REGISTRY, geminiModel, providerName), gemini)
+  }
+  for (const name of ["gemini-test", "GEMINI-test"]) {
+    assert.equal(resolveModelConverter(MODEL_ADAPTER_REGISTRY, { ...geminiModel, name }, "Unknown Proxy"), gemini)
+  }
+  assert.equal(resolveModelConverter(MODEL_ADAPTER_REGISTRY, { ...geminiModel, name: "Gemini-test" }),
+    MODEL_ADAPTER_REGISTRY.genericByProtocol.chat_completions)
+  assert.equal(resolveModelConverter(MODEL_ADAPTER_REGISTRY, { name: "gemini-test", protocol: "responses" }),
+    MODEL_ADAPTER_REGISTRY.genericByProtocol.responses)
+  assert.equal(resolveModelConverter(MODEL_ADAPTER_REGISTRY, { ...geminiModel, name: "gemini-test" }, "OpenRouter"), openRouter)
+  assert.throws(
+    () => resolveModelConverter(MODEL_ADAPTER_REGISTRY, { name: "gemini-test", protocol: "responses" }, "Gemini"),
+    { constructor: AdapterRoutingError, message: /Gemini.*不支持协议 responses/ },
   )
 
   const openAI = resolveModelConverter(MODEL_ADAPTER_REGISTRY, { name: "custom-model", protocol: "responses" }, "OpenAI")
